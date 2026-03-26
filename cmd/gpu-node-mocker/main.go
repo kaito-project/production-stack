@@ -34,7 +34,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	karpenterv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 
-	"github.com/kaito-project/production-stack/gpu-mocker/pkg/controllers"
+	"github.com/kaito-project/production-stack/pkg/gpu-node-mocker/controllers"
 )
 
 var (

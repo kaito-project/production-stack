@@ -1,4 +1,4 @@
-# GPU Mocker
+# GPU Node Mocker
 
 ## Overview
 
