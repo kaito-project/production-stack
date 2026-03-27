@@ -77,32 +77,6 @@ func TestShadowPodNameTruncation(t *testing.T) {
 	}
 }
 
-func TestParseNodeSelector(t *testing.T) {
-	tests := []struct {
-		raw  string
-		want map[string]string
-	}{
-		{"kubernetes.io/os=linux", map[string]string{"kubernetes.io/os": "linux"}},
-		{"a=b,c=d", map[string]string{"a": "b", "c": "d"}},
-		{"", map[string]string{}},
-		{" a=b , c=d ", map[string]string{"a": "b", "c": "d"}},
-		{"keyonly", map[string]string{}},
-		{"k=v=x", map[string]string{"k": "v=x"}},
-	}
-	for _, tt := range tests {
-		got := parseNodeSelector(tt.raw)
-		if len(got) != len(tt.want) {
-			t.Errorf("parseNodeSelector(%q) len=%d, want %d", tt.raw, len(got), len(tt.want))
-			continue
-		}
-		for k, v := range tt.want {
-			if got[k] != v {
-				t.Errorf("parseNodeSelector(%q)[%q]=%q, want %q", tt.raw, k, got[k], v)
-			}
-		}
-	}
-}
-
 func TestMakePodCondition(t *testing.T) {
 	now := metav1.Now()
 	c := makePodCondition(corev1.PodReady, corev1.ConditionTrue, "R", "m", now)
@@ -163,9 +137,19 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if shadow.Labels[ShadowPodLabelKey] != "default.falcon-0" {
 		t.Errorf("shadow label = %q", shadow.Labels[ShadowPodLabelKey])
 	}
-	// Should have nodeSelector from config
-	if shadow.Spec.NodeSelector["kubernetes.io/os"] != "linux" {
-		t.Errorf("nodeSelector = %v", shadow.Spec.NodeSelector)
+	// Should have anti-affinity to exclude fake nodes
+	affinity := shadow.Spec.Affinity
+	if affinity == nil || affinity.NodeAffinity == nil ||
+		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
+		t.Fatal("missing node anti-affinity")
+	}
+	terms := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	if len(terms) != 1 || len(terms[0].MatchExpressions) != 1 {
+		t.Fatalf("unexpected terms: %+v", terms)
+	}
+	expr := terms[0].MatchExpressions[0]
+	if expr.Key != LabelFakeNode || expr.Operator != corev1.NodeSelectorOpDoesNotExist {
+		t.Errorf("anti-affinity expr = %+v", expr)
 	}
 	// Should NOT have ServiceAccountName
 	if shadow.Spec.ServiceAccountName != "" {

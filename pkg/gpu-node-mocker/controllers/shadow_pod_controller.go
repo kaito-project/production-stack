@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The KAITO Authors.
+Copyright 2026 The KAITO Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -155,9 +155,9 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 //
 // The shadow pod:
 //   - Runs in Config.ShadowPodNamespace on a real AKS worker node.
-//   - Uses a nodeSelector derived from Config.WorkerNodeSelector.
+//   - Uses node anti-affinity to avoid fake nodes (LabelFakeNode).
 //   - Runs Config.ShadowPodImage (the LLM Mocker).
-//   - Is labelled with ShadowPodLabelKey=<namespace>/<n> so the secondary watch
+//   - Is labelled with ShadowPodLabelKey=<namespace>.<name> so the secondary watch
 //     can map it back to the original pod.
 //   - Does NOT carry the fake-node taint toleration — it must land on a real node.
 func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *corev1.Pod, shadowName string) (*corev1.Pod, error) {
@@ -169,8 +169,6 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 	if !errors.IsNotFound(err) {
 		return nil, fmt.Errorf("get shadow pod: %w", err)
 	}
-
-	nodeSelector := parseNodeSelector(r.Config.WorkerNodeSelector)
 
 	// Inherit container port definitions from the original pod so traffic
 	// can reach the mocker on the correct port.
@@ -206,7 +204,18 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 			},
 		},
 		Spec: corev1.PodSpec{
-			NodeSelector:  nodeSelector,
+			Affinity: &corev1.Affinity{
+				NodeAffinity: &corev1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+						NodeSelectorTerms: []corev1.NodeSelectorTerm{{
+							MatchExpressions: []corev1.NodeSelectorRequirement{{
+								Key:      LabelFakeNode,
+								Operator: corev1.NodeSelectorOpDoesNotExist,
+							}},
+						}},
+					},
+				},
+			},
 			RestartPolicy: corev1.RestartPolicyAlways,
 			// Don't inherit ServiceAccountName — the original pod's SA
 			// likely doesn't exist in the shadow pod namespace.
@@ -347,23 +356,6 @@ func shadowPodName(original *corev1.Pod) string {
 		name = name[:253]
 	}
 	return name
-}
-
-// parseNodeSelector parses a comma-separated "key=value" string into a map
-// for use as pod.spec.nodeSelector.
-// Example: "kubernetes.io/os=linux,agentpool=nodepool1"
-func parseNodeSelector(raw string) map[string]string {
-	result := map[string]string{}
-	if raw == "" {
-		return result
-	}
-	for _, pair := range strings.Split(raw, ",") {
-		kv := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-		if len(kv) == 2 {
-			result[kv[0]] = kv[1]
-		}
-	}
-	return result
 }
 
 func makePodCondition(t corev1.PodConditionType, s corev1.ConditionStatus, reason, msg string, now metav1.Time) corev1.PodCondition {

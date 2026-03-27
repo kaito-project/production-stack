@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The KAITO Authors.
+Copyright 2026 The KAITO Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import (
 	"flag"
 	"os"
 
+	"github.com/kaito-project/production-stack/pkg/gpu-node-mocker/controllers"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,11 +31,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	karpenterv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
-
-	"github.com/kaito-project/production-stack/pkg/gpu-node-mocker/controllers"
 )
 
 var (
@@ -64,7 +62,6 @@ func main() {
 		probeAddr             string
 		shadowPodNamespace    string
 		shadowPodImage        string
-		workerNodeSelector    string
 		leaseDurationSec      int
 		leaseRenewIntervalSec int
 	)
@@ -77,8 +74,6 @@ func main() {
 		"Namespace where shadow pods are created.")
 	flag.StringVar(&shadowPodImage, "shadow-pod-image", "kaito/llm-mocker:latest",
 		"Container image for the LLM mocker running in shadow pods.")
-	flag.StringVar(&workerNodeSelector, "worker-node-selector", "kubernetes.io/os=linux",
-		"Label selector to target real AKS worker nodes for shadow pod scheduling.")
 	flag.IntVar(&leaseDurationSec, "lease-duration-seconds", 40,
 		"Duration in seconds for fake node lease.")
 	flag.IntVar(&leaseRenewIntervalSec, "lease-renew-interval-seconds", 10,
@@ -104,26 +99,13 @@ func main() {
 	cfg := controllers.Config{
 		ShadowPodNamespace:    shadowPodNamespace,
 		ShadowPodImage:        shadowPodImage,
-		WorkerNodeSelector:    workerNodeSelector,
 		LeaseDurationSec:      int32(leaseDurationSec),
 		LeaseRenewIntervalSec: leaseRenewIntervalSec,
 	}
 
-	// Register Phase 1: NodeClaim → Fake Node controller
-	if err = (&controllers.NodeClaimReconciler{
-		Client: mgr.GetClient(),
-		Config: cfg,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "NodeClaim")
-		os.Exit(1)
-	}
-
-	// Register Phase 2: Pending Pod → Shadow Pod controller
-	if err = (&controllers.ShadowPodReconciler{
-		Client: mgr.GetClient(),
-		Config: cfg,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ShadowPod")
+	// Register all controllers.
+	if err := controllers.NewControllers(mgr, cfg); err != nil {
+		setupLog.Error(err, "unable to register controllers")
 		os.Exit(1)
 	}
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The KAITO Authors.
+Copyright 2026 The KAITO Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -57,9 +57,6 @@ const (
 	// which shadow pod mirrors it, enabling idempotent reconciliation.
 	AnnotationShadowPodRef = "kaito.sh/shadow-pod-ref"
 
-	// AnnotationNodeClaimRef is stored on the fake Node so we can map back.
-	AnnotationNodeClaimRef = "kaito.sh/nodeclaim-ref"
-
 	// FakeProviderIDPrefix is intentionally un-parseable by the Azure CCM so
 	// InstanceExistsByProviderID returns an error and the CCM skips the node
 	// rather than deleting it.
@@ -76,10 +73,6 @@ type Config struct {
 
 	// ShadowPodImage is the LLM Mocker container image.
 	ShadowPodImage string
-
-	// WorkerNodeSelector is a label selector string used as a nodeSelector on
-	// shadow pods to ensure they land on real AKS worker nodes.
-	WorkerNodeSelector string
 
 	// LeaseDurationSec is the Lease.spec.leaseDurationSeconds written to the
 	// kube-node-lease Lease for each fake node.

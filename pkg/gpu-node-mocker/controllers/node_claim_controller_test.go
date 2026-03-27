@@ -15,7 +15,6 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-
 	karpenterv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
 
@@ -37,9 +36,9 @@ func testScheme() *runtime.Scheme {
 
 func testConfig() Config {
 	return Config{
-		ShadowPodNamespace:    "kaito-shadow",
-		ShadowPodImage:        "test/llm-mocker:latest",
-		WorkerNodeSelector:    "kubernetes.io/os=linux",
+		ShadowPodNamespace: "kaito-shadow",
+		ShadowPodImage:     "test/llm-mocker:latest",
+
 		LeaseDurationSec:      40,
 		LeaseRenewIntervalSec: 10,
 	}
@@ -141,8 +140,8 @@ func TestEnsureFakeNode_CreatesNode(t *testing.T) {
 	if node.Labels[LabelExcludeLB] != "true" {
 		t.Error("missing exclude-LB label")
 	}
-	if node.Annotations[AnnotationNodeClaimRef] != "ws-test1" {
-		t.Errorf("annotation = %q", node.Annotations[AnnotationNodeClaimRef])
+	if len(node.OwnerReferences) == 0 || node.OwnerReferences[0].Name != "ws-test1" {
+		t.Errorf("ownerReference = %v, want NodeClaim ws-test1", node.OwnerReferences)
 	}
 	// Taints should come from NodeClaim
 	if len(node.Spec.Taints) != 1 || node.Spec.Taints[0].Key != "sku" {
@@ -252,8 +251,20 @@ func TestEnsureNodeClaimReady_PatchesStatus(t *testing.T) {
 	if updated.Status.ProviderID != "fake://fake-ws-test1" {
 		t.Errorf("providerID = %q", updated.Status.ProviderID)
 	}
-	if len(updated.Status.Conditions) != 3 {
-		t.Errorf("conditions count = %d, want 3", len(updated.Status.Conditions))
+	if len(updated.Status.Conditions) != 4 {
+		t.Errorf("conditions count = %d, want 4", len(updated.Status.Conditions))
+	}
+	// Verify all expected condition types are present.
+	expectedTypes := map[string]bool{"Ready": false, "Launched": false, "Registered": false, "Initialized": false}
+	for _, c := range updated.Status.Conditions {
+		if _, ok := expectedTypes[string(c.Type)]; ok {
+			expectedTypes[string(c.Type)] = true
+		}
+	}
+	for typ, found := range expectedTypes {
+		if !found {
+			t.Errorf("missing condition type %q", typ)
+		}
 	}
 }
 

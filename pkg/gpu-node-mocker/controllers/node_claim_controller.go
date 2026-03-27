@@ -1,5 +1,5 @@
 /*
-Copyright 2024 The KAITO Authors.
+Copyright 2026 The KAITO Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
 	karpenterv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
 
@@ -213,9 +212,6 @@ func (r *NodeClaimReconciler) ensureFakeNode(ctx context.Context, nc *karpenterv
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   nodeName,
 			Labels: labels,
-			Annotations: map[string]string{
-				AnnotationNodeClaimRef: nc.Name,
-			},
 		},
 		Spec: corev1.NodeSpec{
 			// "fake://" prefix is intentionally not a valid Azure provider ID
@@ -229,6 +225,11 @@ func (r *NodeClaimReconciler) ensureFakeNode(ctx context.Context, nc *karpenterv
 			// would block pod scheduling.
 			Taints: nc.Spec.Taints,
 		},
+	}
+
+	// Set OwnerReference so .Owns(&corev1.Node{}) works and the fake node gets garbage collected if the NodeClaim is deleted.
+	if err := controllerutil.SetControllerReference(nc, node, r.Client.Scheme()); err != nil {
+		return nil, fmt.Errorf("set owner reference: %w", err)
 	}
 
 	if err := r.Create(ctx, node); err != nil {
@@ -312,6 +313,13 @@ func (r *NodeClaimReconciler) ensureNodeClaimReady(ctx context.Context, nc *karp
 			LastTransitionTime: now,
 			Reason:             "FakeNodeReady",
 			Message:            "fake node is ready",
+		},
+		{
+			Type:               "Launched",
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: now,
+			Reason:             "FakeNodeLaunched",
+			Message:            "fake node launched",
 		},
 		{
 			Type:               "Registered",
