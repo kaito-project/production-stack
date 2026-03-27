@@ -20,6 +20,7 @@ go.work
 # Build output
 _output/
 bin/
+/gpu-node-mocker
 
 # IDE files
 .vscode/

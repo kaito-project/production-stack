@@ -8,6 +8,9 @@ $(LOCALBIN):
 GOLANGCI_LINT_VERSION ?= v2.11.4
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 
+CONTROLLER_TOOLS_VERSION ?= v0.20.1
+CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
+
 ## --------------------------------------
 ## Tool Dependencies
 ## --------------------------------------
@@ -17,6 +20,31 @@ golangci-lint: $(GOLANGCI_LINT)
 $(GOLANGCI_LINT): $(LOCALBIN)
 	test -s $(GOLANGCI_LINT) && $(GOLANGCI_LINT) --version | grep -q $(GOLANGCI_LINT_VERSION) || \
 	GOBIN=$(LOCALBIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+.PHONY: controller-gen
+controller-gen: $(CONTROLLER_GEN)
+$(CONTROLLER_GEN): $(LOCALBIN)
+	test -s $(CONTROLLER_GEN) && $(CONTROLLER_GEN) --version | grep -q $(CONTROLLER_TOOLS_VERSION) || \
+	GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+## --------------------------------------
+## Code Generation
+## --------------------------------------
+
+.PHONY: manifests
+manifests: controller-gen ## Generate RBAC ClusterRole from kubebuilder markers into the Helm chart.
+	$(CONTROLLER_GEN) rbac:roleName=gpu-node-mocker paths="./pkg/..." output:rbac:artifacts:config=charts/gpu-node-mocker/templates
+	@mv charts/gpu-node-mocker/templates/role.yaml charts/gpu-node-mocker/templates/clusterrole-auto-generated.yaml
+	@echo "Generated charts/gpu-node-mocker/templates/clusterrole-auto-generated.yaml"
+
+.PHONY: verify-manifests
+verify-manifests: manifests ## Verify generated manifests are up to date.
+	@echo "verifying manifests"
+	@if [ -n "$$(git status --porcelain charts/)" ]; then \
+		echo "Error: manifests are not up-to-date. Run 'make manifests' and commit the changes."; \
+		git diff charts/; \
+		exit 1; \
+	fi
 
 ## --------------------------------------
 ## CI Targets
