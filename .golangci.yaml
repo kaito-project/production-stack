@@ -1,0 +1,36 @@
+version: "2"
+
+run:
+  timeout: 15m
+
+linters-settings:
+  gci:
+    skip-generated: true
+    sections:
+      - standard
+      - prefix(github.com/kaito-project/production-stack)
+      - default
+  gofmt:
+    simplify: true
+  goimports:
+    local-prefixes: github.com/kaito-project/production-stack
+
+issues:
+  exclude:
+    - "could not import k8s.io/apimachinery/pkg/types"
+    - "undefined.*Update"
+    - "undefined.*Get"
+    - "undefined: klog"
+    - "declared and not used: serverKey"
+
+linters:
+  default: none
+  enable:
+    - misspell
+    - ineffassign
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    - gci
