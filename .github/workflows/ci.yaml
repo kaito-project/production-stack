@@ -28,7 +28,7 @@ jobs:
       - name: Link Checker
         uses: lycheeverse/lychee-action@v2
         with:
-          args: --root-dir . --verbose --no-progress './**/*.md'
+          args: --root-dir . --verbose --no-progress '**/*.md'
           fail: false
       - name: Verify Mod
         run: make verify-mod
