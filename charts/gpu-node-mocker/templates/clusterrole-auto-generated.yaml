@@ -8,6 +8,23 @@ rules:
   - ""
   resources:
   - nodes
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - nodes/status
+  verbs:
+  - get
+  - update
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
   - create
@@ -15,17 +32,14 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - ""
   resources:
-  - nodes/status
   - pods/status
   verbs:
   - get
   - patch
-  - update
 - apiGroups:
   - coordination.k8s.io
   resources:
@@ -36,7 +50,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - karpenter.sh
@@ -45,20 +58,11 @@ rules:
   verbs:
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
   - karpenter.sh
   resources:
-  - nodeclaims/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - karpenter.sh
-  resources:
   - nodeclaims/status
   verbs:
-  - get
   - patch
-  - update

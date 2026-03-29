@@ -9,7 +9,7 @@ shadowPod:
   # REQUIRED: set via --set shadowPod.image=<your-acr>.azurecr.io/llm-mocker:latest
   image: ""
 
-leaderElect: true
+leaderElect: false
 leaseDurationSeconds: 40
 leaseRenewIntervalSeconds: 10
 
