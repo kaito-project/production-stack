@@ -1,0 +1,92 @@
+name: E2E tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request: {}
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch name to run E2E tests against'
+        required: true
+        default: 'main'
+
+env:
+  GO_VERSION: '1.26.1'
+  RESOURCE_GROUP: "kaito-gw-e2e-rg-${{ github.run_id }}"
+  CLUSTER_NAME: "kaito-gw-e2e-aks-${{ github.run_id }}"
+  ACR_NAME: "kaitogwe2eaks${{ github.run_id }}acr"
+  GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
+  LOCATION: eastus
+  NODE_COUNT: '2'
+  NODE_VM_SIZE: Standard_D8s_v3
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-tests:
+    runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
+    environment: e2e-test
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Azure Login
+        run: az login --identity
+
+      - name: Build gpu-node-mocker image
+        run: make docker-build
+        env:
+          IMG: ${{ env.GPU_MOCKER_IMAGE }}
+
+      - name: Setup cluster
+        run: make e2e-setup
+        env:
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          ACR_NAME: ${{ env.ACR_NAME }}
+          LOCATION: ${{ env.LOCATION }}
+          NODE_COUNT: ${{ env.NODE_COUNT }}
+          NODE_VM_SIZE: ${{ env.NODE_VM_SIZE }}
+
+      - name: Push gpu-node-mocker image
+        id: image
+        run: |
+          OUTPUT=$(make e2e-push-image)
+          echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
+        env:
+          ACR_NAME: ${{ env.ACR_NAME }}
+          GPU_MOCKER_IMAGE: ${{ env.GPU_MOCKER_IMAGE }}
+
+      - name: Install components
+        run: make e2e-install
+        env:
+          SHADOW_CONTROLLER_IMAGE: "${{ steps.image.outputs.image }}"
+
+      - name: Validate components
+        run: make e2e-validate
+
+      - name: Run E2E tests
+        run: make test-e2e
+
+      - name: Dump cluster state
+        if: failure()
+        run: make e2e-dump
+
+      - name: Teardown cluster
+        if: always()
+        run: make e2e-teardown
+        env:
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
