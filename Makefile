@@ -64,6 +64,10 @@ verify-mod: ## Verify go.mod and go.sum are tidy.
 lint: $(GOLANGCI_LINT) ## Run golangci-lint.
 	$(GOLANGCI_LINT) run -v
 
+.PHONY: verify-boilerplate
+verify-boilerplate: ## Verify all Go files have the required license header.
+	@bash hack/verify-boilerplate.sh
+
 ## --------------------------------------
 ## Build
 ## --------------------------------------

@@ -34,6 +34,8 @@ jobs:
         run: make verify-mod
       - name: Verify Manifests
         run: make verify-manifests
+      - name: Verify Boilerplate
+        run: make verify-boilerplate
   golangci-lint:
     runs-on: ubuntu-latest
     steps:
