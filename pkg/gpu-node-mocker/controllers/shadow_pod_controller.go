@@ -99,7 +99,7 @@ func (r *ShadowPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods/status,verbs=get;patch
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 
 func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx).WithValues("pod", req.NamespacedName)
