@@ -598,3 +598,66 @@ func TestShadowPodReconcile_SkipsNonKaitoPod(t *testing.T) {
 		t.Error("should not requeue for non-KAITO pod")
 	}
 }
+
+func TestEnsureNamespace_CreatesWhenMissing(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	if err := r.ensureNamespace(ctx, "kaito-shadow"); err != nil {
+		t.Fatalf("ensureNamespace: %v", err)
+	}
+
+	// Namespace should now exist.
+	ns := &corev1.Namespace{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "kaito-shadow"}, ns); err != nil {
+		t.Fatalf("namespace should exist: %v", err)
+	}
+	if ns.Labels[LabelManagedBy] != ControllerName {
+		t.Errorf("label = %q, want %q", ns.Labels[LabelManagedBy], ControllerName)
+	}
+}
+
+func TestEnsureNamespace_SkipsWhenExists(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+
+	existing := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "kaito-shadow",
+			Labels: map[string]string{"existing": "true"},
+		},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	if err := r.ensureNamespace(ctx, "kaito-shadow"); err != nil {
+		t.Fatalf("ensureNamespace: %v", err)
+	}
+
+	// Should not overwrite existing namespace.
+	ns := &corev1.Namespace{}
+	_ = cl.Get(ctx, types.NamespacedName{Name: "kaito-shadow"}, ns)
+	if ns.Labels["existing"] != "true" {
+		t.Error("should not recreate existing namespace")
+	}
+}
+
+func TestEnsureNamespace_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	// Call twice — second call should not error.
+	if err := r.ensureNamespace(ctx, "kaito-shadow"); err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if err := r.ensureNamespace(ctx, "kaito-shadow"); err != nil {
+		t.Fatalf("second call should be idempotent: %v", err)
+	}
+}

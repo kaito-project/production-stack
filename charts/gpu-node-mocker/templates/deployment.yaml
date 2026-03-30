@@ -25,7 +25,6 @@ spec:
           args:
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
-            - --leader-elect={{ .Values.leaderElect }}
             - --shadow-pod-namespace={{ .Values.shadowPod.namespace }}
             - --shadow-pod-image={{ .Values.shadowPod.image }}
             - --lease-duration-seconds={{ .Values.leaseDurationSeconds }}

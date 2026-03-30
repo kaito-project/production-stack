@@ -58,7 +58,6 @@ func init() {
 func main() {
 	var (
 		metricsAddr           string
-		enableLeaderElection  bool
 		probeAddr             string
 		shadowPodNamespace    string
 		shadowPodImage        string
@@ -68,8 +67,6 @@ func main() {
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager.")
 	flag.StringVar(&shadowPodNamespace, "shadow-pod-namespace", "kaito-shadow",
 		"Namespace where shadow pods are created.")
 	flag.StringVar(&shadowPodImage, "shadow-pod-image", "kaito/llm-mocker:latest",
@@ -88,8 +85,6 @@ func main() {
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "gpu-mocker.kaito.sh",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
