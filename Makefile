@@ -106,3 +106,45 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 	go test -v -timeout 30m ./test/e2e/... \
 		$(if $(E2E_LABEL),--ginkgo.label-filter="$(E2E_LABEL)",) \
 		--ginkgo.v
+## --------------------------------------
+## E2E Targets
+## --------------------------------------
+
+.PHONY: e2e
+e2e: ## Run full E2E cycle: setup cluster, install, validate, test, teardown.
+	hack/e2e/scripts/run-e2e-local.sh all
+
+.PHONY: e2e-setup
+e2e-setup: ## Create AKS cluster and build/push images.
+	hack/e2e/scripts/run-e2e-local.sh setup
+
+GPU_MOCKER_IMAGE ?= gpu-node-mocker:latest
+
+.PHONY: e2e-push-image
+e2e-push-image: ## Tag and push image to ACR. Sets SHADOW_CONTROLLER_IMAGE.
+	az acr login --name "$${ACR_NAME}"; \
+	IMAGE_TAG="latest-$$(head -c 8 /dev/urandom | xxd -p)"; \
+	IMAGE="$${ACR_NAME}.azurecr.io/gpu-node-mocker:$${IMAGE_TAG}"; \
+	docker tag $(GPU_MOCKER_IMAGE) "$${IMAGE}"; \
+	docker push "$${IMAGE}"; \
+	echo "image=$${IMAGE}"
+
+.PHONY: e2e-install
+e2e-install: ## Install all E2E components onto the cluster.
+	hack/e2e/scripts/run-e2e-local.sh install
+
+.PHONY: e2e-validate
+e2e-validate: ## Validate all E2E components are healthy.
+	hack/e2e/scripts/run-e2e-local.sh validate
+
+.PHONY: e2e-test
+e2e-test: ## Run E2E Go tests (cluster must be ready).
+	hack/e2e/scripts/run-e2e-local.sh test
+
+.PHONY: e2e-dump
+e2e-dump: ## Dump cluster state for debugging.
+	hack/e2e/scripts/dump-cluster-state.sh
+
+.PHONY: e2e-teardown
+e2e-teardown: ## Tear down the E2E cluster.
+	hack/e2e/scripts/run-e2e-local.sh teardown

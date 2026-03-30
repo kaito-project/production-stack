@@ -8,12 +8,6 @@ rules:
   - ""
   resources:
   - configmaps
-  verbs:
-  - create
-  - get
-- apiGroups:
-  - ""
-  resources:
   - namespaces
   verbs:
   - create
