@@ -71,6 +71,12 @@ func (r *NodeClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// +kubebuilder:rbac:groups=karpenter.sh,resources=nodeclaims,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=karpenter.sh,resources=nodeclaims/status,verbs=patch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=nodes/status,verbs=get;update
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;patch;delete
+
 func (r *NodeClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx).WithValues("nodeclaim", req.NamespacedName)
 

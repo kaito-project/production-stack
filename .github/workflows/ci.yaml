@@ -32,6 +32,8 @@ jobs:
           fail: false
       - name: Verify Mod
         run: make verify-mod
+      - name: Verify Manifests
+        run: make verify-manifests
   golangci-lint:
     runs-on: ubuntu-latest
     steps:

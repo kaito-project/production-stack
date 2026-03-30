@@ -97,6 +97,10 @@ func (r *ShadowPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups="",resources=pods/status,verbs=get;patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;create
+
 func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx).WithValues("pod", req.NamespacedName)
 
@@ -161,6 +165,11 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 //     can map it back to the original pod.
 //   - Does NOT carry the fake-node taint toleration — it must land on a real node.
 func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *corev1.Pod, shadowName string) (*corev1.Pod, error) {
+	// Ensure the shadow pod namespace exists.
+	if err := r.ensureNamespace(ctx, r.Config.ShadowPodNamespace); err != nil {
+		return nil, fmt.Errorf("ensure shadow namespace: %w", err)
+	}
+
 	existing := &corev1.Pod{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: r.Config.ShadowPodNamespace, Name: shadowName}, existing)
 	if err == nil {
@@ -366,4 +375,24 @@ func makePodCondition(t corev1.PodConditionType, s corev1.ConditionStatus, reaso
 		Reason:             reason,
 		Message:            msg,
 	}
+}
+
+// ensureNamespace creates the namespace if it does not already exist.
+func (r *ShadowPodReconciler) ensureNamespace(ctx context.Context, name string) error {
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: name}, ns); err == nil {
+		return nil
+	}
+	ns = &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				LabelManagedBy: ControllerName,
+			},
+		},
+	}
+	if err := r.Create(ctx, ns); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("create namespace %s: %w", name, err)
+	}
+	return nil
 }

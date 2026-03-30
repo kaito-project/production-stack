@@ -1,0 +1,21 @@
+image:
+  # REQUIRED: set via --set image.repository=<your-acr>.azurecr.io/gpu-node-mocker
+  repository: ""
+  tag: latest
+  pullPolicy: IfNotPresent
+
+shadowPod:
+  namespace: kaito-shadow
+  # REQUIRED: set via --set shadowPod.image=<your-acr>.azurecr.io/llm-mocker:latest
+  image: ""
+
+leaseDurationSeconds: 40
+leaseRenewIntervalSeconds: 10
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
