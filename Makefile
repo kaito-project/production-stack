@@ -89,3 +89,16 @@ test: ## Run unit tests.
 .PHONY: docker-build
 docker-build: ## Build docker image.
 	docker build -f docker/Dockerfile -t $(IMG) .
+
+## --------------------------------------
+## E2E Tests
+## --------------------------------------
+
+E2E_LABEL ?=
+
+.PHONY: test-e2e
+test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
+	@echo "Running e2e tests..."
+	go test -v -timeout 30m ./test/e2e/... \
+		$(if $(E2E_LABEL),--ginkgo.label-filter="$(E2E_LABEL)",) \
+		--ginkgo.v

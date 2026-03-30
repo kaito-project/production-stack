@@ -20,7 +20,6 @@ import (
 	"flag"
 	"os"
 
-	"github.com/kaito-project/production-stack/pkg/gpu-node-mocker/controllers"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	karpenterv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
+
+	"github.com/kaito-project/production-stack/pkg/gpu-node-mocker/controllers"
 )
 
 var (
