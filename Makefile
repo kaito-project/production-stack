@@ -63,3 +63,29 @@ verify-mod: ## Verify go.mod and go.sum are tidy.
 .PHONY: lint
 lint: $(GOLANGCI_LINT) ## Run golangci-lint.
 	$(GOLANGCI_LINT) run -v
+
+## --------------------------------------
+## Build
+## --------------------------------------
+
+OUTPUT_DIR := $(PROJECT_ROOT)/_output
+REGISTRY ?= ghcr.io/kaito-project
+IMG_NAME ?= gpu-node-mocker
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+IMG_TAG ?= $(VERSION)
+IMG ?= $(REGISTRY)/$(IMG_NAME):$(IMG_TAG)
+
+ARCH ?= amd64
+
+.PHONY: build
+build: ## Build the gpu-node-mocker binary.
+	@mkdir -p $(OUTPUT_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -o $(OUTPUT_DIR)/gpu-node-mocker ./cmd/gpu-node-mocker
+
+.PHONY: test
+test: ## Run unit tests.
+	go test -v -race -count=1 ./pkg/... ./cmd/...
+
+.PHONY: docker-build
+docker-build: ## Build docker image.
+	docker build -f docker/Dockerfile -t $(IMG) .

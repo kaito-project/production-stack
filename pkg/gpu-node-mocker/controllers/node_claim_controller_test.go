@@ -36,9 +36,9 @@ func testScheme() *runtime.Scheme {
 
 func testConfig() Config {
 	return Config{
-		ShadowPodNamespace: "kaito-shadow",
-		ShadowPodImage:     "test/llm-mocker:latest",
-
+		ShadowPodNamespace:    "kaito-shadow",
+		ShadowPodImage:        DefaultInferenceSimImage,
+		UDSTokenizerImage:     DefaultUDSTokenizerImage,
 		LeaseDurationSec:      40,
 		LeaseRenewIntervalSec: 10,
 	}

@@ -61,6 +61,7 @@ func main() {
 		probeAddr             string
 		shadowPodNamespace    string
 		shadowPodImage        string
+		udsTokenizerImage     string
 		leaseDurationSec      int
 		leaseRenewIntervalSec int
 	)
@@ -69,8 +70,10 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&shadowPodNamespace, "shadow-pod-namespace", "kaito-shadow",
 		"Namespace where shadow pods are created.")
-	flag.StringVar(&shadowPodImage, "shadow-pod-image", "kaito/llm-mocker:latest",
-		"Container image for the LLM mocker running in shadow pods.")
+	flag.StringVar(&shadowPodImage, "shadow-pod-image", controllers.DefaultInferenceSimImage,
+		"Container image for the inference simulator running in shadow pods.")
+	flag.StringVar(&udsTokenizerImage, "uds-tokenizer-image", controllers.DefaultUDSTokenizerImage,
+		"Container image for the UDS tokenizer sidecar in shadow pods.")
 	flag.IntVar(&leaseDurationSec, "lease-duration-seconds", 40,
 		"Duration in seconds for fake node lease.")
 	flag.IntVar(&leaseRenewIntervalSec, "lease-renew-interval-seconds", 10,
@@ -94,6 +97,7 @@ func main() {
 	cfg := controllers.Config{
 		ShadowPodNamespace:    shadowPodNamespace,
 		ShadowPodImage:        shadowPodImage,
+		UDSTokenizerImage:     udsTokenizerImage,
 		LeaseDurationSec:      int32(leaseDurationSec),
 		LeaseRenewIntervalSec: leaseRenewIntervalSec,
 	}

@@ -27,6 +27,7 @@ spec:
             - --health-probe-bind-address=:8081
             - --shadow-pod-namespace={{ .Values.shadowPod.namespace }}
             - --shadow-pod-image={{ .Values.shadowPod.image }}
+            - --uds-tokenizer-image={{ .Values.shadowPod.udsTokenizerImage }}
             - --lease-duration-seconds={{ .Values.leaseDurationSeconds }}
             - --lease-renew-interval-seconds={{ .Values.leaseRenewIntervalSeconds }}
           ports:

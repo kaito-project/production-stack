@@ -64,6 +64,21 @@ const (
 
 	// ShadowPodLabelKey marks shadow pods so we can watch only those.
 	ShadowPodLabelKey = "kaito.sh/shadow-pod-for"
+
+	// DefaultInferenceSimImage is the default llm-d inference simulator image.
+	DefaultInferenceSimImage = "ghcr.io/llm-d/llm-d-inference-sim:v0.8.1"
+
+	// DefaultUDSTokenizerImage is the default UDS tokenizer sidecar image.
+	DefaultUDSTokenizerImage = "ghcr.io/llm-d/llm-d-uds-tokenizer:v0.6.0"
+
+	// InferenceSimPort is the default port for the inference simulator.
+	InferenceSimPort = 8001
+
+	// UDSTokenizerProbePort is the health probe port for the UDS tokenizer.
+	UDSTokenizerProbePort = 8082
+
+	// DefaultModelName is used when model name cannot be extracted from the original pod.
+	DefaultModelName = "default-model"
 )
 
 // Config holds operator-wide settings injected via CLI flags.
@@ -71,8 +86,11 @@ type Config struct {
 	// ShadowPodNamespace is where Phase 2 creates shadow pods.
 	ShadowPodNamespace string
 
-	// ShadowPodImage is the LLM Mocker container image.
+	// ShadowPodImage is the inference simulator container image.
 	ShadowPodImage string
+
+	// UDSTokenizerImage is the UDS tokenizer sidecar image.
+	UDSTokenizerImage string
 
 	// LeaseDurationSec is the Lease.spec.leaseDurationSeconds written to the
 	// kube-node-lease Lease for each fake node.
