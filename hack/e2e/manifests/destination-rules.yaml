@@ -1,0 +1,24 @@
+# DestinationRules configure SIMPLE TLS with insecureSkipVerify for the
+# EPP (Endpoint Picker) services so Istio's sidecar can reach them over
+# TLS without requiring valid certificates.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: falcon-7b-instruct-inferencepool-epp
+spec:
+  host: falcon-7b-instruct-inferencepool-epp
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: ministral-3-3b-instruct-inferencepool-epp
+spec:
+  host: ministral-3-3b-instruct-inferencepool-epp
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true

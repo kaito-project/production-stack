@@ -21,7 +21,13 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
+
+var _ = BeforeSuite(func() {
+	utils.GetClusterClient(utils.TestingCluster)
+})
 
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
