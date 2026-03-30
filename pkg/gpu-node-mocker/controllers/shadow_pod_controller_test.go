@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -99,7 +100,12 @@ func newPendingPodOnFakeNode(name, ns, nodeName string) *corev1.Pod {
 		Spec: corev1.PodSpec{
 			NodeName: nodeName,
 			Containers: []corev1.Container{
-				{Name: "model", Image: "kaito/falcon:latest", Ports: []corev1.ContainerPort{{ContainerPort: 5000}}},
+				{
+					Name:  "model",
+					Image: "kaito/falcon:latest",
+					Args:  []string{"--model", "tiiuae/falcon-7b-instruct", "--port", "5000"},
+					Ports: []corev1.ContainerPort{{ContainerPort: 5000}},
+				},
 			},
 		},
 		Status: corev1.PodStatus{Phase: corev1.PodPending},
@@ -128,9 +134,58 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if shadow.Namespace != cfg.ShadowPodNamespace {
 		t.Errorf("namespace = %q", shadow.Namespace)
 	}
-	if shadow.Spec.Containers[0].Image != cfg.ShadowPodImage {
-		t.Errorf("image = %q", shadow.Spec.Containers[0].Image)
+	// Main container should be llm-d-inference-sim
+	if len(shadow.Spec.Containers) != 1 {
+		t.Fatalf("expected 1 container, got %d", len(shadow.Spec.Containers))
 	}
+	mainContainer := shadow.Spec.Containers[0]
+	if mainContainer.Name != "llm-d-inference-sim" {
+		t.Errorf("container name = %q", mainContainer.Name)
+	}
+	if mainContainer.Image != cfg.ShadowPodImage {
+		t.Errorf("image = %q", mainContainer.Image)
+	}
+	// Should use --config /config/config.yaml args
+	if len(mainContainer.Args) != 2 || mainContainer.Args[0] != "--config" || mainContainer.Args[1] != "/config/config.yaml" {
+		t.Errorf("args = %v", mainContainer.Args)
+	}
+	// Main container should use port from original pod (5000)
+	if len(mainContainer.Ports) != 1 || mainContainer.Ports[0].ContainerPort != 5000 {
+		t.Errorf("ports = %v, want containerPort=5000 (from original pod)", mainContainer.Ports)
+	}
+	// Should have readiness probe at /ready
+	if mainContainer.ReadinessProbe == nil || mainContainer.ReadinessProbe.HTTPGet.Path != "/ready" {
+		t.Error("missing or wrong readiness probe")
+	}
+	// Should have liveness probe at /health
+	if mainContainer.LivenessProbe == nil || mainContainer.LivenessProbe.HTTPGet.Path != "/health" {
+		t.Error("missing or wrong liveness probe")
+	}
+	// Should have config and uds-socket volume mounts
+	if len(mainContainer.VolumeMounts) != 2 {
+		t.Fatalf("expected 2 volume mounts, got %d", len(mainContainer.VolumeMounts))
+	}
+
+	// Init container should be uds-tokenizer (native sidecar)
+	if len(shadow.Spec.InitContainers) != 1 {
+		t.Fatalf("expected 1 init container, got %d", len(shadow.Spec.InitContainers))
+	}
+	udsContainer := shadow.Spec.InitContainers[0]
+	if udsContainer.Name != "uds-tokenizer" {
+		t.Errorf("init container name = %q", udsContainer.Name)
+	}
+	if udsContainer.Image != DefaultUDSTokenizerImage {
+		t.Errorf("uds tokenizer image = %q", udsContainer.Image)
+	}
+	if udsContainer.RestartPolicy == nil || *udsContainer.RestartPolicy != corev1.ContainerRestartPolicyAlways {
+		t.Error("uds-tokenizer should have restartPolicy=Always (native sidecar)")
+	}
+
+	// Should have 2 volumes: config (ConfigMap) + uds-socket (emptyDir)
+	if len(shadow.Spec.Volumes) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(shadow.Spec.Volumes))
+	}
+
 	if shadow.Labels[LabelManagedBy] != ControllerName {
 		t.Error("missing managed-by label")
 	}
@@ -155,15 +210,25 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if shadow.Spec.ServiceAccountName != "" {
 		t.Errorf("ServiceAccountName should be empty, got %q", shadow.Spec.ServiceAccountName)
 	}
-	// Should have POD_IP env var
-	foundPodIP := false
-	for _, e := range shadow.Spec.Containers[0].Env {
-		if e.Name == "POD_IP" && e.ValueFrom != nil {
-			foundPodIP = true
-		}
+
+	// Verify ConfigMap was created
+	cm := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0-config", Namespace: cfg.ShadowPodNamespace}, cm); err != nil {
+		t.Fatalf("configmap not created: %v", err)
 	}
-	if !foundPodIP {
-		t.Error("shadow pod should have POD_IP env from Downward API")
+	configYAML := cm.Data["config.yaml"]
+	if !strings.Contains(configYAML, "port: 5000") {
+		t.Errorf("config.yaml should use port 5000 from original pod, got: %s", configYAML)
+	}
+	if !strings.Contains(configYAML, "tiiuae/falcon-7b-instruct") {
+		t.Errorf("config.yaml should contain model name, got: %s", configYAML)
+	}
+	if !strings.Contains(configYAML, "enable-kvcache: true") {
+		t.Errorf("config.yaml should enable kv cache, got: %s", configYAML)
+	}
+	// Should NOT contain threshold
+	if strings.Contains(configYAML, "threshold") {
+		t.Errorf("config.yaml should not contain threshold, got: %s", configYAML)
 	}
 }
 
@@ -500,6 +565,8 @@ func TestPatchOriginalPodStatus_MultipleContainers(t *testing.T) {
 }
 
 func TestEnsureShadowPod_MultiplePorts(t *testing.T) {
+	// Multiple ports test is no longer relevant since the inference sim always
+	// uses a fixed port (InferenceSimPort). Verify it uses the correct port.
 	ctx := context.Background()
 	scheme := testScheme()
 	cfg := testConfig()
@@ -514,7 +581,7 @@ func TestEnsureShadowPod_MultiplePorts(t *testing.T) {
 		Spec: corev1.PodSpec{
 			NodeName: "fake-ws1",
 			Containers: []corev1.Container{
-				{Name: "model", Image: "kaito/falcon:latest", Ports: []corev1.ContainerPort{
+				{Name: "model", Image: "kaito/falcon:latest", Args: []string{"--model", "falcon-7b"}, Ports: []corev1.ContainerPort{
 					{ContainerPort: 8080, Name: "http"},
 					{ContainerPort: 9090, Name: "metrics"},
 				}},
@@ -530,13 +597,9 @@ func TestEnsureShadowPod_MultiplePorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureShadowPod: %v", err)
 	}
-	if len(shadow.Spec.Containers[0].Ports) != 2 {
-		t.Fatalf("ports len = %d, want 2", len(shadow.Spec.Containers[0].Ports))
-	}
-	// Readiness probe should use the first port (8080), not the default (5000).
-	probePort := shadow.Spec.Containers[0].ReadinessProbe.ProbeHandler.HTTPGet.Port.IntValue()
-	if probePort != 8080 {
-		t.Errorf("readiness probe port = %d, want 8080", probePort)
+	// Shadow pod should use the original pod's first port (8080)
+	if len(shadow.Spec.Containers[0].Ports) != 1 || shadow.Spec.Containers[0].Ports[0].ContainerPort != 8080 {
+		t.Errorf("expected port 8080 from original pod, got %v", shadow.Spec.Containers[0].Ports)
 	}
 }
 
@@ -546,7 +609,6 @@ func TestEnsureShadowPod_DefaultProbePort(t *testing.T) {
 	cfg := testConfig()
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
-	// Pod with no ports declared — should default to 5000.
 	original := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "no-port-0",
@@ -555,7 +617,7 @@ func TestEnsureShadowPod_DefaultProbePort(t *testing.T) {
 		},
 		Spec: corev1.PodSpec{
 			NodeName:   "fake-ws1",
-			Containers: []corev1.Container{{Name: "model", Image: "kaito/falcon:latest"}},
+			Containers: []corev1.Container{{Name: "model", Image: "kaito/falcon:latest", Args: []string{"--model=falcon-7b"}}},
 		},
 		Status: corev1.PodStatus{Phase: corev1.PodPending},
 	}
@@ -567,9 +629,10 @@ func TestEnsureShadowPod_DefaultProbePort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensureShadowPod: %v", err)
 	}
-	probePort := shadow.Spec.Containers[0].ReadinessProbe.ProbeHandler.HTTPGet.Port.IntValue()
-	if probePort != 5000 {
-		t.Errorf("readiness probe port = %d, want default 5000", probePort)
+	// Readiness probe should use named port "http" which maps to InferenceSimPort
+	probe := shadow.Spec.Containers[0].ReadinessProbe
+	if probe == nil || probe.HTTPGet.Port.StrVal != "http" {
+		t.Errorf("readiness probe port = %v, want named port 'http'", probe)
 	}
 }
 
@@ -596,6 +659,129 @@ func TestShadowPodReconcile_SkipsNonKaitoPod(t *testing.T) {
 	}
 	if result.Requeue || result.RequeueAfter != 0 {
 		t.Error("should not requeue for non-KAITO pod")
+	}
+}
+
+func TestExtractModelName(t *testing.T) {
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		want string
+	}{
+		{"from args --model value", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Args: []string{"--model", "meta-llama/Llama-3.1-8B-Instruct"}},
+			}},
+		}, "meta-llama/Llama-3.1-8B-Instruct"},
+		{"from args --model=value", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Args: []string{"--model=tiiuae/falcon-7b-instruct"}},
+			}},
+		}, "tiiuae/falcon-7b-instruct"},
+		{"from command", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Command: []string{"vllm", "serve", "--model", "Qwen/Qwen2-0.5B"}},
+			}},
+		}, "Qwen/Qwen2-0.5B"},
+		{"from --served-model-name", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Args: []string{"--served-model-name", "my-custom-model"}},
+			}},
+		}, "my-custom-model"},
+		{"from --served-model-name=value", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Args: []string{"--served-model-name=gpt-4o-mini"}},
+			}},
+		}, "gpt-4o-mini"},
+		{"--model takes precedence over --served-model-name", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Args: []string{"--model", "real-model", "--served-model-name", "alias"}},
+			}},
+		}, "real-model"},
+		{"fallback default", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Args: []string{"--port", "8000"}},
+			}},
+		}, DefaultModelName},
+		{"no containers", &corev1.Pod{}, DefaultModelName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractModelName(tt.pod); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractServingPort(t *testing.T) {
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		want int32
+	}{
+		{"from first container port", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Ports: []corev1.ContainerPort{{ContainerPort: 5000}}},
+			}},
+		}, 5000},
+		{"from vLLM default 8000", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Ports: []corev1.ContainerPort{{ContainerPort: 8000}}},
+			}},
+		}, 8000},
+		{"no ports fallback", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Name: "model"},
+			}},
+		}, InferenceSimPort},
+		{"empty pod", &corev1.Pod{}, InferenceSimPort},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractServingPort(tt.pod); got != tt.want {
+				t.Errorf("got %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnsureSimConfigMap(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	cfg := testConfig()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: cfg}
+
+	err := r.ensureSimConfigMap(ctx, "shadow-default-falcon-0", "tiiuae/falcon-7b", 5000)
+	if err != nil {
+		t.Fatalf("ensureSimConfigMap: %v", err)
+	}
+
+	cm := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0-config", Namespace: cfg.ShadowPodNamespace}, cm); err != nil {
+		t.Fatalf("configmap not found: %v", err)
+	}
+
+	configYAML := cm.Data["config.yaml"]
+	if !strings.Contains(configYAML, "port: 5000") {
+		t.Errorf("config should use port 5000, got: %s", configYAML)
+	}
+	if !strings.Contains(configYAML, `model: "tiiuae/falcon-7b"`) {
+		t.Errorf("missing model in config: %s", configYAML)
+	}
+	if !strings.Contains(configYAML, "enable-kvcache: true") {
+		t.Errorf("missing enable-kvcache in config: %s", configYAML)
+	}
+	if strings.Contains(configYAML, "threshold") {
+		t.Errorf("config should not contain threshold: %s", configYAML)
+	}
+
+	// Idempotent: calling again should not error
+	if err := r.ensureSimConfigMap(ctx, "shadow-default-falcon-0", "tiiuae/falcon-7b", 5000); err != nil {
+		t.Fatalf("second call should be idempotent: %v", err)
 	}
 }
 

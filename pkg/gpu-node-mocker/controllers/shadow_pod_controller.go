@@ -100,6 +100,7 @@ func (r *ShadowPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods/status,verbs=get;patch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create
 
 func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx).WithValues("pod", req.NamespacedName)
@@ -157,13 +158,15 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // ensureShadowPod creates the shadow pod if it does not yet exist, or returns
 // the existing one.
 //
-// The shadow pod:
-//   - Runs in Config.ShadowPodNamespace on a real AKS worker node.
-//   - Uses node anti-affinity to avoid fake nodes (LabelFakeNode).
-//   - Runs Config.ShadowPodImage (the LLM Mocker).
-//   - Is labelled with ShadowPodLabelKey=<namespace>.<name> so the secondary watch
-//     can map it back to the original pod.
-//   - Does NOT carry the fake-node taint toleration — it must land on a real node.
+// The shadow pod runs the llm-d inference simulator (ghcr.io/llm-d/llm-d-inference-sim)
+// with a UDS tokenizer sidecar, matching the manifest structure from the
+// llm-d-inference-sim helm chart:
+//   - Init sidecar: uds-tokenizer (native sidecar with restartPolicy=Always)
+//   - Main container: llm-d-inference-sim with --config /config/config.yaml
+//   - ConfigMap volume for config.yaml + emptyDir for UDS socket
+//   - Node anti-affinity to avoid fake nodes
+//   - Model name extracted from the original pod's args/command
+//   - KV cache enabled, no threshold set
 func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *corev1.Pod, shadowName string) (*corev1.Pod, error) {
 	// Ensure the shadow pod namespace exists.
 	if err := r.ensureNamespace(ctx, r.Config.ShadowPodNamespace); err != nil {
@@ -179,28 +182,22 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		return nil, fmt.Errorf("get shadow pod: %w", err)
 	}
 
-	// Inherit container port definitions from the original pod so traffic
-	// can reach the mocker on the correct port.
-	var ports []corev1.ContainerPort
-	for _, c := range original.Spec.Containers {
-		ports = append(ports, c.Ports...)
-	}
+	modelName := extractModelName(original)
+	servingPort := extractServingPort(original)
 
-	// Shadow pods run the lightweight LLM mocker — don't inherit the
-	// original pod's GPU resource requests which can't be satisfied on
-	// real worker nodes.
-	resources := corev1.ResourceRequirements{}
+	// Ensure the ConfigMap for the inference simulator exists.
+	if err := r.ensureSimConfigMap(ctx, shadowName, modelName, servingPort); err != nil {
+		return nil, fmt.Errorf("ensure sim configmap: %w", err)
+	}
 
 	labels := map[string]string{
 		LabelManagedBy:    ControllerName,
 		ShadowPodLabelKey: original.Namespace + "." + original.Name,
-		// No workload labels — shadow pods must not be selected by KAITO Services.
 	}
 
-	// Readiness probe port: first declared port or 5000 (vLLM default).
-	probePort := intstr.FromInt32(5000)
-	if len(ports) > 0 {
-		probePort = intstr.FromInt32(ports[0].ContainerPort)
+	udsTokenizerImage := r.Config.UDSTokenizerImage
+	if udsTokenizerImage == "" {
+		udsTokenizerImage = DefaultUDSTokenizerImage
 	}
 
 	shadow := &corev1.Pod{
@@ -226,36 +223,102 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyAlways,
-			// Don't inherit ServiceAccountName — the original pod's SA
-			// likely doesn't exist in the shadow pod namespace.
+			// UDS tokenizer runs as a native sidecar (init container with restartPolicy=Always).
+			InitContainers: []corev1.Container{
+				{
+					Name:            "uds-tokenizer",
+					Image:           udsTokenizerImage,
+					ImagePullPolicy: corev1.PullIfNotPresent,
+					RestartPolicy:   ptr.To(corev1.ContainerRestartPolicyAlways),
+					Env: []corev1.EnvVar{
+						{Name: "LOG_LEVEL", Value: "INFO"},
+						{Name: "PROBE_PORT", Value: fmt.Sprintf("%d", UDSTokenizerProbePort)},
+					},
+					Ports: []corev1.ContainerPort{
+						{Name: "health", ContainerPort: UDSTokenizerProbePort},
+					},
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/health",
+								Port: intstr.FromInt32(UDSTokenizerProbePort),
+							},
+						},
+						InitialDelaySeconds: 10,
+						PeriodSeconds:       10,
+					},
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/health",
+								Port: intstr.FromInt32(UDSTokenizerProbePort),
+							},
+						},
+						InitialDelaySeconds: 5,
+						PeriodSeconds:       5,
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "uds-socket", MountPath: "/tmp/tokenizer"},
+					},
+				},
+			},
 			Containers: []corev1.Container{
 				{
-					Name:            "llm-mocker",
+					Name:            "llm-d-inference-sim",
 					Image:           r.Config.ShadowPodImage,
 					ImagePullPolicy: corev1.PullIfNotPresent,
-					Ports:           ports,
-					Resources:       resources,
+					Args:            []string{"--config", "/config/config.yaml"},
 					Env: []corev1.EnvVar{
-						{Name: "ORIGINAL_POD_NAME", Value: original.Name},
-						{Name: "ORIGINAL_POD_NAMESPACE", Value: original.Namespace},
-						{Name: "ORIGINAL_NODE_NAME", Value: original.Spec.NodeName},
+						{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{
+							FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.name"},
+						}},
+						{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{
+							FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.namespace"},
+						}},
 						{Name: "POD_IP", ValueFrom: &corev1.EnvVarSource{
 							FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
 						}},
 					},
-					// The readiness probe gates the status patch: we only
-					// mark the original pod Running once the mocker is
-					// actually accepting connections on the shadow IP.
+					Ports: []corev1.ContainerPort{
+						{Name: "http", ContainerPort: servingPort, Protocol: corev1.ProtocolTCP},
+					},
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
+								Path: "/health",
+								Port: intstr.FromString("http"),
+							},
+						},
+					},
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/healthz",
-								Port: probePort,
+								Path: "/ready",
+								Port: intstr.FromString("http"),
 							},
 						},
-						InitialDelaySeconds: 2,
-						PeriodSeconds:       5,
-						FailureThreshold:    6,
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "config", MountPath: "/config"},
+						{Name: "uds-socket", MountPath: "/tmp/tokenizer"},
+					},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: shadowName + "-config",
+							},
+						},
+					},
+				},
+				{
+					Name: "uds-socket",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 			},
@@ -395,4 +458,101 @@ func (r *ShadowPodReconciler) ensureNamespace(ctx context.Context, name string) 
 		return fmt.Errorf("create namespace %s: %w", name, err)
 	}
 	return nil
+}
+
+// ensureSimConfigMap creates the inference simulator ConfigMap if it does not exist.
+// The config enables KV cache but does not set any threshold so cache_threshold
+// is never triggered. The port is set to match the original pod's serving port.
+func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, shadowName, modelName string, port int32) error {
+	cmName := shadowName + "-config"
+	existing := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: r.Config.ShadowPodNamespace, Name: cmName}, existing); err == nil {
+		return nil
+	}
+
+	configYAML := fmt.Sprintf(`port: %d
+model: "%s"
+served-model-name:
+- "%s"
+mode: "random"
+max-num-seqs: 5
+max-model-len: 32768
+enable-kvcache: true
+kv-cache-size: 4096
+block-size: 16
+time-to-first-token: 100ms
+inter-token-latency: 30ms
+`, port, modelName, modelName)
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: r.Config.ShadowPodNamespace,
+			Labels: map[string]string{
+				LabelManagedBy: ControllerName,
+			},
+		},
+		Data: map[string]string{
+			"config.yaml": configYAML,
+		},
+	}
+
+	if err := r.Create(ctx, cm); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("create configmap %s: %w", cmName, err)
+	}
+	return nil
+}
+
+// extractModelName attempts to find the model name from the original pod's
+// container args or command. It looks for "--model" first, then falls back
+// to "--served-model-name" if not found.
+func extractModelName(pod *corev1.Pod) string {
+	// First pass: look for --model
+	for _, c := range pod.Spec.Containers {
+		if name := findArgValue(c.Command, "--model"); name != "" {
+			return name
+		}
+		if name := findArgValue(c.Args, "--model"); name != "" {
+			return name
+		}
+	}
+	// Second pass: look for --served-model-name
+	for _, c := range pod.Spec.Containers {
+		if name := findArgValue(c.Command, "--served-model-name"); name != "" {
+			return name
+		}
+		if name := findArgValue(c.Args, "--served-model-name"); name != "" {
+			return name
+		}
+	}
+	return DefaultModelName
+}
+
+// extractServingPort returns the first declared containerPort from the original
+// pod. If no port is declared, it falls back to InferenceSimPort (8001).
+// This ensures the inference simulator listens on the same port that
+// KAITO Services and EPP expect traffic to reach.
+func extractServingPort(pod *corev1.Pod) int32 {
+	for _, c := range pod.Spec.Containers {
+		for _, p := range c.Ports {
+			if p.ContainerPort > 0 {
+				return p.ContainerPort
+			}
+		}
+	}
+	return InferenceSimPort
+}
+
+// findArgValue scans a slice of arguments for a flag (e.g. "--model") and
+// returns its value. Supports both "--flag value" and "--flag=value" forms.
+func findArgValue(args []string, flag string) string {
+	for i, arg := range args {
+		if arg == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(arg, flag+"=") {
+			return strings.TrimPrefix(arg, flag+"=")
+		}
+	}
+	return ""
 }
