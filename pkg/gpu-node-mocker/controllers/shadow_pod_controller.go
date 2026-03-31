@@ -544,14 +544,36 @@ func extractServingPort(pod *corev1.Pod) int32 {
 }
 
 // findArgValue scans a slice of arguments for a flag (e.g. "--model") and
-// returns its value. Supports both "--flag value" and "--flag=value" forms.
+// returns its value. Supports:
+//   - "--flag value" as separate array elements
+//   - "--flag=value" as a single array element
+//   - Shell-wrapped: "/bin/sh", "-c", "cmd --flag=value ..." where the flag
+//     is embedded inside a single string (used by KAITO InferenceSet pods)
 func findArgValue(args []string, flag string) string {
+	// Pass 1: check for standalone elements.
 	for i, arg := range args {
 		if arg == flag && i+1 < len(args) {
 			return args[i+1]
 		}
 		if strings.HasPrefix(arg, flag+"=") {
 			return strings.TrimPrefix(arg, flag+"=")
+		}
+	}
+	// Pass 2: search inside shell-wrapped command strings.
+	for _, arg := range args {
+		if idx := strings.Index(arg, flag+"="); idx >= 0 {
+			rest := arg[idx+len(flag)+1:]
+			if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+				return rest[:sp]
+			}
+			return rest
+		}
+		if idx := strings.Index(arg, flag+" "); idx >= 0 {
+			rest := strings.TrimLeft(arg[idx+len(flag)+1:], " ")
+			if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+				return rest[:sp]
+			}
+			return rest
 		}
 	}
 	return ""
