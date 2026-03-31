@@ -91,8 +91,8 @@ test: ## Run unit tests.
 	go test -v -race -count=1 ./pkg/... ./cmd/...
 
 .PHONY: docker-build
-docker-build: ## Build docker image.
-	docker build -f docker/Dockerfile -t $(IMG) .
+docker-build: ## Build docker image for the target ARCH.
+	docker build --platform linux/$(ARCH) -f docker/Dockerfile -t $(IMG) .
 
 ## --------------------------------------
 ## E2E Tests

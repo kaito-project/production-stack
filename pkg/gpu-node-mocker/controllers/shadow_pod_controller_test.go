@@ -696,6 +696,21 @@ func TestExtractModelName(t *testing.T) {
 				{Command: []string{"vllm", "serve", "--model", "Qwen/Qwen2-0.5B"}},
 			}},
 		}, "Qwen/Qwen2-0.5B"},
+		{"from shell-wrapped --served-model-name (KAITO pattern)", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Command: []string{"/bin/sh", "-c", "python3 /workspace/vllm/inference_api.py --served-model-name=falcon-7b-instruct --max-model-len=2048 --gpu-memory-utilization=0.84"}},
+			}},
+		}, "falcon-7b-instruct"},
+		{"from shell-wrapped --model=value", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Command: []string{"/bin/sh", "-c", "python3 script.py --model=tiiuae/falcon-7b-instruct --served-model-name=falcon-7b-instruct --port 5000"}},
+			}},
+		}, "tiiuae/falcon-7b-instruct"},
+		{"from shell-wrapped --model space value", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Command: []string{"/bin/sh", "-c", "python3 script.py --model meta-llama/Llama-3.1-8B --gpu-memory-utilization 0.84"}},
+			}},
+		}, "meta-llama/Llama-3.1-8B"},
 		{"from --served-model-name", &corev1.Pod{
 			Spec: corev1.PodSpec{Containers: []corev1.Container{
 				{Args: []string{"--served-model-name", "my-custom-model"}},
