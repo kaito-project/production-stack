@@ -73,11 +73,10 @@ do_validate() {
   "${SCRIPT_DIR}/validate-components.sh"
 }
 
-# TODO: implement real Go e2e tests and run them here
 do_test() {
   echo "=== Running E2E tests ==="
   cd "${REPO_ROOT}"
-  echo "TODO - go test -v -timeout 30m ./..."
+  go test -v -timeout 30m ./test/e2e/...
 }
 
 do_teardown() {
