@@ -49,6 +49,99 @@ E2E_LABEL=PrefixCache make test-e2e
 go test -v -timeout 30m ./test/e2e/... --ginkgo.v
 ```
 
+### Setting up a local E2E environment from scratch
+
+This creates an AKS cluster, builds and pushes the gpu-node-mocker image, installs
+all components (KAITO, Istio, BBR, Gateway, InferenceSets), and validates them.
+
+**Prerequisites:**
+- Azure CLI (`az`) logged in with a subscription that has quota for `Standard_D8s_v3` nodes
+- Docker installed (for building the gpu-node-mocker image)
+- `kubectl`, `helm`, `istioctl` available in PATH (or the setup script will install them)
+
+**One-command setup:**
+
+```bash
+# Uses default names (kaito-e2e-local, eastus, 2 nodes)
+make e2e-up
+```
+
+**With custom configuration:**
+
+```bash
+export RESOURCE_GROUP=my-e2e-rg
+export CLUSTER_NAME=my-e2e-cluster
+export LOCATION=westus2
+export NODE_COUNT=3
+export NODE_VM_SIZE=Standard_D8s_v3
+make e2e-up
+```
+
+**After setup completes, run tests:**
+
+```bash
+make test-e2e
+
+# Or run specific labels
+make test-e2e E2E_LABEL=Smoke
+make test-e2e E2E_LABEL=Infra
+make test-e2e E2E_LABEL=Routing
+make test-e2e E2E_LABEL=PrefixCache
+```
+
+**Tear down when done:**
+
+```bash
+make e2e-teardown
+```
+
+**Step-by-step (if you need more control):**
+
+```bash
+# 1. Build the gpu-node-mocker image
+make docker-build
+
+# 2. Create AKS cluster and ACR
+make e2e-setup
+
+# 3. Push image to ACR
+make e2e-push-image
+
+# 4. Install all components (KAITO, Istio, BBR, Gateway, InferenceSets)
+SHADOW_CONTROLLER_IMAGE=<image-from-step-3> make e2e-install
+
+# 5. Validate everything is healthy
+make e2e-validate
+
+# 6. Run tests
+make test-e2e
+
+# 7. (Optional) Dump cluster state for debugging
+make e2e-dump
+
+# 8. Tear down
+make e2e-teardown
+```
+
+**Skip docker build (use default upstream image):**
+
+If you don't need to test local gpu-node-mocker changes:
+
+```bash
+make e2e-setup
+make e2e-install
+make e2e-validate
+make test-e2e
+```
+
+**Keep the cluster after tests (for debugging):**
+
+```bash
+SKIP_TEARDOWN=true make e2e
+# Cluster stays running. Tear down later:
+make e2e-teardown
+```
+
 ### Environment Variables
 
 | Variable | Description | Default |
