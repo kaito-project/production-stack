@@ -20,7 +20,6 @@ env:
   GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
   LOCATION: eastus
   NODE_COUNT: '2'
-  NODE_VM_SIZE: Standard_D4s_v3
 
 permissions:
   contents: read
@@ -59,7 +58,6 @@ jobs:
           ACR_NAME: ${{ env.ACR_NAME }}
           LOCATION: ${{ env.LOCATION }}
           NODE_COUNT: ${{ env.NODE_COUNT }}
-          NODE_VM_SIZE: ${{ env.NODE_VM_SIZE }}
 
       - name: Push gpu-node-mocker image
         id: image

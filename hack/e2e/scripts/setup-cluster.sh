@@ -21,7 +21,34 @@ CLUSTER_NAME="${CLUSTER_NAME:-kaito-aks}"
 ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
 LOCATION="${LOCATION:-eastus}"
 NODE_COUNT="${NODE_COUNT:-2}"
-NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D4s_v3}"
+
+# Try VM sizes in order until one is available in the subscription/region.
+resolve_vm_size() {
+  if [[ -n "${NODE_VM_SIZE:-}" ]]; then
+    echo "${NODE_VM_SIZE}"
+    return
+  fi
+  local candidates=(
+    Standard_D4s_v3
+    Standard_D4s_v5
+    Standard_D8s_v3
+    Standard_D8s_v5
+    Standard_D4as_v5
+    Standard_D8as_v5
+  )
+  for sku in "${candidates[@]}"; do
+    local restricted
+    restricted=$(az vm list-skus --location "${LOCATION}" --size "${sku}" \
+      --query "[?restrictions[0].type=='Location'] | length(@)" -o tsv 2>/dev/null || echo "1")
+    if [[ "${restricted}" == "0" ]]; then
+      echo "${sku}"
+      return
+    fi
+  done
+  echo "Standard_D4s_v3"  # fallback
+}
+NODE_VM_SIZE=$(resolve_vm_size)
+echo "Using VM size: ${NODE_VM_SIZE}"
 
 echo "=== Creating resource group ${RESOURCE_GROUP} in ${LOCATION} ==="
 az group create \
