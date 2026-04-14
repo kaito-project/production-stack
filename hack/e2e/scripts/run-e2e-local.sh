@@ -15,7 +15,7 @@
 #   CLUSTER_NAME     (default: kaito-e2e-local)
 #   LOCATION         (default: swedencentral)
 #   NODE_COUNT       (default: 2)
-#   NODE_VM_SIZE     (default: auto-set by setup-cluster.sh)
+#   NODE_VM_SIZE     (default: Standard_D4s_v3)
 #   SKIP_TEARDOWN    (default: false) — set to "true" to keep cluster after tests
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -50,6 +50,7 @@ export RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-e2e-local}"
 export CLUSTER_NAME="${CLUSTER_NAME:-kaito-e2e-local}"
 export LOCATION="${LOCATION:-swedencentral}"
 export NODE_COUNT="${NODE_COUNT:-2}"
+export NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D4s_v3}"
 SKIP_TEARDOWN="${SKIP_TEARDOWN:-false}"
 
 STEP="${1:-all}"
