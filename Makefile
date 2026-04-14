@@ -137,10 +137,6 @@ e2e-install: ## Install all E2E components onto the cluster.
 e2e-validate: ## Validate all E2E components are healthy.
 	hack/e2e/scripts/run-e2e-local.sh validate
 
-.PHONY: e2e-test
-e2e-test: ## Run E2E Go tests (cluster must be ready).
-	hack/e2e/scripts/run-e2e-local.sh test
-
 .PHONY: e2e-dump
 e2e-dump: ## Dump cluster state for debugging.
 	hack/e2e/scripts/dump-cluster-state.sh

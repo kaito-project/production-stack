@@ -15,7 +15,7 @@
 #   CLUSTER_NAME     (default: kaito-e2e-local)
 #   LOCATION         (default: eastus)
 #   NODE_COUNT       (default: 2)
-#   NODE_VM_SIZE     (default: Standard_D8s_v3)
+#   NODE_VM_SIZE     (default: Standard_D4s_v3)
 #   SKIP_TEARDOWN    (default: false) — set to "true" to keep cluster after tests
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -27,7 +27,7 @@ export RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-e2e-local}"
 export CLUSTER_NAME="${CLUSTER_NAME:-kaito-e2e-local}"
 export LOCATION="${LOCATION:-eastus}"
 export NODE_COUNT="${NODE_COUNT:-2}"
-export NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v3}"
+export NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D4s_v3}"
 SKIP_TEARDOWN="${SKIP_TEARDOWN:-false}"
 
 STEP="${1:-all}"
@@ -73,11 +73,10 @@ do_validate() {
   "${SCRIPT_DIR}/validate-components.sh"
 }
 
-# TODO: implement real Go e2e tests and run them here
 do_test() {
   echo "=== Running E2E tests ==="
   cd "${REPO_ROOT}"
-  echo "TODO - go test -v -timeout 30m ./..."
+  go test -v -timeout 30m ./test/e2e/... --ginkgo.v
 }
 
 do_teardown() {

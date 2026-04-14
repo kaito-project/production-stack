@@ -21,7 +21,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-kaito-aks}"
 ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
 LOCATION="${LOCATION:-eastus}"
 NODE_COUNT="${NODE_COUNT:-2}"
-NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v3}"
+NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D4s_v3}"
 
 echo "=== Creating resource group ${RESOURCE_GROUP} in ${LOCATION} ==="
 az group create \
