@@ -129,6 +129,14 @@ e2e-push-image: ## Tag and push image to ACR. Sets SHADOW_CONTROLLER_IMAGE.
 	docker push "$${IMAGE}" >&2; \
 	echo "image=$${IMAGE}"
 
+.PHONY: e2e-push-image-local
+e2e-push-image-local: ## Tag and push locally-built image to ACR (no hash, uses IMG).
+	az acr login --name "$${ACR_NAME}" >&2; \
+	IMAGE="$${ACR_NAME}.azurecr.io/gpu-node-mocker:latest"; \
+	docker tag $(IMG) "$${IMAGE}" >&2; \
+	docker push "$${IMAGE}" >&2; \
+	echo "image=$${IMAGE}"
+
 .PHONY: e2e-install
 e2e-install: ## Install all E2E components onto the cluster.
 	hack/e2e/scripts/run-e2e-local.sh install
@@ -148,3 +156,17 @@ e2e-dump: ## Dump cluster state for debugging.
 .PHONY: e2e-teardown
 e2e-teardown: ## Tear down the E2E cluster.
 	hack/e2e/scripts/run-e2e-local.sh teardown
+
+.PHONY: e2e-up
+e2e-up: docker-build e2e-setup ## Setup local E2E env: build image, create cluster, push image, install and validate components.
+	@echo "=== Deriving ACR name ==="
+	$(eval ACR_NAME := $(shell az acr list --resource-group $${RESOURCE_GROUP:-kaito-e2e-local} --query '[0].name' -o tsv))
+	@echo "=== Pushing gpu-node-mocker image to ACR ($(ACR_NAME)) ==="
+	$(eval SHADOW_CONTROLLER_IMAGE := $(shell ACR_NAME=$(ACR_NAME) $(MAKE) --no-print-directory e2e-push-image-local | grep '^image=' | cut -d= -f2-))
+	@echo "Image: $(SHADOW_CONTROLLER_IMAGE)"
+	SHADOW_CONTROLLER_IMAGE="$(SHADOW_CONTROLLER_IMAGE)" $(MAKE) e2e-install
+	$(MAKE) e2e-validate
+	@echo ""
+	@echo "=== E2E environment is ready ==="
+	@echo "Run tests with: make test-e2e"
+	@echo "Tear down with: make e2e-teardown"
