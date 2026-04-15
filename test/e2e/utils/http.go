@@ -119,12 +119,36 @@ type ErrorResponse struct {
 	} `json:"error"`
 }
 
+// portForwardCmd holds the kubectl port-forward process so it can be
+// cleaned up when the test suite exits. Call CleanupPortForward() in
+// AfterSuite.
+var portForwardCmd *exec.Cmd
+
+// cachedGatewayURL stores the gateway URL after the first successful
+// discovery so subsequent calls reuse the same port-forward.
+var cachedGatewayURL string
+
+// CleanupPortForward kills the kubectl port-forward process if one is running.
+func CleanupPortForward() {
+	if portForwardCmd != nil && portForwardCmd.Process != nil {
+		_ = portForwardCmd.Process.Kill()
+		_ = portForwardCmd.Wait()
+		portForwardCmd = nil
+	}
+	cachedGatewayURL = ""
+}
+
 // GetGatewayURL discovers the base URL for the inference gateway.
 // It checks the GATEWAY_URL env var first, then starts a kubectl port-forward
 // to the gateway service and returns a localhost URL.
 func GetGatewayURL() (string, error) {
 	if url := os.Getenv("GATEWAY_URL"); url != "" {
 		return url, nil
+	}
+
+	// Return cached URL if port-forward is already running.
+	if cachedGatewayURL != "" {
+		return cachedGatewayURL, nil
 	}
 
 	// Verify the gateway service exists.
@@ -147,16 +171,17 @@ func GetGatewayURL() (string, error) {
 	}
 
 	// Start kubectl port-forward in the background.
+	// Do NOT attach stdout/stderr — Go's test runner waits for child I/O
+	// to close, and port-forward never exits, causing a 3-minute hang.
 	cmd := exec.Command("kubectl", "port-forward",
 		fmt.Sprintf("svc/%s", GatewayServiceName),
 		fmt.Sprintf("%d:%d", localPort, DefaultGatewayPort),
 		"-n", GatewayNamespace)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("failed to start kubectl port-forward: %w", err)
 	}
+	portForwardCmd = cmd
 
 	// Wait for port-forward to become ready.
 	deadline := time.Now().Add(30 * time.Second)
@@ -165,13 +190,14 @@ func GetGatewayURL() (string, error) {
 			fmt.Sprintf("localhost:%d", localPort), time.Second)
 		if err == nil {
 			conn.Close()
-			return fmt.Sprintf("http://localhost:%d", localPort), nil
+			cachedGatewayURL = fmt.Sprintf("http://localhost:%d", localPort)
+			return cachedGatewayURL, nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Clean up if we couldn't connect.
-	_ = cmd.Process.Kill()
+	CleanupPortForward()
 	return "", fmt.Errorf("kubectl port-forward to %s/%s did not become ready within 30s",
 		GatewayNamespace, GatewayServiceName)
 }
