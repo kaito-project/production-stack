@@ -18,7 +18,7 @@ env:
   CLUSTER_NAME: "kaito-gw-e2e-aks-${{ github.run_id }}"
   ACR_NAME: "kaitogwe2eaks${{ github.run_id }}acr"
   GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
-  LOCATION: eastus
+  LOCATION: swedencentral
   NODE_COUNT: '2'
   NODE_VM_SIZE: Standard_D4s_v3
 
