@@ -2,6 +2,33 @@
 
 This directory contains the end-to-end (e2e) test suite for the production-stack project, built with [Ginkgo v2](https://onsi.github.io/ginkgo/) and [Gomega](https://onsi.github.io/gomega/), following the same pattern as [kaito-project/kaito](https://github.com/kaito-project/kaito/tree/main/test/e2e).
 
+## Resource Management Strategy
+
+E2E resources are split into two tiers based on scope and lifecycle:
+
+### Install script (`hack/e2e/scripts/install-components.sh`) — Platform-level components
+
+These are **shared infrastructure** installed once before all tests run:
+
+- KAITO workspace operator
+- GPU node mocker (gpu-node-mocker)
+- Gateway API CRDs
+- Istio (minimal profile)
+- GWIE CRDs (InferencePool, InferenceModel)
+- BBR (Body-Based Router)
+- Inference Gateway
+- Catch-all HTTPRoute + model-not-found error service + debug filter
+
+### Test cases (`test/e2e/`) — Model-level resources
+
+These are created and cleaned up **per test case** using helpers in `test/e2e/utils/`:
+
+- **InferenceSet** — created via `utils.CreateInferenceSet()` or `utils.CreateInferenceSetWithRouting()`
+- **Model-specific HTTPRoute** — created via `utils.CreateHTTPRouteForInferenceSet()`, routes model requests to the corresponding InferencePool via the shared Gateway
+- **DestinationRule** — created via `utils.CreateDestinationRuleForInferenceSet()`, configures TLS for the EPP service
+
+Each test context uses a **unique namespace** (with a random suffix) and cleans up all resources in `AfterEach` via `utils.CleanupInferenceSetWithRouting()`.
+
 ## Directory Structure
 
 ```
@@ -55,14 +82,14 @@ This creates an AKS cluster, builds and pushes the gpu-node-mocker image, instal
 all components (KAITO, Istio, BBR, Gateway, InferenceSets), and validates them.
 
 **Prerequisites:**
-- Azure CLI (`az`) logged in with a subscription that has quota for `Standard_D8s_v3` nodes
+- Azure CLI (`az`) logged in with a subscription that has quota for `Standard_D4s_v3` nodes
 - Docker installed (for building the gpu-node-mocker image)
 - `kubectl`, `helm`, `istioctl` available in PATH (or the setup script will install them)
 
 **One-command setup:**
 
 ```bash
-# Uses default names (kaito-e2e-local, eastus, 2 nodes)
+# Uses default names (kaito-e2e-local, swedencentral, 2 nodes)
 make e2e-up
 ```
 
@@ -73,7 +100,7 @@ export RESOURCE_GROUP=my-e2e-rg
 export CLUSTER_NAME=my-e2e-cluster
 export LOCATION=westus2
 export NODE_COUNT=3
-export NODE_VM_SIZE=Standard_D8s_v3
+export NODE_VM_SIZE=Standard_D4s_v3
 make e2e-up
 ```
 
