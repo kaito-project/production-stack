@@ -27,4 +27,7 @@ var (
 
 	// GinkgoLabelPrefixCache marks tests that verify prefix/KV-cache aware routing.
 	GinkgoLabelPrefixCache = g.Label("PrefixCache")
+
+	// GinkgoLabelInferenceSet marks tests that verify InferenceSet lifecycle and routing setup.
+	GinkgoLabelInferenceSet = g.Label("InferenceSet")
 )

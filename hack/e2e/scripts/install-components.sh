@@ -10,8 +10,7 @@
 #   5. GWIE CRDs (InferencePool, InferenceModel)
 #   6. BBR (Body-Based Router) v1.3.1
 #   7. Inference Gateway
-#   8. InferencePools, InferenceModels, HTTPRoute
-#   9. InferenceSets (KAITO workloads on fake nodes)
+#   8. HTTPRoute catch-all, error service, debug filter
 #
 # Environment variables:
 #   KAITO_VERSION             — KAITO Helm chart version    (default: v0.9.1)
@@ -128,22 +127,16 @@ kubectl wait --for=condition=ready pod \
   --timeout=180s 2>/dev/null || \
   echo "⚠️  Gateway pod not ready yet — continuing."
 
-# ── 8. HTTPRoute, error service, DestinationRules ───────────────────────
-# Note: InferencePools + EPP are auto-created by KAITO when InferenceSets are applied.
+# ── 8. HTTPRoute catch-all, error service, debug filter ─────────────────
+# Note: InferenceSets, model-specific HTTPRoutes, and DestinationRules are
+# created by individual E2E test cases via the test/e2e/utils helpers.
 echo ""
-echo "=== 8/9: Deploying routing, error service ==="
+echo "=== 8/8: Deploying routing catch-all, error service ==="
 kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
-kubectl apply -f "${MANIFESTS_DIR}/httproute.yaml"
-kubectl apply -f "${MANIFESTS_DIR}/destination-rules.yaml"
 kubectl apply -f "${MANIFESTS_DIR}/inference-debug-filter.yaml"
 
 echo "⏳ Waiting for model-not-found service..."
 kubectl rollout status deployment/model-not-found --timeout=60s 2>/dev/null || true
-
-# ── 9. InferenceSets (KAITO workloads) ──────────────────────────────────
-echo ""
-echo "=== 9/9: Deploying InferenceSets ==="
-kubectl apply -f "${MANIFESTS_DIR}/inference-sets.yaml"
 
 echo ""
 echo "✅ All components installed."

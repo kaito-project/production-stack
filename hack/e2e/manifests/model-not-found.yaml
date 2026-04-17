@@ -46,3 +46,25 @@ spec:
     app: model-not-found
   ports:
   - port: 80
+---
+# Catch-all HTTPRoute: Routes any request whose model name did not match
+# any model-specific HTTPRoute to a dedicated error service that returns
+# an OpenAI-compatible 404 JSON response instead of Envoy's bare 404.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: model-not-found-route
+spec:
+  parentRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: inference-gateway
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: model-not-found
+      kind: Service
+      port: 80
