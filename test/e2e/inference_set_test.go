@@ -20,10 +20,12 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -205,34 +207,40 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying InferenceSet is deleted")
-			is := &unstructured.Unstructured{}
-			is.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   "kaito.sh",
-				Version: "v1alpha1",
-				Kind:    "InferenceSet",
-			})
-			err = cl.Get(ctx, types.NamespacedName{Name: modelName, Namespace: namespace}, is)
-			Expect(err).To(HaveOccurred())
+			Eventually(func() bool {
+				is := &unstructured.Unstructured{}
+				is.SetGroupVersionKind(schema.GroupVersionKind{
+					Group:   "kaito.sh",
+					Version: "v1alpha1",
+					Kind:    "InferenceSet",
+				})
+				err := cl.Get(ctx, types.NamespacedName{Name: modelName, Namespace: namespace}, is)
+				return apierrors.IsNotFound(err)
+			}, 2*time.Minute, utils.PollInterval).Should(BeTrue(), "InferenceSet should be fully deleted")
 
 			By("Verifying DestinationRule is deleted")
-			dr := &unstructured.Unstructured{}
-			dr.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   "networking.istio.io",
-				Version: "v1",
-				Kind:    "DestinationRule",
-			})
-			err = cl.Get(ctx, types.NamespacedName{Name: utils.EPPServiceName(modelName), Namespace: namespace}, dr)
-			Expect(err).To(HaveOccurred())
+			Eventually(func() bool {
+				dr := &unstructured.Unstructured{}
+				dr.SetGroupVersionKind(schema.GroupVersionKind{
+					Group:   "networking.istio.io",
+					Version: "v1",
+					Kind:    "DestinationRule",
+				})
+				err := cl.Get(ctx, types.NamespacedName{Name: utils.EPPServiceName(modelName), Namespace: namespace}, dr)
+				return apierrors.IsNotFound(err)
+			}, 30*time.Second, utils.PollInterval).Should(BeTrue(), "DestinationRule should be deleted")
 
 			By("Verifying HTTPRoute is deleted")
-			hr := &unstructured.Unstructured{}
-			hr.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   "gateway.networking.k8s.io",
-				Version: "v1",
-				Kind:    "HTTPRoute",
-			})
-			err = cl.Get(ctx, types.NamespacedName{Name: modelName + "-route", Namespace: namespace}, hr)
-			Expect(err).To(HaveOccurred())
+			Eventually(func() bool {
+				hr := &unstructured.Unstructured{}
+				hr.SetGroupVersionKind(schema.GroupVersionKind{
+					Group:   "gateway.networking.k8s.io",
+					Version: "v1",
+					Kind:    "HTTPRoute",
+				})
+				err := cl.Get(ctx, types.NamespacedName{Name: modelName + "-route", Namespace: namespace}, hr)
+				return apierrors.IsNotFound(err)
+			}, 30*time.Second, utils.PollInterval).Should(BeTrue(), "HTTPRoute should be deleted")
 		})
 	})
 })
