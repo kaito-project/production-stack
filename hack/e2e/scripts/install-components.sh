@@ -38,7 +38,7 @@ fi
 
 # ── 1. KAITO workspace operator ──────────────────────────────────────────
 echo ""
-echo "=== 1/9: Installing KAITO workspace operator ${KAITO_VERSION} ==="
+echo "=== 1/8: Installing KAITO workspace operator ${KAITO_VERSION} ==="
 helm repo add kaito https://kaito-project.github.io/kaito/charts 2>/dev/null || true
 helm repo update kaito
 helm install kaito kaito/workspace \
@@ -56,7 +56,7 @@ kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name
 
 # ── 2. GPU node mocker (gpu-node-mocker) ──────────────────────────
 echo ""
-echo "=== 2/9: Deploying gpu-node-mocker (GPU node mocker) ==="
+echo "=== 2/8: Deploying gpu-node-mocker (GPU node mocker) ==="
 helm install gpu-node-mocker ./charts/gpu-node-mocker \
   --namespace kaito-system \
   --create-namespace \
@@ -68,12 +68,12 @@ kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=120s
 
 # ── 3. Gateway API CRDs ─────────────────────────────────────────────────
 echo ""
-echo "=== 3/9: Installing Gateway API CRDs ${GATEWAY_API_VERSION} ==="
+echo "=== 3/8: Installing Gateway API CRDs ${GATEWAY_API_VERSION} ==="
 kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
 
 # ── 4. Istio ─────────────────────────────────────────────────────────────
 echo ""
-echo "=== 4/9: Installing Istio ${ISTIO_VERSION} ==="
+echo "=== 4/8: Installing Istio ${ISTIO_VERSION} ==="
 if ! command -v istioctl &>/dev/null; then
   echo "Installing istioctl..."
   curl -L https://istio.io/downloadIstio | ISTIO_VERSION="${ISTIO_VERSION}" sh -
@@ -93,12 +93,12 @@ kubectl -n istio-system rollout status deployment/istiod --timeout=180s
 
 # ── 5. GWIE CRDs (InferencePool, InferenceModel) ────────────────────────
 echo ""
-echo "=== 5/9: Installing GWIE CRDs ==="
+echo "=== 5/8: Installing GWIE CRDs ==="
 kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/latest/download/manifests.yaml"
 
 # ── 6. BBR (Body-Based Router) ──────────────────────────────────────────
 echo ""
-echo "=== 6/9: Installing BBR ${BBR_VERSION} ==="
+echo "=== 6/8: Installing BBR ${BBR_VERSION} ==="
 helm upgrade --install body-based-router oci://registry.k8s.io/gateway-api-inference-extension/charts/body-based-routing \
   --version "${BBR_VERSION}" \
   --set provider.name=istio \
@@ -111,7 +111,7 @@ kubectl rollout status deployment/body-based-router --timeout=120s 2>/dev/null |
 
 # ── 7. Inference Gateway ────────────────────────────────────────────────
 echo ""
-echo "=== 7/9: Deploying inference Gateway ==="
+echo "=== 7/8: Deploying inference Gateway ==="
 kubectl apply -f "${MANIFESTS_DIR}/gateway.yaml"
 
 echo "⏳ Waiting for Gateway pod..."
