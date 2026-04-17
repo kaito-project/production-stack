@@ -108,6 +108,11 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 		--ginkgo.v
 ## --------------------------------------
 ## E2E Targets
+##
+## Component versions are centralized in versions.env (repo root).
+## Override any version via environment variables, e.g.:
+##   KAITO_VERSION=v0.10.0 make e2e-up
+##   ISTIO_VERSION=1.30.0 BBR_VERSION=v1.4.0 make e2e-install
 ## --------------------------------------
 
 .PHONY: e2e
@@ -158,7 +163,7 @@ e2e-teardown: ## Tear down the E2E cluster.
 	hack/e2e/scripts/run-e2e-local.sh teardown
 
 .PHONY: e2e-up
-e2e-up: docker-build e2e-setup ## Setup local E2E env: build image, create cluster, push image, install and validate components.
+e2e-up: docker-build e2e-setup ## One command to set up full local E2E env (build, cluster, push, install, validate).
 	@echo "=== Deriving ACR name ==="
 	$(eval ACR_NAME := $(shell az acr list --resource-group $${RESOURCE_GROUP:-kaito-e2e-local} --query '[0].name' -o tsv))
 	@echo "=== Pushing gpu-node-mocker image to ACR ($(ACR_NAME)) ==="

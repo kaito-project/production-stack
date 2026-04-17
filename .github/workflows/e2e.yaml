@@ -11,9 +11,24 @@ on:
         description: 'Branch name to run E2E tests against'
         required: true
         default: 'main'
+      kaito_version:
+        description: 'KAITO Helm chart version (e.g. v0.9.1). Leave empty to use default from versions.env'
+        required: false
+        default: ''
+      istio_version:
+        description: 'Istio version (e.g. 1.29.0). Leave empty to use default from versions.env'
+        required: false
+        default: ''
+      gateway_api_version:
+        description: 'Gateway API CRD version (e.g. v1.2.0). Leave empty to use default from versions.env'
+        required: false
+        default: ''
+      bbr_version:
+        description: 'BBR release version (e.g. v1.3.1). Leave empty to use default from versions.env'
+        required: false
+        default: ''
 
 env:
-  GO_VERSION: '1.26.1'
   RESOURCE_GROUP: "kaito-gw-e2e-rg-${{ github.run_id }}"
   CLUSTER_NAME: "kaito-gw-e2e-aks-${{ github.run_id }}"
   ACR_NAME: "kaitogwe2eaks${{ github.run_id }}acr"
@@ -37,6 +52,36 @@ jobs:
         uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Load component versions
+        run: |
+          # Source defaults from the centralized version file (loaded exactly once).
+          source versions.env
+          # workflow_dispatch inputs override defaults when non-empty.
+          INPUT_KAITO="${{ github.event.inputs.kaito_version }}"
+          INPUT_ISTIO="${{ github.event.inputs.istio_version }}"
+          INPUT_GWAPI="${{ github.event.inputs.gateway_api_version }}"
+          INPUT_BBR="${{ github.event.inputs.bbr_version }}"
+          [ -n "${INPUT_KAITO}" ] && KAITO_VERSION="${INPUT_KAITO}"
+          [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
+          [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
+          [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
+          # Export to GITHUB_ENV so all subsequent steps inherit these.
+          {
+            echo "GO_VERSION=${GO_VERSION}"
+            echo "KAITO_VERSION=${KAITO_VERSION}"
+            echo "ISTIO_VERSION=${ISTIO_VERSION}"
+            echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
+            echo "BBR_VERSION=${BBR_VERSION}"
+          } >> "$GITHUB_ENV"
+
+      - name: Print versions
+        run: |
+          echo "GO_VERSION=${GO_VERSION}"
+          echo "KAITO_VERSION=${KAITO_VERSION}"
+          echo "ISTIO_VERSION=${ISTIO_VERSION}"
+          echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
+          echo "BBR_VERSION=${BBR_VERSION}"
 
       - name: Setup Go
         uses: actions/setup-go@v6

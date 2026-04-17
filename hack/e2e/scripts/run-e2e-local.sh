@@ -23,6 +23,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
+# ── Load versions.env exactly once and export for child scripts ───────────
+# Save any caller-provided overrides before sourcing defaults.
+_KAITO="${KAITO_VERSION:-}" _ISTIO="${ISTIO_VERSION:-}"
+_GWAPI="${GATEWAY_API_VERSION:-}" _BBR="${BBR_VERSION:-}"
+
+# shellcheck source=../../../versions.env
+source "${REPO_ROOT}/versions.env"
+
+# Restore caller overrides (env vars take precedence over file).
+[ -n "${_KAITO}" ] && KAITO_VERSION="${_KAITO}"
+[ -n "${_ISTIO}" ] && ISTIO_VERSION="${_ISTIO}"
+[ -n "${_GWAPI}" ] && GATEWAY_API_VERSION="${_GWAPI}"
+[ -n "${_BBR}" ]   && BBR_VERSION="${_BBR}"
+
+export KAITO_VERSION ISTIO_VERSION GATEWAY_API_VERSION BBR_VERSION
+
+echo "=== Component versions (from versions.env) ==="
+echo "  KAITO_VERSION:       ${KAITO_VERSION}"
+echo "  ISTIO_VERSION:       ${ISTIO_VERSION}"
+echo "  GATEWAY_API_VERSION: ${GATEWAY_API_VERSION}"
+echo "  BBR_VERSION:         ${BBR_VERSION}"
+echo ""
+
 export RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-e2e-local}"
 export CLUSTER_NAME="${CLUSTER_NAME:-kaito-e2e-local}"
 export LOCATION="${LOCATION:-swedencentral}"
@@ -73,11 +96,10 @@ do_validate() {
   "${SCRIPT_DIR}/validate-components.sh"
 }
 
-# TODO: implement real Go e2e tests and run them here
 do_test() {
   echo "=== Running E2E tests ==="
   cd "${REPO_ROOT}"
-  echo "TODO - go test -v -timeout 30m ./..."
+  go test -v -timeout 30m ./test/e2e/... --ginkgo.v
 }
 
 do_teardown() {

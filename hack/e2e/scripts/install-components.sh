@@ -12,11 +12,11 @@
 #   7. Inference Gateway
 #   8. HTTPRoute catch-all, error service, debug filter
 #
-# Environment variables:
-#   KAITO_VERSION             — KAITO Helm chart version    (default: v0.9.1)
-#   ISTIO_VERSION             — Istio version               (default: 1.29.0)
-#   GATEWAY_API_VERSION       — Gateway API CRD version     (default: v1.2.0)
-#   BBR_VERSION               — BBR release version         (default: v1.3.1)
+# Environment variables (must be set by caller, e.g. run-e2e-local.sh or CI):
+#   KAITO_VERSION             — KAITO Helm chart version
+#   ISTIO_VERSION             — Istio version
+#   GATEWAY_API_VERSION       — Gateway API CRD version
+#   BBR_VERSION               — BBR release version
 #   SHADOW_CONTROLLER_IMAGE   — gpu-node-mocker image (default: ghcr.io/kaito-project/gpu-node-mocker:latest)
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -24,11 +24,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFESTS_DIR="${SCRIPT_DIR}/../manifests"
 
-KAITO_VERSION="${KAITO_VERSION:-v0.9.1}"
-ISTIO_VERSION="${ISTIO_VERSION:-1.29.0}"
-GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.2.0}"
-BBR_VERSION="${BBR_VERSION:-v1.3.1}"
+# Validate required version variables are set.
+: "${KAITO_VERSION:?KAITO_VERSION is not set. Source versions.env or export it before calling this script.}"
+: "${ISTIO_VERSION:?ISTIO_VERSION is not set. Source versions.env or export it before calling this script.}"
+: "${GATEWAY_API_VERSION:?GATEWAY_API_VERSION is not set. Source versions.env or export it before calling this script.}"
+: "${BBR_VERSION:?BBR_VERSION is not set. Source versions.env or export it before calling this script.}"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
+
+echo "=== Component versions ==="
+echo "  KAITO_VERSION:           ${KAITO_VERSION}"
+echo "  ISTIO_VERSION:           ${ISTIO_VERSION}"
+echo "  GATEWAY_API_VERSION:     ${GATEWAY_API_VERSION}"
+echo "  BBR_VERSION:             ${BBR_VERSION}"
+echo "  SHADOW_CONTROLLER_IMAGE: ${SHADOW_CONTROLLER_IMAGE}"
+echo ""
 
 # ── 0. Ensure helm is available ───────────────────────────────────────────
 if ! command -v helm &>/dev/null; then
