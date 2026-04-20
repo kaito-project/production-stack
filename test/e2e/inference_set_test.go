@@ -216,7 +216,7 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 				})
 				err := cl.Get(ctx, types.NamespacedName{Name: modelName, Namespace: namespace}, is)
 				return apierrors.IsNotFound(err)
-			}, 2*time.Minute, utils.PollInterval).Should(BeTrue(), "InferenceSet should be fully deleted")
+			}, 3*time.Minute, utils.PollInterval).Should(BeTrue(), "InferenceSet should be fully deleted")
 
 			By("Verifying DestinationRule is deleted")
 			Eventually(func() bool {

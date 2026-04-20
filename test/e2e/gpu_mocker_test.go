@@ -34,8 +34,9 @@ import (
 const (
 	shadowNamespace = "kaito-shadow"
 	testNamespace   = "default"
-	falconModel     = "falcon-7b-instruct"
-	ministralModel  = "ministral-3-3b-instruct"
+
+	falconModel    = "falcon-7b-instruct"
+	ministralModel = "ministral-3-3b-instruct"
 )
 
 var modelNames = []string{falconModel, ministralModel}
@@ -82,18 +83,42 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				"failed to create HTTPRoute for %s", model)
 		}
 
-		// Wait for the GPU mocker to fully reconcile: fake nodes, shadow pods,
-		// and original pod status patching must all complete before the gateway
-		// can route traffic to inference pods.
+		// Wait for KAITO to fully reconcile: EPP pods (deployed via
+		// HelmRelease), fake nodes, shadow pods, and original pod status
+		// patching must all complete before the gateway can route traffic.
 		clientset, err := utils.GetK8sClientset()
 		Expect(err).NotTo(HaveOccurred())
 
 		for _, model := range modelNames {
+			eppName := utils.EPPServiceName(model)
+			By(fmt.Sprintf("Waiting for EPP pods for %s to be Running", model))
+			Eventually(func() error {
+				pods, err := clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
+				})
+				if err != nil {
+					return fmt.Errorf("failed to list EPP pods: %w", err)
+				}
+				var running int
+				for _, pod := range pods.Items {
+					if pod.Status.Phase == "Running" {
+						running++
+					}
+				}
+				if running < 1 {
+					return fmt.Errorf("no running EPP pods for %q (total: %d)", eppName, len(pods.Items))
+				}
+				return nil
+			}, 5*time.Minute, 10*time.Second).Should(Succeed(),
+				"EPP pods for %s should be Running", model)
+		}
+
+		for _, model := range modelNames {
 			By(fmt.Sprintf("Waiting for inference pods for %s to be Running", model))
 			Eventually(func() error {
-				// Use the InferenceSet's matchLabels selector to find pods.
+				// Use the KAITO InferenceSet label to find pods.
 				pods, err := clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
-					LabelSelector: fmt.Sprintf("apps=%s", model),
+					LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", model),
 				})
 				if err != nil {
 					return fmt.Errorf("failed to list pods: %w", err)
@@ -136,9 +161,6 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 		Context("Gateway connectivity", utils.GinkgoLabelSmoke, func() {
 			It("should be reachable and return a response", func() {
-				gatewayURL, err := utils.GetGatewayURL()
-				Expect(err).NotTo(HaveOccurred(), "failed to discover gateway URL")
-
 				// Retry with backoff — BBR/EPP ext_proc filters may need time
 				// to establish gRPC connections after cluster setup.
 				Eventually(func() error {
@@ -161,6 +183,28 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 	Context("InferenceSet and InferencePool lifecycle", utils.GinkgoLabelInfra, func() {
 
 		Context("InferenceSet lifecycle", func() {
+			It("should have EPP pods running for each InferencePool", func() {
+				clientset, err := utils.GetK8sClientset()
+				Expect(err).NotTo(HaveOccurred())
+
+				for _, name := range modelNames {
+					eppName := utils.EPPServiceName(name)
+					By(fmt.Sprintf("checking EPP pods for %q", eppName))
+					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
+						LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
+					})
+					Expect(err).NotTo(HaveOccurred())
+					var runningEPP int
+					for _, pod := range pods.Items {
+						if pod.Status.Phase == "Running" {
+							runningEPP++
+						}
+					}
+					Expect(runningEPP).To(BeNumerically(">=", 1),
+						"at least one EPP pod should be Running for %q", eppName)
+				}
+			})
+
 			It("should have InferenceSet created with downstream resources", func() {
 				dynClient, err := utils.GetDynamicClient()
 				Expect(err).NotTo(HaveOccurred())
@@ -200,29 +244,6 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					_, err = dynClient.Resource(utils.DestinationRuleGVR).Namespace(testNamespace).
 						Get(context.Background(), utils.EPPServiceName(name), metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred(), "DestinationRule %q should exist", utils.EPPServiceName(name))
-				}
-			})
-
-			It("should have EPP pods running for each InferencePool", func() {
-				clientset, err := utils.GetK8sClientset()
-				Expect(err).NotTo(HaveOccurred())
-
-				for _, name := range modelNames {
-					eppName := name + "-inferencepool-epp"
-					By(fmt.Sprintf("checking EPP pods for %q", eppName))
-					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
-						LabelSelector: fmt.Sprintf("app=%s", eppName),
-					})
-					Expect(err).NotTo(HaveOccurred())
-
-					var runningEPP int
-					for _, pod := range pods.Items {
-						if pod.Status.Phase == "Running" {
-							runningEPP++
-						}
-					}
-					Expect(runningEPP).To(BeNumerically(">=", 1),
-						"at least one EPP pod should be Running for %q", eppName)
 				}
 			})
 		})
@@ -335,27 +356,27 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
+				// Use field selector to skip stale Failed/Completed pods from
+				// previous test runs that haven't been garbage-collected yet.
 				Eventually(func() error {
 					pods, err := clientset.CoreV1().Pods(shadowNamespace).List(context.Background(), metav1.ListOptions{
 						LabelSelector: "kaito.sh/managed-by=gpu-mocker",
+						FieldSelector: "status.phase=Running",
 					})
 					if err != nil {
 						return fmt.Errorf("failed to list shadow pods: %w", err)
 					}
 					if len(pods.Items) == 0 {
-						return fmt.Errorf("no shadow pods found in %s", shadowNamespace)
+						return fmt.Errorf("no running shadow pods found in %s", shadowNamespace)
 					}
 					for _, pod := range pods.Items {
-						if pod.Status.Phase != "Running" {
-							return fmt.Errorf("shadow pod %q is %s, not Running", pod.Name, pod.Status.Phase)
-						}
 						if _, ok := pod.Labels["kaito.sh/shadow-pod-for"]; !ok {
 							return fmt.Errorf("shadow pod %q missing shadow-pod-for label", pod.Name)
 						}
 					}
 					return nil
 				}, 3*time.Minute, 10*time.Second).Should(Succeed(),
-					"all shadow pods should be Running in %s", shadowNamespace)
+					"running shadow pods should exist in %s", shadowNamespace)
 			})
 
 			It("should have shadow pods with both llm-d-inference-sim and tokenizer containers", func() {
@@ -364,6 +385,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 				pods, err := clientset.CoreV1().Pods(shadowNamespace).List(context.Background(), metav1.ListOptions{
 					LabelSelector: "kaito.sh/managed-by=gpu-mocker",
+					FieldSelector: "status.phase=Running",
 				})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(pods.Items).NotTo(BeEmpty())
@@ -394,7 +416,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					By(fmt.Sprintf("checking original pods for %q", model))
 
 					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
-						LabelSelector: fmt.Sprintf("apps=%s", model),
+						LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", model),
 					})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(pods.Items).NotTo(BeEmpty(),
@@ -418,9 +440,6 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 		Context("Non-existent model request", func() {
 			It("should return 404 with an OpenAI-compatible error for an unknown model", func() {
-				gatewayURL, err := utils.GetGatewayURL()
-				Expect(err).NotTo(HaveOccurred())
-
 				resp, err := utils.SendChatCompletion(gatewayURL, "non-existent-model-xyz")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
