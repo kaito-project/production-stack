@@ -128,14 +128,27 @@ var portForwardCmd *exec.Cmd
 // discovery so subsequent calls reuse the same port-forward.
 var cachedGatewayURL string
 
+// portForwardDone is closed when the kubectl port-forward process exits unexpectedly.
+var portForwardDone chan struct{}
+
+// portForwardErr stores the error from the port-forward process.
+var portForwardErr error
+
 // CleanupPortForward kills the kubectl port-forward process if one is running.
 func CleanupPortForward() {
 	if portForwardCmd != nil && portForwardCmd.Process != nil {
 		_ = portForwardCmd.Process.Kill()
-		_ = portForwardCmd.Wait()
+		// Wait only if the background goroutine hasn't already reaped the process.
+		if portForwardDone != nil {
+			<-portForwardDone
+		} else {
+			_ = portForwardCmd.Wait()
+		}
 		portForwardCmd = nil
 	}
 	cachedGatewayURL = ""
+	portForwardDone = nil
+	portForwardErr = nil
 }
 
 // GetGatewayURL discovers the base URL for the inference gateway.
@@ -182,10 +195,26 @@ func GetGatewayURL() (string, error) {
 		return "", fmt.Errorf("failed to start kubectl port-forward: %w", err)
 	}
 	portForwardCmd = cmd
+	portForwardDone = make(chan struct{})
+
+	// Monitor the process in the background so tests fail fast
+	// instead of hanging on HTTP timeouts.
+	go func() {
+		err := cmd.Wait()
+		portForwardErr = fmt.Errorf("kubectl port-forward exited unexpectedly: %w", err)
+		close(portForwardDone)
+	}()
 
 	// Wait for port-forward to become ready.
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
+		// Check if port-forward already died during startup.
+		select {
+		case <-portForwardDone:
+			cachedGatewayURL = ""
+			return "", portForwardErr
+		default:
+		}
 		conn, err := net.DialTimeout("tcp",
 			fmt.Sprintf("localhost:%d", localPort), time.Second)
 		if err == nil {
@@ -215,13 +244,32 @@ func getFreePort() (int, error) {
 // SendChatCompletion sends an OpenAI-compatible chat completion request to the
 // gateway and returns the raw HTTP response. The caller is responsible for
 // closing the response body (or using one of the Parse helpers).
+// checkPortForward returns an error if the port-forward process has exited.
+func checkPortForward() error {
+	if portForwardDone == nil {
+		return nil
+	}
+	select {
+	case <-portForwardDone:
+		return portForwardErr
+	default:
+		return nil
+	}
+}
+
 func SendChatCompletion(gatewayURL, model string) (*http.Response, error) {
+	if err := checkPortForward(); err != nil {
+		return nil, err
+	}
 	return SendChatCompletionWithPrompt(gatewayURL, model, "hello")
 }
 
 // SendChatCompletionWithPrompt sends a chat completion request with a custom
 // prompt message.
 func SendChatCompletionWithPrompt(gatewayURL, model, prompt string) (*http.Response, error) {
+	if err := checkPortForward(); err != nil {
+		return nil, err
+	}
 	reqBody := ChatCompletionRequest{
 		Model: model,
 		Messages: []ChatMessage{
@@ -248,6 +296,9 @@ func SendChatCompletionWithPrompt(gatewayURL, model, prompt string) (*http.Respo
 
 // SendChatCompletionRaw sends an arbitrary ChatCompletionRequest to the gateway.
 func SendChatCompletionRaw(gatewayURL string, reqBody ChatCompletionRequest) (*http.Response, error) {
+	if err := checkPortForward(); err != nil {
+		return nil, err
+	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
