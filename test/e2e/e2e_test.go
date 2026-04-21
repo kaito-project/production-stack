@@ -21,7 +21,22 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
+
+// gatewayURL is set once in BeforeSuite and reused by all test files.
+var gatewayURL string
+
+var _ = BeforeSuite(func() {
+	url, err := utils.GetGatewayURL()
+	Expect(err).NotTo(HaveOccurred(), "failed to set up gateway port-forward")
+	gatewayURL = url
+})
+
+var _ = AfterSuite(func() {
+	utils.CleanupPortForward()
+})
 
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)

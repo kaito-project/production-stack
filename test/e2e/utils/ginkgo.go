@@ -22,6 +22,9 @@ var (
 	// GinkgoLabelSmoke marks lightweight smoke tests that can run without GPUs.
 	GinkgoLabelSmoke = g.Label("Smoke")
 
+	// GinkgoLabelInfra marks tests that verify infrastructure (fake nodes, shadow pods, InferencePools).
+	GinkgoLabelInfra = g.Label("Infra")
+
 	// GinkgoLabelRouting marks tests that verify model-based request routing.
 	GinkgoLabelRouting = g.Label("Routing")
 
