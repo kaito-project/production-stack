@@ -742,6 +742,40 @@ func TestExtractModelName(t *testing.T) {
 	}
 }
 
+func TestExtractServedModelName(t *testing.T) {
+	tests := []struct {
+		name      string
+		pod       *corev1.Pod
+		modelName string
+		want      string
+	}{
+		{"--served-model-name takes precedence", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Args: []string{"--model", "mistralai/Ministral-3-3B-Instruct-2512", "--served-model-name", "ministral-3-3b-instruct"}},
+			}},
+		}, "mistralai/Ministral-3-3B-Instruct-2512", "ministral-3-3b-instruct"},
+		{"shell-wrapped --served-model-name", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Command: []string{"/bin/sh", "-c", "python3 script.py --model=tiiuae/falcon-7b-instruct --served-model-name=falcon-7b-instruct --port 5000"}},
+			}},
+		}, "tiiuae/falcon-7b-instruct", "falcon-7b-instruct"},
+		{"falls back to modelName when no --served-model-name", &corev1.Pod{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Args: []string{"--model", "meta-llama/Llama-3.1-8B-Instruct"}},
+			}},
+		}, "meta-llama/Llama-3.1-8B-Instruct", "meta-llama/Llama-3.1-8B-Instruct"},
+		{"no containers falls back to modelName", &corev1.Pod{},
+			"some-model", "some-model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractServedModelName(tt.pod, tt.modelName); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractServingPort(t *testing.T) {
 	tests := []struct {
 		name string
@@ -783,7 +817,7 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	r := &ShadowPodReconciler{Client: cl, Config: cfg}
 
-	err := r.ensureSimConfigMap(ctx, "shadow-default-falcon-0", "tiiuae/falcon-7b", 5000)
+	err := r.ensureSimConfigMap(ctx, "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000)
 	if err != nil {
 		t.Fatalf("ensureSimConfigMap: %v", err)
 	}
@@ -800,6 +834,9 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	if !strings.Contains(configYAML, `model: "tiiuae/falcon-7b"`) {
 		t.Errorf("missing model in config: %s", configYAML)
 	}
+	if !strings.Contains(configYAML, `- "falcon-7b-instruct"`) {
+		t.Errorf("served-model-name should be falcon-7b-instruct, got: %s", configYAML)
+	}
 	if !strings.Contains(configYAML, "enable-kvcache: true") {
 		t.Errorf("missing enable-kvcache in config: %s", configYAML)
 	}
@@ -808,7 +845,7 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	}
 
 	// Idempotent: calling again should not error
-	if err := r.ensureSimConfigMap(ctx, "shadow-default-falcon-0", "tiiuae/falcon-7b", 5000); err != nil {
+	if err := r.ensureSimConfigMap(ctx, "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000); err != nil {
 		t.Fatalf("second call should be idempotent: %v", err)
 	}
 }
