@@ -73,12 +73,41 @@ fi
 kubectl get pods -l gateway.networking.k8s.io/gateway-name=inference-gateway 2>/dev/null || true
 echo ""
 
+# ── KEDA ─────────────────────────────────────────────────────────────────
+echo "=== KEDA ==="
+if kubectl -n keda wait --for=condition=ready pod -l app=keda-operator --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+  pass "keda-operator is Running"
+else
+  fail "keda-operator is NOT Running"
+fi
+if kubectl -n keda wait --for=condition=ready pod -l app=keda-operator-metrics-apiserver --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+  pass "keda-operator-metrics-apiserver is Running"
+else
+  fail "keda-operator-metrics-apiserver is NOT Running"
+fi
+kubectl -n keda get pods 2>/dev/null || true
+echo ""
+
+# ── KEDA Kaito Scaler ────────────────────────────────────────────────────
+echo "=== KEDA Kaito Scaler ==="
+if kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=keda-kaito-scaler --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+  pass "keda-kaito-scaler is Running"
+else
+  fail "keda-kaito-scaler is NOT Running"
+fi
+kubectl -n kaito-system get pods -l app.kubernetes.io/name=keda-kaito-scaler 2>/dev/null || true
+echo ""
+
 # ── CRDs ─────────────────────────────────────────────────────────────────
 echo "=== CRDs ==="
 for crd in \
   gateways.gateway.networking.k8s.io \
   httproutes.gateway.networking.k8s.io \
-  inferencepools.inference.networking.k8s.io; do
+  inferencepools.inference.networking.k8s.io \
+  inferencesets.kaito.sh \
+  workspaces.kaito.sh \
+  scaledobjects.keda.sh \
+  clustertriggerauthentications.keda.sh; do
   if kubectl get crd "${crd}" >/dev/null 2>&1; then
     pass "CRD ${crd} exists"
   else

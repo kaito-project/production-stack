@@ -27,6 +27,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 # Save any caller-provided overrides before sourcing defaults.
 _KAITO="${KAITO_VERSION:-}" _ISTIO="${ISTIO_VERSION:-}"
 _GWAPI="${GATEWAY_API_VERSION:-}" _BBR="${BBR_VERSION:-}"
+_KEDA="${KEDA_VERSION:-}" _KKS="${KEDA_KAITO_SCALER_VERSION:-}"
 
 # shellcheck source=../../../versions.env
 source "${REPO_ROOT}/versions.env"
@@ -36,14 +37,18 @@ source "${REPO_ROOT}/versions.env"
 [ -n "${_ISTIO}" ] && ISTIO_VERSION="${_ISTIO}"
 [ -n "${_GWAPI}" ] && GATEWAY_API_VERSION="${_GWAPI}"
 [ -n "${_BBR}" ]   && BBR_VERSION="${_BBR}"
+[ -n "${_KEDA}" ]  && KEDA_VERSION="${_KEDA}"
+[ -n "${_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${_KKS}"
 
-export KAITO_VERSION ISTIO_VERSION GATEWAY_API_VERSION BBR_VERSION
+export KAITO_VERSION ISTIO_VERSION GATEWAY_API_VERSION BBR_VERSION KEDA_VERSION KEDA_KAITO_SCALER_VERSION
 
 echo "=== Component versions (from versions.env) ==="
-echo "  KAITO_VERSION:       ${KAITO_VERSION}"
-echo "  ISTIO_VERSION:       ${ISTIO_VERSION}"
-echo "  GATEWAY_API_VERSION: ${GATEWAY_API_VERSION}"
-echo "  BBR_VERSION:         ${BBR_VERSION}"
+echo "  KAITO_VERSION:             ${KAITO_VERSION}"
+echo "  ISTIO_VERSION:             ${ISTIO_VERSION}"
+echo "  GATEWAY_API_VERSION:       ${GATEWAY_API_VERSION}"
+echo "  BBR_VERSION:               ${BBR_VERSION}"
+echo "  KEDA_VERSION:              ${KEDA_VERSION}"
+echo "  KEDA_KAITO_SCALER_VERSION: ${KEDA_KAITO_SCALER_VERSION}"
 echo ""
 
 export RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-e2e-local}"

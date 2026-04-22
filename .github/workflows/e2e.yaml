@@ -27,6 +27,14 @@ on:
         description: 'BBR release version (e.g. v1.3.1). Leave empty to use default from versions.env'
         required: false
         default: ''
+      keda_version:
+        description: 'KEDA Helm chart version (e.g. v2.19.0). Leave empty to use default from versions.env'
+        required: false
+        default: ''
+      keda_kaito_scaler_version:
+        description: 'KEDA Kaito Scaler Helm chart version (e.g. v0.3.3). Leave empty to use default from versions.env'
+        required: false
+        default: ''
 
 env:
   RESOURCE_GROUP: "kaito-gw-e2e-rg-${{ github.run_id }}"
@@ -62,10 +70,14 @@ jobs:
           INPUT_ISTIO="${{ github.event.inputs.istio_version }}"
           INPUT_GWAPI="${{ github.event.inputs.gateway_api_version }}"
           INPUT_BBR="${{ github.event.inputs.bbr_version }}"
+          INPUT_KEDA="${{ github.event.inputs.keda_version }}"
+          INPUT_KKS="${{ github.event.inputs.keda_kaito_scaler_version }}"
           [ -n "${INPUT_KAITO}" ] && KAITO_VERSION="${INPUT_KAITO}"
           [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
           [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
           [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
+          [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
+          [ -n "${INPUT_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${INPUT_KKS}"
           # Export to GITHUB_ENV so all subsequent steps inherit these.
           {
             echo "GO_VERSION=${GO_VERSION}"
@@ -73,6 +85,8 @@ jobs:
             echo "ISTIO_VERSION=${ISTIO_VERSION}"
             echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
             echo "BBR_VERSION=${BBR_VERSION}"
+            echo "KEDA_VERSION=${KEDA_VERSION}"
+            echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
           } >> "$GITHUB_ENV"
 
       - name: Print versions
@@ -82,6 +96,8 @@ jobs:
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
           echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
           echo "BBR_VERSION=${BBR_VERSION}"
+          echo "KEDA_VERSION=${KEDA_VERSION}"
+          echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
 
       - name: Setup Go
         uses: actions/setup-go@v6
