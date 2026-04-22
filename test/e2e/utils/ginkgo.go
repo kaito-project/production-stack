@@ -39,4 +39,7 @@ var (
 
 	// GinkgoLabelAuth marks tests that verify API key authentication.
 	GinkgoLabelAuth = g.Label("Auth")
+
+	// GinkgoLabelNetworkPolicy marks tests that verify NetworkPolicy enforcement.
+	GinkgoLabelNetworkPolicy = g.Label("NetworkPolicy")
 )
