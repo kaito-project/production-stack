@@ -27,3 +27,5 @@ All component versions are centralized in [`versions.env`](versions.env). This f
 | Istio | 1.29.0 | `ISTIO_VERSION` |
 | Gateway API CRDs | v1.2.0 | `GATEWAY_API_VERSION` |
 | BBR (Body-Based Router) | v1.3.1 | `BBR_VERSION` |
+| KEDA | v2.19.0 | `KEDA_VERSION` |
+| KEDA Kaito Scaler | v0.4.0 | `KEDA_KAITO_SCALER_VERSION` |
