@@ -340,9 +340,9 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			"traffic from random-ns should be blocked by default-deny-ingress")
 	})
 
-	It("should ALLOW ingress from kube-system namespace", func() {
-		Expect(probe("kube-system")).To(BeTrue(),
-			"traffic from kube-system should be allowed for health checks and DNS")
+	It("should DENY ingress from kube-system namespace", func() {
+		Expect(probe("kube-system")).To(BeFalse(),
+			"traffic from kube-system should be blocked by default-deny-ingress")
 	})
 
 	It("should ALLOW ingress from the inference gateway via a real request", func() {

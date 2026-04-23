@@ -314,17 +314,6 @@ func CreateNetworkPoliciesForNamespace(ctx context.Context, cl client.Client, na
 							},
 						},
 					},
-					map[string]interface{}{
-						"from": []interface{}{
-							map[string]interface{}{
-								"namespaceSelector": map[string]interface{}{
-									"matchLabels": map[string]interface{}{
-										"kubernetes.io/metadata.name": "kube-system",
-									},
-								},
-							},
-						},
-					},
 				},
 			},
 		},
