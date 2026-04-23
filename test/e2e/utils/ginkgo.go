@@ -33,4 +33,7 @@ var (
 
 	// GinkgoLabelInferenceSet marks tests that verify InferenceSet lifecycle and routing setup.
 	GinkgoLabelInferenceSet = g.Label("InferenceSet")
+
+	// GinkgoLabelNightly marks tests that are destructive or slow and only run in nightly CI.
+	GinkgoLabelNightly = g.Label("Nightly")
 )

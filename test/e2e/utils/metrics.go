@@ -272,6 +272,30 @@ func TotalDelta(diff PodMetricSnapshot) float64 {
 	return total
 }
 
+// ScrapeModelMetric scrapes a named metric with a model_name label from all
+// shadow pods for the given model and returns a per-pod snapshot.
+// This is used for metrics like vllm:prefix_cache_hits, vllm:prefix_cache_queries, etc.
+func ScrapeModelMetric(ctx context.Context, clientset *kubernetes.Clientset, model, metricName string) (PodMetricSnapshot, error) {
+	pods, err := GetShadowPodsForModel(ctx, clientset, model)
+	if err != nil {
+		return nil, err
+	}
+
+	snapshot := make(PodMetricSnapshot, len(pods))
+	for _, pod := range pods {
+		port := inferenceSimPort(pod)
+		raw, err := ScrapePodMetrics(ctx, clientset, ShadowNamespace, pod.Name, port)
+		if err != nil {
+			return nil, fmt.Errorf("scraping %s: %w", pod.Name, err)
+		}
+		val, _ := ParseMetricValue(raw, metricName, map[string]string{
+			"model_name": model,
+		})
+		snapshot[pod.Name] = val
+	}
+	return snapshot, nil
+}
+
 // inferenceSimPort returns the llm-d-inference-sim container's port from the
 // pod spec. The simulator serves both the API and /metrics on the same port.
 // Falls back to 8000 if no port is declared.
