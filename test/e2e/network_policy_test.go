@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -35,8 +36,9 @@ import (
 )
 
 const (
-	netpolModelName = "falcon-7b-instruct"
-	probeTimeout    = 10 * time.Second
+	netpolModelName  = "falcon-7b-instruct"
+	netpolModelNameB = "falcon-7b-instruct-b" // different name to avoid KAITO workspace name collision
+	probeTimeout     = 10 * time.Second
 )
 
 var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func() {
@@ -44,8 +46,11 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		ctx             context.Context
 		clientset       *kubernetes.Clientset
 		namespace       string
+		namespaceB      string
 		serverIP        string
 		serverPort      int32
+		serverIPB       string
+		serverPortB     int32
 		probeNamespaces []string
 	)
 
@@ -128,6 +133,68 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			}
 		}
 		Expect(serverPort).To(BeNumerically(">", 0), "could not determine model pod serving port")
+
+		// Deploy a second model namespace (namespace B) to test cross-namespace isolation.
+		namespaceB = fmt.Sprintf("e2e-netpol-%d", rand.Intn(900000)+100000)
+		nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceB}}
+		Expect(cl.Create(ctx, nsB)).To(Succeed(), "failed to create namespace %s", namespaceB)
+
+		cfgB := utils.DefaultInferenceSetConfig(netpolModelNameB)
+		cfgB.Namespace = namespaceB
+		cfgB.PresetName = netpolModelName // same underlying model preset
+		Expect(utils.CreateInferenceSetWithRouting(ctx, cl, cfgB)).To(Succeed(),
+			"failed to create InferenceSet with routing in %s", namespaceB)
+
+		Expect(utils.CreateNetworkPoliciesForNamespace(ctx, cl, namespaceB)).To(Succeed(),
+			"failed to create network policies in %s", namespaceB)
+
+		// Wait for model pod in namespace B.
+		Eventually(func() (string, error) {
+			podsB, err := clientset.CoreV1().Pods(namespaceB).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", netpolModelNameB),
+			})
+			if err != nil {
+				return "", err
+			}
+			for _, pod := range podsB.Items {
+				for _, cond := range pod.Status.Conditions {
+					if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+						return pod.Status.PodIP, nil
+					}
+				}
+			}
+			return "", fmt.Errorf("no ready model pods found")
+		}, utils.InferenceSetReadyTimeout, utils.PollInterval).ShouldNot(BeEmpty(),
+			"model pod did not become ready in %s", namespaceB)
+
+		podsB, err := clientset.CoreV1().Pods(namespaceB).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", netpolModelNameB),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		for _, pod := range podsB.Items {
+			for _, c := range pod.Spec.Containers {
+				for _, p := range c.Ports {
+					if p.ContainerPort > 0 {
+						serverPortB = p.ContainerPort
+						break
+					}
+				}
+				if serverPortB > 0 {
+					break
+				}
+			}
+			for _, cond := range pod.Status.Conditions {
+				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+					serverIPB = pod.Status.PodIP
+					break
+				}
+			}
+			if serverIPB != "" && serverPortB > 0 {
+				break
+			}
+		}
+		Expect(serverIPB).NotTo(BeEmpty(), "could not find a ready model pod IP in namespace B")
+		Expect(serverPortB).To(BeNumerically(">", 0), "could not determine model pod serving port in namespace B")
 	})
 
 	AfterAll(func() {
@@ -135,9 +202,11 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 
 		// Clean up routing and InferenceSet.
 		_ = utils.CleanupInferenceSetWithRouting(ctx, cl, netpolModelName, namespace)
+		_ = utils.CleanupInferenceSetWithRouting(ctx, cl, netpolModelNameB, namespaceB)
 
 		// Clean up network policies.
 		_ = utils.CleanupNetworkPolicies(ctx, cl, namespace)
+		_ = utils.CleanupNetworkPolicies(ctx, cl, namespaceB)
 
 		// Clean up probe namespaces.
 		for _, ns := range probeNamespaces {
@@ -147,10 +216,15 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		// Delete the test namespace.
 		nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
 		_ = cl.Delete(ctx, nsObj)
+		nsBObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceB}}
+		_ = cl.Delete(ctx, nsBObj)
 	})
 
-	// probeTarget launches a busybox pod in probeNS and tries to nc to targetIP:targetPort.
-	probeTarget := func(probeNS string, targetIP string, targetPort int32) bool {
+	// probeTarget launches a busybox pod in probeNS and execs the given command.
+	// It returns the stdout output and any exec error. The caller decides how to
+	// interpret the result (e.g. err==nil means connectivity, stdout content for
+	// HTTP response validation).
+	probeTarget := func(probeNS string, cmd []string, timeout time.Duration) (string, error) {
 		// Track probe namespaces for cleanup (skip pre-existing ones).
 		if probeNS != namespace && probeNS != "istio-system" && probeNS != "kube-system" && probeNS != "default" {
 			probeNamespaces = append(probeNamespaces, probeNS)
@@ -185,9 +259,6 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			_ = clientset.CoreV1().Pods(probeNS).Delete(ctx, probePodName, metav1.DeleteOptions{})
 		}()
 
-		// Exec into the probe pod and try to connect to the target.
-		cmd := []string{"sh", "-c", fmt.Sprintf("echo test | nc -w 3 %s %d", targetIP, targetPort)}
-
 		restCfg, err := utils.GetK8sConfig()
 		Expect(err).NotTo(HaveOccurred())
 
@@ -206,7 +277,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		Expect(err).NotTo(HaveOccurred())
 
 		var stdout, stderr bytes.Buffer
-		execCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		err = exec.StreamWithContext(execCtx, remotecommand.StreamOptions{
@@ -214,12 +285,28 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			Stderr: &stderr,
 		})
 
-		return err == nil
+		return stdout.String(), err
 	}
 
-	// probe is a convenience wrapper that probes the model pod.
+	// ncCmd builds a netcat TCP connectivity check command.
+	ncCmd := func(targetIP string, targetPort int32) []string {
+		return []string{"sh", "-c", fmt.Sprintf("echo test | nc -w 3 %s %d", targetIP, targetPort)}
+	}
+
+	// wgetCmd builds a wget command that returns the HTTP status code.
+	wgetCmd := func(targetIP string, targetPort int32, model string) []string {
+		return []string{"sh", "-c", fmt.Sprintf(
+			`wget -q -S -O /dev/null --header='Content-Type: application/json' `+
+				`--post-data='{"model":"%s","messages":[{"role":"user","content":"hello"}],"max_tokens":5}' `+
+				`http://%s:%d/v1/chat/completions 2>&1 | grep 'HTTP/' | awk '{print $2}'`,
+			model, targetIP, targetPort,
+		)}
+	}
+
+	// probe is a convenience wrapper that checks TCP connectivity to the model pod.
 	probe := func(probeNS string) bool {
-		return probeTarget(probeNS, serverIP, serverPort)
+		_, err := probeTarget(probeNS, ncCmd(serverIP, serverPort), probeTimeout)
+		return err == nil
 	}
 
 	It("should DENY ingress from an external namespace", func() {
@@ -227,9 +314,13 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			"traffic from external-ns should be blocked by default-deny-ingress")
 	})
 
-	It("should ALLOW ingress from within the model namespace", func() {
-		Expect(probe(namespace)).To(BeTrue(),
-			"intra-namespace traffic should be allowed by allow-inference-traffic")
+	It("should ALLOW ingress from within the model namespace via a real inference request", func() {
+		// Send a real chat completion request via wget from a busybox pod in the
+		// model namespace directly to the model pod IP.
+		stdout, err := probeTarget(namespace, wgetCmd(serverIP, serverPort, netpolModelName), 30*time.Second)
+		Expect(err).NotTo(HaveOccurred(), "wget to model pod failed")
+		Expect(strings.TrimSpace(stdout)).To(Equal("200"),
+			"intra-namespace inference request should return HTTP 200, got %s", stdout)
 	})
 
 	It("should DENY ingress from a non-gateway pod in default namespace", func() {
@@ -270,5 +361,21 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		// need to include valid credentials.
 		Expect(resp.StatusCode).To(Equal(200),
 			"gateway should be able to reach model pods — got HTTP %d", resp.StatusCode)
+	})
+
+	It("should DENY ingress from workload namespace A to workload namespace B", func() {
+		// Each model namespace has its own network policies with intra-namespace
+		// allow only. A pod in namespace A should NOT be able to reach model
+		// pods in namespace B — this validates tenant isolation between workloads.
+		_, err := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout)
+		Expect(err).To(HaveOccurred(),
+			"workload namespace A should not be able to reach model pods in workload namespace B")
+	})
+
+	It("should DENY ingress from workload namespace B to workload namespace A", func() {
+		// Verify isolation in the reverse direction as well.
+		_, err := probeTarget(namespaceB, ncCmd(serverIP, serverPort), probeTimeout)
+		Expect(err).To(HaveOccurred(),
+			"workload namespace B should not be able to reach model pods in workload namespace A")
 	})
 })
