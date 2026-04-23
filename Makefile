@@ -90,9 +90,11 @@ build: ## Build the gpu-node-mocker binary.
 test: ## Run unit tests.
 	go test -v -race -count=1 ./pkg/... ./cmd/...
 
+CONTAINER_TOOL ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null || echo docker)
+
 .PHONY: docker-build
 docker-build: ## Build docker image for the target ARCH.
-	docker build --platform linux/$(ARCH) -f docker/Dockerfile -t $(IMG) .
+	$(CONTAINER_TOOL) build --platform linux/$(ARCH) -f docker/Dockerfile -t $(IMG) .
 
 ## --------------------------------------
 ## E2E Tests
@@ -130,16 +132,16 @@ e2e-push-image: ## Tag and push image to ACR. Sets SHADOW_CONTROLLER_IMAGE.
 	az acr login --name "$${ACR_NAME}" >&2; \
 	IMAGE_TAG="latest-$$(head -c 8 /dev/urandom | xxd -p)"; \
 	IMAGE="$${ACR_NAME}.azurecr.io/gpu-node-mocker:$${IMAGE_TAG}"; \
-	docker tag $(GPU_MOCKER_IMAGE) "$${IMAGE}" >&2; \
-	docker push "$${IMAGE}" >&2; \
+	$(CONTAINER_TOOL) tag $(GPU_MOCKER_IMAGE) "$${IMAGE}" >&2; \
+	$(CONTAINER_TOOL) push "$${IMAGE}" >&2; \
 	echo "image=$${IMAGE}"
 
 .PHONY: e2e-push-image-local
 e2e-push-image-local: ## Tag and push locally-built image to ACR (no hash, uses IMG).
 	az acr login --name "$${ACR_NAME}" >&2; \
 	IMAGE="$${ACR_NAME}.azurecr.io/gpu-node-mocker:latest"; \
-	docker tag $(IMG) "$${IMAGE}" >&2; \
-	docker push "$${IMAGE}" >&2; \
+	$(CONTAINER_TOOL) tag $(IMG) "$${IMAGE}" >&2; \
+	$(CONTAINER_TOOL) push "$${IMAGE}" >&2; \
 	echo "image=$${IMAGE}"
 
 .PHONY: e2e-install
