@@ -35,7 +35,8 @@ const (
 	EPPMetricsPort = 9090
 
 	// ShadowNamespace is the namespace where shadow pods are deployed.
-	ShadowNamespace = "kaito-shadow"
+	// Shadow pods are created in the same namespace as the original model pods.
+	ShadowNamespace = "default"
 )
 
 // ScrapePodMetrics fetches the /metrics endpoint from a pod using the
