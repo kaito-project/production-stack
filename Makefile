@@ -79,6 +79,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 IMG_TAG ?= $(VERSION)
 IMG ?= $(REGISTRY)/$(IMG_NAME):$(IMG_TAG)
 
+CONTAINER_ENGINE ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null)
 ARCH ?= amd64
 
 .PHONY: build
@@ -89,8 +90,6 @@ build: ## Build the gpu-node-mocker binary.
 .PHONY: test
 test: ## Run unit tests.
 	go test -v -race -count=1 ./pkg/... ./cmd/...
-
-CONTAINER_TOOL ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/dev/null || echo docker)
 
 .PHONY: docker-build
 docker-build: ## Build docker image for the target ARCH.
@@ -161,13 +160,15 @@ e2e-teardown: ## Tear down the E2E cluster.
 	hack/e2e/scripts/run-e2e-local.sh teardown
 
 .PHONY: e2e-up
-e2e-up: docker-build e2e-setup ## One command to set up full local E2E env (build, cluster, push, install, validate).
-	@echo "=== Deriving ACR name ==="
-	$(eval ACR_NAME := $(shell az acr list --resource-group $${RESOURCE_GROUP:-kaito-e2e-local} --query '[0].name' -o tsv))
-	@echo "=== Pushing gpu-node-mocker image to ACR ($(ACR_NAME)) ==="
-	$(eval SHADOW_CONTROLLER_IMAGE := $(shell ACR_NAME=$(ACR_NAME) $(MAKE) --no-print-directory e2e-push-image-local | grep '^image=' | cut -d= -f2-))
-	@echo "Image: $(SHADOW_CONTROLLER_IMAGE)"
-	SHADOW_CONTROLLER_IMAGE="$(SHADOW_CONTROLLER_IMAGE)" $(MAKE) e2e-install
+e2e-up: e2e-setup ## One command to set up full local E2E env (build, cluster, push, install, validate).
+	@ACR_NAME=$$(az acr list --resource-group $${RESOURCE_GROUP:-kaito-e2e-local} --query '[0].name' -o tsv) && \
+	echo "=== Building and pushing image to ACR ($$ACR_NAME) ===" && \
+	TOKEN=$$(az acr login --name "$$ACR_NAME" --expose-token --query accessToken -o tsv) && \
+	echo "$$TOKEN" | $(CONTAINER_ENGINE) login "$$ACR_NAME.azurecr.io" --username 00000000-0000-0000-0000-000000000000 --password-stdin && \
+	$(CONTAINER_ENGINE) build --platform linux/$(ARCH) -f docker/Dockerfile \
+		-t "$$ACR_NAME.azurecr.io/gpu-node-mocker:latest" . && \
+	$(CONTAINER_ENGINE) push "$$ACR_NAME.azurecr.io/gpu-node-mocker:latest" && \
+	SHADOW_CONTROLLER_IMAGE="$$ACR_NAME.azurecr.io/gpu-node-mocker:latest" $(MAKE) e2e-install
 	$(MAKE) e2e-validate
 	@echo ""
 	@echo "=== E2E environment is ready ==="
