@@ -160,16 +160,20 @@ e2e-dump: ## Dump cluster state for debugging.
 e2e-teardown: ## Tear down the E2E cluster.
 	hack/e2e/scripts/run-e2e-local.sh teardown
 
+USER_ID ?= $(shell whoami)
+E2E_CLUSTER_NAME ?= kaito-$(USER_ID)
+E2E_RESOURCE_GROUP ?= kaito-$(USER_ID)
+
 .PHONY: e2e-up
-e2e-up: docker-build e2e-setup ## One command to set up full local E2E env (build, cluster, push, install, validate).
-	@echo "=== Deriving ACR name ==="
-	$(eval ACR_NAME := $(shell az acr list --resource-group $${RESOURCE_GROUP:-kaito-e2e-local} --query '[0].name' -o tsv))
-	@echo "=== Pushing gpu-node-mocker image to ACR ($(ACR_NAME)) ==="
-	$(eval SHADOW_CONTROLLER_IMAGE := $(shell ACR_NAME=$(ACR_NAME) $(MAKE) --no-print-directory e2e-push-image-local | grep '^image=' | cut -d= -f2-))
-	@echo "Image: $(SHADOW_CONTROLLER_IMAGE)"
-	SHADOW_CONTROLLER_IMAGE="$(SHADOW_CONTROLLER_IMAGE)" $(MAKE) e2e-install
-	$(MAKE) e2e-validate
-	@echo ""
-	@echo "=== E2E environment is ready ==="
-	@echo "Run tests with: make test-e2e"
-	@echo "Tear down with: make e2e-teardown"
+e2e-up: ## One command to set up full local E2E env (cluster, build, push, install, validate).
+	@export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) && \
+	hack/e2e/scripts/run-e2e-local.sh setup && \
+	hack/e2e/scripts/run-e2e-local.sh build-push && \
+	hack/e2e/scripts/run-e2e-local.sh install && \
+	hack/e2e/scripts/run-e2e-local.sh validate && \
+	echo "" && \
+	echo "=== E2E environment is ready ===" && \
+	echo "  Cluster: $(E2E_CLUSTER_NAME)" && \
+	echo "  Resource Group: $(E2E_RESOURCE_GROUP)" && \
+	echo "Run tests with: make test-e2e" && \
+	echo "Tear down with: CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) make e2e-teardown"

@@ -40,7 +40,7 @@ source "${REPO_ROOT}/versions.env"
 [ -n "${_KEDA}" ]  && KEDA_VERSION="${_KEDA}"
 [ -n "${_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${_KKS}"
 
-export KAITO_VERSION ISTIO_VERSION GATEWAY_API_VERSION BBR_VERSION KEDA_VERSION KEDA_KAITO_SCALER_VERSION
+export KAITO_VERSION ISTIO_VERSION GATEWAY_API_VERSION BBR_VERSION KEDA_VERSION KEDA_KAITO_SCALER_VERSION AKS_K8S_VERSION
 
 echo "=== Component versions (from versions.env) ==="
 echo "  KAITO_VERSION:             ${KAITO_VERSION}"
@@ -76,11 +76,22 @@ cleanup() {
   exit "${exit_code}"
 }
 
+CONTAINER_TOOL="${CONTAINER_TOOL:-$(command -v podman 2>/dev/null || command -v docker 2>/dev/null)}"
+
 derive_acr() {
   ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
   ACR_LOGIN_SERVER=$(az acr show --name "${ACR_NAME}" --query loginServer -o tsv)
   export ACR_LOGIN_SERVER
   export SHADOW_CONTROLLER_IMAGE="${ACR_LOGIN_SERVER}/gpu-node-mocker:latest"
+}
+
+do_build_push() {
+  derive_acr
+  echo "=== Building and pushing image to ACR (${ACR_NAME}) ==="
+  TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
+  echo "${TOKEN}" | "${CONTAINER_TOOL}" login "${ACR_LOGIN_SERVER}" --username 00000000-0000-0000-0000-000000000000 --password-stdin
+  "${CONTAINER_TOOL}" build --platform linux/amd64 -f "${REPO_ROOT}/docker/Dockerfile" -t "${SHADOW_CONTROLLER_IMAGE}" "${REPO_ROOT}"
+  "${CONTAINER_TOOL}" push "${SHADOW_CONTROLLER_IMAGE}"
 }
 
 do_setup() {
@@ -113,8 +124,9 @@ do_teardown() {
 }
 
 case "${STEP}" in
-  setup)    do_setup ;;
-  install)  do_install ;;
+  setup)      do_setup ;;
+  build-push) do_build_push ;;
+  install)    do_install ;;
   validate) do_validate ;;
   test)     do_test ;;
   teardown) do_teardown ;;
