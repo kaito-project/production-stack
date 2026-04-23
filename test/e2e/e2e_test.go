@@ -32,9 +32,14 @@ var _ = BeforeSuite(func() {
 	url, err := utils.GetGatewayURL()
 	Expect(err).NotTo(HaveOccurred(), "failed to set up gateway port-forward")
 	gatewayURL = url
+
+	// Create InferenceSets and wait for the full routing pipeline once
+	// for the entire suite. Individual Describes share these resources.
+	utils.SetupInferenceSetsWithRouting(modelNames, testNamespace, gatewayURL)
 })
 
 var _ = AfterSuite(func() {
+	utils.TeardownInferenceSetsWithRouting(modelNames, testNamespace)
 	utils.CleanupPortForward()
 })
 

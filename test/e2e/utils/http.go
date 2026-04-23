@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -113,10 +114,25 @@ type ResponseMessage struct {
 // ErrorResponse represents an OpenAI-compatible error response.
 type ErrorResponse struct {
 	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-		Code    string `json:"code"`
+		Message string          `json:"message"`
+		Type    string          `json:"type"`
+		Code    json.RawMessage `json:"code"`
 	} `json:"error"`
+}
+
+// ErrorCode returns the error code as a string, handling both string
+// and numeric JSON values (vLLM returns numeric, catch-all returns string).
+func (e *ErrorResponse) ErrorCode() string {
+	if e == nil || e.Error.Code == nil {
+		return ""
+	}
+	// Try to unmarshal as string first.
+	var s string
+	if err := json.Unmarshal(e.Error.Code, &s); err == nil {
+		return s
+	}
+	// Fall back to raw representation (e.g., "400").
+	return strings.TrimSpace(string(e.Error.Code))
 }
 
 // portForwardCmd holds the kubectl port-forward process so it can be

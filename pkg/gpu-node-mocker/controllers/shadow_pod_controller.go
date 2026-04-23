@@ -183,10 +183,11 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 	}
 
 	modelName := extractModelName(original)
+	servedModelName := extractServedModelName(original, modelName)
 	servingPort := extractServingPort(original)
 
 	// Ensure the ConfigMap for the inference simulator exists.
-	if err := r.ensureSimConfigMap(ctx, shadowName, modelName, servingPort); err != nil {
+	if err := r.ensureSimConfigMap(ctx, shadowName, modelName, servedModelName, servingPort); err != nil {
 		return nil, fmt.Errorf("ensure sim configmap: %w", err)
 	}
 
@@ -463,7 +464,7 @@ func (r *ShadowPodReconciler) ensureNamespace(ctx context.Context, name string) 
 // ensureSimConfigMap creates the inference simulator ConfigMap if it does not exist.
 // The config enables KV cache but does not set any threshold so cache_threshold
 // is never triggered. The port is set to match the original pod's serving port.
-func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, shadowName, modelName string, port int32) error {
+func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, shadowName, modelName, servedModelName string, port int32) error {
 	cmName := shadowName + "-config"
 	existing := &corev1.ConfigMap{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: r.Config.ShadowPodNamespace, Name: cmName}, existing); err == nil {
@@ -482,7 +483,7 @@ kv-cache-size: 4096
 block-size: 16
 time-to-first-token: 100ms
 inter-token-latency: 30ms
-`, port, modelName, modelName)
+`, port, modelName, servedModelName)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -526,6 +527,22 @@ func extractModelName(pod *corev1.Pod) string {
 		}
 	}
 	return DefaultModelName
+}
+
+// extractServedModelName returns the served model name from the original pod.
+// If the pod has an explicit --served-model-name, that is used (it is the
+// user-facing alias that EPP matches requests against). Otherwise, modelName
+// (typically the HuggingFace model ID from --model) is used as the fallback.
+func extractServedModelName(pod *corev1.Pod, modelName string) string {
+	for _, c := range pod.Spec.Containers {
+		if name := findArgValue(c.Command, "--served-model-name"); name != "" {
+			return name
+		}
+		if name := findArgValue(c.Args, "--served-model-name"); name != "" {
+			return name
+		}
+	}
+	return modelName
 }
 
 // extractServingPort returns the first declared containerPort from the original
