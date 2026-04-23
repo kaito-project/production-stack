@@ -47,6 +47,7 @@ az aks create \
   --enable-managed-identity \
   --attach-acr "${ACR_NAME}" \
   --network-plugin azure \
+  --network-plugin-mode overlay \
   --network-dataplane cilium \
   --network-policy cilium \
   --generate-ssh-keys \
