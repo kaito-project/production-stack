@@ -37,7 +37,7 @@ import (
 const (
 	netpolModelNameA = "netpol-a"           // unique name to avoid KAITO workspace collision with other test suites
 	netpolModelNameB = "netpol-b"           // different name for namespace B isolation test
-	netpolPreset     = "falcon-7b-instruct"    // underlying model preset shared by both
+	netpolPreset     = "falcon-7b-instruct" // underlying model preset shared by both
 	probeTimeout     = 10 * time.Second
 )
 
@@ -72,6 +72,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		cfg := utils.DefaultInferenceSetConfig(netpolModelNameA)
 		cfg.Namespace = namespace
 		cfg.PresetName = netpolPreset
+		cfg.ModelName = netpolPreset
 		Expect(utils.CreateInferenceSetWithRouting(ctx, cl, cfg)).To(Succeed(),
 			"failed to create InferenceSet with routing in %s", namespace)
 
@@ -143,6 +144,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		cfgB := utils.DefaultInferenceSetConfig(netpolModelNameB)
 		cfgB.Namespace = namespaceB
 		cfgB.PresetName = netpolPreset // same underlying model preset
+		cfgB.ModelName = netpolPreset
 		Expect(utils.CreateInferenceSetWithRouting(ctx, cl, cfgB)).To(Succeed(),
 			"failed to create InferenceSet with routing in %s", namespaceB)
 
@@ -346,17 +348,15 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			"traffic from kube-system should be blocked by default-deny-ingress")
 	})
 
-	It("should ALLOW ingress from a pod with the gateway label in default namespace", func() {
-		// The network policy allows ingress from pods in the default namespace
-		// with the gateway label. This simulates the real gateway pod's connectivity
-		// to the model pods without requiring a full inference request through the
-		// routing stack.
+	It("should ALLOW ingress via gateway-labeled pod with a real inference request", func() {
+		// End-to-end validation: a gateway-labeled pod sends a real chat completion
+		// request directly to the model pod and receives a successful HTTP response.
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
-		_, err := probeTarget("default", ncCmd(serverIP, serverPort), probeTimeout, gatewayLabels)
+		_, err := probeTarget("default", wgetCmd(serverIP, serverPort, netpolPreset), 30*time.Second, gatewayLabels)
 		Expect(err).NotTo(HaveOccurred(),
-			"a pod with the gateway label in default namespace should be able to reach model pods")
+			"gateway-labeled pod should receive HTTP 200 from model pod for chat completion request")
 	})
 
 	It("should DENY ingress from workload namespace A to workload namespace B", func() {
