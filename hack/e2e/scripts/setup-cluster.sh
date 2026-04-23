@@ -47,7 +47,8 @@ az aks create \
   --enable-managed-identity \
   --attach-acr "${ACR_NAME}" \
   --network-plugin azure \
-  --network-policy azure \
+  --network-dataplane cilium \
+  --network-policy cilium \
   --generate-ssh-keys \
   ${AKS_K8S_VERSION:+--kubernetes-version "${AKS_K8S_VERSION}"}
 
