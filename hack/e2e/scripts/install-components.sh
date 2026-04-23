@@ -10,10 +10,9 @@
 #   5. GWIE CRDs (InferencePool, InferenceModel)
 #   6. BBR (Body-Based Router) v1.3.1
 #   7. Inference Gateway
-#   8. Network Policies (default-deny + allow inference traffic)
-#   9. HTTPRoute catch-all, error service, debug filter
-#  10. KEDA (Helm)
-#  11. KEDA Kaito Scaler (Helm)
+#   8. HTTPRoute catch-all, error service, debug filter
+#   9. KEDA (Helm)
+#  10. KEDA Kaito Scaler (Helm)
 #
 # Environment variables (must be set by caller, e.g. run-e2e-local.sh or CI):
 #   KAITO_VERSION             — KAITO Helm chart version
@@ -145,25 +144,20 @@ kubectl wait --for=condition=ready pod \
   --timeout=180s 2>/dev/null || \
   echo "⚠️  Gateway pod not ready yet — continuing."
 
-# ── 8. Network Policies ─────────────────────────────────────────────────
-echo ""
-echo "=== 8/9: Deploying network policies ==="
-kubectl apply -f "${MANIFESTS_DIR}/network-policy.yaml"
-
-# ── 9. HTTPRoute catch-all, error service, debug filter ─────────────────
+# ── 8. HTTPRoute catch-all, error service, debug filter ─────────────────
 # Note: InferenceSets, model-specific HTTPRoutes, and DestinationRules are
 # created by individual E2E test cases via the test/e2e/utils helpers.
 echo ""
-echo "=== 9/10: Deploying routing catch-all, error service ==="
+echo "=== 8/10: Deploying routing catch-all, error service ==="
 kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
 kubectl apply -f "${MANIFESTS_DIR}/inference-debug-filter.yaml"
 
 echo "⏳ Waiting for model-not-found service..."
 kubectl rollout status deployment/model-not-found --timeout=60s 2>/dev/null || true
 
-# ── 10. KEDA ────────────────────────────────────────────────────────
+# ── 9. KEDA ────────────────────────────────────────────────────────
 echo ""
-echo "=== 10/10: Installing KEDA ${KEDA_VERSION} ==="
+echo "=== 9/10: Installing KEDA ${KEDA_VERSION} ==="
 helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
 helm repo update kedacore
 helm upgrade --install keda kedacore/keda \
@@ -176,7 +170,7 @@ echo "⏳ Waiting for KEDA operator..."
 kubectl -n keda rollout status deployment/keda-operator --timeout=180s || true
 kubectl -n keda rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
 
-# ── 11. KEDA Kaito Scaler ───────────────────────────────────────────
+# ── 10. KEDA Kaito Scaler ───────────────────────────────────────────
 echo ""
 echo "=== 10/10: Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} ==="
 helm repo add keda-kaito-scaler https://kaito-project.github.io/keda-kaito-scaler/charts/kaito-project 2>/dev/null || true
