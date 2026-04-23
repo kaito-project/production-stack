@@ -117,7 +117,12 @@ func CreateInferenceSet(ctx context.Context, cl client.Client, cfg InferenceSetC
 
 // WaitForInferenceSetReady waits for the InferenceSet's associated InferencePool
 // to be created, indicating KAITO has processed the InferenceSet.
-func WaitForInferenceSetReady(ctx context.Context, cl client.Client, name, namespace string, timeout time.Duration) error {
+func WaitForInferenceSetReady(
+	ctx context.Context,
+	cl client.Client,
+	name, namespace string,
+	timeout time.Duration,
+) error {
 	poolName := InferencePoolName(name)
 	deadline := time.Now().Add(timeout)
 
@@ -189,8 +194,8 @@ func CreateHTTPRouteForInferenceSet(ctx context.Context, cl client.Client, name,
 			"spec": map[string]interface{}{
 				"parentRefs": []interface{}{
 					map[string]interface{}{
-						"group": "gateway.networking.k8s.io",
-						"kind":  "Gateway",
+						"group":     "gateway.networking.k8s.io",
+						"kind":      "Gateway",
 						"name":      gatewayName,
 						"namespace": GatewayNamespace,
 					},
