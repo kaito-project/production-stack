@@ -190,7 +190,7 @@ individually so failures can be localised.
 * Generate queue pressure — Send concurrent requests at a rate exceeding serving capacity so that `vllm:num_requests_waiting` rises above the KEDA threshold (10) on at least one pod. Verify by scraping shadow pod metrics. This is the trigger condition for scale-up.
 * KEDA triggers replica increase — Poll the InferenceSet and verify `.spec.replicas` increases (e.g. 2 → 3) within the KEDA polling interval. Proves the ScaledObject correctly read the vLLM metric and patched the InferenceSet.
 * New fake node provisioned — Verify a new fake node appears with the correct labels and `Ready=True` status. Proves gpu-node-mocker Phase 1 (NodeClaimReconciler) handled the new NodeClaim produced by Karpenter.
-* New shadow pod running — Verify a new shadow pod reaches `Running` in the `kaito-shadow` namespace with both `inference-sim` and `tokenizer` containers ready. Proves gpu-node-mocker Phase 2 (ShadowPodReconciler) completed the shadow-pod creation path.
+* New shadow pod running — Verify a new shadow pod reaches `Running` in the model's namespace with both `inference-sim` and `tokenizer` containers ready. Proves gpu-node-mocker Phase 2 (ShadowPodReconciler) completed the shadow-pod creation path.
 * Original pod patched to Running — Verify the newly scheduled original pod's status is patched to `Running` with the shadow pod's real CNI IP as `PodIP`. Proves the status-patch pipeline works for dynamically scaled pods, not just initially deployed ones.
 * InferencePool endpoint list updated — Verify `inference_pool_ready_pods{name}` increases to match the new replica count. If InferencePool doesn't learn about the new pod, EPP cannot route to it and the new replica is wasted.
 * New pod receives traffic — Continue sending requests. Scrape `vllm:request_success_total` from the new pod and verify it is > 0 within a reasonable window. The new replica must actually serve traffic, not just exist on paper. (General load-distribution fairness is covered by *Model-Based Routing → Load distribution*; not duplicated here.)
@@ -199,7 +199,7 @@ individually so failures can be localised.
 
 * Stop traffic and drain queue — Cease all inbound requests. Wait for `vllm:num_requests_waiting` to reach 0 on every pod and `vllm:num_requests_running` to reach 0. The queue must fully drain before KEDA begins scale-down.
 * KEDA triggers replica decrease — Poll the InferenceSet and verify `.spec.replicas` decreases (e.g. 3 → 2) after the KEDA cooldown period elapses. Proves the scale-down path is not silently stuck.
-* Excess shadow pod and fake node cleaned up — Verify the extra shadow pod is deleted from `kaito-shadow`, the corresponding fake node is removed, and the NodeClaim is released. Proves the cleanup pipeline (ShadowPodReconciler → NodeClaim release, including the lease-renewal goroutine stop) works.
+* Excess shadow pod and fake node cleaned up — Verify the extra shadow pod is deleted from the model's namespace, the corresponding fake node is removed, and the NodeClaim is released. Proves the cleanup pipeline (ShadowPodReconciler → NodeClaim release, including the lease-renewal goroutine stop) works.
 * InferencePool endpoint list shrinks — Verify `inference_pool_ready_pods{name}` decreases to match the new replica count. A stale endpoint would cause EPP to route to a non-existent pod and requests would fail.
 * Remaining pods continue to serve traffic — Resume sending requests. Verify all requests succeed (HTTP 200). Scrape `vllm:request_success_total` on the remaining pods to confirm they handle the load. `inference_extension_scheduler_attempts_total{status="failure"}` must not increment.
 * No request failures during transition — Send a low-rate stream of requests throughout the scale-down window. Verify `inference_objective_request_error_total` does not increment and no HTTP 5xx responses are observed. Proves the system handles pod removal gracefully without dropping in-flight requests.
@@ -238,7 +238,7 @@ deliberately damage cluster state.
   `Ready=True` without the `node.kubernetes.io/unreachable` taint. If the Phase-1 renewal goroutine
   stops, the node-lifecycle-controller marks the node `Unknown` within 40s and evicts all inference
   pods — the entire stack silently fails.
-* Shadow pod deletion self-heals — Delete a specific shadow pod from `kaito-shadow` while the original
+* Shadow pod deletion self-heals — Delete a specific shadow pod from the model's namespace while the original
   inference pod is running. Verify `ShadowPodReconciler` creates a replacement shadow pod (same
   `kaito.sh/shadow-pod-for` label, new CNI IP), the original pod's `status.podIP` is re-patched to the
   new IP, and the `kaito.sh/shadow-pod-ref` annotation is updated. Send a request afterwards and

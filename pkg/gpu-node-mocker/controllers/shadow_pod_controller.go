@@ -44,7 +44,7 @@ import (
 //   - Still in Pending phase (no kubelet will ever run it)
 //
 // For each such pod the reconciler:
-//  1. Creates a "shadow pod" in Config.ShadowPodNamespace on a real AKS node.
+//  1. Creates a "shadow pod" in the same namespace as the original pod on a real AKS node.
 //     The shadow pod runs the LLM Mocker container and gets a real CNI IP.
 //  2. Waits until the shadow pod is Running and has a podIP.
 //  3. Patches the original pending pod's STATUS (not spec) with:
@@ -99,7 +99,6 @@ func (r *ShadowPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods/status,verbs=get;patch
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create
 
 func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -135,7 +134,7 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		if original.Annotations == nil {
 			original.Annotations = map[string]string{}
 		}
-		original.Annotations[AnnotationShadowPodRef] = r.Config.ShadowPodNamespace + "/" + shadowName
+		original.Annotations[AnnotationShadowPodRef] = original.Namespace + "/" + shadowName
 		if pErr := r.Patch(ctx, original, patch); pErr != nil {
 			log.Error(pErr, "failed to annotate original pod with shadow ref")
 		}
@@ -168,13 +167,13 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 //   - Model name extracted from the original pod's args/command
 //   - KV cache enabled, no threshold set
 func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *corev1.Pod, shadowName string) (*corev1.Pod, error) {
-	// Ensure the shadow pod namespace exists.
-	if err := r.ensureNamespace(ctx, r.Config.ShadowPodNamespace); err != nil {
-		return nil, fmt.Errorf("ensure shadow namespace: %w", err)
-	}
+	// Create the shadow pod in the same namespace as the original pod so that
+	// Kubernetes NetworkPolicies applied to the model namespace also govern
+	// the shadow pod's ingress/egress traffic.
+	shadowNS := original.Namespace
 
 	existing := &corev1.Pod{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: r.Config.ShadowPodNamespace, Name: shadowName}, existing)
+	err := r.Get(ctx, types.NamespacedName{Namespace: shadowNS, Name: shadowName}, existing)
 	if err == nil {
 		return existing, nil
 	}
@@ -187,7 +186,7 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 	servingPort := extractServingPort(original)
 
 	// Ensure the ConfigMap for the inference simulator exists.
-	if err := r.ensureSimConfigMap(ctx, shadowName, modelName, servedModelName, servingPort); err != nil {
+	if err := r.ensureSimConfigMap(ctx, shadowNS, shadowName, modelName, servedModelName, servingPort); err != nil {
 		return nil, fmt.Errorf("ensure sim configmap: %w", err)
 	}
 
@@ -204,7 +203,7 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 	shadow := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      shadowName,
-			Namespace: r.Config.ShadowPodNamespace,
+			Namespace: shadowNS,
 			Labels:    labels,
 			Annotations: map[string]string{
 				"kaito.sh/original-pod": original.Namespace + "/" + original.Name,
@@ -441,33 +440,13 @@ func makePodCondition(t corev1.PodConditionType, s corev1.ConditionStatus, reaso
 	}
 }
 
-// ensureNamespace creates the namespace if it does not already exist.
-func (r *ShadowPodReconciler) ensureNamespace(ctx context.Context, name string) error {
-	ns := &corev1.Namespace{}
-	if err := r.Get(ctx, types.NamespacedName{Name: name}, ns); err == nil {
-		return nil
-	}
-	ns = &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				LabelManagedBy: ControllerName,
-			},
-		},
-	}
-	if err := r.Create(ctx, ns); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("create namespace %s: %w", name, err)
-	}
-	return nil
-}
-
 // ensureSimConfigMap creates the inference simulator ConfigMap if it does not exist.
 // The config enables KV cache but does not set any threshold so cache_threshold
 // is never triggered. The port is set to match the original pod's serving port.
-func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, shadowName, modelName, servedModelName string, port int32) error {
+func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, namespace, shadowName, modelName, servedModelName string, port int32) error {
 	cmName := shadowName + "-config"
 	existing := &corev1.ConfigMap{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: r.Config.ShadowPodNamespace, Name: cmName}, existing); err == nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cmName}, existing); err == nil {
 		return nil
 	}
 
@@ -488,7 +467,7 @@ inter-token-latency: 30ms
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cmName,
-			Namespace: r.Config.ShadowPodNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				LabelManagedBy: ControllerName,
 			},

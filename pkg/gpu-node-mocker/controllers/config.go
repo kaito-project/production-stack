@@ -83,9 +83,6 @@ const (
 
 // Config holds operator-wide settings injected via CLI flags.
 type Config struct {
-	// ShadowPodNamespace is where Phase 2 creates shadow pods.
-	ShadowPodNamespace string
-
 	// ShadowPodImage is the inference simulator container image.
 	ShadowPodImage string
 

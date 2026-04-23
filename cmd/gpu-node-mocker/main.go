@@ -60,7 +60,6 @@ func main() {
 	var (
 		metricsAddr           string
 		probeAddr             string
-		shadowPodNamespace    string
 		shadowPodImage        string
 		udsTokenizerImage     string
 		leaseDurationSec      int
@@ -69,8 +68,6 @@ func main() {
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.StringVar(&shadowPodNamespace, "shadow-pod-namespace", "kaito-shadow",
-		"Namespace where shadow pods are created.")
 	flag.StringVar(&shadowPodImage, "shadow-pod-image", controllers.DefaultInferenceSimImage,
 		"Container image for the inference simulator running in shadow pods.")
 	flag.StringVar(&udsTokenizerImage, "uds-tokenizer-image", controllers.DefaultUDSTokenizerImage,
@@ -96,7 +93,6 @@ func main() {
 	}
 
 	cfg := controllers.Config{
-		ShadowPodNamespace:    shadowPodNamespace,
 		ShadowPodImage:        shadowPodImage,
 		UDSTokenizerImage:     udsTokenizerImage,
 		LeaseDurationSec:      int32(leaseDurationSec),

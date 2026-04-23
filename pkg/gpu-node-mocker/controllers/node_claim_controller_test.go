@@ -49,7 +49,6 @@ func testScheme() *runtime.Scheme {
 
 func testConfig() Config {
 	return Config{
-		ShadowPodNamespace:    "kaito-shadow",
 		ShadowPodImage:        DefaultInferenceSimImage,
 		UDSTokenizerImage:     DefaultUDSTokenizerImage,
 		LeaseDurationSec:      40,

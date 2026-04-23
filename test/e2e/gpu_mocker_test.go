@@ -31,8 +31,7 @@ import (
 )
 
 const (
-	shadowNamespace = "kaito-shadow"
-	testNamespace   = "default"
+	testNamespace = "default"
 
 	falconModel    = "falcon-7b-instruct"
 	ministralModel = "ministral-3-3b-instruct"
@@ -261,7 +260,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// Use field selector to skip stale Failed/Completed pods from
 				// previous test runs that haven't been garbage-collected yet.
 				Eventually(func() error {
-					pods, err := clientset.CoreV1().Pods(shadowNamespace).List(context.Background(), metav1.ListOptions{
+					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
 						LabelSelector: "kaito.sh/managed-by=gpu-mocker",
 						FieldSelector: "status.phase=Running",
 					})
@@ -269,7 +268,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 						return fmt.Errorf("failed to list shadow pods: %w", err)
 					}
 					if len(pods.Items) == 0 {
-						return fmt.Errorf("no running shadow pods found in %s", shadowNamespace)
+						return fmt.Errorf("no running shadow pods found in %s", testNamespace)
 					}
 					for _, pod := range pods.Items {
 						if _, ok := pod.Labels["kaito.sh/shadow-pod-for"]; !ok {
@@ -278,14 +277,14 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					}
 					return nil
 				}, 3*time.Minute, 10*time.Second).Should(Succeed(),
-					"running shadow pods should exist in %s", shadowNamespace)
+					"running shadow pods should exist in %s", testNamespace)
 			})
 
 			It("should have shadow pods with both llm-d-inference-sim and tokenizer containers", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				pods, err := clientset.CoreV1().Pods(shadowNamespace).List(context.Background(), metav1.ListOptions{
+				pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
 					LabelSelector: "kaito.sh/managed-by=gpu-mocker",
 					FieldSelector: "status.phase=Running",
 				})

@@ -131,7 +131,7 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	cfg := testConfig()
 
 	// Create the shadow namespace
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 	original := newPendingPodOnFakeNode("falcon-0", "default", "fake-ws1")
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, original).Build()
@@ -144,8 +144,8 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if shadow.Name != "shadow-default-falcon-0" {
 		t.Errorf("name = %q", shadow.Name)
 	}
-	if shadow.Namespace != cfg.ShadowPodNamespace {
-		t.Errorf("namespace = %q", shadow.Namespace)
+	if shadow.Namespace != "default" {
+		t.Errorf("namespace = %q, want %q", shadow.Namespace, "default")
 	}
 	// Main container should be llm-d-inference-sim
 	if len(shadow.Spec.Containers) != 1 {
@@ -226,7 +226,7 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 
 	// Verify ConfigMap was created
 	cm := &corev1.ConfigMap{}
-	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0-config", Namespace: cfg.ShadowPodNamespace}, cm); err != nil {
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0-config", Namespace: "default"}, cm); err != nil {
 		t.Fatalf("configmap not created: %v", err)
 	}
 	configYAML := cm.Data["config.yaml"]
@@ -250,11 +250,11 @@ func TestEnsureShadowPod_ReturnsExisting(t *testing.T) {
 	scheme := testScheme()
 	cfg := testConfig()
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 	existing := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "shadow-default-falcon-0",
-			Namespace: cfg.ShadowPodNamespace,
+			Namespace: "default",
 			Labels:    map[string]string{"existing": "true"},
 		},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "i"}}},
@@ -279,7 +279,7 @@ func TestPatchOriginalPodStatus(t *testing.T) {
 
 	original := newPendingPodOnFakeNode("falcon-0", "default", "fake-ws1")
 	shadow := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "shadow-default-falcon-0", Namespace: "kaito-shadow"},
+		ObjectMeta: metav1.ObjectMeta{Name: "shadow-default-falcon-0", Namespace: "default"},
 		Status: corev1.PodStatus{
 			Phase:  corev1.PodRunning,
 			PodIP:  "10.244.1.100",
@@ -419,7 +419,7 @@ func TestShadowPodReconcile_CreatesShadowAndRequeues(t *testing.T) {
 	scheme := testScheme()
 	cfg := testConfig()
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 	original := newPendingPodOnFakeNode("falcon-0", "default", "fake-ws1")
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, original).WithStatusSubresource(original).Build()
@@ -436,14 +436,14 @@ func TestShadowPodReconcile_CreatesShadowAndRequeues(t *testing.T) {
 
 	// Verify shadow pod was created
 	shadow := &corev1.Pod{}
-	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0", Namespace: cfg.ShadowPodNamespace}, shadow); err != nil {
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0", Namespace: "default"}, shadow); err != nil {
 		t.Fatalf("shadow pod not created: %v", err)
 	}
 
 	// Verify annotation was set on original pod
 	updated := &corev1.Pod{}
 	_ = cl.Get(ctx, types.NamespacedName{Name: "falcon-0", Namespace: "default"}, updated)
-	if updated.Annotations[AnnotationShadowPodRef] != cfg.ShadowPodNamespace+"/shadow-default-falcon-0" {
+	if updated.Annotations[AnnotationShadowPodRef] != "default/shadow-default-falcon-0" {
 		t.Errorf("annotation = %q", updated.Annotations[AnnotationShadowPodRef])
 	}
 }
@@ -453,14 +453,14 @@ func TestShadowPodReconcile_PatchesWhenShadowRunning(t *testing.T) {
 	scheme := testScheme()
 	cfg := testConfig()
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 	original := newPendingPodOnFakeNode("falcon-0", "default", "fake-ws1")
 
 	// Pre-create a Running shadow pod
 	shadow := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "shadow-default-falcon-0",
-			Namespace: cfg.ShadowPodNamespace,
+			Namespace: "default",
 			Labels:    map[string]string{ShadowPodLabelKey: "default.falcon-0"},
 		},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "i"}}},
@@ -535,7 +535,7 @@ func TestPatchOriginalPodStatus_MultipleContainers(t *testing.T) {
 		Status: corev1.PodStatus{Phase: corev1.PodPending},
 	}
 	shadow := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "shadow-default-multi-0", Namespace: "kaito-shadow"},
+		ObjectMeta: metav1.ObjectMeta{Name: "shadow-default-multi-0", Namespace: "default"},
 		Status: corev1.PodStatus{
 			Phase:  corev1.PodRunning,
 			PodIP:  "10.244.1.200",
@@ -584,7 +584,7 @@ func TestEnsureShadowPod_MultiplePorts(t *testing.T) {
 	scheme := testScheme()
 	cfg := testConfig()
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 	original := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "multi-port-0",
@@ -621,7 +621,7 @@ func TestEnsureShadowPod_DefaultProbePort(t *testing.T) {
 	scheme := testScheme()
 	cfg := testConfig()
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 	original := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "no-port-0",
@@ -812,18 +812,18 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme()
 	cfg := testConfig()
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: cfg.ShadowPodNamespace}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
 
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	r := &ShadowPodReconciler{Client: cl, Config: cfg}
 
-	err := r.ensureSimConfigMap(ctx, "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000)
+	err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000)
 	if err != nil {
 		t.Fatalf("ensureSimConfigMap: %v", err)
 	}
 
 	cm := &corev1.ConfigMap{}
-	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0-config", Namespace: cfg.ShadowPodNamespace}, cm); err != nil {
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0-config", Namespace: "default"}, cm); err != nil {
 		t.Fatalf("configmap not found: %v", err)
 	}
 
@@ -845,70 +845,8 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	}
 
 	// Idempotent: calling again should not error
-	if err := r.ensureSimConfigMap(ctx, "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000); err != nil {
+	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000); err != nil {
 		t.Fatalf("second call should be idempotent: %v", err)
 	}
 }
 
-func TestEnsureNamespace_CreatesWhenMissing(t *testing.T) {
-	ctx := context.Background()
-	scheme := testScheme()
-
-	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
-
-	if err := r.ensureNamespace(ctx, "kaito-shadow"); err != nil {
-		t.Fatalf("ensureNamespace: %v", err)
-	}
-
-	// Namespace should now exist.
-	ns := &corev1.Namespace{}
-	if err := cl.Get(ctx, types.NamespacedName{Name: "kaito-shadow"}, ns); err != nil {
-		t.Fatalf("namespace should exist: %v", err)
-	}
-	if ns.Labels[LabelManagedBy] != ControllerName {
-		t.Errorf("label = %q, want %q", ns.Labels[LabelManagedBy], ControllerName)
-	}
-}
-
-func TestEnsureNamespace_SkipsWhenExists(t *testing.T) {
-	ctx := context.Background()
-	scheme := testScheme()
-
-	existing := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "kaito-shadow",
-			Labels: map[string]string{"existing": "true"},
-		},
-	}
-
-	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
-	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
-
-	if err := r.ensureNamespace(ctx, "kaito-shadow"); err != nil {
-		t.Fatalf("ensureNamespace: %v", err)
-	}
-
-	// Should not overwrite existing namespace.
-	ns := &corev1.Namespace{}
-	_ = cl.Get(ctx, types.NamespacedName{Name: "kaito-shadow"}, ns)
-	if ns.Labels["existing"] != "true" {
-		t.Error("should not recreate existing namespace")
-	}
-}
-
-func TestEnsureNamespace_Idempotent(t *testing.T) {
-	ctx := context.Background()
-	scheme := testScheme()
-
-	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
-
-	// Call twice — second call should not error.
-	if err := r.ensureNamespace(ctx, "kaito-shadow"); err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	if err := r.ensureNamespace(ctx, "kaito-shadow"); err != nil {
-		t.Fatalf("second call should be idempotent: %v", err)
-	}
-}
