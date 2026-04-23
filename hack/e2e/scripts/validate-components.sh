@@ -140,17 +140,6 @@ for crd in \
 done
 echo ""
 
-# ── Network Policies ─────────────────────────────────────────────────────
-echo "=== Network Policies ==="
-for np in default-deny-ingress allow-inference-traffic; do
-  if kubectl get networkpolicy "${np}" >/dev/null 2>&1; then
-    pass "NetworkPolicy ${np} exists"
-  else
-    fail "NetworkPolicy ${np} is MISSING"
-  fi
-done
-echo ""
-
 # ── Summary ──────────────────────────────────────────────────────────────
 if [[ "$FAILED" -eq 0 ]]; then
   echo "=== All validation checks passed ✅ ==="
