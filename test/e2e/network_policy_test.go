@@ -313,22 +313,27 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		return err == nil
 	}
 
-	It("should DENY ingress from an external namespace", func() {
-		Expect(probe("external-ns")).To(BeFalse(),
-			"traffic from external-ns should be blocked by default-deny-ingress")
-	})
-
-	It("should ALLOW ingress from within the model namespace via a real inference request", func() {
-		// Send a real chat completion request via wget from a busybox pod in the
-		// model namespace directly to the model pod IP.
+	// ── Enforcement baseline ──────────────────────────────────────────────
+	// These two tests run first (suite is Ordered) and together prove that
+	// NetworkPolicy enforcement is active. If intra-namespace connectivity
+	// works but an external namespace is NOT blocked, enforcement is off and
+	// every subsequent deny assertion would be a false positive.
+	It("baseline: should ALLOW ingress from within the model namespace", func() {
 		_, err := probeTarget(namespace, wgetCmd(serverIP, serverPort, netpolPreset), 30*time.Second, nil)
 		Expect(err).NotTo(HaveOccurred(),
-			"intra-namespace inference request should succeed with HTTP 200")
+			"intra-namespace inference request should succeed — if this fails, cluster networking is broken")
 	})
 
+	It("baseline: should DENY ingress from an external namespace (proves enforcement is active)", func() {
+		allowed := probe("external-ns")
+		Expect(allowed).To(BeFalse(),
+			"external namespace reached model pod — NetworkPolicy enforcement is NOT active; "+
+				"remaining deny tests are unreliable. Check that the CNI plugin supports "+
+				"NetworkPolicy and that policies were applied correctly.")
+	})
+
+	// ── Deny tests ────────────────────────────────────────────────────────
 	It("should DENY ingress from a non-gateway pod in default namespace", func() {
-		// The policy only allows pods in default with the gateway label,
-		// not arbitrary pods.
 		Expect(probe("default")).To(BeFalse(),
 			"traffic from a non-gateway pod in default should be blocked")
 	})
@@ -348,9 +353,8 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			"traffic from kube-system should be blocked by default-deny-ingress")
 	})
 
+	// ── Allow tests ───────────────────────────────────────────────────────
 	It("should ALLOW ingress via gateway-labeled pod with a real inference request", func() {
-		// End-to-end validation: a gateway-labeled pod sends a real chat completion
-		// request directly to the model pod and receives a successful HTTP response.
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
@@ -359,17 +363,14 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			"gateway-labeled pod should receive HTTP 200 from model pod for chat completion request")
 	})
 
+	// ── Cross-namespace isolation ─────────────────────────────────────────
 	It("should DENY ingress from workload namespace A to workload namespace B", func() {
-		// Each model namespace has its own network policies with intra-namespace
-		// allow only. A pod in namespace A should NOT be able to reach model
-		// pods in namespace B — this validates tenant isolation between workloads.
 		_, err := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout, nil)
 		Expect(err).To(HaveOccurred(),
 			"workload namespace A should not be able to reach model pods in workload namespace B")
 	})
 
 	It("should DENY ingress from workload namespace B to workload namespace A", func() {
-		// Verify isolation in the reverse direction as well.
 		_, err := probeTarget(namespaceB, ncCmd(serverIP, serverPort), probeTimeout, nil)
 		Expect(err).To(HaveOccurred(),
 			"workload namespace B should not be able to reach model pods in workload namespace A")
