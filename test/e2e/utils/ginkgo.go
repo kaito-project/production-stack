@@ -36,4 +36,7 @@ var (
 
 	// GinkgoLabelNightly marks tests that are destructive or slow and only run in nightly CI.
 	GinkgoLabelNightly = g.Label("Nightly")
+
+	// GinkgoLabelNetworkPolicy marks tests that verify NetworkPolicy enforcement.
+	GinkgoLabelNetworkPolicy = g.Label("NetworkPolicy")
 )

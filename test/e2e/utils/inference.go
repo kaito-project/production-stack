@@ -51,6 +51,9 @@ type InferenceSetConfig struct {
 	PresetName string
 	// GatewayName is the name of the Gateway to associate HTTPRoutes with.
 	GatewayName string
+	// ModelName is the value matched in the X-Gateway-Model-Name header.
+	// Defaults to Name if empty.
+	ModelName string
 }
 
 // DefaultInferenceSetConfig returns an InferenceSetConfig with sensible defaults.
@@ -117,7 +120,12 @@ func CreateInferenceSet(ctx context.Context, cl client.Client, cfg InferenceSetC
 
 // WaitForInferenceSetReady waits for the InferenceSet's associated InferencePool
 // to be created, indicating KAITO has processed the InferenceSet.
-func WaitForInferenceSetReady(ctx context.Context, cl client.Client, name, namespace string, timeout time.Duration) error {
+func WaitForInferenceSetReady(
+	ctx context.Context,
+	cl client.Client,
+	name, namespace string,
+	timeout time.Duration,
+) error {
 	poolName := InferencePoolName(name)
 	deadline := time.Now().Add(timeout)
 
@@ -176,22 +184,27 @@ func CreateDestinationRuleForInferenceSet(ctx context.Context, cl client.Client,
 // CreateHTTPRouteForInferenceSet creates an HTTPRoute that routes requests
 // with the matching X-Gateway-Model-Name header to the InferenceSet's
 // InferencePool via the specified Gateway.
-func CreateHTTPRouteForInferenceSet(ctx context.Context, cl client.Client, name, namespace, gatewayName string) error {
-	poolName := InferencePoolName(name)
+func CreateHTTPRouteForInferenceSet(ctx context.Context, cl client.Client, cfg InferenceSetConfig) error {
+	poolName := InferencePoolName(cfg.Name)
+	modelName := cfg.ModelName
+	if modelName == "" {
+		modelName = cfg.Name
+	}
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "gateway.networking.k8s.io/v1",
 			"kind":       "HTTPRoute",
 			"metadata": map[string]interface{}{
-				"name":      name + "-route",
-				"namespace": namespace,
+				"name":      cfg.Name + "-route",
+				"namespace": cfg.Namespace,
 			},
 			"spec": map[string]interface{}{
 				"parentRefs": []interface{}{
 					map[string]interface{}{
-						"group": "gateway.networking.k8s.io",
-						"kind":  "Gateway",
-						"name":  gatewayName,
+						"group":     "gateway.networking.k8s.io",
+						"kind":      "Gateway",
+						"name":      cfg.GatewayName,
+						"namespace": GatewayNamespace,
 					},
 				},
 				"rules": []interface{}{
@@ -202,7 +215,7 @@ func CreateHTTPRouteForInferenceSet(ctx context.Context, cl client.Client, name,
 									map[string]interface{}{
 										"type":  "Exact",
 										"name":  "X-Gateway-Model-Name",
-										"value": name,
+										"value": modelName,
 									},
 								},
 								"path": map[string]interface{}{
@@ -242,10 +255,103 @@ func CreateInferenceSetWithRouting(ctx context.Context, cl client.Client, cfg In
 		return fmt.Errorf("failed to create DestinationRule for %s: %w", cfg.Name, err)
 	}
 
-	if err := CreateHTTPRouteForInferenceSet(ctx, cl, cfg.Name, cfg.Namespace, cfg.GatewayName); err != nil {
+	if err := CreateHTTPRouteForInferenceSet(ctx, cl, cfg); err != nil {
 		return fmt.Errorf("failed to create HTTPRoute for %s: %w", cfg.Name, err)
 	}
 
+	return nil
+}
+
+// CreateNetworkPoliciesForNamespace creates the standard inference network
+// policies (default-deny-ingress + allow-inference-traffic) in the given namespace.
+func CreateNetworkPoliciesForNamespace(ctx context.Context, cl client.Client, namespace string) error {
+	// 1. Default deny all ingress.
+	denyAll := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "networking.k8s.io/v1",
+			"kind":       "NetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":      "default-deny-ingress",
+				"namespace": namespace,
+			},
+			"spec": map[string]interface{}{
+				"podSelector": map[string]interface{}{},
+				"policyTypes": []interface{}{"Ingress"},
+			},
+		},
+	}
+	if err := cl.Create(ctx, denyAll); err != nil {
+		return fmt.Errorf("failed to create default-deny-ingress in %s: %w", namespace, err)
+	}
+
+	// 2. Allow ingress from the inference gateway pod in default namespace,
+	// same namespace, and kube-system.
+	allow := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "networking.k8s.io/v1",
+			"kind":       "NetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":      "allow-inference-traffic",
+				"namespace": namespace,
+			},
+			"spec": map[string]interface{}{
+				"podSelector": map[string]interface{}{},
+				"policyTypes": []interface{}{"Ingress"},
+				"ingress": []interface{}{
+					map[string]interface{}{
+						"from": []interface{}{
+							map[string]interface{}{
+								"namespaceSelector": map[string]interface{}{
+									"matchLabels": map[string]interface{}{
+										"kubernetes.io/metadata.name": "default",
+									},
+								},
+								"podSelector": map[string]interface{}{
+									"matchLabels": map[string]interface{}{
+										"gateway.networking.k8s.io/gateway-name": "inference-gateway",
+									},
+								},
+							},
+						},
+					},
+					map[string]interface{}{
+						"from": []interface{}{
+							map[string]interface{}{
+								"podSelector": map[string]interface{}{},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := cl.Create(ctx, allow); err != nil {
+		return fmt.Errorf("failed to create allow-inference-traffic in %s: %w", namespace, err)
+	}
+
+	return nil
+}
+
+// CleanupNetworkPolicies deletes the network policies created by
+// CreateNetworkPoliciesForNamespace.
+func CleanupNetworkPolicies(ctx context.Context, cl client.Client, namespace string) error {
+	var errs []error
+	for _, name := range []string{"default-deny-ingress", "allow-inference-traffic"} {
+		np := &unstructured.Unstructured{}
+		np.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   "networking.k8s.io",
+			Version: "v1",
+			Kind:    "NetworkPolicy",
+		})
+		np.SetName(name)
+		np.SetNamespace(namespace)
+		if err := cl.Delete(ctx, np); err != nil && !apierrors.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("delete NetworkPolicy %s: %w", name, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("cleanup errors: %v", errs)
+	}
 	return nil
 }
 

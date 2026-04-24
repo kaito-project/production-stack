@@ -69,7 +69,7 @@ func SetupInferenceSetsWithRouting(modelNames []string, namespace, gatewayURL st
 
 		By(fmt.Sprintf("Creating HTTPRoute for %s", model))
 		Eventually(func() error {
-			err := CreateHTTPRouteForInferenceSet(ctx, cl, cfg.Name, cfg.Namespace, cfg.GatewayName)
+			err := CreateHTTPRouteForInferenceSet(ctx, cl, cfg)
 			if apierrors.IsAlreadyExists(err) {
 				return nil
 			}
