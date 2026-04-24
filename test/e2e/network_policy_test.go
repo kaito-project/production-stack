@@ -198,6 +198,70 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		}
 		Expect(serverIPB).NotTo(BeEmpty(), "could not find a ready model pod IP in namespace B")
 		Expect(serverPortB).To(BeNumerically(">", 0), "could not determine model pod serving port in namespace B")
+
+		// Wait for NetworkPolicy enforcement to be active. On freshly created
+		// clusters Cilium may report Running before its eBPF policy maps are
+		// loaded. We poll by launching a canary probe from an external namespace
+		// and waiting until it is blocked.
+		canaryNS := fmt.Sprintf("e2e-netpol-canary-%d", rand.Intn(900000)+100000)
+		probeNamespaces = append(probeNamespaces, canaryNS)
+		Eventually(func() bool {
+			nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: canaryNS}}
+			_, _ = clientset.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{})
+
+			probePodName := fmt.Sprintf("canary-probe-%d", rand.Intn(900000)+100000)
+			probePod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: probePodName, Namespace: canaryNS},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:    "probe",
+						Image:   "busybox:1.36",
+						Command: []string{"sh", "-c", "sleep 3600"},
+					}},
+				},
+			}
+			_, err := clientset.CoreV1().Pods(canaryNS).Create(ctx, probePod, metav1.CreateOptions{})
+			if err != nil {
+				return false
+			}
+			defer func() {
+				_ = clientset.CoreV1().Pods(canaryNS).Delete(ctx, probePodName, metav1.DeleteOptions{})
+			}()
+
+			if err := utils.WaitForPodReady(ctx, clientset, canaryNS, probePodName, utils.PollTimeout); err != nil {
+				return false
+			}
+
+			restCfg, err := utils.GetK8sConfig()
+			if err != nil {
+				return false
+			}
+
+			cmd := []string{"sh", "-c", fmt.Sprintf("echo test | nc -w 3 %s %d", serverIP, serverPort)}
+			req := clientset.CoreV1().RESTClient().Post().
+				Resource("pods").Name(probePodName).Namespace(canaryNS).
+				SubResource("exec").
+				VersionedParams(&corev1.PodExecOptions{
+					Command: cmd, Stdout: true, Stderr: true,
+				}, scheme.ParameterCodec)
+
+			exec, err := remotecommand.NewSPDYExecutor(restCfg, "POST", req.URL())
+			if err != nil {
+				return false
+			}
+
+			var stdout, stderr bytes.Buffer
+			execCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+			defer cancel()
+
+			err = exec.StreamWithContext(execCtx, remotecommand.StreamOptions{
+				Stdout: &stdout, Stderr: &stderr,
+			})
+			// err != nil means connectivity was blocked — enforcement is active.
+			return err != nil
+		}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
+			"timed out waiting for NetworkPolicy enforcement to become active — "+
+				"Cilium may not be enforcing policies on this cluster")
 	})
 
 	AfterAll(func() {
