@@ -61,6 +61,13 @@ for pod in $(kubectl -n kaito-system get pods --no-headers -o custom-columns=':m
 done
 
 echo ""
+echo "── keda logs (last 80 lines per pod) ─────────────────────────"
+for pod in $(kubectl -n keda get pods --no-headers -o custom-columns=':metadata.name' 2>/dev/null); do
+  echo "  ── ${pod} ──"
+  kubectl -n keda logs "${pod}" --all-containers --tail=80 2>/dev/null || true
+done
+
+echo ""
 echo "══════════════════════════════════════════════════════════════"
 echo "  END OF DEBUG SNAPSHOT"
 echo "══════════════════════════════════════════════════════════════"

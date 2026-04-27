@@ -58,3 +58,21 @@ auth:
 # traffic into the gateway is unaffected.
 networkPolicy:
   enabled: false
+
+  # allowedIngressNamespaces grants cross-namespace ingress to
+  # non-gateway pods in this workload namespace, matched by the
+  # standard `kubernetes.io/metadata.name` label that Kubernetes
+  # stamps on every namespace (v1.22+). Use this to permit
+  # control-plane / metric-scraper components living outside the
+  # workload namespace — for example, `keda-kaito-scaler` in the
+  # `keda` namespace must reach vLLM / InferencePool metric endpoints
+  # on shadow pods to drive autoscaling decisions.
+  #
+  # Each entry renders an additional `from.namespaceSelector` clause
+  # on `allow-inference-traffic`. Leaving the list empty preserves the
+  # strict per-namespace isolation used by the network-policy e2e
+  # cases (which assert that label-only spoofing across namespaces is
+  # always denied).
+  allowedIngressNamespaces: []
+  #   - keda
+  #   - kaito-system

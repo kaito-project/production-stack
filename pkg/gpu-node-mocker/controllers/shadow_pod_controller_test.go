@@ -206,6 +206,9 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if shadow.Labels[ShadowPodLabelKey] != "default.falcon-0" {
 		t.Errorf("shadow label = %q", shadow.Labels[ShadowPodLabelKey])
 	}
+	if shadow.Labels[ShadowPodInferenceSetLabelKey] != "falcon-7b-instruct" {
+		t.Errorf("shadow inferenceset label = %q", shadow.Labels[ShadowPodInferenceSetLabelKey])
+	}
 	// Should have anti-affinity to exclude fake nodes
 	affinity := shadow.Spec.Affinity
 	if affinity == nil || affinity.NodeAffinity == nil ||

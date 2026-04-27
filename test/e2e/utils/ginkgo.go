@@ -42,4 +42,19 @@ var (
 
 	// GinkgoLabelNetworkPolicy marks tests that verify NetworkPolicy enforcement.
 	GinkgoLabelNetworkPolicy = g.Label("NetworkPolicy")
+
+	// GinkgoLabelScaling marks tests that verify end-to-end KEDA-driven
+	// scaling of InferenceSet replicas. Nightly-only because KEDA polling
+	// and cooldown windows make these tests take minutes per run.
+	GinkgoLabelScaling = g.Label("Scaling")
+
+	// GinkgoLabelScaleUp marks the scale-up phase of a scaling test.
+	GinkgoLabelScaleUp = g.Label("ScaleUp")
+
+	// GinkgoLabelScaleDown marks the scale-down phase of a scaling test.
+	GinkgoLabelScaleDown = g.Label("ScaleDown")
+
+	// GinkgoLabelAntiFlapping marks anti-flapping tests that verify KEDA
+	// does not oscillate replicas near the threshold or during cooldown.
+	GinkgoLabelAntiFlapping = g.Label("AntiFlapping")
 )

@@ -41,11 +41,15 @@ import (
 // lock down East-West ingress while keeping the per-namespace gateway
 // pod reachable from outside the namespace (matched via the standard
 // `gateway.networking.k8s.io/gateway-name` label that Istio stamps on
-// every gateway pod).
+// every gateway pod). `npAllowedNamespaces` (only honored when
+// networkPolicyEnabled is true) grants cross-namespace ingress to
+// non-gateway pods for the named namespaces — required for control-plane
+// scrapers like `keda-kaito-scaler` that live outside the workload
+// namespace.
 //
 // Safe to call repeatedly; the underlying `helm upgrade --install` and
 // namespace Create are both idempotent.
-func EnsureNamespace(ctx context.Context, name string, authEnabled, networkPolicyEnabled bool) error {
+func EnsureNamespace(ctx context.Context, name string, authEnabled, networkPolicyEnabled bool, npAllowedNamespaces []string) error {
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
@@ -53,7 +57,7 @@ func EnsureNamespace(ctx context.Context, name string, authEnabled, networkPolic
 		return fmt.Errorf("create namespace %s: %w", name, err)
 	}
 
-	if err := InstallModelHarness(name, authEnabled, networkPolicyEnabled); err != nil {
+	if err := InstallModelHarness(name, authEnabled, networkPolicyEnabled, npAllowedNamespaces); err != nil {
 		return fmt.Errorf("install modelharness in %s: %w", name, err)
 	}
 

@@ -100,12 +100,12 @@ echo ""
 
 # ── KEDA Kaito Scaler ────────────────────────────────────────────────────
 echo "=== KEDA Kaito Scaler ==="
-if kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=keda-kaito-scaler --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n keda wait --for=condition=ready pod -l app.kubernetes.io/name=keda-kaito-scaler --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "keda-kaito-scaler is Running"
 else
   fail "keda-kaito-scaler is NOT Running"
 fi
-kubectl -n kaito-system get pods -l app.kubernetes.io/name=keda-kaito-scaler 2>/dev/null || true
+kubectl -n keda get pods -l app.kubernetes.io/name=keda-kaito-scaler 2>/dev/null || true
 echo ""
 
 # ── LLM Gateway Auth (apikey-operator) ──────────────────────────────────

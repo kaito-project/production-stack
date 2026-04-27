@@ -52,4 +52,9 @@ spec:
   ingress:
     - from:
         - podSelector: {}
+{{- range .Values.networkPolicy.allowedIngressNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+{{- end }}
 {{- end }}
