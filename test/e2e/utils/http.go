@@ -470,6 +470,43 @@ func SendChatCompletionRaw(gatewayURL string, reqBody ChatCompletionRequest) (*h
 	return client.Do(req)
 }
 
+// SendChatCompletionWithAuth sends an OpenAI-compatible chat completion request
+// with an Authorization Bearer token and a custom Host header (needed for
+// namespace resolution by the apikey-authz service).
+func SendChatCompletionWithAuth(gatewayURL, model, prompt, bearerToken, hostHeader string) (*http.Response, error) {
+	if err := checkPortForward(); err != nil {
+		return nil, err
+	}
+	reqBody := ChatCompletionRequest{
+		Model: model,
+		Messages: []ChatMessage{
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	client := &http.Client{Timeout: HTTPTimeout}
+	url := gatewayURL + "/v1/chat/completions"
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
+	if hostHeader != "" {
+		req.Host = hostHeader
+	}
+
+	return client.Do(req)
+}
+
 // ReadResponseBody reads the full response body and closes it.
 func ReadResponseBody(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()

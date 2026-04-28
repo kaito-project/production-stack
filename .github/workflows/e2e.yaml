@@ -31,6 +31,10 @@ on:
         description: 'KEDA Kaito Scaler Helm chart version (e.g. v0.3.3). Leave empty to use default from versions.env'
         required: false
         default: ''
+      llm_gateway_auth_version:
+        description: 'LLM Gateway Auth Helm chart version (e.g. v0.1.0). Leave empty to use default from versions.env'
+        required: false
+        default: ''
 
 env:
   RESOURCE_GROUP: "kaito-gw-e2e-rg-${{ github.run_id }}"
@@ -67,11 +71,13 @@ jobs:
           INPUT_BBR="${{ github.event.inputs.bbr_version }}"
           INPUT_KEDA="${{ github.event.inputs.keda_version }}"
           INPUT_KKS="${{ github.event.inputs.keda_kaito_scaler_version }}"
+          INPUT_LGA="${{ github.event.inputs.llm_gateway_auth_version }}"
           [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
           [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
           [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
           [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
           [ -n "${INPUT_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${INPUT_KKS}"
+          [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
           # Export to GITHUB_ENV so all subsequent steps inherit these.
           {
             echo "GO_VERSION=${GO_VERSION}"
@@ -80,6 +86,8 @@ jobs:
             echo "BBR_VERSION=${BBR_VERSION}"
             echo "KEDA_VERSION=${KEDA_VERSION}"
             echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
+            echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
+            echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
             echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
           } >> "$GITHUB_ENV"
 
@@ -91,6 +99,8 @@ jobs:
           echo "BBR_VERSION=${BBR_VERSION}"
           echo "KEDA_VERSION=${KEDA_VERSION}"
           echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
+          echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
+          echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
           echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
 
       - name: Setup Go

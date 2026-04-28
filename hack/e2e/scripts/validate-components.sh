@@ -101,6 +101,26 @@ fi
 kubectl -n kaito-system get pods -l app.kubernetes.io/name=keda-kaito-scaler 2>/dev/null || true
 echo ""
 
+# ── LLM Gateway Auth (apikey-operator) ──────────────────────────────────
+echo "=== LLM Gateway Auth (operator) ==="
+if kubectl -n llm-gateway-auth wait --for=condition=ready pod -l app.kubernetes.io/component=apikey-operator --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+  pass "apikey-operator is Running"
+else
+  fail "apikey-operator is NOT Running"
+fi
+kubectl -n llm-gateway-auth get pods -l app.kubernetes.io/component=apikey-operator 2>/dev/null || true
+echo ""
+
+# ── LLM Gateway Auth (apikey-authz) ─────────────────────────────────────
+echo "=== LLM Gateway Auth (authz) ==="
+if kubectl -n llm-gateway-auth wait --for=condition=ready pod -l app.kubernetes.io/component=apikey-authz --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+  pass "apikey-authz is Running"
+else
+  fail "apikey-authz is NOT Running"
+fi
+kubectl -n llm-gateway-auth get pods -l app.kubernetes.io/component=apikey-authz 2>/dev/null || true
+echo ""
+
 # ── CRDs ─────────────────────────────────────────────────────────────────
 echo "=== CRDs ==="
 for crd in \
@@ -110,7 +130,8 @@ for crd in \
   inferencesets.kaito.sh \
   workspaces.kaito.sh \
   scaledobjects.keda.sh \
-  clustertriggerauthentications.keda.sh; do
+  clustertriggerauthentications.keda.sh \
+  apikeys.kaito.sh; do
   if kubectl get crd "${crd}" >/dev/null 2>&1; then
     pass "CRD ${crd} exists"
   else

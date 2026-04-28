@@ -36,4 +36,7 @@ var (
 
 	// GinkgoLabelNightly marks tests that are destructive or slow and only run in nightly CI.
 	GinkgoLabelNightly = g.Label("Nightly")
+
+	// GinkgoLabelAuth marks tests that verify API key authentication.
+	GinkgoLabelAuth = g.Label("Auth")
 )
