@@ -24,71 +24,62 @@ import (
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SetupInferenceSetsWithRouting idempotently creates InferenceSets, waits for
-// InferencePools, creates DestinationRules + HTTPRoutes, waits for EPP and
-// inference pods to be Running, and optionally verifies the gateway routing
-// pipeline is returning HTTP 200 for each model.
+// SetupInferenceSetsWithRouting idempotently installs the modeldeployment
+// Helm chart for each entry in deployments, waits for the InferencePool, EPP,
+// and inference (shadow) pods to be Running, and optionally verifies that
+// the Gateway routing pipeline is returning HTTP 200 for each deployment.
+//
+// The modeldeployment chart inlines all of the per-deployment GAIE artifacts
+// (InferenceSet, InferencePool, EPP Deployment/Service/ConfigMap/RBAC, and
+// HTTPRoute), so no separate DestinationRule creation step is required —
+// the EPP runs with `--secure-serving=false` and is reached over plaintext
+// gRPC by the Istio Gateway.
 //
 // Parameters:
-//   - modelNames: list of model names to set up
-//   - namespace: target namespace (typically "default")
-//   - gatewayURL: if non-empty, performs a warm-up request loop per model
-//     to wait for the BBR → EPP ext_proc pipeline to be fully ready
-func SetupInferenceSetsWithRouting(modelNames []string, namespace, gatewayURL string) {
+//   - deployments: list of ModelDeploymentValues to install. If an entry's
+//     Namespace is empty, the namespace argument is used as the default.
+//   - namespace: target namespace for entries whose Namespace is unset.
+//   - gatewayURL: if non-empty, performs a warm-up request loop per
+//     deployment to wait for the BBR → EPP ext_proc pipeline to be ready.
+func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespace, gatewayURL string) {
 	ctx := context.Background()
 	GetClusterClient(TestingCluster)
 
 	cl := TestingCluster.KubeClient
-	for _, model := range modelNames {
-		cfg := DefaultInferenceSetConfig(model)
-		cfg.Namespace = namespace
 
-		By(fmt.Sprintf("Creating InferenceSet for %s", model))
-		err := CreateInferenceSet(ctx, cl, cfg)
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			Expect(err).NotTo(HaveOccurred(), "failed to create InferenceSet for %s", model)
+	// Apply namespace default eagerly so subsequent waits use the correct ns.
+	resolved := make([]ModelDeploymentValues, len(deployments))
+	for i, d := range deployments {
+		if d.Namespace == "" {
+			d.Namespace = namespace
 		}
-
-		By(fmt.Sprintf("Waiting for InferencePool for %s", model))
-		err = WaitForInferenceSetReady(ctx, cl, cfg.Name, cfg.Namespace, InferenceSetReadyTimeout)
-		Expect(err).NotTo(HaveOccurred(), "InferenceSet %s not ready", model)
-
-		By(fmt.Sprintf("Creating DestinationRule for %s", model))
-		Eventually(func() error {
-			err := CreateDestinationRuleForInferenceSet(ctx, cl, cfg.Name, cfg.Namespace)
-			if apierrors.IsAlreadyExists(err) {
-				return nil
-			}
-			return err
-		}, 1*time.Minute, 5*time.Second).Should(Succeed(),
-			"failed to create DestinationRule for %s", model)
-
-		By(fmt.Sprintf("Creating HTTPRoute for %s", model))
-		Eventually(func() error {
-			err := CreateHTTPRouteForInferenceSet(ctx, cl, cfg.Name, cfg.Namespace, cfg.GatewayName)
-			if apierrors.IsAlreadyExists(err) {
-				return nil
-			}
-			return err
-		}, 1*time.Minute, 5*time.Second).Should(Succeed(),
-			"failed to create HTTPRoute for %s", model)
+		resolved[i] = d
 	}
 
-	// Wait for KAITO to fully reconcile: EPP pods (deployed via
-	// HelmRelease), fake nodes, shadow pods, and original pod status
-	// patching must all complete before the gateway can route traffic.
+	for _, d := range resolved {
+		By(fmt.Sprintf("Installing modeldeployment chart %s (model=%s) in %s", d.Name, d.Model, d.Namespace))
+		Expect(InstallModelDeployment(d)).To(Succeed(),
+			"failed to install modeldeployment chart for %s", d.Name)
+
+		By(fmt.Sprintf("Waiting for InferencePool for %s", d.Name))
+		Expect(WaitForInferenceSetReady(ctx, cl, d.Name, d.Namespace, InferenceSetReadyTimeout)).
+			To(Succeed(), "InferenceSet %s not ready", d.Name)
+	}
+
+	// Wait for KAITO + the chart-rendered EPP Deployment to fully reconcile:
+	// EPP pods, fake nodes, shadow pods, and original pod status patching
+	// must all complete before the gateway can route traffic.
 	clientset, err := GetK8sClientset()
 	Expect(err).NotTo(HaveOccurred())
 
-	for _, model := range modelNames {
-		eppName := EPPServiceName(model)
-		By(fmt.Sprintf("Waiting for EPP pods for %s to be Running", model))
+	for _, d := range resolved {
+		eppName := EPPServiceName(d.Name)
+		By(fmt.Sprintf("Waiting for EPP pods for %s to be Running", d.Name))
 		Eventually(func() error {
-			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
 				LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
 			})
 			if err != nil {
@@ -105,20 +96,20 @@ func SetupInferenceSetsWithRouting(modelNames []string, namespace, gatewayURL st
 			}
 			return nil
 		}, 5*time.Minute, 10*time.Second).Should(Succeed(),
-			"EPP pods for %s should be Running", model)
+			"EPP pods for %s should be Running", d.Name)
 	}
 
-	for _, model := range modelNames {
-		By(fmt.Sprintf("Waiting for inference pods for %s to be Running", model))
+	for _, d := range resolved {
+		By(fmt.Sprintf("Waiting for inference pods for %s to be Running", d.Name))
 		Eventually(func() error {
-			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", model),
+			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", d.Name),
 			})
 			if err != nil {
 				return fmt.Errorf("failed to list pods: %w", err)
 			}
 			if len(pods.Items) == 0 {
-				return fmt.Errorf("no inference pods found for %s", model)
+				return fmt.Errorf("no inference pods found for %s", d.Name)
 			}
 			for _, pod := range pods.Items {
 				if pod.Status.Phase != "Running" {
@@ -130,18 +121,22 @@ func SetupInferenceSetsWithRouting(modelNames []string, namespace, gatewayURL st
 			}
 			return nil
 		}, 5*time.Minute, 10*time.Second).Should(Succeed(),
-			"inference pods for %s should be Running with PodIPs", model)
+			"inference pods for %s should be Running with PodIPs", d.Name)
 	}
 
 	// Wait for the full BBR → EPP ext_proc pipeline to be ready.
 	// Pods being Running does not guarantee ext_proc gRPC connections
 	// are established; requests may 500 during the warm-up window.
+	//
+	// The HTTPRoute matches X-Gateway-Model-Name against the deployment
+	// name (.Values.name in the chart), so the gateway is exercised by
+	// sending requests with `"model": "<deploymentName>"`.
 	if gatewayURL != "" {
-		for _, model := range modelNames {
-			model := model
-			By(fmt.Sprintf("Waiting for gateway routing to be ready for %s", model))
+		for _, d := range resolved {
+			d := d
+			By(fmt.Sprintf("Waiting for gateway routing to be ready for deployment %s (preset %s)", d.Name, d.Model))
 			Eventually(func() error {
-				resp, err := SendChatCompletion(gatewayURL, model)
+				resp, err := SendChatCompletion(gatewayURL, d.Name)
 				if err != nil {
 					return fmt.Errorf("request failed: %w", err)
 				}
@@ -152,20 +147,24 @@ func SetupInferenceSetsWithRouting(modelNames []string, namespace, gatewayURL st
 				}
 				return nil
 			}, 5*time.Minute, 10*time.Second).Should(Succeed(),
-				"gateway should route to %s successfully", model)
+				"gateway should route to deployment %s successfully", d.Name)
 		}
 	}
 }
 
-// TeardownInferenceSetsWithRouting cleans up InferenceSets and their associated
-// routing resources (HTTPRoute, DestinationRule).
-func TeardownInferenceSetsWithRouting(modelNames []string, namespace string) {
-	ctx := context.Background()
-	for _, model := range modelNames {
-		By(fmt.Sprintf("Cleaning up InferenceSet with routing for %s", model))
-		err := CleanupInferenceSetWithRouting(ctx, TestingCluster.KubeClient, model, namespace)
-		if err != nil {
-			GinkgoWriter.Printf("Cleanup warning for %s: %v\n", model, err)
+// TeardownInferenceSetsWithRouting uninstalls the modeldeployment Helm
+// releases for every deployment, removing the InferenceSets, InferencePools,
+// EPP artifacts, and HTTPRoutes. Entries with an empty Namespace fall back
+// to the supplied namespace argument.
+func TeardownInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespace string) {
+	for _, d := range deployments {
+		ns := d.Namespace
+		if ns == "" {
+			ns = namespace
+		}
+		By(fmt.Sprintf("Uninstalling modeldeployment chart for %s in %s", d.Name, ns))
+		if err := UninstallModelDeployment(d.Name, ns); err != nil {
+			GinkgoWriter.Printf("Cleanup warning for %s: %v\n", d.Name, err)
 		}
 	}
 }

@@ -6,28 +6,102 @@ This directory contains the end-to-end (e2e) test suite for the production-stack
 
 E2E resources are split into two tiers based on scope and lifecycle:
 
-### Install script (`hack/e2e/scripts/install-components.sh`) — Platform-level components
+### Install script ([`hack/e2e/scripts/install-components.sh`](../../hack/e2e/scripts/install-components.sh)) — Platform-level components
 
-These are **shared infrastructure** installed once before all tests run:
+These are **shared infrastructure** installed once before any test runs (see
+the prerequisites table above for the role of each):
 
-- KAITO workspace operator
-- GPU node mocker (gpu-node-mocker)
-- Gateway API CRDs
-- Istio (minimal profile)
-- GWIE CRDs (InferencePool, InferenceModel)
-- BBR (Body-Based Router)
-- Inference Gateway
-- Catch-all HTTPRoute + model-not-found error service + debug filter
+1. KAITO workspace operator (Helm; image pinned to `nightly-latest`)
+2. GPU node mocker (`gpu-node-mocker`, Helm)
+3. Gateway API CRDs
+4. Istio (minimal profile, GAIE pilot env enabled)
+5. GAIE CRDs (`InferencePool`, `InferenceObjective`)
+6. BBR (Body-Based Router)
+7. Inference Gateway
+8. Catch-all `HTTPRoute` + `model-not-found` error service + debug filter
+9. KEDA
+10. KEDA Kaito Scaler
 
-### Test cases (`test/e2e/`) — Model-level resources
+### Test cases (`test/e2e/`) — Per-case model deployments
 
-These are created and cleaned up **per test case** using helpers in `test/e2e/utils/`:
+Per-deployment GAIE artifacts (`InferenceSet`, `InferencePool`, EPP
+`Deployment` + `Service` + RBAC + `ConfigMap`, `HTTPRoute`) are provisioned
+by the [`modeldeployment`](../../charts/modeldeployment) Helm chart. The
+chart's EPP runs with `--secure-serving=false`, so the Istio Gateway can
+reach it over plaintext gRPC and **no `DestinationRule` is required**.
 
-- **InferenceSet** — created via `utils.CreateInferenceSet()` or `utils.CreateInferenceSetWithRouting()`
-- **Model-specific HTTPRoute** — created via `utils.CreateHTTPRouteForInferenceSet()`, routes model requests to the corresponding InferencePool via the shared Gateway
-- **DestinationRule** — created via `utils.CreateDestinationRuleForInferenceSet()`, configures TLS for the EPP service
+The suite invokes the chart from Go via the `helm` CLI. Helpers live in
+[`utils/helm.go`](utils/helm.go) and [`utils/inference.go`](utils/inference.go):
 
-Each test context uses a **unique namespace** (with a random suffix) and cleans up all resources in `AfterEach` via `utils.CleanupInferenceSetWithRouting()`.
+- `utils.SetupInferenceSetsWithRouting(deployments, namespace, gatewayURL)` —
+  takes a `[]utils.ModelDeploymentValues`, installs the chart for each entry,
+  and waits for the EPP / inference pods to be Running and the Gateway to
+  return 200.
+- `utils.CreateInferenceSetWithRouting(ctx, cl, values)` — installs the chart
+  for a single per-test InferenceSet (used by `modeldeployment_chart_test.go`).
+- `utils.CleanupInferenceSetWithRouting(ctx, cl, name, namespace)` — runs
+  `helm uninstall` and removes every chart-rendered artifact.
+
+The set of deployments owned by each test case is centralised in
+[`cases.go`](cases.go) as
+`CaseDeployments map[string][]utils.ModelDeploymentValues`. **Each case has
+its own dedicated entry — deployments are NOT shared across cases.** The
+suite-level cases (those whose deployments are installed once by
+`BeforeSuite`) are enumerated by `AllSuiteDeployments`; lifecycle cases
+install their deployment per-test in a fresh random namespace.
+
+Helpers exposed by `cases.go`:
+
+- `CaseDeploymentsWithNamespace(caseName, ns)` — returns a copy of the
+  case's table entry with `Namespace` stamped to `ns`.
+- `AllSuiteDeployments(ns)` — concatenates every suite-level case's
+  deployments (in deterministic order); used by `BeforeSuite` /
+  `AfterSuite`.
+
+#### Per-case modeldeployment values
+
+The table below mirrors [`CaseDeployments`](cases.go) — the single source of
+truth for what the modeldeployment Helm chart is invoked with per case.
+**`name` (the deployment / Helm release identifier) is unique across the
+entire table and is decoupled from `model` (the inference preset).** The
+HTTPRoute matches `name` against `X-Gateway-Model-Name` (i.e. the value
+users send in the `model` field of OpenAI-style requests), so a single
+namespace can host multiple deployments of the same preset under distinct
+names.
+
+| Case key                  | Test entry point                                 | `name` (deployment / request key) | Namespace                            | `model` (preset)          | `replicas` | `instanceType`            | `gatewayName`        | Lifecycle                                    |
+| ------------------------- | ------------------------------------------------ | --------------------------------- | ------------------------------------ | ------------------------- | ---------- | ------------------------- | -------------------- | -------------------------------------------- |
+| `CaseGPUMocker`           | `gpu_mocker_test.go`                             | `gpu-mocker-phi`                  | `default`                            | `phi-4-mini-instruct`     | `2`        | `Standard_NV36ads_A10_v5` | `inference-gateway`  | Suite-level (installed by `BeforeSuite`).    |
+| `CaseGPUMocker`           | `gpu_mocker_test.go`                             | `gpu-mocker-ministral`            | `default`                            | `ministral-3-3b-instruct` | `2`        | `Standard_NV36ads_A10_v5` | `inference-gateway`  | Suite-level (installed by `BeforeSuite`).    |
+| `CaseModelRouting`        | `model_routing_test.go`                          | `routing-phi`                     | `default`                            | `phi-4-mini-instruct`     | `2`        | `Standard_NV36ads_A10_v5` | `inference-gateway`  | Suite-level (installed by `BeforeSuite`).    |
+| `CaseModelRouting`        | `model_routing_test.go`                          | `routing-ministral`               | `default`                            | `ministral-3-3b-instruct` | `2`        | `Standard_NV36ads_A10_v5` | `inference-gateway`  | Suite-level (installed by `BeforeSuite`).    |
+| `CasePrefixCache`         | `prefix_cache_routing_test.go`                   | `prefix-cache-phi`                | `default`                            | `phi-4-mini-instruct`     | `2`        | `Standard_NV36ads_A10_v5` | `inference-gateway`  | Suite-level (installed by `BeforeSuite`).    |
+| `CaseModelDeploymentChart` | `modeldeployment_chart_test.go`                 | `mdchart-phi`                     | `e2e-inferenceset-<rand>`            | `phi-4-mini-instruct`     | `2`        | `Standard_NV36ads_A10_v5` | `inference-gateway`  | Per-test; namespace recycled in `AfterEach`. Drives both the install/render and uninstall/delete `It` blocks. |
+
+`name` ends up as the InferenceSet name, the prefix for the InferencePool /
+EPP / HTTPRoute object names, the value of the
+`inferenceset.kaito.sh/created-by` selector used by the InferencePool to
+find shadow pods, AND the value of the `X-Gateway-Model-Name` header
+matched by the HTTPRoute (i.e. the `model` field that user requests carry).
+`model` ends up as `spec.template.inference.preset.name` only — it
+identifies the underlying preset and is independent of the deployment
+identity. Override the chart location with `MODELDEPLOYMENT_CHART=<path>`
+if running tests outside the repository root.
+
+#### Namespacing
+
+The two tiers use different namespacing strategies:
+
+- **Suite-level cases** (`CaseGPUMocker`, `CaseModelRouting`,
+  `CasePrefixCache`) **share a single namespace** — `testNamespace`
+  (currently `default`) — installed once by `BeforeSuite` and torn down by
+  `AfterSuite`. Helm release names (`name` column above) are unique across
+  the whole table so multiple deployments coexist there without collision.
+- **Per-test cases** (`CaseModelDeploymentChart`) get a fresh
+  random-suffixed namespace per `It`, created in `BeforeEach` and deleted
+  in `AfterEach`. This is required because they exercise the chart's
+  install/uninstall lifecycle and must not leave residue in the shared
+  suite namespace.
 
 ## Directory Structure
 
@@ -82,14 +156,14 @@ This creates an AKS cluster, builds and pushes the gpu-node-mocker image, instal
 all components (KAITO, Istio, BBR, Gateway, InferenceSets), and validates them.
 
 **Prerequisites:**
-- Azure CLI (`az`) logged in with a subscription that has quota for `Standard_D4s_v3` nodes
+- Azure CLI (`az`) logged in with a subscription that has quota for `Standard_D8s_v5` nodes (3 × 8 vCPU = 24 vCPU in the `standardDSv5Family`)
 - Docker installed (for building the gpu-node-mocker image)
 - `kubectl`, `helm`, `istioctl` available in PATH (or the setup script will install them)
 
 **One-command setup:**
 
 ```bash
-# Uses default names (kaito-e2e-local, swedencentral, 2 nodes)
+# Uses default names (kaito-e2e-local, swedencentral, 3 nodes)
 make e2e-up
 ```
 
@@ -100,7 +174,7 @@ export RESOURCE_GROUP=my-e2e-rg
 export CLUSTER_NAME=my-e2e-cluster
 export LOCATION=westus2
 export NODE_COUNT=3
-export NODE_VM_SIZE=Standard_D4s_v3
+export NODE_VM_SIZE=Standard_D8s_v5
 make e2e-up
 ```
 

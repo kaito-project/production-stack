@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -817,7 +818,15 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	r := &ShadowPodReconciler{Client: cl, Config: cfg}
 
-	err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000)
+	ownerRef := metav1.OwnerReference{
+		APIVersion: "v1",
+		Kind:       "Pod",
+		Name:       "falcon-0",
+		UID:        "test-uid",
+		Controller: ptr.To(true),
+	}
+
+	err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef)
 	if err != nil {
 		t.Fatalf("ensureSimConfigMap: %v", err)
 	}
@@ -845,7 +854,7 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	}
 
 	// Idempotent: calling again should not error
-	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000); err != nil {
+	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef); err != nil {
 		t.Fatalf("second call should be idempotent: %v", err)
 	}
 }

@@ -51,6 +51,22 @@ import (
 //   - model-not-found catch-all HTTPRoute deployed
 
 var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func() {
+	// Per-case deployments owned by model_routing_test.go (see cases.go).
+	caseDeployments := CaseDeployments[CaseModelRouting]
+	falconModel := caseDeployments[0].Name
+	ministralModel := caseDeployments[1].Name
+	modelNames := []string{falconModel, ministralModel}
+
+	// otherModelName returns the model name in modelNames that is not `model`.
+	otherModelName := func(model string) string {
+		for _, m := range modelNames {
+			if m != model {
+				return m
+			}
+		}
+		return ""
+	}
+
 	var ctx context.Context
 
 	BeforeAll(func() {
@@ -121,7 +137,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
-					resp, err := utils.SendChatCompletion(gatewayURL, model)
+					resp, err := utils.SendChatCompletionWithRetry(gatewayURL, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
@@ -179,7 +195,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 					go func(idx int) {
 						defer wg.Done()
 						defer GinkgoRecover()
-						resp, err := utils.SendChatCompletion(gatewayURL, model)
+						resp, err := utils.SendChatCompletionWithRetry(gatewayURL, model)
 						if err != nil {
 							results[idx] = result{model: model, err: err}
 							return
@@ -590,16 +606,6 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 })
-
-// otherModelName returns the model name that is not the given one.
-func otherModelName(model string) string {
-	for _, m := range modelNames {
-		if m != model {
-			return m
-		}
-	}
-	return ""
-}
 
 // countNginxAccessLogs counts POST request lines in the nginx access log.
 // Only POST lines are counted to exclude Kubernetes health probe traffic

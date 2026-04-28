@@ -33,13 +33,18 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred(), "failed to set up gateway port-forward")
 	gatewayURL = url
 
-	// Create InferenceSets and wait for the full routing pipeline once
-	// for the entire suite. Individual Describes share these resources.
-	utils.SetupInferenceSetsWithRouting(modelNames, testNamespace, gatewayURL)
+	// Install the modeldeployment Helm chart for every suite-level case
+	// (each Describe owns its own table entry — see cases.go). Lifecycle
+	// cases (CaseInferenceSetCreate / Cleanup) are installed per-test.
+	utils.SetupInferenceSetsWithRouting(
+		AllSuiteDeployments(testNamespace),
+		testNamespace, gatewayURL)
 })
 
 var _ = AfterSuite(func() {
-	utils.TeardownInferenceSetsWithRouting(modelNames, testNamespace)
+	utils.TeardownInferenceSetsWithRouting(
+		AllSuiteDeployments(testNamespace),
+		testNamespace)
 	utils.CleanupPortForward()
 })
 

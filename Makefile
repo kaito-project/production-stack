@@ -113,7 +113,6 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 ##
 ## Component versions are centralized in versions.env (repo root).
 ## Override any version via environment variables, e.g.:
-##   KAITO_VERSION=v0.10.0 make e2e-up
 ##   ISTIO_VERSION=1.30.0 BBR_VERSION=v1.4.0 make e2e-install
 ## --------------------------------------
 

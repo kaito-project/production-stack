@@ -32,14 +32,16 @@ import (
 
 const (
 	testNamespace = "default"
-
-	falconModel    = "falcon-7b-instruct"
-	ministralModel = "ministral-3-3b-instruct"
 )
 
-var modelNames = []string{falconModel, ministralModel}
-
 var _ = Describe("GPU Mocker E2E", Ordered, func() {
+	// Per-case deployments owned by gpu_mocker_test.go (see cases.go).
+	// These are installed by BeforeSuite as part of the suite-level union;
+	// the test bodies below use the local aliases so renaming the
+	// deployments is a one-line change in cases.go.
+	caseDeployments := CaseDeployments[CaseGPUMocker]
+	suiteDeployments := caseDeployments
+	falconModel := caseDeployments[0].Name
 
 	Context("GPU Node Mocker", utils.GinkgoLabelSmoke, func() {
 
@@ -77,8 +79,8 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				for _, name := range modelNames {
-					eppName := utils.EPPServiceName(name)
+				for _, d := range suiteDeployments {
+					eppName := utils.EPPServiceName(d.Name)
 					By(fmt.Sprintf("checking EPP pods for %q", eppName))
 					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
 						LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
@@ -99,12 +101,19 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				dynClient, err := utils.GetDynamicClient()
 				Expect(err).NotTo(HaveOccurred())
 
-				for _, name := range modelNames {
+				for _, d := range suiteDeployments {
+					name := d.Name
 					By(fmt.Sprintf("verifying InferenceSet %q exists with correct spec", name))
 					is, err := dynClient.Resource(utils.InferenceSetGVR).Namespace(testNamespace).
 						Get(context.Background(), name, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred(), "InferenceSet %q should exist", name)
 					Expect(is.GetName()).To(Equal(name))
+
+					By(fmt.Sprintf("verifying InferenceSet %q preset.name == %q", name, d.Model))
+					preset, found, _ := unstructured.NestedString(is.Object, "spec", "template", "inference", "preset", "name")
+					Expect(found).To(BeTrue(), "spec.template.inference.preset.name should be set")
+					Expect(preset).To(Equal(d.Model),
+						"InferenceSet %q preset.name should match the explicitly-set model", name)
 
 					By(fmt.Sprintf("verifying InferenceSet %q readyReplicas matches desired", name))
 					spec := is.Object["spec"].(map[string]interface{})
@@ -140,22 +149,17 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					_, err = dynClient.Resource(utils.HTTPRouteGVR).Namespace(testNamespace).
 						Get(context.Background(), name+"-route", metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred(), "HTTPRoute %q should exist", name+"-route")
-
-					By(fmt.Sprintf("verifying DestinationRule %q exists", utils.EPPServiceName(name)))
-					_, err = dynClient.Resource(utils.DestinationRuleGVR).Namespace(testNamespace).
-						Get(context.Background(), utils.EPPServiceName(name), metav1.GetOptions{})
-					Expect(err).NotTo(HaveOccurred(), "DestinationRule %q should exist", utils.EPPServiceName(name))
 				}
 			})
 		})
 
 		Context("HTTPRoute status", func() {
-			It("should have HTTPRoutes with Accepted=True condition for each model", func() {
+			It("should have HTTPRoutes with Accepted=True condition for each deployment", func() {
 				dynClient, err := utils.GetDynamicClient()
 				Expect(err).NotTo(HaveOccurred())
 
-				for _, name := range modelNames {
-					routeName := name + "-route"
+				for _, d := range suiteDeployments {
+					routeName := d.Name + "-route"
 					By(fmt.Sprintf("checking HTTPRoute %q has Accepted=True", routeName))
 
 					route, err := dynClient.Resource(utils.HTTPRouteGVR).Namespace(testNamespace).
@@ -182,27 +186,6 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 						}
 					}
 					Expect(accepted).To(BeTrue(), "HTTPRoute %q should have Accepted=True", routeName)
-				}
-			})
-		})
-
-		Context("DestinationRules", func() {
-			It("should have DestinationRules with trafficPolicy.tls.mode=SIMPLE for each EPP service", func() {
-				dynClient, err := utils.GetDynamicClient()
-				Expect(err).NotTo(HaveOccurred())
-
-				for _, name := range modelNames {
-					drName := utils.EPPServiceName(name)
-					By(fmt.Sprintf("checking DestinationRule %q exists with SIMPLE TLS", drName))
-					dr, err := dynClient.Resource(utils.DestinationRuleGVR).Namespace(testNamespace).
-						Get(context.Background(), drName, metav1.GetOptions{})
-					Expect(err).NotTo(HaveOccurred(), "DestinationRule %q should exist", drName)
-					Expect(dr.GetName()).To(Equal(drName))
-
-					tlsMode, found, _ := unstructured.NestedString(dr.Object, "spec", "trafficPolicy", "tls", "mode")
-					Expect(found).To(BeTrue(), "DestinationRule %q should have spec.trafficPolicy.tls.mode", drName)
-					Expect(tlsMode).To(Equal("SIMPLE"),
-						"DestinationRule %q trafficPolicy.tls.mode should be SIMPLE", drName)
 				}
 			})
 		})
@@ -313,15 +296,15 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				for _, model := range modelNames {
-					By(fmt.Sprintf("checking original pods for %q", model))
+				for _, d := range suiteDeployments {
+					By(fmt.Sprintf("checking original pods for %q", d.Name))
 
 					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
-						LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", model),
+						LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", d.Name),
 					})
 					Expect(err).NotTo(HaveOccurred())
 					Expect(pods.Items).NotTo(BeEmpty(),
-						"inference pods for %q should exist", model)
+						"inference pods for %q should exist", d.Name)
 
 					for _, pod := range pods.Items {
 						By(fmt.Sprintf("validating pod %q status", pod.Name))

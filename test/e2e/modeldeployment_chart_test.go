@@ -34,10 +34,12 @@ import (
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
-// InferenceSet lifecycle tests verify that the utility functions correctly
-// create an InferenceSet and its associated routing resources (DestinationRule,
-// HTTPRoute). These resources were previously deployed as static manifests by
-// the E2E workflow; they are now created per-test via the utils helpers.
+// ModelDeployment chart tests verify that the modeldeployment Helm chart
+// (charts/modeldeployment) correctly installs an InferenceSet and its
+// associated GAIE artifacts (InferencePool, EPP, HTTPRoute), and that
+// `helm uninstall` removes them. The chart's EPP runs with
+// --secure-serving=false, so no DestinationRule is needed for the Istio
+// Gateway to reach it.
 
 // generateNamespace returns a unique namespace name with a random suffix.
 func generateNamespace(prefix string) string {
@@ -64,7 +66,7 @@ func deleteNamespace(ctx context.Context, name string) {
 	}
 }
 
-var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func() {
+var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() {
 	var ctx context.Context
 
 	BeforeEach(func() {
@@ -72,36 +74,38 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 		utils.GetClusterClient(utils.TestingCluster)
 	})
 
-	Context("Create InferenceSet with routing resources", func() {
-		const (
-			modelName   = "falcon-7b-instruct"
-			gatewayName = "inference-gateway"
-		)
+	Context("modeldeployment chart install + uninstall", func() {
+		// Pull the deployment values for this case from the per-case table
+		// (see cases.go). The same deployment is shared by both It blocks
+		// below — BeforeEach installs the chart in a fresh random namespace,
+		// AfterEach uninstalls it and deletes the namespace.
+		caseValues := CaseDeployments[CaseModelDeploymentChart][0]
+		deploymentName := caseValues.Name
+		preset := caseValues.Model
+		gatewayName := caseValues.GatewayName
 
 		var namespace string
 
 		BeforeEach(func() {
-			namespace = generateNamespace("e2e-inferenceset-create")
+			namespace = generateNamespace("e2e-inferenceset")
 			createNamespace(ctx, namespace)
+
+			values := caseValues
+			values.Namespace = namespace
+			By("Installing modeldeployment chart")
+			err := utils.CreateInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, values)
+			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
-			By("Cleaning up InferenceSet and routing resources")
-			err := utils.CleanupInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, modelName, namespace)
-			if err != nil {
+			By("Uninstalling modeldeployment chart")
+			if err := utils.CleanupInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, deploymentName, namespace); err != nil {
 				GinkgoWriter.Printf("Cleanup warning: %v\n", err)
 			}
 			deleteNamespace(ctx, namespace)
 		})
 
-		It("should create InferenceSet and auto-create DestinationRule and HTTPRoute after readiness", func() {
-			cfg := utils.DefaultInferenceSetConfig(modelName)
-			cfg.Namespace = namespace
-
-			By("Creating InferenceSet with routing via utility function")
-			err := utils.CreateInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, cfg)
-			Expect(err).NotTo(HaveOccurred())
-
+		It("should render InferenceSet + HTTPRoute with the expected spec", func() {
 			cl := utils.TestingCluster.KubeClient
 
 			By("Verifying InferenceSet exists with correct spec")
@@ -111,7 +115,7 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 				Version: "v1alpha1",
 				Kind:    "InferenceSet",
 			})
-			err = cl.Get(ctx, types.NamespacedName{Name: modelName, Namespace: namespace}, is)
+			err := cl.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, is)
 			Expect(err).NotTo(HaveOccurred())
 
 			replicas, found, _ := unstructured.NestedInt64(is.Object, "spec", "replicas")
@@ -120,30 +124,12 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 
 			presetName, found, _ := unstructured.NestedString(is.Object, "spec", "template", "inference", "preset", "name")
 			Expect(found).To(BeTrue())
-			Expect(presetName).To(Equal(modelName))
+			Expect(presetName).To(Equal(preset),
+				"InferenceSet preset.name should equal the chart `model` value (preset), not the deploymentName")
 
 			instanceType, found, _ := unstructured.NestedString(is.Object, "spec", "template", "resource", "instanceType")
 			Expect(found).To(BeTrue())
 			Expect(instanceType).To(Equal("Standard_NV36ads_A10_v5"))
-
-			By("Verifying DestinationRule exists with correct spec")
-			dr := &unstructured.Unstructured{}
-			dr.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   "networking.istio.io",
-				Version: "v1",
-				Kind:    "DestinationRule",
-			})
-			eppName := utils.EPPServiceName(modelName)
-			err = cl.Get(ctx, types.NamespacedName{Name: eppName, Namespace: namespace}, dr)
-			Expect(err).NotTo(HaveOccurred())
-
-			host, found, _ := unstructured.NestedString(dr.Object, "spec", "host")
-			Expect(found).To(BeTrue())
-			Expect(host).To(Equal(eppName))
-
-			tlsMode, found, _ := unstructured.NestedString(dr.Object, "spec", "trafficPolicy", "tls", "mode")
-			Expect(found).To(BeTrue())
-			Expect(tlsMode).To(Equal("SIMPLE"))
 
 			By("Verifying HTTPRoute exists with correct spec")
 			hr := &unstructured.Unstructured{}
@@ -152,7 +138,7 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 				Version: "v1",
 				Kind:    "HTTPRoute",
 			})
-			err = cl.Get(ctx, types.NamespacedName{Name: modelName + "-route", Namespace: namespace}, hr)
+			err = cl.Get(ctx, types.NamespacedName{Name: deploymentName + "-route", Namespace: namespace}, hr)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify the HTTPRoute references the correct gateway.
@@ -163,48 +149,41 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 			Expect(ok).To(BeTrue())
 			Expect(parentRef["name"]).To(Equal(gatewayName))
 
-			// Verify the HTTPRoute routes to the correct InferencePool.
+			// Verify the HTTPRoute matches the deploymentName in the
+			// X-Gateway-Model-Name header (this is what user requests carry
+			// in their `model` field). Multiple deployments of the same
+			// preset can coexist in a namespace under distinct deploymentNames.
 			rules, found, _ := unstructured.NestedSlice(hr.Object, "spec", "rules")
 			Expect(found).To(BeTrue())
 			Expect(rules).To(HaveLen(1))
 			rule, ok := rules[0].(map[string]interface{})
 			Expect(ok).To(BeTrue())
+			matches, ok := rule["matches"].([]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(matches).To(HaveLen(1))
+			match := matches[0].(map[string]interface{})
+			headers, ok := match["headers"].([]interface{})
+			Expect(ok).To(BeTrue())
+			Expect(headers).To(HaveLen(1))
+			header := headers[0].(map[string]interface{})
+			Expect(header["name"]).To(Equal("X-Gateway-Model-Name"))
+			Expect(header["value"]).To(Equal(deploymentName),
+				"HTTPRoute header match value should equal the deploymentName, not the preset")
+
 			backendRefs, ok := rule["backendRefs"].([]interface{})
 			Expect(ok).To(BeTrue())
 			Expect(backendRefs).To(HaveLen(1))
 			backendRef, ok := backendRefs[0].(map[string]interface{})
 			Expect(ok).To(BeTrue())
-			Expect(backendRef["name"]).To(Equal(utils.InferencePoolName(modelName)))
+			Expect(backendRef["name"]).To(Equal(utils.InferencePoolName(deploymentName)))
 			Expect(backendRef["kind"]).To(Equal("InferencePool"))
 		})
-	})
 
-	Context("Cleanup InferenceSet resources", func() {
-		const modelName = "ministral-3-3b-instruct"
-
-		var namespace string
-
-		BeforeEach(func() {
-			namespace = generateNamespace("e2e-inferenceset-cleanup")
-			createNamespace(ctx, namespace)
-		})
-
-		AfterEach(func() {
-			deleteNamespace(ctx, namespace)
-		})
-
-		It("should create and then successfully clean up all resources", func() {
-			cfg := utils.DefaultInferenceSetConfig(modelName)
-			cfg.Namespace = namespace
+		It("should remove all resources after `helm uninstall`", func() {
 			cl := utils.TestingCluster.KubeClient
 
-			By("Creating InferenceSet with routing")
-			err := utils.CreateInferenceSetWithRouting(ctx, cl, cfg)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleaning up all resources")
-			err = utils.CleanupInferenceSetWithRouting(ctx, cl, modelName, namespace)
-			Expect(err).NotTo(HaveOccurred())
+			By("Uninstalling modeldeployment chart up-front (AfterEach will be a no-op)")
+			Expect(utils.CleanupInferenceSetWithRouting(ctx, cl, deploymentName, namespace)).To(Succeed())
 
 			By("Verifying InferenceSet is deleted")
 			Eventually(func() bool {
@@ -214,21 +193,9 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 					Version: "v1alpha1",
 					Kind:    "InferenceSet",
 				})
-				err := cl.Get(ctx, types.NamespacedName{Name: modelName, Namespace: namespace}, is)
+				err := cl.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, is)
 				return apierrors.IsNotFound(err)
 			}, 3*time.Minute, utils.PollInterval).Should(BeTrue(), "InferenceSet should be fully deleted")
-
-			By("Verifying DestinationRule is deleted")
-			Eventually(func() bool {
-				dr := &unstructured.Unstructured{}
-				dr.SetGroupVersionKind(schema.GroupVersionKind{
-					Group:   "networking.istio.io",
-					Version: "v1",
-					Kind:    "DestinationRule",
-				})
-				err := cl.Get(ctx, types.NamespacedName{Name: utils.EPPServiceName(modelName), Namespace: namespace}, dr)
-				return apierrors.IsNotFound(err)
-			}, 30*time.Second, utils.PollInterval).Should(BeTrue(), "DestinationRule should be deleted")
 
 			By("Verifying HTTPRoute is deleted")
 			Eventually(func() bool {
@@ -238,7 +205,7 @@ var _ = Describe("InferenceSet Lifecycle", utils.GinkgoLabelInferenceSet, func()
 					Version: "v1",
 					Kind:    "HTTPRoute",
 				})
-				err := cl.Get(ctx, types.NamespacedName{Name: modelName + "-route", Namespace: namespace}, hr)
+				err := cl.Get(ctx, types.NamespacedName{Name: deploymentName + "-route", Namespace: namespace}, hr)
 				return apierrors.IsNotFound(err)
 			}, 30*time.Second, utils.PollInterval).Should(BeTrue(), "HTTPRoute should be deleted")
 		})
