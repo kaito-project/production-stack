@@ -1,16 +1,23 @@
 # Required inputs.
 
 # name is the deployment name. It is used as:
-#   - the InferenceSet name
+#   - the Helm release / InferenceSet name
+#   - the prefix for the InferencePool / EPP / HTTPRoute object names
+#   - the value of the inferenceset.kaito.sh/created-by selector used by
+#     the InferencePool to find inference (shadow) pods
 #   - the value of the X-Gateway-Model-Name header matched by the HTTPRoute
+#     (i.e. the value sent in the `model` field of OpenAI-style requests).
+#     This lets a single namespace host multiple deployments of the same
+#     preset model under distinct deployment names.
 # Defaults to .Release.Name when empty.
 name: ""
 
 # namespace is the target namespace. Defaults to .Release.Namespace when empty.
 namespace: ""
 
-# model is the preset model name. Used only as InferenceSet
-# spec.template.inference.preset.name.
+# model is the inference preset name, used only as
+# spec.template.inference.preset.name on the InferenceSet. It is independent
+# of `name` — multiple deployments may share the same preset model. Required.
 model: ""
 
 # instanceType is the VM instance type used for the underlying nodes.

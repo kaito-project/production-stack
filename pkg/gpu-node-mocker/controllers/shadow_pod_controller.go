@@ -185,8 +185,23 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 	servedModelName := extractServedModelName(original, modelName)
 	servingPort := extractServingPort(original)
 
+	// Tie shadow-pod and its ConfigMap lifecycle to the original pod via
+	// OwnerReferences. When KAITO/InferenceSet deletes the original pod,
+	// the K8s garbage collector cascades the delete to the shadow pod and
+	// the ConfigMap, eliminating the need for a custom cleanup loop.
+	// Same-namespace requirement is satisfied: ensureShadowPod uses
+	// shadowNS = original.Namespace.
+	ownerRef := metav1.OwnerReference{
+		APIVersion:         "v1",
+		Kind:               "Pod",
+		Name:               original.Name,
+		UID:                original.UID,
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(false),
+	}
+
 	// Ensure the ConfigMap for the inference simulator exists.
-	if err := r.ensureSimConfigMap(ctx, shadowNS, shadowName, modelName, servedModelName, servingPort); err != nil {
+	if err := r.ensureSimConfigMap(ctx, shadowNS, shadowName, modelName, servedModelName, servingPort, ownerRef); err != nil {
 		return nil, fmt.Errorf("ensure sim configmap: %w", err)
 	}
 
@@ -202,9 +217,10 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 
 	shadow := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      shadowName,
-			Namespace: shadowNS,
-			Labels:    labels,
+			Name:            shadowName,
+			Namespace:       shadowNS,
+			Labels:          labels,
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
 			Annotations: map[string]string{
 				"kaito.sh/original-pod": original.Namespace + "/" + original.Name,
 			},
@@ -443,7 +459,10 @@ func makePodCondition(t corev1.PodConditionType, s corev1.ConditionStatus, reaso
 // ensureSimConfigMap creates the inference simulator ConfigMap if it does not exist.
 // The config enables KV cache but does not set any threshold so cache_threshold
 // is never triggered. The port is set to match the original pod's serving port.
-func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, namespace, shadowName, modelName, servedModelName string, port int32) error {
+//
+// ownerRef is set on the ConfigMap so it is garbage-collected together with
+// the original pod (same namespace, K8s GC cascades the delete).
+func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, namespace, shadowName, modelName, servedModelName string, port int32, ownerRef metav1.OwnerReference) error {
 	cmName := shadowName + "-config"
 	existing := &corev1.ConfigMap{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cmName}, existing); err == nil {
@@ -471,6 +490,7 @@ inter-token-latency: 30ms
 			Labels: map[string]string{
 				LabelManagedBy: ControllerName,
 			},
+			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},
 		Data: map[string]string{
 			"config.yaml": configYAML,

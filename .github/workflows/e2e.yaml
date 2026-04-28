@@ -11,10 +11,6 @@ on:
         description: 'Branch name to run E2E tests against'
         required: true
         default: 'main'
-      kaito_version:
-        description: 'KAITO Helm chart version (e.g. v0.9.1). Leave empty to use default from versions.env'
-        required: false
-        default: ''
       istio_version:
         description: 'Istio version (e.g. 1.29.0). Leave empty to use default from versions.env'
         required: false
@@ -42,8 +38,8 @@ env:
   ACR_NAME: "kaitogwe2eaks${{ github.run_id }}acr"
   GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
   LOCATION: swedencentral
-  NODE_COUNT: '2'
-  NODE_VM_SIZE: Standard_D4s_v3
+  NODE_COUNT: '3'
+  NODE_VM_SIZE: Standard_D8s_v5
 
 permissions:
   contents: read
@@ -66,13 +62,11 @@ jobs:
           # Source defaults from the centralized version file (loaded exactly once).
           source versions.env
           # workflow_dispatch inputs override defaults when non-empty.
-          INPUT_KAITO="${{ github.event.inputs.kaito_version }}"
           INPUT_ISTIO="${{ github.event.inputs.istio_version }}"
           INPUT_GWAPI="${{ github.event.inputs.gateway_api_version }}"
           INPUT_BBR="${{ github.event.inputs.bbr_version }}"
           INPUT_KEDA="${{ github.event.inputs.keda_version }}"
           INPUT_KKS="${{ github.event.inputs.keda_kaito_scaler_version }}"
-          [ -n "${INPUT_KAITO}" ] && KAITO_VERSION="${INPUT_KAITO}"
           [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
           [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
           [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
@@ -81,7 +75,6 @@ jobs:
           # Export to GITHUB_ENV so all subsequent steps inherit these.
           {
             echo "GO_VERSION=${GO_VERSION}"
-            echo "KAITO_VERSION=${KAITO_VERSION}"
             echo "ISTIO_VERSION=${ISTIO_VERSION}"
             echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
             echo "BBR_VERSION=${BBR_VERSION}"
@@ -93,7 +86,6 @@ jobs:
       - name: Print versions
         run: |
           echo "GO_VERSION=${GO_VERSION}"
-          echo "KAITO_VERSION=${KAITO_VERSION}"
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
           echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
           echo "BBR_VERSION=${BBR_VERSION}"

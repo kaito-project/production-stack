@@ -44,8 +44,11 @@ import (
 //   - llm-d-inference-sim configured with enable-kvcache: true
 
 var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, func() {
+	// Per-case deployment owned by prefix_cache_routing_test.go (see cases.go).
+	// A single deployment with replicas≥2 is sufficient for prefix-cache tests.
+	model := CaseDeployments[CasePrefixCache][0].Name
+
 	var ctx context.Context
-	model := falconModel
 
 	BeforeEach(func() {
 		ctx = context.Background()

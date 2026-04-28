@@ -15,7 +15,6 @@
 #  10. KEDA Kaito Scaler (Helm)
 #
 # Environment variables (must be set by caller, e.g. run-e2e-local.sh or CI):
-#   KAITO_VERSION             — KAITO Helm chart version
 #   ISTIO_VERSION             — Istio version
 #   GATEWAY_API_VERSION       — Gateway API CRD version
 #   BBR_VERSION               — BBR release version
@@ -29,7 +28,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFESTS_DIR="${SCRIPT_DIR}/../manifests"
 
 # Validate required version variables are set.
-: "${KAITO_VERSION:?KAITO_VERSION is not set. Source versions.env or export it before calling this script.}"
 : "${ISTIO_VERSION:?ISTIO_VERSION is not set. Source versions.env or export it before calling this script.}"
 : "${GATEWAY_API_VERSION:?GATEWAY_API_VERSION is not set. Source versions.env or export it before calling this script.}"
 : "${BBR_VERSION:?BBR_VERSION is not set. Source versions.env or export it before calling this script.}"
@@ -38,7 +36,6 @@ MANIFESTS_DIR="${SCRIPT_DIR}/../manifests"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 
 echo "=== Component versions ==="
-echo "  KAITO_VERSION:             ${KAITO_VERSION}"
 echo "  ISTIO_VERSION:             ${ISTIO_VERSION}"
 echo "  GATEWAY_API_VERSION:       ${GATEWAY_API_VERSION}"
 echo "  BBR_VERSION:               ${BBR_VERSION}"
@@ -55,15 +52,30 @@ fi
 
 # ── 1. KAITO workspace operator ──────────────────────────────────────────
 echo ""
-echo "=== 1/10: Installing KAITO workspace operator ${KAITO_VERSION} ==="
-helm repo add kaito https://kaito-project.github.io/kaito/charts 2>/dev/null || true
+echo "=== 1/10: Installing KAITO workspace operator (latest chart, image: nightly-latest) ==="
+helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
 helm repo update kaito
+
+# Install pattern follows the official KAITO nightly install guide verbatim:
+#   https://kaito-project.github.io/kaito/docs/installation/#using-nightly-builds-for-testing-purpose
+# i.e. the latest published chart from the helm repo (no --version pin)
+# combined with image.tag=nightly-latest so both chart templates and
+# controller binary track upstream HEAD.
+#
+# featureGates.gatewayAPIInferenceExtension is intentionally DISABLED.
+# Per-model GAIE artifacts (InferencePool + EPP Deployment/Service/RBAC +
+# HTTPRoute) are now provisioned by the modeldeployment Helm chart at
+# charts/modeldeployment via the E2E test suite. Enabling the feature gate
+# here would cause KAITO to render a duplicate set of resources via Flux
+# and conflict with the chart-managed artifacts.
 helm install kaito kaito/workspace \
-  --version "${KAITO_VERSION}" \
   --namespace kaito-system \
   --create-namespace \
   --set featureGates.enableInferenceSetController=true \
-  --set featureGates.gatewayAPIInferenceExtension=true \
+  --set featureGates.gatewayAPIInferenceExtension=false \
+  --set image.repository=ghcr.io/kaito-project/kaito/workspace \
+  --set image.tag=nightly-latest \
+  --set image.pullPolicy=Always \
   --wait --timeout=300s
 
 echo "⏳ Waiting for KAITO controller..."
@@ -145,8 +157,11 @@ kubectl wait --for=condition=ready pod \
   echo "⚠️  Gateway pod not ready yet — continuing."
 
 # ── 8. HTTPRoute catch-all, error service, debug filter ─────────────────
-# Note: InferenceSets, model-specific HTTPRoutes, and DestinationRules are
-# created by individual E2E test cases via the test/e2e/utils helpers.
+# Note: Per-model InferenceSets, InferencePools, EPP Deployments, and
+# model-specific HTTPRoutes are provisioned by the modeldeployment Helm
+# chart (charts/modeldeployment) via the E2E test suite (see
+# test/e2e/utils/setup.go). Only cluster-wide routing primitives (catch-all
+# HTTPRoute, error service, debug filter) are installed here.
 echo ""
 echo "=== 8/10: Deploying routing catch-all, error service ==="
 kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"

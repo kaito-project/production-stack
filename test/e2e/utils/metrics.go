@@ -313,26 +313,26 @@ func inferenceSimPort(pod corev1.Pod) int {
 	return 8000
 }
 
-// GetEPPPods returns the EPP pods for the given model.
-func GetEPPPods(ctx context.Context, clientset *kubernetes.Clientset, model, namespace string) ([]corev1.Pod, error) {
-	eppName := EPPServiceName(model)
+// GetEPPPods returns the EPP pods for the given deployment.
+func GetEPPPods(ctx context.Context, clientset *kubernetes.Clientset, deploymentName, namespace string) ([]corev1.Pod, error) {
+	eppName := EPPServiceName(deploymentName)
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
 		FieldSelector: "status.phase=Running",
 	})
 	if err != nil {
-		return nil, fmt.Errorf("listing EPP pods for %s: %w", model, err)
+		return nil, fmt.Errorf("listing EPP pods for %s: %w", deploymentName, err)
 	}
 	if len(pods.Items) == 0 {
-		return nil, fmt.Errorf("no running EPP pods found for %s", model)
+		return nil, fmt.Errorf("no running EPP pods found for %s", deploymentName)
 	}
 	return pods.Items, nil
 }
 
-// ScrapeEPPMetric scrapes a single metric from the EPP pod(s) for a model
+// ScrapeEPPMetric scrapes a single metric from the EPP pod(s) for a deployment
 // and returns the value. If multiple EPP pods exist, sums across them.
-func ScrapeEPPMetric(ctx context.Context, clientset *kubernetes.Clientset, model, namespace, metricName string, labels map[string]string) (float64, error) {
-	pods, err := GetEPPPods(ctx, clientset, model, namespace)
+func ScrapeEPPMetric(ctx context.Context, clientset *kubernetes.Clientset, deploymentName, namespace, metricName string, labels map[string]string) (float64, error) {
+	pods, err := GetEPPPods(ctx, clientset, deploymentName, namespace)
 	if err != nil {
 		return 0, err
 	}
