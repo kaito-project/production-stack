@@ -68,9 +68,6 @@ epp:
     requests:
       cpu: 100m
       memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
   # modelServerSelector selects the inference pods this InferencePool routes
   # to. KAITO labels each inference pod with
   # `inferenceset.kaito.sh/created-by: <inferenceset-name>` and (for stateful
