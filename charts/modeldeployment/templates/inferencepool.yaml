@@ -1,0 +1,23 @@
+apiVersion: inference.networking.k8s.io/v1
+kind: InferencePool
+metadata:
+  name: {{ include "modeldeployment.inferencePoolName" . }}
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+spec:
+  targetPorts:
+    - number: {{ .Values.epp.modelServerPort }}
+  selector:
+    matchLabels:
+      {{- range $key, $value := .Values.epp.modelServerSelector }}
+      {{- if and (eq $key "inferenceset.kaito.sh/created-by") (eq $value "") }}
+      {{ $key }}: {{ include "modeldeployment.name" $ | quote }}
+      {{- else }}
+      {{ $key }}: {{ $value | quote }}
+      {{- end }}
+      {{- end }}
+  endpointPickerRef:
+    name: {{ include "modeldeployment.eppServiceName" . }}
+    port:
+      number: {{ .Values.epp.extProcPort }}

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: modeldeployment
+description: |
+  Deploys a KAITO InferenceSet together with the Istio DestinationRule and
+  Gateway API HTTPRoute required to route inference traffic to it.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

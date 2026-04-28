@@ -1,0 +1,25 @@
+apiVersion: kaito.sh/v1alpha1
+kind: InferenceSet
+metadata:
+  name: {{ include "modeldeployment.name" . }}
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+  {{- if .Values.enableScaling }}
+  annotations:
+    scaledobject.kaito.sh/auto-provision: "true"
+    scaledobject.kaito.sh/threshold: {{ .Values.scalingThreshold | quote }}
+    scaledobject.kaito.sh/min-replicas: {{ .Values.replicas | quote }}
+    scaledobject.kaito.sh/max-replicas: {{ .Values.maxReplicas | quote }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicas }}
+  labelSelector:
+    matchLabels:
+      apps: {{ include "modeldeployment.name" . }}
+  template:
+    resource:
+      instanceType: {{ .Values.instanceType | quote }}
+    inference:
+      preset:
+        name: {{ .Values.model | quote }}
