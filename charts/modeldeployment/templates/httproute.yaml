@@ -1,0 +1,25 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "modeldeployment.httpRouteName" . }}
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.gatewayName | quote }}
+  rules:
+    - matches:
+        - headers:
+            - type: Exact
+              name: X-Gateway-Model-Name
+              value: {{ include "modeldeployment.name" . | quote }}
+          path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "modeldeployment.inferencePoolName" . }}
+          group: inference.networking.k8s.io
+          kind: InferencePool

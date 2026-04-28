@@ -1,0 +1,80 @@
+# Required inputs.
+
+# name is the deployment name. It is used as:
+#   - the InferenceSet name
+#   - the value of the X-Gateway-Model-Name header matched by the HTTPRoute
+# Defaults to .Release.Name when empty.
+name: ""
+
+# namespace is the target namespace. Defaults to .Release.Namespace when empty.
+namespace: ""
+
+# model is the preset model name. Used only as InferenceSet
+# spec.template.inference.preset.name.
+model: ""
+
+# instanceType is the VM instance type used for the underlying nodes.
+instanceType: "Standard_NV36ads_A10_v5"
+
+# replicas is the desired number of InferenceSet replicas. Also wired to the
+# scaledobject.kaito.sh/min-replicas annotation.
+replicas: 2
+
+# enableScaling toggles KAITO ScaledObject auto-provisioning. When false,
+# none of the scaledobject.kaito.sh/* annotations are rendered on the
+# InferenceSet, and `maxReplicas` / `scalingThreshold` are ignored.
+enableScaling: false
+
+# maxReplicas is the upper bound for autoscaling. Only used when
+# enableScaling is true. Wired to the scaledobject.kaito.sh/max-replicas
+# annotation.
+maxReplicas: 5
+
+# scalingThreshold is the queue depth threshold used by the ScaledObject.
+# Only used when enableScaling is true. Wired to the
+# scaledobject.kaito.sh/threshold annotation.
+scalingThreshold: 10
+
+# gatewayName is the Gateway resource the HTTPRoute attaches to.
+gatewayName: "inference-gateway"
+
+# ----------------------------------------------------------------------------
+# Endpoint Picker (EPP) configuration.
+#
+# This chart inlines the GAIE InferencePool + EPP artifacts that KAITO
+# normally provisions via Flux + the upstream
+# `oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool`
+# chart. The EPP runs with TLS disabled (`--secure-serving=false`), so the
+# Istio Gateway can reach it over plaintext gRPC without a DestinationRule.
+# ----------------------------------------------------------------------------
+epp:
+  image:
+    repository: "mcr.microsoft.com/oss/v2/llm-d/llm-d-inference-scheduler"
+    tag: "v0.7.1"
+    pullPolicy: "IfNotPresent"
+  replicas: 1
+  # modelServerPort is the port exposed by the inference (model server) pods.
+  # Must match KAITO's PortInferenceServer (5000).
+  modelServerPort: 5000
+  # extProcPort is the EPP gRPC ext_proc port consumed by the Gateway.
+  extProcPort: 9002
+  # healthPort is the EPP gRPC health-check port.
+  healthPort: 9003
+  # metricsPort is the EPP HTTP metrics port.
+  metricsPort: 9090
+  # logVerbosity passed as `--v=<n>`.
+  logVerbosity: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # modelServerSelector selects the inference pods this InferencePool routes
+  # to. KAITO labels each inference pod with
+  # `inferenceset.kaito.sh/created-by: <inferenceset-name>` and (for stateful
+  # deployments) restricts traffic to the pod-index 0 leader.
+  modelServerSelector:
+    inferenceset.kaito.sh/created-by: ""   # auto-filled with .Values.name when empty
+    apps.kubernetes.io/pod-index: "0"

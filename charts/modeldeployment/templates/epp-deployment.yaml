@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "modeldeployment.eppServiceName" . }}
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.epp.replicas }}
+  strategy:
+    # Recreate avoids two leaders during rollouts (matches upstream GAIE chart).
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "modeldeployment.eppSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "modeldeployment.eppSelectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "modeldeployment.eppServiceName" . }}
+      terminationGracePeriodSeconds: 130
+      containers:
+        - name: epp
+          image: "{{ .Values.epp.image.repository }}:{{ .Values.epp.image.tag }}"
+          imagePullPolicy: {{ .Values.epp.image.pullPolicy }}
+          args:
+            - --pool-name
+            - {{ include "modeldeployment.inferencePoolName" . | quote }}
+            - --pool-namespace
+            - {{ include "modeldeployment.namespace" . | quote }}
+            - --zap-encoder
+            - "json"
+            - --config-file
+            - "/config/default-plugins.yaml"
+            - --secure-serving=false
+            - --tracing=false
+            - --metrics-endpoint-auth=false
+            - --v={{ .Values.epp.logVerbosity }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.epp.extProcPort }}
+            - name: grpc-health
+              containerPort: {{ .Values.epp.healthPort }}
+            - name: metrics
+              containerPort: {{ .Values.epp.metricsPort }}
+          livenessProbe:
+            grpc:
+              port: {{ .Values.epp.healthPort }}
+              service: inference-extension
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            grpc:
+              port: {{ .Values.epp.healthPort }}
+              service: inference-extension
+            periodSeconds: 2
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: plugins-config-volume
+              mountPath: /config
+          resources:
+            {{- toYaml .Values.epp.resources | nindent 12 }}
+      volumes:
+        - name: plugins-config-volume
+          configMap:
+            name: {{ include "modeldeployment.eppServiceName" . }}
