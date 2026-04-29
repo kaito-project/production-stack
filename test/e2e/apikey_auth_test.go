@@ -29,15 +29,18 @@ import (
 )
 
 var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils.GinkgoLabelSmoke, func() {
-	// CaseAuth deployment — installed with auth.enabled=true so the chart
-	// renders an AuthorizationPolicy alongside the model artifacts.
+	// CaseAuth deployment — installed with authAPIKeyEnabled=true so the chart
+	// renders an AuthorizationPolicy, APIKey CR, and MeshConfig patch Job.
 	authDeployment := CaseDeployments[CaseAuth][0]
 	modelName := authDeployment.Name
 
+	// The chart deploys the APIKey CR into the model namespace. The authz
+	// service resolves the namespace from the Host header subdomain.
+	const deployNamespace = "default"
+
 	var (
-		ctx       context.Context
-		apiKey    string
-		namespace string
+		ctx    context.Context
+		apiKey string
 	)
 
 	BeforeAll(func() {
@@ -45,28 +48,19 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		utils.GetClusterClient(utils.TestingCluster)
 
 		// Install the auth model deployment into the default namespace.
-		// This renders the AuthorizationPolicy (auth.enabled=true) that
-		// enforces ext_authz on the gateway.
-		authDeployment.Namespace = "default"
-		By(fmt.Sprintf("Installing auth model deployment %q with auth.enabled=true", modelName))
+		// The chart renders: AuthorizationPolicy, APIKey CR, MeshConfig
+		// patch Job, plus the standard model artifacts.
+		authDeployment.Namespace = deployNamespace
+		By(fmt.Sprintf("Installing auth model deployment %q with authAPIKeyEnabled=true", modelName))
 		err := utils.InstallModelDeployment(authDeployment)
 		Expect(err).NotTo(HaveOccurred(), "failed to install auth model deployment")
 
-		// Create a random namespace for the APIKey CR.
-		namespace = generateNamespace("e2e-apikey")
-		By(fmt.Sprintf("Creating test namespace %s", namespace))
-		createNamespace(ctx, namespace)
-
-		By(fmt.Sprintf("Creating APIKey CR in namespace %s", namespace))
-		err = utils.CreateAPIKeyResource(ctx, utils.TestingCluster.KubeClient, namespace)
-		Expect(err).NotTo(HaveOccurred(), "failed to create APIKey CR")
-
 		By("Waiting for apikey-operator to generate the API key Secret")
 		Eventually(func() (string, error) {
-			return utils.GetAPIKeyFromSecret(ctx, namespace)
+			return utils.GetAPIKeyFromSecret(ctx, deployNamespace)
 		}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(), "API key Secret should be created")
 
-		key, err := utils.GetAPIKeyFromSecret(ctx, namespace)
+		key, err := utils.GetAPIKeyFromSecret(ctx, deployNamespace)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(key).NotTo(BeEmpty())
 		apiKey = key
@@ -77,18 +71,14 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 	})
 
 	AfterAll(func() {
-		By("Uninstalling auth model deployment (removes AuthorizationPolicy)")
-		_ = utils.UninstallModelDeployment(authDeployment.Name, "default")
-
-		By("Cleaning up APIKey CR and namespace")
-		_ = utils.DeleteAPIKeyResource(ctx, utils.TestingCluster.KubeClient, namespace)
-		deleteNamespace(ctx, namespace)
+		By("Uninstalling auth model deployment (removes AuthorizationPolicy, APIKey CR)")
+		_ = utils.UninstallModelDeployment(authDeployment.Name, deployNamespace)
 	})
 
-	// hostHeader returns the Host header value that maps to the test namespace
-	// for the apikey-authz namespace resolution (subdomain = namespace).
+	// hostHeader returns the Host header value that maps to the deployment
+	// namespace for the apikey-authz namespace resolution (subdomain = namespace).
 	hostHeader := func() string {
-		return namespace + ".gw.example.com"
+		return deployNamespace + ".gw.example.com"
 	}
 
 	It("should reject requests without an Authorization header (401)", func() {

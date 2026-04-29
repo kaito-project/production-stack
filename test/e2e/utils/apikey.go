@@ -21,9 +21,6 @@ import (
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -33,31 +30,6 @@ const (
 	// APIKeySecretDataKey is the key inside the Secret that holds the plaintext API key.
 	APIKeySecretDataKey = "apiKey"
 )
-
-// APIKeyGVR is the GroupVersionResource for the APIKey CRD.
-var APIKeyGVR = schema.GroupVersionResource{
-	Group:    "kaito.sh",
-	Version:  "v1alpha1",
-	Resource: "apikeys",
-}
-
-// CreateAPIKeyResource creates an APIKey CR in the given namespace.
-// The name must be "default" (singleton per namespace).
-func CreateAPIKeyResource(ctx context.Context, cl client.Client, namespace string) error {
-	apikey := &unstructured.Unstructured{}
-	apikey.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "kaito.sh",
-		Version: "v1alpha1",
-		Kind:    "APIKey",
-	})
-	apikey.SetName("default")
-	apikey.SetNamespace(namespace)
-	if err := unstructured.SetNestedField(apikey.Object, map[string]any{}, "spec"); err != nil {
-		return fmt.Errorf("failed to set spec: %w", err)
-	}
-
-	return cl.Create(ctx, apikey)
-}
 
 // GetAPIKeyFromSecret reads the plaintext API key from the operator-generated Secret.
 func GetAPIKeyFromSecret(ctx context.Context, namespace string) (string, error) {
@@ -77,18 +49,4 @@ func GetAPIKeyFromSecret(ctx context.Context, namespace string) (string, error) 
 	}
 
 	return string(keyBytes), nil
-}
-
-// DeleteAPIKeyResource deletes the APIKey CR from the given namespace.
-func DeleteAPIKeyResource(ctx context.Context, cl client.Client, namespace string) error {
-	apikey := &unstructured.Unstructured{}
-	apikey.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "kaito.sh",
-		Version: "v1alpha1",
-		Kind:    "APIKey",
-	})
-	apikey.SetName("default")
-	apikey.SetNamespace(namespace)
-
-	return client.IgnoreNotFound(cl.Delete(ctx, apikey))
 }

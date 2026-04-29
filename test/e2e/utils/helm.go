@@ -59,6 +59,10 @@ type ModelDeploymentValues struct {
 	// AuthAPIKeyEnabled toggles the Istio AuthorizationPolicy for API key
 	// authentication via the apikey-ext-authz extension provider.
 	AuthAPIKeyEnabled bool
+	// GatewayNamespace is the namespace where the gateway pods run. The
+	// AuthorizationPolicy is created here. Only used when AuthAPIKeyEnabled
+	// is true. Defaults to "default" in the chart.
+	GatewayNamespace string
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a
@@ -107,6 +111,9 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 	}
 	if v.AuthAPIKeyEnabled {
 		args = append(args, "--set", "authAPIKeyEnabled=true")
+		if v.GatewayNamespace != "" {
+			args = append(args, "--set", "gatewayNamespace="+v.GatewayNamespace)
+		}
 	}
 	return args
 }

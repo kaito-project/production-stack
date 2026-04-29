@@ -1,0 +1,10 @@
+{{- if .Values.authAPIKeyEnabled }}
+apiVersion: kaito.sh/v1alpha1
+kind: APIKey
+metadata:
+  name: default
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+spec: {}
+{{- end }}

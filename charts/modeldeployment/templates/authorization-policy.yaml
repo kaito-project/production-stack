@@ -3,7 +3,7 @@ apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
   name: {{ include "modeldeployment.name" . }}-ext-authz
-  namespace: {{ include "modeldeployment.namespace" . }}
+  namespace: {{ .Values.gatewayNamespace }}
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
 spec:
