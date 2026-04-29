@@ -1,0 +1,135 @@
+{{- if .Values.authAPIKeyEnabled }}
+# ---------------------------------------------------------------------------
+# Post-install/upgrade hook: register the apikey-ext-authz extension provider
+# in Istio's MeshConfig so the AuthorizationPolicy can reference it.
+# Idempotent — skips the patch if the provider is already registered.
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "modeldeployment.name" . }}-meshconfig-patch
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "modeldeployment.name" . }}-meshconfig-patch
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["istio"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["istiod"]
+    verbs: ["get", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "modeldeployment.name" . }}-meshconfig-patch
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "modeldeployment.name" . }}-meshconfig-patch
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "modeldeployment.name" . }}-meshconfig-patch
+    namespace: {{ include "modeldeployment.namespace" . }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "modeldeployment.name" . }}-meshconfig-patch
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "modeldeployment.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "modeldeployment.name" . }}-meshconfig-patch
+      restartPolicy: OnFailure
+      containers:
+        - name: patch
+          image: "bitnami/kubectl:latest"
+          command:
+            - /bin/sh
+            - -exc
+            - |
+              # ── Idempotency check ──────────────────────────────────
+              MESH=$(kubectl get cm istio -n istio-system -o jsonpath='{.data.mesh}' 2>/dev/null || echo "")
+              if echo "$MESH" | grep -q 'apikey-ext-authz'; then
+                echo "Extension provider apikey-ext-authz already registered — skipping."
+                exit 0
+              fi
+
+              # ── Build new mesh config ──────────────────────────────
+              if echo "$MESH" | grep -q 'extensionProviders:'; then
+                # extensionProviders key exists — append our entry after it.
+                NEW_MESH=$(echo "$MESH" | awk '
+                  /^extensionProviders:/ {
+                    print
+                    print "- name: apikey-ext-authz"
+                    print "  envoyExtAuthzGrpc:"
+                    print "    service: apikey-authz.llm-gateway-auth.svc.cluster.local"
+                    print "    port: \"9001\""
+                    next
+                  }
+                  { print }
+                ')
+              else
+                # No extensionProviders yet — append the entire block.
+                NEW_MESH="${MESH}
+              extensionProviders:
+              - name: apikey-ext-authz
+                envoyExtAuthzGrpc:
+                  service: apikey-authz.llm-gateway-auth.svc.cluster.local
+                  port: \"9001\""
+              fi
+
+              # ── Escape for JSON and patch ──────────────────────────
+              ESCAPED=$(printf '%s' "$NEW_MESH" | awk '
+                { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t") }
+                NR>1 { printf "\\n" }
+                { printf "%s", $0 }
+              ')
+              kubectl patch cm istio -n istio-system --type merge \
+                -p "{\"data\":{\"mesh\":\"${ESCAPED}\"}}"
+
+              # ── Restart istiod to pick up the change ───────────────
+              kubectl rollout restart deployment/istiod -n istio-system
+              kubectl rollout status deployment/istiod -n istio-system --timeout=180s
+              echo "MeshConfig patched and istiod restarted successfully."
+{{- end }}

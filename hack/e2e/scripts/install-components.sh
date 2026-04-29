@@ -271,35 +271,9 @@ kubectl -n llm-gateway-auth rollout status deployment/apikey-operator --timeout=
 echo "⏳ Waiting for apikey-authz..."
 kubectl -n llm-gateway-auth rollout status deployment/apikey-authz --timeout=180s || true
 
-# Register the ext_authz extension provider in Istio's MeshConfig so the
-# AuthorizationPolicy (created by the Helm chart) can reference it.
-echo "Patching Istio MeshConfig with apikey-ext-authz extension provider..."
-kubectl get configmap istio -n istio-system -o json | \
-  python3 -c "
-import json, sys, yaml
-
-cm = json.load(sys.stdin)
-mesh_str = cm['data'].get('mesh', '')
-mesh = yaml.safe_load(mesh_str) or {}
-
-providers = mesh.setdefault('extensionProviders', [])
-if not any(p.get('name') == 'apikey-ext-authz' for p in providers):
-    providers.append({
-        'name': 'apikey-ext-authz',
-        'envoyExtAuthzGrpc': {
-            'service': 'apikey-authz.llm-gateway-auth.svc.cluster.local',
-            'port': '9001',
-        },
-    })
-    cm['data']['mesh'] = yaml.dump(mesh, default_flow_style=False)
-
-json.dump(cm, sys.stdout)
-" | kubectl apply -f -
-
-# Restart istiod to pick up the MeshConfig change.
-echo "Restarting istiod to pick up extensionProvider..."
-kubectl -n istio-system rollout restart deployment/istiod
-kubectl -n istio-system rollout status deployment/istiod --timeout=180s
+# NOTE: The MeshConfig extensionProvider registration (apikey-ext-authz) and
+# the AuthorizationPolicy are now handled by the modeldeployment Helm chart
+# when authAPIKeyEnabled=true. See charts/modeldeployment/templates/.
 
 echo ""
 echo "✅ All components installed."
