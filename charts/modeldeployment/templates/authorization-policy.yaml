@@ -1,0 +1,21 @@
+{{- if .Values.authAPIKeyEnabled }}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ include "modeldeployment.name" . }}-ext-authz
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: {{ .Values.gatewayName }}
+  action: CUSTOM
+  provider:
+    name: apikey-ext-authz
+  rules:
+    - to:
+        - operation:
+            paths:
+              - "/*"
+{{- end }}

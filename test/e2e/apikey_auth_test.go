@@ -29,8 +29,10 @@ import (
 )
 
 var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils.GinkgoLabelSmoke, func() {
-	// Use the first model from CaseGPUMocker — it's deployed by BeforeSuite.
-	modelName := CaseDeployments[CaseGPUMocker][0].Name
+	// CaseAuth deployment — installed with auth.enabled=true so the chart
+	// renders an AuthorizationPolicy alongside the model artifacts.
+	authDeployment := CaseDeployments[CaseAuth][0]
+	modelName := authDeployment.Name
 
 	var (
 		ctx       context.Context
@@ -42,12 +44,21 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		ctx = context.Background()
 		utils.GetClusterClient(utils.TestingCluster)
 
+		// Install the auth model deployment into the default namespace.
+		// This renders the AuthorizationPolicy (auth.enabled=true) that
+		// enforces ext_authz on the gateway.
+		authDeployment.Namespace = "default"
+		By(fmt.Sprintf("Installing auth model deployment %q with auth.enabled=true", modelName))
+		err := utils.InstallModelDeployment(authDeployment)
+		Expect(err).NotTo(HaveOccurred(), "failed to install auth model deployment")
+
+		// Create a random namespace for the APIKey CR.
 		namespace = generateNamespace("e2e-apikey")
 		By(fmt.Sprintf("Creating test namespace %s", namespace))
 		createNamespace(ctx, namespace)
 
 		By(fmt.Sprintf("Creating APIKey CR in namespace %s", namespace))
-		err := utils.CreateAPIKeyResource(ctx, utils.TestingCluster.KubeClient, namespace)
+		err = utils.CreateAPIKeyResource(ctx, utils.TestingCluster.KubeClient, namespace)
 		Expect(err).NotTo(HaveOccurred(), "failed to create APIKey CR")
 
 		By("Waiting for apikey-operator to generate the API key Secret")
@@ -61,17 +72,13 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		apiKey = key
 		GinkgoWriter.Printf("API key obtained (length=%d)\n", len(apiKey))
 
-		By("Creating AuthorizationPolicy to enforce ext_authz on the gateway")
-		err = utils.CreateAuthorizationPolicy(ctx, utils.TestingCluster.KubeClient, utils.GatewayNamespace)
-		Expect(err).NotTo(HaveOccurred(), "failed to create AuthorizationPolicy")
-
-		// Give Envoy a moment to pick up the new policy.
+		// Give Envoy a moment to pick up the new AuthorizationPolicy.
 		time.Sleep(5 * time.Second)
 	})
 
 	AfterAll(func() {
-		By("Cleaning up AuthorizationPolicy")
-		_ = utils.DeleteAuthorizationPolicy(ctx, utils.TestingCluster.KubeClient, utils.GatewayNamespace)
+		By("Uninstalling auth model deployment (removes AuthorizationPolicy)")
+		_ = utils.UninstallModelDeployment(authDeployment.Name, "default")
 
 		By("Cleaning up APIKey CR and namespace")
 		_ = utils.DeleteAPIKeyResource(ctx, utils.TestingCluster.KubeClient, namespace)

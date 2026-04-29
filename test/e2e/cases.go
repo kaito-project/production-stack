@@ -63,6 +63,10 @@ const (
 	// chart uninstall/deletion assertions, exercised by sibling It blocks
 	// that share BeforeEach/AfterEach).
 	CaseModelDeploymentChart = "modeldeployment-chart"
+
+	// CaseAuth covers apikey_auth_test.go (API key authentication via
+	// Istio ext_authz — valid/invalid/missing key scenarios).
+	CaseAuth = "auth"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -137,6 +141,16 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 			GatewayName:  utils.DefaultGatewayName,
+		},
+	},
+	CaseAuth: {
+		{
+			Name:         "auth-phi",
+			Model:        presetPhi,
+			Replicas:     2,
+			InstanceType: "Standard_NV36ads_A10_v5",
+			GatewayName:  "inference-gateway",
+			AuthAPIKeyEnabled: true,
 		},
 	},
 }

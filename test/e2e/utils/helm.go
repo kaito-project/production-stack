@@ -56,6 +56,9 @@ type ModelDeploymentValues struct {
 	// ScalingThreshold is the queue depth threshold. Only used when
 	// EnableScaling is true.
 	ScalingThreshold int64
+	// AuthAPIKeyEnabled toggles the Istio AuthorizationPolicy for API key
+	// authentication via the apikey-ext-authz extension provider.
+	AuthAPIKeyEnabled bool
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a
@@ -101,6 +104,9 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 		if v.ScalingThreshold > 0 {
 			args = append(args, "--set", "scalingThreshold="+strconv.FormatInt(v.ScalingThreshold, 10))
 		}
+	}
+	if v.AuthAPIKeyEnabled {
+		args = append(args, "--set", "authAPIKeyEnabled=true")
 	}
 	return args
 }

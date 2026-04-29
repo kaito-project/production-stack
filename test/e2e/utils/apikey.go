@@ -32,10 +32,6 @@ const (
 
 	// APIKeySecretDataKey is the key inside the Secret that holds the plaintext API key.
 	APIKeySecretDataKey = "apiKey"
-
-	// AuthorizationPolicyName is the name of the Istio AuthorizationPolicy
-	// that triggers ext_authz for the inference gateway.
-	AuthorizationPolicyName = "apikey-gateway-ext-authz"
 )
 
 // APIKeyGVR is the GroupVersionResource for the APIKey CRD.
@@ -95,58 +91,4 @@ func DeleteAPIKeyResource(ctx context.Context, cl client.Client, namespace strin
 	apikey.SetNamespace(namespace)
 
 	return client.IgnoreNotFound(cl.Delete(ctx, apikey))
-}
-
-// CreateAuthorizationPolicy creates an Istio AuthorizationPolicy in the gateway
-// namespace that routes all requests through the apikey-ext-authz provider.
-func CreateAuthorizationPolicy(ctx context.Context, cl client.Client, gatewayNamespace string) error {
-	ap := &unstructured.Unstructured{
-		Object: map[string]any{
-			"apiVersion": "security.istio.io/v1",
-			"kind":       "AuthorizationPolicy",
-			"metadata": map[string]any{
-				"name":      AuthorizationPolicyName,
-				"namespace": gatewayNamespace,
-			},
-			"spec": map[string]any{
-				"selector": map[string]any{
-					"matchLabels": map[string]any{
-						"gateway.networking.k8s.io/gateway-name": "inference-gateway",
-					},
-				},
-				"action": "CUSTOM",
-				"provider": map[string]any{
-					"name": "apikey-ext-authz",
-				},
-				"rules": []any{
-					map[string]any{
-						"to": []any{
-							map[string]any{
-								"operation": map[string]any{
-									"paths": []any{"/*"},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	return cl.Create(ctx, ap)
-}
-
-// DeleteAuthorizationPolicy removes the Istio AuthorizationPolicy from the
-// gateway namespace.
-func DeleteAuthorizationPolicy(ctx context.Context, cl client.Client, gatewayNamespace string) error {
-	ap := &unstructured.Unstructured{}
-	ap.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "security.istio.io",
-		Version: "v1",
-		Kind:    "AuthorizationPolicy",
-	})
-	ap.SetName(AuthorizationPolicyName)
-	ap.SetNamespace(gatewayNamespace)
-
-	return client.IgnoreNotFound(cl.Delete(ctx, ap))
 }
