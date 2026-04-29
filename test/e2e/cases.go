@@ -145,11 +145,11 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	},
 	CaseAuth: {
 		{
-			Name:         "auth-phi",
-			Model:        presetPhi,
-			Replicas:     2,
-			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "inference-gateway",
+			Name:              "auth-phi",
+			Model:             presetPhi,
+			Replicas:          2,
+			InstanceType:      "Standard_NV36ads_A10_v5",
+			GatewayName:       "inference-gateway",
 			AuthAPIKeyEnabled: true,
 		},
 	},
