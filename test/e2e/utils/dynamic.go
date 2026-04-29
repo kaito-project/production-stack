@@ -49,6 +49,30 @@ var (
 		Version:  "v1",
 		Resource: "destinationrules",
 	}
+
+	// GatewayGVK identifies the Gateway resource provisioned per case.
+	GatewayGVK = schema.GroupVersionKind{
+		Group:   "gateway.networking.k8s.io",
+		Version: "v1",
+		Kind:    "Gateway",
+	}
+
+	// HTTPRouteGVK identifies HTTPRoute resources (used to create the
+	// per-namespace catch-all that returns OpenAI-compatible 404 JSON).
+	HTTPRouteGVK = schema.GroupVersionKind{
+		Group:   "gateway.networking.k8s.io",
+		Version: "v1",
+		Kind:    "HTTPRoute",
+	}
+
+	// ReferenceGrantGVK identifies the ReferenceGrant used to permit a
+	// per-case HTTPRoute to reference the shared model-not-found Service
+	// living in the default namespace.
+	ReferenceGrantGVK = schema.GroupVersionKind{
+		Group:   "gateway.networking.k8s.io",
+		Version: "v1beta1",
+		Kind:    "ReferenceGrant",
+	}
 )
 
 // GetDynamicClient returns a dynamic Kubernetes client for working with

@@ -33,10 +33,6 @@ import (
 const (
 	// EPPMetricsPort is the port where the EPP exposes Prometheus metrics.
 	EPPMetricsPort = 9090
-
-	// ShadowNamespace is the namespace where shadow pods are deployed.
-	// Shadow pods are created in the same namespace as the original model pods.
-	ShadowNamespace = "default"
 )
 
 // ScrapePodMetrics fetches the /metrics endpoint from a pod using the
@@ -176,9 +172,10 @@ func splitLabels(s string) []string {
 type PodMetricSnapshot map[string]float64
 
 // ScrapeRequestSuccessTotal scrapes vllm:request_success_total from all shadow
-// pods for the given model and returns a map of podName → counter value.
-func ScrapeRequestSuccessTotal(ctx context.Context, clientset *kubernetes.Clientset, model string) (PodMetricSnapshot, error) {
-	pods, err := GetShadowPodsForModel(ctx, clientset, model)
+// pods for the given model in the given namespace and returns a map of
+// podName → counter value.
+func ScrapeRequestSuccessTotal(ctx context.Context, clientset *kubernetes.Clientset, namespace, model string) (PodMetricSnapshot, error) {
+	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +183,7 @@ func ScrapeRequestSuccessTotal(ctx context.Context, clientset *kubernetes.Client
 	snapshot := make(PodMetricSnapshot, len(pods))
 	for _, pod := range pods {
 		port := inferenceSimPort(pod)
-		raw, err := ScrapePodMetrics(ctx, clientset, ShadowNamespace, pod.Name, port)
+		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, port)
 		if err != nil {
 			return nil, fmt.Errorf("scraping %s: %w", pod.Name, err)
 		}
@@ -202,11 +199,12 @@ func ScrapeRequestSuccessTotal(ctx context.Context, clientset *kubernetes.Client
 	return snapshot, nil
 }
 
-// GetShadowPodsForModel returns the Running shadow pods that serve the given model.
-// Shadow pods are identified by label kaito.sh/managed-by=gpu-mocker and
-// annotation or label containing the model name.
-func GetShadowPodsForModel(ctx context.Context, clientset *kubernetes.Clientset, model string) ([]corev1.Pod, error) {
-	pods, err := clientset.CoreV1().Pods(ShadowNamespace).List(ctx, metav1.ListOptions{
+// GetShadowPodsForModel returns the Running shadow pods in the given
+// namespace that serve the given model. Shadow pods are identified by label
+// kaito.sh/managed-by=gpu-mocker and annotation or label containing the
+// model name.
+func GetShadowPodsForModel(ctx context.Context, clientset *kubernetes.Clientset, namespace, model string) ([]corev1.Pod, error) {
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "kaito.sh/managed-by=gpu-mocker",
 		FieldSelector: "status.phase=Running",
 	})
@@ -223,7 +221,7 @@ func GetShadowPodsForModel(ctx context.Context, clientset *kubernetes.Clientset,
 		}
 	}
 	if len(matched) == 0 {
-		return nil, fmt.Errorf("no running shadow pods found for model %q in %s", model, ShadowNamespace)
+		return nil, fmt.Errorf("no running shadow pods found for model %q in %s", model, namespace)
 	}
 	return matched, nil
 }
@@ -274,10 +272,11 @@ func TotalDelta(diff PodMetricSnapshot) float64 {
 }
 
 // ScrapeModelMetric scrapes a named metric with a model_name label from all
-// shadow pods for the given model and returns a per-pod snapshot.
-// This is used for metrics like vllm:prefix_cache_hits, vllm:prefix_cache_queries, etc.
-func ScrapeModelMetric(ctx context.Context, clientset *kubernetes.Clientset, model, metricName string) (PodMetricSnapshot, error) {
-	pods, err := GetShadowPodsForModel(ctx, clientset, model)
+// shadow pods in the given namespace for the given model and returns a
+// per-pod snapshot. This is used for metrics like vllm:prefix_cache_hits,
+// vllm:prefix_cache_queries, etc.
+func ScrapeModelMetric(ctx context.Context, clientset *kubernetes.Clientset, namespace, model, metricName string) (PodMetricSnapshot, error) {
+	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +284,7 @@ func ScrapeModelMetric(ctx context.Context, clientset *kubernetes.Clientset, mod
 	snapshot := make(PodMetricSnapshot, len(pods))
 	for _, pod := range pods {
 		port := inferenceSimPort(pod)
-		raw, err := ScrapePodMetrics(ctx, clientset, ShadowNamespace, pod.Name, port)
+		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, port)
 		if err != nil {
 			return nil, fmt.Errorf("scraping %s: %w", pod.Name, err)
 		}

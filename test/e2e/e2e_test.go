@@ -25,26 +25,23 @@ import (
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
-// gatewayURL is set once in BeforeSuite and reused by all test files.
-var gatewayURL string
+// defaultGatewayURL is the URL of the cluster-wide Inference Gateway in
+// the `default` namespace (installed by hack/e2e/scripts/install-components.sh).
+// It is used by edge tests that depend on cluster-wide artifacts which only
+// parent the default Gateway: the catch-all model-not-found HTTPRoute and
+// the inference-debug-filter EnvoyFilter.
+//
+// Per-case inference traffic flows through case-owned Gateways resolved
+// inside each Ordered Describe's BeforeAll (see InstallCase in cases.go).
+var defaultGatewayURL string
 
 var _ = BeforeSuite(func() {
 	url, err := utils.GetGatewayURL()
-	Expect(err).NotTo(HaveOccurred(), "failed to set up gateway port-forward")
-	gatewayURL = url
-
-	// Install the modeldeployment Helm chart for every suite-level case
-	// (each Describe owns its own table entry — see cases.go). Lifecycle
-	// cases (CaseInferenceSetCreate / Cleanup) are installed per-test.
-	utils.SetupInferenceSetsWithRouting(
-		AllSuiteDeployments(testNamespace),
-		testNamespace, gatewayURL)
+	Expect(err).NotTo(HaveOccurred(), "failed to set up default gateway port-forward")
+	defaultGatewayURL = url
 })
 
 var _ = AfterSuite(func() {
-	utils.TeardownInferenceSetsWithRouting(
-		AllSuiteDeployments(testNamespace),
-		testNamespace)
 	utils.CleanupPortForward()
 })
 

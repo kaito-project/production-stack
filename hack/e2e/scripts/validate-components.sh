@@ -54,13 +54,16 @@ kubectl -n istio-system get pods -l app=istiod
 echo ""
 
 # ── BBR ──────────────────────────────────────────────────────────────────
+# BBR is installed into Istio's rootNamespace (istio-system) so its
+# EnvoyFilter applies cluster-wide and per-case Gateways inherit
+# body-based routing automatically. Validate it there.
 echo "=== BBR (Body-Based Router) ==="
-if kubectl wait --for=condition=ready pod -l app=body-based-router --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n istio-system wait --for=condition=ready pod -l app=body-based-router --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "BBR is Running"
 else
   fail "BBR is NOT Running"
 fi
-kubectl get pods -l app=body-based-router 2>/dev/null || true
+kubectl -n istio-system get pods -l app=body-based-router 2>/dev/null || true
 echo ""
 
 # ── Gateway pod ──────────────────────────────────────────────────────────

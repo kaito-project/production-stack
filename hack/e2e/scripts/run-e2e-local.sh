@@ -14,8 +14,9 @@
 #   RESOURCE_GROUP   (default: kaito-e2e-local)
 #   CLUSTER_NAME     (default: kaito-e2e-local)
 #   LOCATION         (default: swedencentral)
-#   NODE_COUNT       (default: 3)
+#   NODE_COUNT       (default: 2)
 #   NODE_VM_SIZE     (default: Standard_D8s_v5)
+#   E2E_PARALLEL     (default: 2) — Ginkgo parallel worker count
 #   SKIP_TEARDOWN    (default: false) — set to "true" to keep cluster after tests
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -52,8 +53,9 @@ echo ""
 export RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-e2e-local}"
 export CLUSTER_NAME="${CLUSTER_NAME:-kaito-e2e-local}"
 export LOCATION="${LOCATION:-swedencentral}"
-export NODE_COUNT="${NODE_COUNT:-3}"
+export NODE_COUNT="${NODE_COUNT:-2}"
 export NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v5}"
+export E2E_PARALLEL="${E2E_PARALLEL:-2}"
 SKIP_TEARDOWN="${SKIP_TEARDOWN:-false}"
 
 STEP="${1:-all}"
@@ -111,9 +113,15 @@ do_validate() {
 }
 
 do_test() {
-  echo "=== Running E2E tests ==="
+  echo "=== Running E2E tests (E2E_PARALLEL=${E2E_PARALLEL}) ==="
   cd "${REPO_ROOT}"
-  go test -v -timeout 30m ./test/e2e/... --ginkgo.v
+  # Use the Ginkgo CLI so --procs=N actually spawns parallel workers.
+  # `go test` by itself only runs a single process and ignores --procs.
+  go run github.com/onsi/ginkgo/v2/ginkgo \
+    --procs="${E2E_PARALLEL}" \
+    --timeout=30m \
+    -v \
+    ./test/e2e/...
 }
 
 do_teardown() {

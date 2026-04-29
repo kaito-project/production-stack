@@ -43,12 +43,24 @@ import (
 //   - KAITO InferenceSet with 2+ replicas (shadow pods running llm-d-inference-sim)
 //   - llm-d-inference-sim configured with enable-kvcache: true
 
-var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, func() {
+var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixCache, func() {
 	// Per-case deployment owned by prefix_cache_routing_test.go (see cases.go).
 	// A single deployment with replicas≥2 is sufficient for prefix-cache tests.
+	// Installed in a dedicated namespace by BeforeAll so this case can run in
+	// parallel with other Ordered Describes.
 	model := CaseDeployments[CasePrefixCache][0].Name
+	caseNamespace := CaseNamespace(CasePrefixCache)
 
 	var ctx context.Context
+	var caseGatewayURL string
+
+	BeforeAll(func() {
+		caseGatewayURL = InstallCase(CasePrefixCache)
+	})
+
+	AfterAll(func() {
+		UninstallCase(CasePrefixCache)
+	})
 
 	BeforeEach(func() {
 		ctx = context.Background()
@@ -63,19 +75,19 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 			Expect(err).NotTo(HaveOccurred())
 
 			By("snapshotting per-pod metrics before sending requests")
-			before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(len(before)).To(BeNumerically(">=", 2),
 				"need at least 2 shadow pods for prefix cache test")
 
-			beforeCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, model, "vllm:prefix_cache_hits")
+			beforeCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 			Expect(err).NotTo(HaveOccurred())
-			beforeCacheQueries, err := utils.ScrapeModelMetric(ctx, clientset, model, "vllm:prefix_cache_queries")
+			beforeCacheQueries, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
 			Expect(err).NotTo(HaveOccurred())
 
 			By(fmt.Sprintf("sending the same prompt %d times", numRequests))
 			for i := 0; i < numRequests; i++ {
-				resp, err := utils.SendChatCompletionWithPrompt(gatewayURL, model, prompt)
+				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, prompt)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK),
 					"request %d should succeed", i)
@@ -83,7 +95,7 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 			}
 
 			By("verifying all requests were routed to the same pod")
-			after, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			after, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			Expect(err).NotTo(HaveOccurred())
 
 			diff := utils.DiffSnapshots(before, after)
@@ -102,9 +114,9 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 			Expect(stickyPod).NotTo(BeEmpty(), "should have identified the sticky pod")
 
 			By("verifying prefix cache metrics incremented on the sticky pod")
-			afterCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, model, "vllm:prefix_cache_hits")
+			afterCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 			Expect(err).NotTo(HaveOccurred())
-			afterCacheQueries, err := utils.ScrapeModelMetric(ctx, clientset, model, "vllm:prefix_cache_queries")
+			afterCacheQueries, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
 			Expect(err).NotTo(HaveOccurred())
 
 			cacheHitsDiff := utils.DiffSnapshots(beforeCacheHits, afterCacheHits)
@@ -130,21 +142,21 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 			Expect(err).NotTo(HaveOccurred())
 
 			By("snapshotting per-pod metrics before category A")
-			beforeA, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			beforeA, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			Expect(err).NotTo(HaveOccurred())
 
-			beforeCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, model, "vllm:prefix_cache_hits")
+			beforeCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 			Expect(err).NotTo(HaveOccurred())
 
 			By(fmt.Sprintf("sending category A prompt %d times", numPerCategory))
 			for i := 0; i < numPerCategory; i++ {
-				resp, err := utils.SendChatCompletionWithPrompt(gatewayURL, model, promptA)
+				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, promptA)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
 			}
 
-			afterA, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			afterA, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			Expect(err).NotTo(HaveOccurred())
 			diffA := utils.DiffSnapshots(beforeA, afterA)
 
@@ -160,17 +172,17 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 				"category A should be sticky — one pod should have received all %d requests", numPerCategory)
 
 			By(fmt.Sprintf("sending category B prompt %d times", numPerCategory))
-			beforeB, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			beforeB, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 0; i < numPerCategory; i++ {
-				resp, err := utils.SendChatCompletionWithPrompt(gatewayURL, model, promptB)
+				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, promptB)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
 			}
 
-			afterB, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			afterB, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			Expect(err).NotTo(HaveOccurred())
 			diffB := utils.DiffSnapshots(beforeB, afterB)
 
@@ -186,7 +198,7 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 				"category B should be sticky — one pod should have received all %d requests", numPerCategory)
 
 			By("checking prefix cache hits on each sticky pod")
-			afterCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, model, "vllm:prefix_cache_hits")
+			afterCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 			Expect(err).NotTo(HaveOccurred())
 			cacheHitsDiff := utils.DiffSnapshots(beforeCacheHits, afterCacheHits)
 
@@ -206,17 +218,17 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 			Expect(err).NotTo(HaveOccurred())
 
 			By("sending requests to establish a sticky pod")
-			before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 0; i < 3; i++ {
-				resp, err := utils.SendChatCompletionWithPrompt(gatewayURL, model, prompt)
+				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, prompt)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
 			}
 
-			after, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			after, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			Expect(err).NotTo(HaveOccurred())
 			diff := utils.DiffSnapshots(before, after)
 
@@ -230,25 +242,25 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 			Expect(stickyPod).NotTo(BeEmpty(), "should have identified a sticky pod")
 
 			By(fmt.Sprintf("deleting sticky pod %s", stickyPod))
-			err = clientset.CoreV1().Pods(utils.ShadowNamespace).Delete(ctx, stickyPod, metav1.DeleteOptions{})
+			err = clientset.CoreV1().Pods(caseNamespace).Delete(ctx, stickyPod, metav1.DeleteOptions{})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("sending the same prompt again and verifying it succeeds on a different pod")
 			// Scrape metrics from the remaining (non-deleted) pods before sending.
 			// The deleted pod will not appear in this snapshot.
-			before2, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			before2, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			// ScrapeRequestSuccessTotal may transiently fail while the pod list
 			// refreshes after deletion — retry until it succeeds.
 			if err != nil {
 				Eventually(func() error {
-					before2, err = utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+					before2, err = utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 					return err
 				}, "30s", "2s").Should(Succeed(),
 					"should be able to scrape remaining pods after deletion")
 			}
 
 			Eventually(func() error {
-				resp, err := utils.SendChatCompletionWithPrompt(gatewayURL, model, prompt)
+				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, prompt)
 				if err != nil {
 					return err
 				}
@@ -260,10 +272,10 @@ var _ = Describe("Prefix Cache Aware Routing", utils.GinkgoLabelPrefixCache, fun
 			}, "3m", "5s").Should(Succeed(),
 				"request should succeed after sticky pod deletion")
 
-			after2, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+			after2, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 			if err != nil {
 				Eventually(func() error {
-					after2, err = utils.ScrapeRequestSuccessTotal(ctx, clientset, model)
+					after2, err = utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 					return err
 				}, "30s", "2s").Should(Succeed())
 			}

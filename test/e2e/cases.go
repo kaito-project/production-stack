@@ -17,6 +17,11 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
+
+	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
+	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
+
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -35,9 +40,9 @@ const (
 )
 
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
-// entry — deployments are NOT shared across cases. Suite-level cases are
-// installed once by BeforeSuite (their union is the steady-state fixture);
-// lifecycle cases are installed per-test in their own random namespace.
+// entry — deployments are NOT shared across cases. Suite-level cases install
+// their deployments via the Ordered Describe's BeforeAll / AfterAll;
+// lifecycle cases install per-test in their own random namespace.
 const (
 	// CaseGPUMocker covers gpu_mocker_test.go (framework smoke, gateway
 	// connectivity, InferenceSet/EPP/HTTPRoute observability, fake-node and
@@ -71,90 +76,133 @@ const (
 //     X-Gateway-Model-Name).
 //   - Model: inference preset name, written to the InferenceSet's
 //     spec.template.inference.preset.name.
-//   - Namespace: left empty here; callers (Setup / per-case install) inject
-//     the runtime namespace at install time.
-//   - Replicas / InstanceType / GatewayName: explicit so test assertions can
-//     compare against a known-good value.
+//   - Namespace: per-case namespace — the suite installs into this
+//     namespace directly. Each non-default namespace gets its own
+//     dedicated Istio Gateway (named GatewayName) so parallel Ginkgo
+//     workers can target independent dataplanes.
+//   - GatewayName: the Gateway resource the HTTPRoute parents into. For
+//     non-default namespaces this Gateway is provisioned by EnsureNamespace
+//     during InstallCase. For the `default` namespace, the cluster-wide
+//     "inference-gateway" installed by hack/e2e/scripts/install-components.sh
+//     is reused.
+//   - Replicas / InstanceType: explicit so test assertions can compare
+//     against a known-good value.
 var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	CaseGPUMocker: {
 		{
 			Name:         "gpu-mocker-phi",
+			Namespace:    "e2e-gpu-mocker",
 			Model:        presetPhi,
-			Replicas:     2,
+			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "inference-gateway",
-		},
-		{
-			Name:         "gpu-mocker-ministral",
-			Model:        presetMinistral,
-			Replicas:     2,
-			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "inference-gateway",
+			GatewayName:  "gpu-mocker-gateway",
 		},
 	},
 	CaseModelRouting: {
 		{
 			Name:         "routing-phi",
+			Namespace:    "e2e-model-routing",
 			Model:        presetPhi,
 			Replicas:     2,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "inference-gateway",
+			GatewayName:  "model-routing-gateway",
 		},
 		{
 			Name:         "routing-ministral",
+			Namespace:    "e2e-model-routing",
 			Model:        presetMinistral,
 			Replicas:     2,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "inference-gateway",
+			GatewayName:  "model-routing-gateway",
 		},
 	},
 	CasePrefixCache: {
 		{
 			Name:         "prefix-cache-phi",
+			Namespace:    "e2e-prefix-cache",
 			Model:        presetPhi,
 			Replicas:     2, // prefix-cache tests require ≥2 shadow pods.
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "inference-gateway",
+			GatewayName:  "prefix-cache-gateway",
 		},
 	},
 	CaseModelDeploymentChart: {
 		{
+			// Per-test case — Namespace is filled in at runtime with a
+			// random suffix by modeldeployment_chart_test.go. The
+			// GatewayName references the cluster-wide default Gateway
+			// because the chart test asserts spec.parentRefs[0].name.
 			Name:         "mdchart-phi",
 			Model:        presetPhi,
-			Replicas:     2,
+			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "inference-gateway",
+			GatewayName:  utils.DefaultGatewayName,
 		},
 	},
 }
 
-// CaseDeploymentsWithNamespace returns a copy of CaseDeployments[caseName]
-// with Namespace set to ns on every entry. Use this whenever the case is
-// installed into a namespace that differs from the table's default (empty).
-func CaseDeploymentsWithNamespace(caseName, ns string) []utils.ModelDeploymentValues {
-	src := CaseDeployments[caseName]
-	out := make([]utils.ModelDeploymentValues, len(src))
-	for i, v := range src {
-		v.Namespace = ns
-		out[i] = v
+// CaseNamespace returns the namespace declared on the first deployment of
+// the case (all deployments in a case share a namespace).
+func CaseNamespace(caseName string) string {
+	deployments := CaseDeployments[caseName]
+	if len(deployments) == 0 {
+		return ""
 	}
-	return out
+	return deployments[0].Namespace
 }
 
-// AllSuiteDeployments returns the concatenation of every suite-level case's
-// deployments (in deterministic order), with Namespace stamped to ns. This
-// is the full set of Helm releases BeforeSuite installs. Per-test cases
-// (CaseModelDeploymentChart) are intentionally excluded — they are
-// installed per-test in a fresh namespace.
-func AllSuiteDeployments(ns string) []utils.ModelDeploymentValues {
-	suiteCases := []string{
-		CaseGPUMocker,
-		CaseModelRouting,
-		CasePrefixCache,
+// CaseGatewayName returns the Gateway resource name declared on the first
+// deployment of the case (all deployments in a case share a gateway).
+func CaseGatewayName(caseName string) string {
+	deployments := CaseDeployments[caseName]
+	if len(deployments) == 0 {
+		return ""
 	}
-	var out []utils.ModelDeploymentValues
-	for _, key := range suiteCases {
-		out = append(out, CaseDeploymentsWithNamespace(key, ns)...)
+	return deployments[0].GatewayName
+}
+
+// InstallCase provisions every modeldeployment Helm release owned by the
+// given case into its declared namespace (see CaseDeployments) and waits
+// for the EPP / inference pods + gateway routing to be ready. Returns the
+// gateway URL that routes to this case's deployments.
+//
+// For non-default namespaces, EnsureNamespace also creates the case's
+// dedicated Istio Gateway so each case has an isolated dataplane and
+// parallel Ginkgo workers do not contend on a shared gateway.
+//
+// Intended to be called from a Ginkgo Ordered Describe's BeforeAll.
+func InstallCase(caseName string) string {
+	ns := CaseNamespace(caseName)
+	gatewayName := CaseGatewayName(caseName)
+	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", caseName)
+	Expect(gatewayName).NotTo(BeEmpty(), "case %q has no GatewayName declared in CaseDeployments", caseName)
+
+	ctx := context.Background()
+	Expect(utils.EnsureNamespace(ctx, ns, gatewayName)).To(Succeed(),
+		"failed to ensure namespace %s (gateway %s) for case %s", ns, gatewayName, caseName)
+
+	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
+		To(Succeed(), "gateway service for %s did not appear", caseName)
+
+	gatewayURL, err := utils.GetGatewayURLFor(ns, gatewayName)
+	Expect(err).NotTo(HaveOccurred(), "failed to resolve gateway URL for case %s", caseName)
+
+	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gatewayURL)
+	return gatewayURL
+}
+
+// UninstallCase tears down every modeldeployment Helm release owned by the
+// given case and deletes the case's dedicated namespace (which cascades
+// the per-case Gateway). Intended to be called from a Ginkgo Ordered
+// Describe's AfterAll.
+func UninstallCase(caseName string) {
+	deployments := CaseDeployments[caseName]
+	if len(deployments) == 0 {
+		return
 	}
-	return out
+	ns := deployments[0].Namespace
+	utils.TeardownInferenceSetsWithRouting(deployments, ns)
+	if err := utils.DeleteNamespace(context.Background(), ns); err != nil {
+		GinkgoWriter.Printf("Cleanup warning: %v\n", err)
+	}
 }

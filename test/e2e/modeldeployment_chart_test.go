@@ -120,7 +120,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 
 			replicas, found, _ := unstructured.NestedInt64(is.Object, "spec", "replicas")
 			Expect(found).To(BeTrue())
-			Expect(replicas).To(Equal(int64(2)))
+			Expect(replicas).To(Equal(int64(1)))
 
 			presetName, found, _ := unstructured.NestedString(is.Object, "spec", "template", "inference", "preset", "name")
 			Expect(found).To(BeTrue())
