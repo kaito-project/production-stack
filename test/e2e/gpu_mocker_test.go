@@ -53,6 +53,12 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 	// Gateway. Resolved in BeforeAll.
 	var caseGatewayURL string
 
+	// sendChat forwards to the non-auth helper — the gpu-mocker case
+	// no longer enables the API-key AuthorizationPolicy (see cases.go).
+	sendChat := func(url, model string) (*http.Response, error) {
+		return utils.SendChatCompletion(url, model)
+	}
+
 	BeforeAll(func() {
 		caseGatewayURL = InstallCase(CaseGPUMocker)
 	})
@@ -74,7 +80,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// Retry with backoff — BBR/EPP ext_proc filters may need time
 				// to establish gRPC connections after cluster setup.
 				Eventually(func() error {
-					resp, err := utils.SendChatCompletion(caseGatewayURL, falconModel)
+					resp, err := sendChat(caseGatewayURL, falconModel)
 					if err != nil {
 						return fmt.Errorf("request failed: %w", err)
 					}
@@ -345,8 +351,20 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// The catch-all model-not-found HTTPRoute parents the
 				// cluster-wide default Gateway only, so this assertion
 				// must target defaultGatewayURL rather than the per-case
-				// gateway (which has no catch-all).
-				resp, err := utils.SendChatCompletion(defaultGatewayURL, "non-existent-model-xyz")
+				// gateway (which has no catch-all). The cluster-wide
+				// AuthorizationPolicy installed by llm-gateway-apikey
+				// also guards that gateway, so the probe must
+				// authenticate. install-components.sh provisions an
+				// APIKey CR in `default` whose Secret (default/llm-api-key)
+				// we read here.
+				ctx := context.Background()
+				apiKey, err := utils.GetAPIKeyFromSecret(ctx, "default")
+				Expect(err).NotTo(HaveOccurred(),
+					"default/llm-api-key Secret should be reconciled by apikey-operator from the APIKey CR shipped in model-not-found.yaml")
+
+				resp, err := utils.SendChatCompletionWithAuth(
+					defaultGatewayURL, "non-existent-model-xyz", "hello",
+					apiKey, "default.gw.example.com")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 

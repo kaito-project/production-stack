@@ -45,13 +45,6 @@ scalingThreshold: 10
 # gatewayName is the Gateway resource the HTTPRoute attaches to.
 gatewayName: "inference-gateway"
 
-# authApiKey controls whether an Istio AuthorizationPolicy is rendered to
-# enforce API key authentication via the apikey-ext-authz extension provider.
-# When enabled, all requests to the inference gateway are routed through the
-# external authorization service for validation. Also creates an APIKey CR in
-# the model namespace so the apikey-operator generates the API key Secret.
-authAPIKeyEnabled: false
-
 # ----------------------------------------------------------------------------
 # Endpoint Picker (EPP) configuration.
 #

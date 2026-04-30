@@ -146,6 +146,7 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	CaseAuth: {
 		{
 			Name:              "auth-phi",
+			Namespace:         "e2e-auth",
 			Model:             presetPhi,
 			Replicas:          2,
 			InstanceType:      "Standard_NV36ads_A10_v5",
@@ -192,7 +193,7 @@ func InstallCase(caseName string) string {
 	Expect(gatewayName).NotTo(BeEmpty(), "case %q has no GatewayName declared in CaseDeployments", caseName)
 
 	ctx := context.Background()
-	Expect(utils.EnsureNamespace(ctx, ns, gatewayName)).To(Succeed(),
+	Expect(utils.EnsureNamespace(ctx, ns, gatewayName, CaseDeployments[caseName][0].AuthAPIKeyEnabled)).To(Succeed(),
 		"failed to ensure namespace %s (gateway %s) for case %s", ns, gatewayName, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).

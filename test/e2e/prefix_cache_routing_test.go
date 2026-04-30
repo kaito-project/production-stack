@@ -54,6 +54,13 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 	var ctx context.Context
 	var caseGatewayURL string
 
+	// sendChatWithPrompt forwards to the non-auth helper — the
+	// prefix-cache case no longer enables the API-key
+	// AuthorizationPolicy (see cases.go).
+	sendChatWithPrompt := func(url, model, prompt string) (*http.Response, error) {
+		return utils.SendChatCompletionWithPrompt(url, model, prompt)
+	}
+
 	BeforeAll(func() {
 		caseGatewayURL = InstallCase(CasePrefixCache)
 	})
@@ -87,7 +94,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 
 			By(fmt.Sprintf("sending the same prompt %d times", numRequests))
 			for i := 0; i < numRequests; i++ {
-				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, prompt)
+				resp, err := sendChatWithPrompt(caseGatewayURL, model, prompt)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK),
 					"request %d should succeed", i)
@@ -150,7 +157,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 
 			By(fmt.Sprintf("sending category A prompt %d times", numPerCategory))
 			for i := 0; i < numPerCategory; i++ {
-				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, promptA)
+				resp, err := sendChatWithPrompt(caseGatewayURL, model, promptA)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -176,7 +183,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 0; i < numPerCategory; i++ {
-				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, promptB)
+				resp, err := sendChatWithPrompt(caseGatewayURL, model, promptB)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -222,7 +229,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 0; i < 3; i++ {
-				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, prompt)
+				resp, err := sendChatWithPrompt(caseGatewayURL, model, prompt)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -260,7 +267,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			}
 
 			Eventually(func() error {
-				resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, prompt)
+				resp, err := sendChatWithPrompt(caseGatewayURL, model, prompt)
 				if err != nil {
 					return err
 				}

@@ -83,6 +83,19 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		caseGatewayURL = InstallCase(CaseModelRouting)
 	})
 
+	// sendChat / sendChatWithRetry / sendChatWithPrompt forward to the
+	// non-auth helpers — the routing case no longer enables the API-key
+	// AuthorizationPolicy (see cases.go).
+	sendChat := func(url, model string) (*http.Response, error) {
+		return utils.SendChatCompletion(url, model)
+	}
+	sendChatWithPrompt := func(url, model, prompt string) (*http.Response, error) {
+		return utils.SendChatCompletionWithPrompt(url, model, prompt)
+	}
+	sendChatWithRetry := func(url, model string) (*http.Response, error) {
+		return utils.SendChatCompletionWithRetry(url, model)
+	}
+
 	AfterAll(func() {
 		UninstallCase(CaseModelRouting)
 	})
@@ -91,7 +104,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		It("should return the correct model name for falcon", func() {
 			var parsed *utils.ChatCompletionResponse
 			Eventually(func() error {
-				resp, err := utils.SendChatCompletion(caseGatewayURL, falconModel)
+				resp, err := sendChat(caseGatewayURL, falconModel)
 				if err != nil {
 					return err
 				}
@@ -113,7 +126,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		It("should return the correct model name for ministral", func() {
 			var parsed *utils.ChatCompletionResponse
 			Eventually(func() error {
-				resp, err := utils.SendChatCompletion(caseGatewayURL, ministralModel)
+				resp, err := sendChat(caseGatewayURL, ministralModel)
 				if err != nil {
 					return err
 				}
@@ -151,7 +164,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
-					resp, err := utils.SendChatCompletionWithRetry(caseGatewayURL, model)
+					resp, err := sendChatWithRetry(caseGatewayURL, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
@@ -209,7 +222,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 					go func(idx int) {
 						defer wg.Done()
 						defer GinkgoRecover()
-						resp, err := utils.SendChatCompletionWithRetry(caseGatewayURL, model)
+						resp, err := sendChatWithRetry(caseGatewayURL, model)
 						if err != nil {
 							results[idx] = result{model: model, err: err}
 							return
@@ -269,7 +282,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			By("sending requests to known models")
 			for _, model := range modelNames {
 				for i := 0; i < 3; i++ {
-					resp, err := utils.SendChatCompletion(caseGatewayURL, model)
+					resp, err := sendChat(caseGatewayURL, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					resp.Body.Close()
@@ -321,7 +334,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			By(fmt.Sprintf("sending %d requests per model", numRequests))
 			for _, model := range modelNames {
 				for i := 0; i < numRequests; i++ {
-					resp, err := utils.SendChatCompletion(caseGatewayURL, model)
+					resp, err := sendChat(caseGatewayURL, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					resp.Body.Close()
@@ -368,7 +381,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
-					resp, err := utils.SendChatCompletionWithRetry(caseGatewayURL, model)
+					resp, err := sendChatWithRetry(caseGatewayURL, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					resp.Body.Close()
@@ -440,7 +453,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			for _, model := range modelNames {
 				By(fmt.Sprintf("sending a request for %s and checking debug filter logs", model))
 
-				resp, err := utils.SendChatCompletion(caseGatewayURL, model)
+				resp, err := sendChat(caseGatewayURL, model)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -519,7 +532,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Verify subsequent valid requests still succeed (BBR didn't crash permanently).
 			Eventually(func() int {
-				r, err := utils.SendChatCompletion(caseGatewayURL, falconModel)
+				r, err := sendChat(caseGatewayURL, falconModel)
 				if err != nil {
 					return 0
 				}
@@ -548,7 +561,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Verify subsequent valid requests still succeed (BBR didn't crash).
 			Eventually(func() int {
-				r, err := utils.SendChatCompletion(caseGatewayURL, falconModel)
+				r, err := sendChat(caseGatewayURL, falconModel)
 				if err != nil {
 					return 0
 				}
@@ -592,7 +605,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Send the oversized request and verify HTTP 400 with an
 			// OpenAI-compatible JSON error body from vLLM.
-			resp, err := utils.SendChatCompletionWithPrompt(caseGatewayURL, model, longPrompt)
+			resp, err := sendChatWithPrompt(caseGatewayURL, model, longPrompt)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -615,7 +628,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			// Verify subsequent valid requests still succeed — the rejection
 			// did not wedge the connection or the ext_proc filter chain.
 			Eventually(func() error {
-				r, err := utils.SendChatCompletion(caseGatewayURL, model)
+				r, err := sendChat(caseGatewayURL, model)
 				if err != nil {
 					return err
 				}
