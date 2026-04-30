@@ -31,17 +31,35 @@ import (
 )
 
 const (
+	// testNamespace is the cluster-wide infrastructure namespace where
+	// shared components (the default Istio Gateway, model-not-found, and
+	// the debug filter) are installed by
+	// hack/e2e/scripts/install-components.sh. Per-case modeldeployment
+	// Helm releases live in dedicated namespaces declared on each
+	// deployment in cases.go.
 	testNamespace = "default"
 )
 
 var _ = Describe("GPU Mocker E2E", Ordered, func() {
 	// Per-case deployments owned by gpu_mocker_test.go (see cases.go).
-	// These are installed by BeforeSuite as part of the suite-level union;
-	// the test bodies below use the local aliases so renaming the
-	// deployments is a one-line change in cases.go.
+	// Installed in a dedicated namespace by BeforeAll so this case can
+	// run in parallel with other Ordered Describes.
 	caseDeployments := CaseDeployments[CaseGPUMocker]
+	caseNamespace := CaseNamespace(CaseGPUMocker)
 	suiteDeployments := caseDeployments
 	falconModel := caseDeployments[0].Name
+
+	// caseGatewayURL is the URL routing into this case's dedicated
+	// Gateway. Resolved in BeforeAll.
+	var caseGatewayURL string
+
+	BeforeAll(func() {
+		caseGatewayURL = InstallCase(CaseGPUMocker)
+	})
+
+	AfterAll(func() {
+		UninstallCase(CaseGPUMocker)
+	})
 
 	Context("GPU Node Mocker", utils.GinkgoLabelSmoke, func() {
 
@@ -56,7 +74,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// Retry with backoff — BBR/EPP ext_proc filters may need time
 				// to establish gRPC connections after cluster setup.
 				Eventually(func() error {
-					resp, err := utils.SendChatCompletion(gatewayURL, falconModel)
+					resp, err := utils.SendChatCompletion(caseGatewayURL, falconModel)
 					if err != nil {
 						return fmt.Errorf("request failed: %w", err)
 					}
@@ -67,7 +85,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					}
 					return nil
 				}, 5*time.Minute, 10*time.Second).Should(Succeed(),
-					"gateway should be reachable and return 200")
+					"case gateway should be reachable and return 200")
 			})
 		})
 	})
@@ -82,7 +100,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				for _, d := range suiteDeployments {
 					eppName := utils.EPPServiceName(d.Name)
 					By(fmt.Sprintf("checking EPP pods for %q", eppName))
-					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
+					pods, err := clientset.CoreV1().Pods(caseNamespace).List(context.Background(), metav1.ListOptions{
 						LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -104,7 +122,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				for _, d := range suiteDeployments {
 					name := d.Name
 					By(fmt.Sprintf("verifying InferenceSet %q exists with correct spec", name))
-					is, err := dynClient.Resource(utils.InferenceSetGVR).Namespace(testNamespace).
+					is, err := dynClient.Resource(utils.InferenceSetGVR).Namespace(caseNamespace).
 						Get(context.Background(), name, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred(), "InferenceSet %q should exist", name)
 					Expect(is.GetName()).To(Equal(name))
@@ -121,7 +139,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					Expect(ok).To(BeTrue(), "spec.replicas should be set")
 
 					Eventually(func() (int64, error) {
-						current, err := dynClient.Resource(utils.InferenceSetGVR).Namespace(testNamespace).
+						current, err := dynClient.Resource(utils.InferenceSetGVR).Namespace(caseNamespace).
 							Get(context.Background(), name, metav1.GetOptions{})
 						if err != nil {
 							return 0, err
@@ -140,13 +158,13 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 					By(fmt.Sprintf("verifying InferencePool %q is auto-created", utils.InferencePoolName(name)))
 					poolName := utils.InferencePoolName(name)
-					pool, err := dynClient.Resource(utils.InferencePoolGVR).Namespace(testNamespace).
+					pool, err := dynClient.Resource(utils.InferencePoolGVR).Namespace(caseNamespace).
 						Get(context.Background(), poolName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred(), "InferencePool %q should exist", poolName)
 					Expect(pool.GetName()).To(Equal(poolName))
 
 					By(fmt.Sprintf("verifying HTTPRoute %q exists", name+"-route"))
-					_, err = dynClient.Resource(utils.HTTPRouteGVR).Namespace(testNamespace).
+					_, err = dynClient.Resource(utils.HTTPRouteGVR).Namespace(caseNamespace).
 						Get(context.Background(), name+"-route", metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred(), "HTTPRoute %q should exist", name+"-route")
 				}
@@ -162,7 +180,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					routeName := d.Name + "-route"
 					By(fmt.Sprintf("checking HTTPRoute %q has Accepted=True", routeName))
 
-					route, err := dynClient.Resource(utils.HTTPRouteGVR).Namespace(testNamespace).
+					route, err := dynClient.Resource(utils.HTTPRouteGVR).Namespace(caseNamespace).
 						Get(context.Background(), routeName, metav1.GetOptions{})
 					Expect(err).NotTo(HaveOccurred(), "HTTPRoute %q should exist", routeName)
 
@@ -243,7 +261,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// Use field selector to skip stale Failed/Completed pods from
 				// previous test runs that haven't been garbage-collected yet.
 				Eventually(func() error {
-					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
+					pods, err := clientset.CoreV1().Pods(caseNamespace).List(context.Background(), metav1.ListOptions{
 						LabelSelector: "kaito.sh/managed-by=gpu-mocker",
 						FieldSelector: "status.phase=Running",
 					})
@@ -251,7 +269,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 						return fmt.Errorf("failed to list shadow pods: %w", err)
 					}
 					if len(pods.Items) == 0 {
-						return fmt.Errorf("no running shadow pods found in %s", testNamespace)
+						return fmt.Errorf("no running shadow pods found in %s", caseNamespace)
 					}
 					for _, pod := range pods.Items {
 						if _, ok := pod.Labels["kaito.sh/shadow-pod-for"]; !ok {
@@ -260,14 +278,14 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					}
 					return nil
 				}, 3*time.Minute, 10*time.Second).Should(Succeed(),
-					"running shadow pods should exist in %s", testNamespace)
+					"running shadow pods should exist in %s", caseNamespace)
 			})
 
 			It("should have shadow pods with both llm-d-inference-sim and tokenizer containers", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
+				pods, err := clientset.CoreV1().Pods(caseNamespace).List(context.Background(), metav1.ListOptions{
 					LabelSelector: "kaito.sh/managed-by=gpu-mocker",
 					FieldSelector: "status.phase=Running",
 				})
@@ -299,7 +317,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				for _, d := range suiteDeployments {
 					By(fmt.Sprintf("checking original pods for %q", d.Name))
 
-					pods, err := clientset.CoreV1().Pods(testNamespace).List(context.Background(), metav1.ListOptions{
+					pods, err := clientset.CoreV1().Pods(caseNamespace).List(context.Background(), metav1.ListOptions{
 						LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", d.Name),
 					})
 					Expect(err).NotTo(HaveOccurred())
@@ -324,7 +342,11 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 		Context("Non-existent model request", func() {
 			It("should return 404 with an OpenAI-compatible error for an unknown model", func() {
-				resp, err := utils.SendChatCompletion(gatewayURL, "non-existent-model-xyz")
+				// The catch-all model-not-found HTTPRoute parents the
+				// cluster-wide default Gateway only, so this assertion
+				// must target defaultGatewayURL rather than the per-case
+				// gateway (which has no catch-all).
+				resp, err := utils.SendChatCompletion(defaultGatewayURL, "non-existent-model-xyz")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 

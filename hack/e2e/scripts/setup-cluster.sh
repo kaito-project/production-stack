@@ -7,7 +7,7 @@
 #   CLUSTER_NAME     — AKS cluster name           (default: kaito-aks)
 #   ACR_NAME         — ACR registry name           (default: <cluster_name>acr, sanitized)
 #   LOCATION         — Azure region               (default: swedencentral)
-#   NODE_COUNT       — Number of worker nodes      (default: 3)
+#   NODE_COUNT       — Number of worker nodes      (default: 2)
 #   NODE_VM_SIZE     — VM SKU for the node pool    (default: Standard_D8s_v5)
 #
 # Outputs (exported for use by install-components.sh):
@@ -20,7 +20,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-kaito-aks}"
 # ACR names must be alphanumeric, 5-50 chars. Strip dashes from cluster name.
 ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
 LOCATION="${LOCATION:-swedencentral}"
-NODE_COUNT="${NODE_COUNT:-3}"
+NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v5}"
 
 echo "=== Creating resource group ${RESOURCE_GROUP} in ${LOCATION} ==="

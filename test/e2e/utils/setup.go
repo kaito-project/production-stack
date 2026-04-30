@@ -24,8 +24,242 @@ import (
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 )
+
+// EnsureNamespace creates the namespace if it does not exist and, when
+// the namespace is non-default, provisions all per-namespace e2e
+// resources (Gateway, catch-all HTTPRoute, ReferenceGrant). The
+// cluster-wide default Gateway and its catch-all are installed
+// out-of-band by hack/e2e/scripts/install-components.sh, so we do not
+// re-create them here.
+//
+// Safe to call repeatedly; existing resources are left untouched.
+func EnsureNamespace(ctx context.Context, name, gatewayName string) error {
+	if name == DefaultGatewayNamespace {
+		// The cluster-wide default Gateway is installed by the e2e
+		// install script — do not duplicate it here.
+		return nil
+	}
+
+	GetClusterClient(TestingCluster)
+	cl := TestingCluster.KubeClient
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if err := cl.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create namespace %s: %w", name, err)
+	}
+
+	if gatewayName == "" {
+		return fmt.Errorf("gatewayName must be set for non-default namespace %q", name)
+	}
+
+	return provisionNamespaceResources(ctx, name, gatewayName)
+}
+
+// provisionNamespaceResources is the single source of truth for every
+// resource that a non-default e2e case namespace owns. Add new
+// per-namespace resources here so callers stay unchanged.
+//
+// Currently provisioned:
+//  1. Gateway <gatewayName>: per-case Istio Gateway (HTTP/80) used by
+//     this namespace's HTTPRoutes and port-forwarded by the test client.
+//  2. HTTPRoute model-not-found-route: catch-all routing every otherwise
+//     unmatched path on the per-case Gateway to the shared
+//     `default/model-not-found` Service so requests for non-existent
+//     models return OpenAI-compatible 404 JSON instead of Envoy's bare
+//  404. Uses a cross-namespace backendRef.
+//  3. ReferenceGrant allow-model-not-found-from-<ns> (in `default`):
+//     authorizes the catch-all HTTPRoute in <ns> to reference the
+//     `default/model-not-found` Service.
+func provisionNamespaceResources(ctx context.Context, name, gatewayName string) error {
+	cl := TestingCluster.KubeClient
+
+	// 1. Gateway in the case namespace.
+	gw := &unstructured.Unstructured{}
+	gw.SetGroupVersionKind(GatewayGVK)
+	gw.SetName(gatewayName)
+	gw.SetNamespace(name)
+	if err := unstructured.SetNestedField(gw.Object, "istio", "spec", "gatewayClassName"); err != nil {
+		return fmt.Errorf("set gatewayClassName: %w", err)
+	}
+	listeners := []interface{}{
+		map[string]interface{}{
+			"name":     "http",
+			"port":     int64(80),
+			"protocol": "HTTP",
+		},
+	}
+	if err := unstructured.SetNestedSlice(gw.Object, listeners, "spec", "listeners"); err != nil {
+		return fmt.Errorf("set listeners: %w", err)
+	}
+	if err := cl.Create(ctx, gw); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create Gateway %s/%s: %w", name, gatewayName, err)
+	}
+
+	// 2. ReferenceGrant in the default (Service-owning) namespace, named
+	// after the consuming namespace so each case fully owns its grant.
+	grantName := fmt.Sprintf("allow-model-not-found-from-%s", name)
+	rg := &unstructured.Unstructured{}
+	rg.SetGroupVersionKind(ReferenceGrantGVK)
+	rg.SetName(grantName)
+	rg.SetNamespace(DefaultGatewayNamespace)
+	if err := unstructured.SetNestedSlice(rg.Object, []interface{}{
+		map[string]interface{}{
+			"group":     "gateway.networking.k8s.io",
+			"kind":      "HTTPRoute",
+			"namespace": name,
+		},
+	}, "spec", "from"); err != nil {
+		return fmt.Errorf("set ReferenceGrant.from: %w", err)
+	}
+	if err := unstructured.SetNestedSlice(rg.Object, []interface{}{
+		map[string]interface{}{
+			"group": "",
+			"kind":  "Service",
+			"name":  ModelNotFoundServiceName,
+		},
+	}, "spec", "to"); err != nil {
+		return fmt.Errorf("set ReferenceGrant.to: %w", err)
+	}
+	if err := cl.Create(ctx, rg); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create ReferenceGrant %s/%s: %w", DefaultGatewayNamespace, grantName, err)
+	}
+
+	// 3. Catch-all HTTPRoute in the case namespace, parented to the
+	// per-case Gateway, sending unmatched paths to default/model-not-found.
+	route := &unstructured.Unstructured{}
+	route.SetGroupVersionKind(HTTPRouteGVK)
+	route.SetName("model-not-found-route")
+	route.SetNamespace(name)
+	if err := unstructured.SetNestedSlice(route.Object, []interface{}{
+		map[string]interface{}{
+			"group": "gateway.networking.k8s.io",
+			"kind":  "Gateway",
+			"name":  gatewayName,
+		},
+	}, "spec", "parentRefs"); err != nil {
+		return fmt.Errorf("set parentRefs: %w", err)
+	}
+	if err := unstructured.SetNestedSlice(route.Object, []interface{}{
+		map[string]interface{}{
+			"matches": []interface{}{
+				map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":  "PathPrefix",
+						"value": "/",
+					},
+				},
+			},
+			"backendRefs": []interface{}{
+				map[string]interface{}{
+					"group":     "",
+					"kind":      "Service",
+					"name":      ModelNotFoundServiceName,
+					"namespace": DefaultGatewayNamespace,
+					"port":      int64(80),
+				},
+			},
+		},
+	}, "spec", "rules"); err != nil {
+		return fmt.Errorf("set rules: %w", err)
+	}
+	if err := cl.Create(ctx, route); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create HTTPRoute %s/model-not-found-route: %w", name, err)
+	}
+
+	return nil
+}
+
+// cleanupNamespaceResources removes per-namespace artifacts that live
+// outside the case namespace (and therefore are not reaped by the
+// namespace cascade). In-namespace resources (Gateway, HTTPRoute) are
+// deleted automatically when the namespace is deleted.
+func cleanupNamespaceResources(ctx context.Context, name string) error {
+	cl := TestingCluster.KubeClient
+
+	grantName := fmt.Sprintf("allow-model-not-found-from-%s", name)
+	rg := &unstructured.Unstructured{}
+	rg.SetGroupVersionKind(ReferenceGrantGVK)
+	rg.SetName(grantName)
+	rg.SetNamespace(DefaultGatewayNamespace)
+	if err := cl.Delete(ctx, rg); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete ReferenceGrant %s/%s: %w", DefaultGatewayNamespace, grantName, err)
+	}
+	return nil
+}
+
+// DeleteNamespace deletes the given namespace and any out-of-namespace
+// per-case artifacts. The cluster-wide default namespace is never
+// deleted.
+func DeleteNamespace(ctx context.Context, name string) error {
+	if name == DefaultGatewayNamespace {
+		return nil
+	}
+	GetClusterClient(TestingCluster)
+	cl := TestingCluster.KubeClient
+	if err := cleanupNamespaceResources(ctx, name); err != nil {
+		return err
+	}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if err := cl.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete namespace %s: %w", name, err)
+	}
+	return nil
+}
+
+// WaitForGatewayService blocks until the Istio Service backing the named
+// Gateway exists AND the gateway Pod has at least one Ready replica, so
+// port-forwards started immediately afterwards do not race the
+// gateway-controller. Istio creates the Service synchronously when it
+// observes the Gateway resource, but the underlying envoy Pod takes
+// longer to schedule + become Ready; `kubectl port-forward` to a Service
+// with no Ready endpoints hangs until those endpoints appear, which
+// causes the 30s port-forward readiness probe to time out.
+func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, timeout time.Duration) error {
+	if namespace == DefaultGatewayNamespace {
+		return nil
+	}
+	GetClusterClient(TestingCluster)
+	cl := TestingCluster.KubeClient
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return fmt.Errorf("init clientset: %w", err)
+	}
+
+	deadline := time.Now().Add(timeout)
+	svc := &corev1.Service{}
+	svcKey := types.NamespacedName{Namespace: namespace, Name: IstioGatewayServiceName(gatewayName)}
+	podSelector := fmt.Sprintf("gateway.networking.k8s.io/gateway-name=%s", gatewayName)
+
+	for time.Now().Before(deadline) {
+		if err := cl.Get(ctx, svcKey, svc); err != nil {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: podSelector,
+		})
+		if err == nil {
+			for _, pod := range pods.Items {
+				if pod.Status.Phase != corev1.PodRunning {
+					continue
+				}
+				for _, c := range pod.Status.Conditions {
+					if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+						return nil
+					}
+				}
+			}
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("gateway %s/%s did not become ready within %s (service=%s, pod selector=%q)",
+		namespace, gatewayName, timeout, svcKey.Name, podSelector)
+}
 
 // SetupInferenceSetsWithRouting idempotently installs the modeldeployment
 // Helm chart for each entry in deployments, waits for the InferencePool, EPP,

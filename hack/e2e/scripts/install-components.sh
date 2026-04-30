@@ -9,10 +9,12 @@
 #   4. Istio v1.29 (minimal profile)
 #   5. GWIE CRDs (InferencePool, InferenceModel)
 #   6. BBR (Body-Based Router) v1.3.1
-#   7. Inference Gateway
-#   8. HTTPRoute catch-all, error service, debug filter
-#   9. KEDA (Helm)
-#  10. KEDA Kaito Scaler (Helm)
+#   7. HTTPRoute catch-all, error service, debug filter
+#   8. KEDA (Helm)
+#   9. KEDA Kaito Scaler (Helm)
+#  10. Inference Gateway (default namespace) — installed last so all
+#       upstream filters (BBR, GAIE, debug filter) are already present
+#       when the gateway controller renders the gateway pod.
 #
 # Environment variables (must be set by caller, e.g. run-e2e-local.sh or CI):
 #   ISTIO_VERSION             — Istio version
@@ -126,21 +128,81 @@ echo "=== 5/10: Installing GWIE CRDs ==="
 kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/latest/download/manifests.yaml"
 
 # ── 6. BBR (Body-Based Router) ──────────────────────────────────────────
+# Installed into istio-system (Istio's rootNamespace) so that the
+# EnvoyFilter rendered by the chart applies cluster-wide to every
+# Istio-managed gateway, including per-case Gateways provisioned in
+# isolated namespaces by the e2e framework. Without this, the BBR
+# EnvoyFilter would be namespace-scoped to `default` and per-case
+# Gateways would never see the body-based-routing ext_proc filter,
+# breaking model name extraction and downstream HTTPRoute matching.
+# The chart also rewrites the ext_proc cluster_name FQDN to
+# `body-based-router.istio-system.svc.cluster.local` automatically.
 echo ""
 echo "=== 6/10: Installing BBR ${BBR_VERSION} ==="
 helm upgrade --install body-based-router oci://registry.k8s.io/gateway-api-inference-extension/charts/body-based-routing \
   --version "${BBR_VERSION}" \
+  --namespace istio-system \
   --set provider.name=istio \
   --wait
 
 echo "⏳ Waiting for BBR..."
-kubectl rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
-  kubectl wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
+kubectl -n istio-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
+  kubectl -n istio-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
   echo "⚠️  BBR not ready yet — continuing."
 
-# ── 7. Inference Gateway ────────────────────────────────────────────────
+# ── 7. HTTPRoute catch-all, error service, debug filter ─────────────────
+# Note: Per-model InferenceSets, InferencePools, EPP Deployments, and
+# model-specific HTTPRoutes are provisioned by the modeldeployment Helm
+# chart (charts/modeldeployment) via the E2E test suite (see
+# test/e2e/utils/setup.go). Only cluster-wide routing primitives (catch-all
+# HTTPRoute, error service, debug filter) are installed here. The catch-all
+# HTTPRoute parents the default Inference Gateway installed in step 10
+# below — applying it before the gateway exists is harmless; it simply
+# stays inactive until the gateway controller picks it up.
 echo ""
-echo "=== 7/10: Deploying inference Gateway ==="
+echo "=== 7/10: Deploying routing catch-all, error service ==="
+kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
+kubectl apply -f "${MANIFESTS_DIR}/inference-debug-filter.yaml"
+
+echo "⏳ Waiting for model-not-found service..."
+kubectl rollout status deployment/model-not-found --timeout=60s 2>/dev/null || true
+
+# ── 8. KEDA ────────────────────────────────────────────────────────
+echo ""
+echo "=== 8/10: Installing KEDA ${KEDA_VERSION} ==="
+helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
+helm repo update kedacore
+helm upgrade --install keda kedacore/keda \
+  --version "${KEDA_VERSION}" \
+  --namespace keda \
+  --create-namespace \
+  --wait --timeout=300s
+
+echo "⏳ Waiting for KEDA operator..."
+kubectl -n keda rollout status deployment/keda-operator --timeout=180s || true
+kubectl -n keda rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
+
+# ── 9. KEDA Kaito Scaler ───────────────────────────────────────────
+echo ""
+echo "=== 9/10: Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} ==="
+helm repo add keda-kaito-scaler https://kaito-project.github.io/keda-kaito-scaler/charts/kaito-project 2>/dev/null || true
+helm repo update keda-kaito-scaler
+helm upgrade --install keda-kaito-scaler keda-kaito-scaler/keda-kaito-scaler \
+  --version "${KEDA_KAITO_SCALER_VERSION}" \
+  --namespace kaito-system \
+  --create-namespace \
+  --wait --timeout=300s
+
+echo "⏳ Waiting for keda-kaito-scaler..."
+kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
+
+# ── 10. Inference Gateway (default namespace) ──────────────────────────
+# Deployed last so every upstream filter (BBR, GAIE, debug filter) is
+# already in place when the Istio gateway-controller renders the gateway
+# pod. Per-case Gateways for the e2e suite are provisioned at runtime by
+# the test framework (utils.EnsureNamespace) inside per-case namespaces.
+echo ""
+echo "=== 10/10: Deploying default inference Gateway ==="
 kubectl apply -f "${MANIFESTS_DIR}/gateway.yaml"
 
 echo "⏳ Waiting for Gateway pod..."
@@ -155,49 +217,6 @@ kubectl wait --for=condition=ready pod \
   -l gateway.networking.k8s.io/gateway-name=inference-gateway \
   --timeout=180s 2>/dev/null || \
   echo "⚠️  Gateway pod not ready yet — continuing."
-
-# ── 8. HTTPRoute catch-all, error service, debug filter ─────────────────
-# Note: Per-model InferenceSets, InferencePools, EPP Deployments, and
-# model-specific HTTPRoutes are provisioned by the modeldeployment Helm
-# chart (charts/modeldeployment) via the E2E test suite (see
-# test/e2e/utils/setup.go). Only cluster-wide routing primitives (catch-all
-# HTTPRoute, error service, debug filter) are installed here.
-echo ""
-echo "=== 8/10: Deploying routing catch-all, error service ==="
-kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
-kubectl apply -f "${MANIFESTS_DIR}/inference-debug-filter.yaml"
-
-echo "⏳ Waiting for model-not-found service..."
-kubectl rollout status deployment/model-not-found --timeout=60s 2>/dev/null || true
-
-# ── 9. KEDA ────────────────────────────────────────────────────────
-echo ""
-echo "=== 9/10: Installing KEDA ${KEDA_VERSION} ==="
-helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
-helm repo update kedacore
-helm upgrade --install keda kedacore/keda \
-  --version "${KEDA_VERSION}" \
-  --namespace keda \
-  --create-namespace \
-  --wait --timeout=300s
-
-echo "⏳ Waiting for KEDA operator..."
-kubectl -n keda rollout status deployment/keda-operator --timeout=180s || true
-kubectl -n keda rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
-
-# ── 10. KEDA Kaito Scaler ───────────────────────────────────────────
-echo ""
-echo "=== 10/10: Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} ==="
-helm repo add keda-kaito-scaler https://kaito-project.github.io/keda-kaito-scaler/charts/kaito-project 2>/dev/null || true
-helm repo update keda-kaito-scaler
-helm upgrade --install keda-kaito-scaler keda-kaito-scaler/keda-kaito-scaler \
-  --version "${KEDA_KAITO_SCALER_VERSION}" \
-  --namespace kaito-system \
-  --create-namespace \
-  --wait --timeout=300s
-
-echo "⏳ Waiting for keda-kaito-scaler..."
-kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
 
 echo ""
 echo "✅ All components installed."

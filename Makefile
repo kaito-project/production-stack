@@ -101,13 +101,17 @@ docker-build: ## Build docker image for the target ARCH.
 ## --------------------------------------
 
 E2E_LABEL ?=
+E2E_PARALLEL ?= 2
 
 .PHONY: test-e2e
 test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
-	@echo "Running e2e tests..."
-	go test -v -timeout 30m ./test/e2e/... \
-		$(if $(E2E_LABEL),--ginkgo.label-filter="$(E2E_LABEL)",) \
-		--ginkgo.v
+	@echo "Running e2e tests (parallel=$(E2E_PARALLEL))..."
+	go run github.com/onsi/ginkgo/v2/ginkgo \
+		--procs=$(E2E_PARALLEL) \
+		--timeout=30m \
+		-v \
+		$(if $(E2E_LABEL),--label-filter="$(E2E_LABEL)",) \
+		./test/e2e/...
 ## --------------------------------------
 ## E2E Targets
 ##

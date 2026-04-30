@@ -34,11 +34,34 @@ import (
 )
 
 const (
-	// GatewayServiceName is the Kubernetes Service name created by Istio for the Gateway.
+	// DefaultGatewayName is the Gateway resource name used by the
+	// cluster-wide infrastructure gateway provisioned by
+	// hack/e2e/scripts/install-components.sh in the `default` namespace.
+	// Per-case Gateways live in their own namespaces with case-specific
+	// names (see CaseDeployments).
+	DefaultGatewayName = "inference-gateway"
+
+	// DefaultGatewayNamespace is where the cluster-wide default Gateway
+	// (and the catch-all model-not-found service / debug filter) live.
+	DefaultGatewayNamespace = "default"
+
+	// ModelNotFoundServiceName is the cluster-wide nginx-backed Service
+	// that returns OpenAI-compatible 404 JSON for unmatched model names.
+	// Lives in DefaultGatewayNamespace and is referenced by every
+	// per-case catch-all HTTPRoute via a ReferenceGrant.
+	ModelNotFoundServiceName = "model-not-found"
+
+	// GatewayServiceName is the Kubernetes Service name Istio creates for
+	// the default Gateway. Per-case gateway services follow the same
+	// "<gateway-name>-istio" convention; use IstioGatewayServiceName().
 	GatewayServiceName = "inference-gateway-istio"
 
-	// GatewayNamespace is where the Gateway and its Service are deployed.
-	GatewayNamespace = "default"
+	// GatewayNamespace retains its historical meaning: the namespace
+	// hosting the default Gateway.
+	//
+	// Deprecated: prefer DefaultGatewayNamespace for clarity. Kept for
+	// backwards compatibility with existing call sites in this file.
+	GatewayNamespace = DefaultGatewayNamespace
 
 	// DefaultGatewayPort is the HTTP listener port on the Gateway.
 	DefaultGatewayPort = 80
@@ -136,85 +159,81 @@ func (e *ErrorResponse) ErrorCode() string {
 	return strings.TrimSpace(string(e.Error.Code))
 }
 
-// portForwardCmd holds the kubectl port-forward process so it can be
-// cleaned up when the test suite exits. Call CleanupPortForward() in
-// AfterSuite.
-var portForwardCmd *exec.Cmd
+// IstioGatewayServiceName returns the Kubernetes Service name Istio
+// creates for a Gateway with the given resource name. Istio's pattern is
+// "<gateway-name>-istio".
+func IstioGatewayServiceName(gatewayName string) string {
+	return gatewayName + "-istio"
+}
 
-// cachedGatewayURL stores the gateway URL after the first successful
-// discovery so subsequent calls reuse the same port-forward.
-var cachedGatewayURL string
+// portForward holds per-gateway port-forward state. Each (namespace,
+// gatewayName) tuple owns one kubectl port-forward and one cached URL,
+// so multiple gateways (the cluster-wide default plus per-case ones)
+// can be exercised concurrently by parallel Ginkgo workers.
+type portForward struct {
+	cmd       *exec.Cmd
+	done      chan struct{}
+	err       error
+	localPort int
+	url       string
+}
 
-// portForwardLocalPort is the local TCP port the kubectl port-forward
-// child binds to. Stored so we can restart on the same port and keep
-// any cached `gatewayURL` strings the suite has already handed out
-// to test specs (see e2e_test.go) valid across restarts.
-var portForwardLocalPort int
+// portForwardKey identifies a (namespace, serviceName) pair so the same
+// port-forward is reused across calls.
+type portForwardKey struct {
+	namespace string
+	service   string
+}
 
-// portForwardDone is closed when the kubectl port-forward process exits unexpectedly.
-var portForwardDone chan struct{}
+var (
+	portForwardMu sync.Mutex
+	portForwards  = make(map[portForwardKey]*portForward)
+)
 
-// portForwardErr stores the error from the port-forward process.
-var portForwardErr error
-
-// portForwardMu guards the port-forward state above. Concurrent specs
-// (e.g. Cross-model isolation concurrent burst) call SendChatCompletion
-// from many goroutines and any one of them may race a restart attempt.
-var portForwardMu sync.Mutex
-
-// CleanupPortForward kills the kubectl port-forward process if one is running.
+// CleanupPortForward kills every kubectl port-forward process started by
+// the suite. Safe to call from AfterSuite even if no forwards were ever
+// started.
 func CleanupPortForward() {
-	// Snapshot and reset state under the lock, then release it BEFORE
-	// waiting on portForwardDone. The watcher goroutine in
-	// startPortForward grabs portForwardMu after cmd.Wait() returns; if
-	// we held the lock here while blocking on <-portForwardDone, the
-	// watcher would deadlock on the mutex and never close(done).
 	portForwardMu.Lock()
-	cmd := portForwardCmd
-	done := portForwardDone
-	portForwardCmd = nil
-	portForwardDone = nil
-	cachedGatewayURL = ""
-	portForwardLocalPort = 0
-	portForwardErr = nil
+	pfs := portForwards
+	portForwards = make(map[portForwardKey]*portForward)
 	portForwardMu.Unlock()
 
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-		// Wait only if the background goroutine hasn't already reaped the process.
-		if done != nil {
-			<-done
-		} else {
-			_ = cmd.Wait()
+	for _, pf := range pfs {
+		if pf.cmd != nil && pf.cmd.Process != nil {
+			_ = pf.cmd.Process.Kill()
+			if pf.done != nil {
+				<-pf.done
+			} else {
+				_ = pf.cmd.Wait()
+			}
 		}
 	}
 }
 
-// startPortForward spawns `kubectl port-forward` bound to localPort and
-// installs the watcher goroutine. portForwardMu must be held.
-func startPortForward(localPort int) error {
+// startPortForward spawns `kubectl port-forward` for the given service in
+// namespace, bound to localPort. portForwardMu must be held by the caller.
+func startPortForward(pf *portForward, namespace, serviceName string) error {
 	cmd := exec.Command("kubectl", "port-forward",
-		fmt.Sprintf("svc/%s", GatewayServiceName),
-		fmt.Sprintf("%d:%d", localPort, DefaultGatewayPort),
-		"-n", GatewayNamespace)
+		fmt.Sprintf("svc/%s", serviceName),
+		fmt.Sprintf("%d:%d", pf.localPort, DefaultGatewayPort),
+		"-n", namespace)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start kubectl port-forward: %w", err)
 	}
-	portForwardCmd = cmd
-	portForwardDone = make(chan struct{})
-	portForwardErr = nil
-	done := portForwardDone
+	pf.cmd = cmd
+	pf.done = make(chan struct{})
+	pf.err = nil
+	done := pf.done
 
-	// Monitor the process in the background so tests fail fast
-	// instead of hanging on HTTP timeouts.
+	// Monitor the process so tests fail fast instead of hanging on
+	// HTTP timeouts when the forward dies.
 	go func() {
 		err := cmd.Wait()
 		portForwardMu.Lock()
-		// Only record the error if we are still tracking THIS cmd.
-		// CleanupPortForward / a concurrent restart may have replaced it.
-		if portForwardCmd == cmd {
-			portForwardErr = fmt.Errorf("kubectl port-forward exited unexpectedly: %w", err)
+		if pf.cmd == cmd {
+			pf.err = fmt.Errorf("kubectl port-forward exited unexpectedly: %w", err)
 		}
 		portForwardMu.Unlock()
 		close(done)
@@ -225,11 +244,11 @@ func startPortForward(localPort int) error {
 	for time.Now().Before(deadline) {
 		select {
 		case <-done:
-			return portForwardErr
+			return pf.err
 		default:
 		}
 		conn, err := net.DialTimeout("tcp",
-			fmt.Sprintf("localhost:%d", localPort), time.Second)
+			fmt.Sprintf("localhost:%d", pf.localPort), time.Second)
 		if err == nil {
 			conn.Close()
 			return nil
@@ -237,65 +256,73 @@ func startPortForward(localPort int) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("kubectl port-forward to %s/%s did not become ready within 30s",
-		GatewayNamespace, GatewayServiceName)
+		namespace, serviceName)
 }
 
 // restartPortForward re-spawns kubectl port-forward on the SAME local
-// port the previous instance was using, so any `gatewayURL` strings the
-// suite has already handed out to test specs remain valid. Caller MUST
-// observe portForwardDone closed (i.e. the previous process is dead)
-// before calling. portForwardMu must NOT be held.
-func restartPortForward() error {
+// port the previous instance was using, so any URL strings the suite has
+// already handed out remain valid. portForwardMu must NOT be held.
+func restartPortForward(key portForwardKey) error {
 	portForwardMu.Lock()
 	defer portForwardMu.Unlock()
-	// Another goroutine may have already restarted while we were waiting
-	// for the lock.
-	if portForwardDone != nil {
+	pf, ok := portForwards[key]
+	if !ok {
+		return fmt.Errorf("no port-forward registered for %s/%s", key.namespace, key.service)
+	}
+	// Another goroutine may have already restarted it.
+	if pf.done != nil {
 		select {
-		case <-portForwardDone:
-			// still dead — proceed with restart
+		case <-pf.done:
+			// still dead — proceed
 		default:
 			return nil
 		}
 	}
-	if portForwardLocalPort == 0 {
+	if pf.localPort == 0 {
 		return fmt.Errorf("port-forward died and no recorded local port to rebind to")
 	}
-	// Reap the dead cmd state (Wait already returned in the watcher goroutine).
-	portForwardCmd = nil
-	return startPortForward(portForwardLocalPort)
+	pf.cmd = nil
+	return startPortForward(pf, key.namespace, key.service)
 }
 
-// GetGatewayURL discovers the base URL for the inference gateway.
-// It checks the GATEWAY_URL env var first, then starts a kubectl port-forward
-// to the gateway service and returns a localhost URL.
+// GetGatewayURL returns the base URL for the cluster-wide default
+// Inference Gateway (default namespace). Honours the GATEWAY_URL env
+// override.
 func GetGatewayURL() (string, error) {
 	if url := os.Getenv("GATEWAY_URL"); url != "" {
 		return url, nil
 	}
+	return GetGatewayURLFor(DefaultGatewayNamespace, DefaultGatewayName)
+}
+
+// GetGatewayURLFor returns a base URL that proxies HTTP traffic to the
+// Gateway named gatewayName in the given namespace. The first call for a
+// (namespace, gatewayName) tuple starts a kubectl port-forward; later
+// calls reuse the same forward.
+func GetGatewayURLFor(namespace, gatewayName string) (string, error) {
+	serviceName := IstioGatewayServiceName(gatewayName)
+	key := portForwardKey{namespace: namespace, service: serviceName}
 
 	portForwardMu.Lock()
-	if cachedGatewayURL != "" {
-		url := cachedGatewayURL
+	if pf, ok := portForwards[key]; ok && pf.url != "" {
+		url := pf.url
 		portForwardMu.Unlock()
 		return url, nil
 	}
 	portForwardMu.Unlock()
 
-	// Verify the gateway service exists.
+	// Verify the gateway service exists before starting a port-forward.
 	clientset, err := GetK8sClientset()
 	if err != nil {
 		return "", fmt.Errorf("failed to create clientset: %w", err)
 	}
 
-	_, err = clientset.CoreV1().Services(GatewayNamespace).Get(
-		context.Background(), GatewayServiceName, metav1.GetOptions{})
-	if err != nil {
+	if _, err := clientset.CoreV1().Services(namespace).Get(
+		context.Background(), serviceName, metav1.GetOptions{}); err != nil {
 		return "", fmt.Errorf("failed to get gateway service %s/%s: %w",
-			GatewayNamespace, GatewayServiceName, err)
+			namespace, serviceName, err)
 	}
 
-	// Find a free local port.
 	localPort, err := getFreePort()
 	if err != nil {
 		return "", fmt.Errorf("failed to find free port: %w", err)
@@ -303,16 +330,17 @@ func GetGatewayURL() (string, error) {
 
 	portForwardMu.Lock()
 	defer portForwardMu.Unlock()
-	if cachedGatewayURL != "" {
+	if pf, ok := portForwards[key]; ok && pf.url != "" {
 		// Lost the race — another goroutine already started one.
-		return cachedGatewayURL, nil
+		return pf.url, nil
 	}
-	if err := startPortForward(localPort); err != nil {
+	pf := &portForward{localPort: localPort}
+	if err := startPortForward(pf, namespace, serviceName); err != nil {
 		return "", err
 	}
-	portForwardLocalPort = localPort
-	cachedGatewayURL = fmt.Sprintf("http://localhost:%d", localPort)
-	return cachedGatewayURL, nil
+	pf.url = fmt.Sprintf("http://localhost:%d", localPort)
+	portForwards[key] = pf
+	return pf.url, nil
 }
 
 // getFreePort asks the OS for an available port.
@@ -325,34 +353,42 @@ func getFreePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// checkPortForward returns nil if the port-forward is healthy. If the
-// background kubectl process has died, it transparently restarts it on
-// the same local port (so any previously-handed-out gatewayURL strings
-// remain valid) and returns nil on success or a wrapped error on failure.
-func checkPortForward() error {
+// checkAllPortForwards returns nil if every registered port-forward is
+// healthy. Dead forwards are restarted transparently on their original
+// local port so previously-handed-out URLs remain valid.
+func checkAllPortForwards() error {
 	portForwardMu.Lock()
-	done := portForwardDone
+	keys := make([]portForwardKey, 0, len(portForwards))
+	for k := range portForwards {
+		keys = append(keys, k)
+	}
 	portForwardMu.Unlock()
-	if done == nil {
-		return nil
-	}
-	select {
-	case <-done:
-		// Port-forward died — try to revive it.
-		if err := restartPortForward(); err != nil {
-			portForwardMu.Lock()
-			origErr := portForwardErr
-			portForwardMu.Unlock()
-			return fmt.Errorf("port-forward died (%v) and restart failed: %w", origErr, err)
+
+	for _, key := range keys {
+		portForwardMu.Lock()
+		pf := portForwards[key]
+		done := pf.done
+		portForwardMu.Unlock()
+		if done == nil {
+			continue
 		}
-		return nil
-	default:
-		return nil
+		select {
+		case <-done:
+			if err := restartPortForward(key); err != nil {
+				portForwardMu.Lock()
+				origErr := pf.err
+				portForwardMu.Unlock()
+				return fmt.Errorf("port-forward %s/%s died (%v) and restart failed: %w",
+					key.namespace, key.service, origErr, err)
+			}
+		default:
+		}
 	}
+	return nil
 }
 
 func SendChatCompletion(gatewayURL, model string) (*http.Response, error) {
-	if err := checkPortForward(); err != nil {
+	if err := checkAllPortForwards(); err != nil {
 		return nil, err
 	}
 	return SendChatCompletionWithPrompt(gatewayURL, model, "hello")
@@ -375,7 +411,7 @@ func SendChatCompletionWithRetry(gatewayURL, model string) (*http.Response, erro
 		}
 		lastErr = err
 		// Only retry on transport errors (e.g., EOF, connection reset).
-		// If the port-forward is permanently dead, checkPortForward()
+		// If the port-forward is permanently dead, checkAllPortForwards()
 		// will short-circuit on the next iteration anyway.
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -385,7 +421,7 @@ func SendChatCompletionWithRetry(gatewayURL, model string) (*http.Response, erro
 // SendChatCompletionWithPrompt sends a chat completion request with a custom
 // prompt message.
 func SendChatCompletionWithPrompt(gatewayURL, model, prompt string) (*http.Response, error) {
-	if err := checkPortForward(); err != nil {
+	if err := checkAllPortForwards(); err != nil {
 		return nil, err
 	}
 	reqBody := ChatCompletionRequest{
@@ -414,7 +450,7 @@ func SendChatCompletionWithPrompt(gatewayURL, model, prompt string) (*http.Respo
 
 // SendChatCompletionRaw sends an arbitrary ChatCompletionRequest to the gateway.
 func SendChatCompletionRaw(gatewayURL string, reqBody ChatCompletionRequest) (*http.Response, error) {
-	if err := checkPortForward(); err != nil {
+	if err := checkAllPortForwards(); err != nil {
 		return nil, err
 	}
 	bodyBytes, err := json.Marshal(reqBody)
