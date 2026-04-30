@@ -261,7 +261,10 @@ helm upgrade --install llm-gateway-apikey \
   --set authz.image.repository=mcr.microsoft.com/aks/kaito/apikey-authz \
   --set authz.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
   --set operator.webhook.enabled=true \
-  --set istio.enabled=false \
+  --set istio.enabled=true \
+  --set istio.meshConfigConfigMap.patch=true \
+  --set istio.gatewayNamespace="${GW_NAMESPACE}" \
+  --set istio.gatewaySelector."gateway\.networking\.k8s\.io/gateway-name"=inference-gateway \
   --set crds.install=true \
   --wait --timeout=300s
 
@@ -271,9 +274,9 @@ kubectl -n llm-gateway-auth rollout status deployment/apikey-operator --timeout=
 echo "⏳ Waiting for apikey-authz..."
 kubectl -n llm-gateway-auth rollout status deployment/apikey-authz --timeout=180s || true
 
-# NOTE: The MeshConfig extensionProvider registration (apikey-ext-authz) and
-# the AuthorizationPolicy are now handled by the modeldeployment Helm chart
-# when authAPIKeyEnabled=true. See charts/modeldeployment/templates/.
+# NOTE: The MeshConfig extensionProvider registration (apikey-ext-authz),
+# the AuthorizationPolicy, and the MeshConfig cleanup on uninstall are all
+# handled by the llm-gateway-apikey chart when istio.enabled=true.
 
 echo ""
 echo "✅ All components installed."

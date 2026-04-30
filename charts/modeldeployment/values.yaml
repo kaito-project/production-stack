@@ -52,11 +52,6 @@ gatewayName: "inference-gateway"
 # the model namespace so the apikey-operator generates the API key Secret.
 authAPIKeyEnabled: false
 
-# gatewayNamespace is the namespace where the inference gateway pods run. The
-# AuthorizationPolicy must be created in this namespace to affect the gateway.
-# Only used when authAPIKeyEnabled is true.
-gatewayNamespace: "default"
-
 # ----------------------------------------------------------------------------
 # Endpoint Picker (EPP) configuration.
 #
