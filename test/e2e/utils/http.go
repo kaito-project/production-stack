@@ -188,7 +188,29 @@ type portForwardKey struct {
 var (
 	portForwardMu sync.Mutex
 	portForwards  = make(map[portForwardKey]*portForward)
+	// portForwardByURL lets Send* helpers swap a stale (pre-restart)
+	// URL for the current one without callers having to re-resolve.
+	// Populated at first GetGatewayURLFor() and updated on restart.
+	portForwardByURL = make(map[string]portForwardKey)
 )
+
+// resolveGatewayURL maps a possibly-stale URL (cached by a test at
+// BeforeAll time) to the current URL of the same gateway after any
+// port-forward restarts. Returns the input unchanged if we don't own it.
+func resolveGatewayURL(url string) string {
+	portForwardMu.Lock()
+	defer portForwardMu.Unlock()
+	// Fast path: URL is current.
+	if _, ok := portForwardByURL[url]; ok {
+		// portForwardByURL maps both stale and current URLs to the
+		// same key; resolve via the key to the canonical pf.url.
+		key := portForwardByURL[url]
+		if pf, ok := portForwards[key]; ok && pf.url != "" {
+			return pf.url
+		}
+	}
+	return url
+}
 
 // CleanupPortForward kills every kubectl port-forward process started by
 // the suite. Safe to call from AfterSuite even if no forwards were ever
@@ -259,9 +281,20 @@ func startPortForward(pf *portForward, namespace, serviceName string) error {
 		namespace, serviceName)
 }
 
-// restartPortForward re-spawns kubectl port-forward on the SAME local
-// port the previous instance was using, so any URL strings the suite has
-// already handed out remain valid. portForwardMu must NOT be held.
+// restartPortForward re-spawns kubectl port-forward on a FRESH local
+// port. Previously this rebound the same port, but on long e2e runs the
+// kernel often still held the prior socket in TIME_WAIT (or `kubectl`
+// hadn't fully released the listener), so the 30s readiness wait would
+// expire and cascade-fail every spec sharing this forward.
+//
+// Allocating a new port avoids the bind race entirely. The pf.url field
+// is updated atomically so subsequent calls to GetGatewayURLFor() (which
+// every Send* helper makes via checkAllPortForwards → cached lookup)
+// pick up the new URL on the next iteration. Test code that caches the
+// URL once at BeforeAll time will see the stale URL fail with a connect
+// error and should re-resolve via GetGatewayURLFor — most Eventually
+// loops in the suite already do this implicitly because they call the
+// Send* helpers fresh each iteration. portForwardMu must NOT be held.
 func restartPortForward(key portForwardKey) error {
 	portForwardMu.Lock()
 	defer portForwardMu.Unlock()
@@ -278,11 +311,21 @@ func restartPortForward(key portForwardKey) error {
 			return nil
 		}
 	}
-	if pf.localPort == 0 {
-		return fmt.Errorf("port-forward died and no recorded local port to rebind to")
+	newPort, err := getFreePort()
+	if err != nil {
+		return fmt.Errorf("failed to allocate fresh port for restart: %w", err)
 	}
+	pf.localPort = newPort
 	pf.cmd = nil
-	return startPortForward(pf, key.namespace, key.service)
+	if err := startPortForward(pf, key.namespace, key.service); err != nil {
+		return err
+	}
+	newURL := fmt.Sprintf("http://localhost:%d", newPort)
+	// Keep the old URL pointing at this key so resolveGatewayURL can
+	// translate stale BeforeAll-cached URLs to the live one.
+	portForwardByURL[newURL] = key
+	pf.url = newURL
+	return nil
 }
 
 // GetGatewayURL returns the base URL for the cluster-wide default
@@ -340,6 +383,7 @@ func GetGatewayURLFor(namespace, gatewayName string) (string, error) {
 	}
 	pf.url = fmt.Sprintf("http://localhost:%d", localPort)
 	portForwards[key] = pf
+	portForwardByURL[pf.url] = key
 	return pf.url, nil
 }
 
@@ -424,6 +468,7 @@ func SendChatCompletionWithPrompt(gatewayURL, model, prompt string) (*http.Respo
 	if err := checkAllPortForwards(); err != nil {
 		return nil, err
 	}
+	gatewayURL = resolveGatewayURL(gatewayURL)
 	reqBody := ChatCompletionRequest{
 		Model: model,
 		Messages: []ChatMessage{
@@ -453,6 +498,7 @@ func SendChatCompletionRaw(gatewayURL string, reqBody ChatCompletionRequest) (*h
 	if err := checkAllPortForwards(); err != nil {
 		return nil, err
 	}
+	gatewayURL = resolveGatewayURL(gatewayURL)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -466,6 +512,44 @@ func SendChatCompletionRaw(gatewayURL string, reqBody ChatCompletionRequest) (*h
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+
+	return client.Do(req)
+}
+
+// SendChatCompletionWithAuth sends an OpenAI-compatible chat completion request
+// with an Authorization Bearer token and a custom Host header (needed for
+// namespace resolution by the apikey-authz service).
+func SendChatCompletionWithAuth(gatewayURL, model, prompt, bearerToken, hostHeader string) (*http.Response, error) {
+	if err := checkAllPortForwards(); err != nil {
+		return nil, err
+	}
+	gatewayURL = resolveGatewayURL(gatewayURL)
+	reqBody := ChatCompletionRequest{
+		Model: model,
+		Messages: []ChatMessage{
+			{Role: "user", Content: prompt},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	client := &http.Client{Timeout: HTTPTimeout}
+	url := gatewayURL + "/v1/chat/completions"
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
+	if hostHeader != "" {
+		req.Host = hostHeader
+	}
 
 	return client.Do(req)
 }

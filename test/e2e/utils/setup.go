@@ -33,13 +33,14 @@ import (
 
 // EnsureNamespace creates the namespace if it does not exist and, when
 // the namespace is non-default, provisions all per-namespace e2e
-// resources (Gateway, catch-all HTTPRoute, ReferenceGrant). The
+// resources (Gateway, catch-all HTTPRoute, ReferenceGrant, and — when
+// authEnabled is true — an Istio AuthorizationPolicy + APIKey CR). The
 // cluster-wide default Gateway and its catch-all are installed
 // out-of-band by hack/e2e/scripts/install-components.sh, so we do not
 // re-create them here.
 //
 // Safe to call repeatedly; existing resources are left untouched.
-func EnsureNamespace(ctx context.Context, name, gatewayName string) error {
+func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled bool) error {
 	if name == DefaultGatewayNamespace {
 		// The cluster-wide default Gateway is installed by the e2e
 		// install script — do not duplicate it here.
@@ -57,7 +58,7 @@ func EnsureNamespace(ctx context.Context, name, gatewayName string) error {
 		return fmt.Errorf("gatewayName must be set for non-default namespace %q", name)
 	}
 
-	return provisionNamespaceResources(ctx, name, gatewayName)
+	return provisionNamespaceResources(ctx, name, gatewayName, authEnabled)
 }
 
 // provisionNamespaceResources is the single source of truth for every
@@ -75,7 +76,16 @@ func EnsureNamespace(ctx context.Context, name, gatewayName string) error {
 //  3. ReferenceGrant allow-model-not-found-from-<ns> (in `default`):
 //     authorizes the catch-all HTTPRoute in <ns> to reference the
 //     `default/model-not-found` Service.
-func provisionNamespaceResources(ctx context.Context, name, gatewayName string) error {
+//  4. AuthorizationPolicy apikey-gateway-ext-authz (in <ns>): wires the
+//     per-case Gateway pod into the cluster-wide `apikey-ext-authz` CUSTOM
+//     provider (registered in MeshConfig by the llm-gateway-apikey chart).
+//     The upstream chart only installs an AP for the cluster-wide
+//     `inference-gateway`, so per-case Gateways must get their own.
+//     Created only when authEnabled is true.
+//  5. APIKey CR `default` (in <ns>): triggers the apikey-operator to
+//     reconcile a Secret named APIKeySecretName the tests pull a Bearer
+//     token from. Created only when authEnabled is true.
+func provisionNamespaceResources(ctx context.Context, name, gatewayName string, authEnabled bool) error {
 	cl := TestingCluster.KubeClient
 
 	// 1. Gateway in the case namespace.
@@ -169,6 +179,67 @@ func provisionNamespaceResources(ctx context.Context, name, gatewayName string) 
 	}
 	if err := cl.Create(ctx, route); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create HTTPRoute %s/model-not-found-route: %w", name, err)
+	}
+
+	// 4. Per-case Istio AuthorizationPolicy wiring this namespace's
+	// Gateway pod into the cluster-wide apikey-ext-authz CUSTOM provider
+	// (registered in MeshConfig by the llm-gateway-apikey chart). The
+	// upstream chart only installs an AP for the cluster-wide
+	// `inference-gateway`; per-case Gateways must get their own AP or
+	// requests bypass authentication. Selector matches the Istio gateway
+	// Pod via the standard gateway-name label. Skipped when the case
+	// does not opt into API key auth.
+	if !authEnabled {
+		return nil
+	}
+
+	ap := &unstructured.Unstructured{}
+	ap.SetGroupVersionKind(AuthorizationPolicyGVK)
+	ap.SetName("apikey-gateway-ext-authz")
+	ap.SetNamespace(name)
+	if err := unstructured.SetNestedField(ap.Object, "CUSTOM", "spec", "action"); err != nil {
+		return fmt.Errorf("set AuthorizationPolicy.action: %w", err)
+	}
+	if err := unstructured.SetNestedField(ap.Object, "apikey-ext-authz", "spec", "provider", "name"); err != nil {
+		return fmt.Errorf("set AuthorizationPolicy.provider.name: %w", err)
+	}
+	if err := unstructured.SetNestedStringMap(ap.Object, map[string]string{
+		"gateway.networking.k8s.io/gateway-name": gatewayName,
+	}, "spec", "selector", "matchLabels"); err != nil {
+		return fmt.Errorf("set AuthorizationPolicy.selector: %w", err)
+	}
+	if err := unstructured.SetNestedSlice(ap.Object, []interface{}{
+		map[string]interface{}{
+			"to": []interface{}{
+				map[string]interface{}{
+					"operation": map[string]interface{}{
+						"paths": []interface{}{"/*"},
+					},
+				},
+			},
+		},
+	}, "spec", "rules"); err != nil {
+		return fmt.Errorf("set AuthorizationPolicy.rules: %w", err)
+	}
+	if err := cl.Create(ctx, ap); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create AuthorizationPolicy %s/apikey-gateway-ext-authz: %w", name, err)
+	}
+
+	// 5. APIKey CR consumed by the apikey-operator, which reconciles it
+	// into a Secret named APIKeySecretName (`llm-api-key`) holding the
+	// bearer token the test client sends. Empty spec uses the operator's
+	// defaults (a generated random key). Previously rendered by the
+	// modeldeployment Helm chart; moved here so all per-namespace auth
+	// plumbing is co-located with the Gateway/AP it serves.
+	apiKey := &unstructured.Unstructured{}
+	apiKey.SetGroupVersionKind(APIKeyGVK)
+	apiKey.SetName("default")
+	apiKey.SetNamespace(name)
+	if err := unstructured.SetNestedMap(apiKey.Object, map[string]interface{}{}, "spec"); err != nil {
+		return fmt.Errorf("set APIKey.spec: %w", err)
+	}
+	if err := cl.Create(ctx, apiKey); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create APIKey %s/default: %w", name, err)
 	}
 
 	return nil
@@ -368,16 +439,66 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 	if gatewayURL != "" {
 		for _, d := range resolved {
 			d := d
+			// When the deployment opts in to API key auth, the chart
+			// renders an APIKey CR; the apikey-operator generates a
+			// Secret named APIKeySecretName in the same namespace. The
+			// authz service resolves the namespace from the Host
+			// header subdomain (<ns>.gw.example.com).
+			var (
+				bearerToken string
+				hostHeader  string
+			)
+			if d.AuthAPIKeyEnabled {
+				By(fmt.Sprintf("Waiting for API key Secret in %s for deployment %s", d.Namespace, d.Name))
+				Eventually(func() (string, error) {
+					return GetAPIKeyFromSecret(ctx, d.Namespace)
+				}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
+					"API key Secret should be created in %s", d.Namespace)
+				key, err := GetAPIKeyFromSecret(ctx, d.Namespace)
+				Expect(err).NotTo(HaveOccurred())
+				bearerToken = key
+				hostHeader = d.Namespace + ".gw.example.com"
+				// Give Envoy a moment to pick up the AuthorizationPolicy.
+				time.Sleep(5 * time.Second)
+				// DEBUG: surface the bearer prefix + host so failed-warmup
+				// triage can correlate the request with what apikey-authz
+				// indexed for this namespace.
+				keyPrefix := bearerToken
+				if len(keyPrefix) > 8 {
+					keyPrefix = keyPrefix[:8]
+				}
+				By(fmt.Sprintf("DEBUG warmup auth ns=%s deployment=%s host=%s bearerPrefix=%s bearerLen=%d",
+					d.Namespace, d.Name, hostHeader, keyPrefix, len(bearerToken)))
+			}
 			By(fmt.Sprintf("Waiting for gateway routing to be ready for deployment %s (preset %s)", d.Name, d.Model))
 			Eventually(func() error {
-				resp, err := SendChatCompletion(gatewayURL, d.Name)
+				var (
+					resp *http.Response
+					err  error
+				)
+				if d.AuthAPIKeyEnabled {
+					// Re-read the Secret on each retry so we don't cache
+					// a stale bearer that the apikey-operator has since
+					// rotated (the operator regenerates the Secret if its
+					// KEYID drifts from the APIKey CR — see operator
+					// "Secret not found, will regenerate" reconciles).
+					freshKey, kerr := GetAPIKeyFromSecret(ctx, d.Namespace)
+					if kerr != nil {
+						return fmt.Errorf("re-read API key for %s: %w", d.Namespace, kerr)
+					}
+					bearerToken = freshKey
+					resp, err = SendChatCompletionWithAuth(gatewayURL, d.Name, "hello", bearerToken, hostHeader)
+				} else {
+					resp, err = SendChatCompletion(gatewayURL, d.Name)
+				}
 				if err != nil {
 					return fmt.Errorf("request failed: %w", err)
 				}
 				defer resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {
 					body, _ := ReadResponseBody(resp)
-					return fmt.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
+					return fmt.Errorf("expected 200, got %d (ns=%s deployment=%s host=%q authEnabled=%v): %s",
+						resp.StatusCode, d.Namespace, d.Name, hostHeader, d.AuthAPIKeyEnabled, string(body))
 				}
 				return nil
 			}, 5*time.Minute, 10*time.Second).Should(Succeed(),

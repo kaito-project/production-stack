@@ -56,6 +56,12 @@ type ModelDeploymentValues struct {
 	// ScalingThreshold is the queue depth threshold. Only used when
 	// EnableScaling is true.
 	ScalingThreshold int64
+	// AuthAPIKeyEnabled signals that this deployment runs behind the
+	// apikey-ext-authz CUSTOM provider. The per-namespace
+	// AuthorizationPolicy and APIKey CR are provisioned by
+	// EnsureNamespace; the warmup loop in SetupInferenceSetsWithRouting
+	// reads the resulting Secret and sends Bearer + Host headers.
+	AuthAPIKeyEnabled bool
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a

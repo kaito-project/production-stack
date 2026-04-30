@@ -68,3 +68,19 @@ spec:
     - name: model-not-found
       kind: Service
       port: 80
+---
+# APIKey CR for the `default` namespace. The apikey-operator reconciles
+# this into a Secret named `llm-api-key` in `default`. The unknown-model
+# probe in gpu_mocker_test.go pulls this bearer so its request can pass
+# the cluster-wide AuthorizationPolicy that guards `inference-gateway`
+# and reach the catch-all HTTPRoute above (which returns the
+# OpenAI-compatible 404 JSON the test asserts on).
+#
+# Requires the apikey-operator + APIKey CRD installed earlier in
+# install-components.sh (the llm-gateway-apikey chart).
+apiVersion: kaito.sh/v1alpha1
+kind: APIKey
+metadata:
+  name: default
+  namespace: default
+spec: {}

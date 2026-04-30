@@ -73,6 +73,25 @@ var (
 		Version: "v1beta1",
 		Kind:    "ReferenceGrant",
 	}
+
+	// AuthorizationPolicyGVK identifies the Istio AuthorizationPolicy used
+	// to wire each per-case Gateway into the apikey-ext-authz CUSTOM
+	// provider. The upstream llm-gateway-apikey chart only installs an AP
+	// targeting the cluster-wide `inference-gateway`, so each per-case
+	// Gateway must get its own AP provisioned alongside it.
+	AuthorizationPolicyGVK = schema.GroupVersionKind{
+		Group:   "security.istio.io",
+		Version: "v1",
+		Kind:    "AuthorizationPolicy",
+	}
+
+	// APIKeyGVK identifies the KAITO APIKey CR that the apikey-operator
+	// reconciles into a Secret named APIKeySecretName.
+	APIKeyGVK = schema.GroupVersionKind{
+		Group:   "kaito.sh",
+		Version: "v1alpha1",
+		Kind:    "APIKey",
+	}
 )
 
 // GetDynamicClient returns a dynamic Kubernetes client for working with

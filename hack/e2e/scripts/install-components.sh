@@ -9,12 +9,20 @@
 #   4. Istio v1.29 (minimal profile)
 #   5. GWIE CRDs (InferencePool, InferenceModel)
 #   6. BBR (Body-Based Router) v1.3.1
-#   7. HTTPRoute catch-all, error service, debug filter
-#   8. KEDA (Helm)
-#   9. KEDA Kaito Scaler (Helm)
-#  10. Inference Gateway (default namespace) — installed last so all
-#       upstream filters (BBR, GAIE, debug filter) are already present
-#       when the gateway controller renders the gateway pod.
+#   7. LLM Gateway Auth — API key ext_authz (Helm) — installs the
+#       apikeys.kaito.sh CRD and cluster-wide AuthorizationPolicy that
+#       guards `inference-gateway`. Operator webhook is disabled (no
+#       cert-manager dependency); re-enable later.
+#   8. HTTPRoute catch-all, error service, debug filter, default APIKey
+#       — relies on the CRD from step 7 to provision the APIKey CR in
+#       `default` consumed by the unknown-model probe in
+#       gpu_mocker_test.go.
+#   9. KEDA (Helm)
+#  10. KEDA Kaito Scaler (Helm)
+#  11. Inference Gateway (default namespace) — installed last so all
+#       upstream filters (BBR, GAIE, debug filter, ext_authz) are
+#       already present when the gateway controller renders the
+#       gateway pod.
 #
 # Environment variables (must be set by caller, e.g. run-e2e-local.sh or CI):
 #   ISTIO_VERSION             — Istio version
@@ -22,6 +30,8 @@
 #   BBR_VERSION               — BBR release version
 #   KEDA_VERSION              — KEDA Helm chart version
 #   KEDA_KAITO_SCALER_VERSION — KEDA Kaito Scaler Helm chart version
+#   LLM_GATEWAY_AUTH_VERSION  — LLM Gateway Auth Helm chart version
+#   LLM_GATEWAY_AUTH_IMAGE_TAG — LLM Gateway Auth container image tag
 #   SHADOW_CONTROLLER_IMAGE   — gpu-node-mocker image (default: ghcr.io/kaito-project/gpu-node-mocker:latest)
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -35,6 +45,8 @@ MANIFESTS_DIR="${SCRIPT_DIR}/../manifests"
 : "${BBR_VERSION:?BBR_VERSION is not set. Source versions.env or export it before calling this script.}"
 : "${KEDA_VERSION:?KEDA_VERSION is not set. Source versions.env or export it before calling this script.}"
 : "${KEDA_KAITO_SCALER_VERSION:?KEDA_KAITO_SCALER_VERSION is not set. Source versions.env or export it before calling this script.}"
+: "${LLM_GATEWAY_AUTH_VERSION:?LLM_GATEWAY_AUTH_VERSION is not set. Source versions.env or export it before calling this script.}"
+: "${LLM_GATEWAY_AUTH_IMAGE_TAG:?LLM_GATEWAY_AUTH_IMAGE_TAG is not set. Source versions.env or export it before calling this script.}"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 
 echo "=== Component versions ==="
@@ -43,6 +55,8 @@ echo "  GATEWAY_API_VERSION:       ${GATEWAY_API_VERSION}"
 echo "  BBR_VERSION:               ${BBR_VERSION}"
 echo "  KEDA_VERSION:              ${KEDA_VERSION}"
 echo "  KEDA_KAITO_SCALER_VERSION: ${KEDA_KAITO_SCALER_VERSION}"
+echo "  LLM_GATEWAY_AUTH_VERSION:  ${LLM_GATEWAY_AUTH_VERSION}"
+echo "  LLM_GATEWAY_AUTH_IMAGE_TAG:${LLM_GATEWAY_AUTH_IMAGE_TAG}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
 echo ""
 
@@ -54,7 +68,7 @@ fi
 
 # ── 1. KAITO workspace operator ──────────────────────────────────────────
 echo ""
-echo "=== 1/10: Installing KAITO workspace operator (latest chart, image: nightly-latest) ==="
+echo "=== 1/11: Installing KAITO workspace operator (latest chart, image: nightly-latest) ==="
 helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
 helm repo update kaito
 
@@ -87,7 +101,7 @@ kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name
 
 # ── 2. GPU node mocker (gpu-node-mocker) ──────────────────────────
 echo ""
-echo "=== 2/10: Deploying gpu-node-mocker (GPU node mocker) ==="
+echo "=== 2/11: Deploying gpu-node-mocker (GPU node mocker) ==="
 helm install gpu-node-mocker ./charts/gpu-node-mocker \
   --namespace kaito-system \
   --create-namespace \
@@ -99,12 +113,12 @@ kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=120s
 
 # ── 3. Gateway API CRDs ─────────────────────────────────────────────────
 echo ""
-echo "=== 3/10: Installing Gateway API CRDs ${GATEWAY_API_VERSION} ==="
+echo "=== 3/11: Installing Gateway API CRDs ${GATEWAY_API_VERSION} ==="
 kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
 
 # ── 4. Istio ─────────────────────────────────────────────────────────────
 echo ""
-echo "=== 4/10: Installing Istio ${ISTIO_VERSION} ==="
+echo "=== 4/11: Installing Istio ${ISTIO_VERSION} ==="
 if ! command -v istioctl &>/dev/null; then
   echo "Installing istioctl..."
   curl -L https://istio.io/downloadIstio | ISTIO_VERSION="${ISTIO_VERSION}" sh -
@@ -124,7 +138,7 @@ kubectl -n istio-system rollout status deployment/istiod --timeout=180s
 
 # ── 5. GWIE CRDs (InferencePool, InferenceModel) ────────────────────────
 echo ""
-echo "=== 5/10: Installing GWIE CRDs ==="
+echo "=== 5/11: Installing GWIE CRDs ==="
 kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/latest/download/manifests.yaml"
 
 # ── 6. BBR (Body-Based Router) ──────────────────────────────────────────
@@ -138,7 +152,7 @@ kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api-inference-exten
 # The chart also rewrites the ext_proc cluster_name FQDN to
 # `body-based-router.istio-system.svc.cluster.local` automatically.
 echo ""
-echo "=== 6/10: Installing BBR ${BBR_VERSION} ==="
+echo "=== 6/11: Installing BBR ${BBR_VERSION} ==="
 helm upgrade --install body-based-router oci://registry.k8s.io/gateway-api-inference-extension/charts/body-based-routing \
   --version "${BBR_VERSION}" \
   --namespace istio-system \
@@ -150,26 +164,97 @@ kubectl -n istio-system rollout status deployment/body-based-router --timeout=12
   kubectl -n istio-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
   echo "⚠️  BBR not ready yet — continuing."
 
-# ── 7. HTTPRoute catch-all, error service, debug filter ─────────────────
-# Note: Per-model InferenceSets, InferencePools, EPP Deployments, and
-# model-specific HTTPRoutes are provisioned by the modeldeployment Helm
-# chart (charts/modeldeployment) via the E2E test suite (see
-# test/e2e/utils/setup.go). Only cluster-wide routing primitives (catch-all
-# HTTPRoute, error service, debug filter) are installed here. The catch-all
-# HTTPRoute parents the default Inference Gateway installed in step 10
-# below — applying it before the gateway exists is harmless; it simply
-# stays inactive until the gateway controller picks it up.
+# Scope the BBR EnvoyFilter to gateway HCMs only.
+#
+# The upstream chart deliberately omits `match.context` (see the chart's
+# templates/istio.yaml: "context omitted so that this applies to both
+# sidecars and gateways"), so Istio fans the ext_proc filter out to every
+# HCM in the mesh — including sidecars on llm-gateway-auth's apikey-authz
+# pod. Inbound gRPC Authorization/Check calls then get routed through
+# BBR's JSON body parser, BBR returns grpc-status:2 with
+# "invalid character '\x00' looking for beginning of value", and because
+# failure_mode_allow:false the sidecar emits a local 500 — which the
+# gateway's ext_authz filter surfaces to the client as 403
+# `ext_authz_error`. That breaks the apikey_auth_test.go suite end-to-end
+# and also makes the unknown-model probe in gpu_mocker_test.go return 403
+# instead of the expected 404 model_not_found.
+#
+# Adding `match.context: GATEWAY` restricts the filter to standalone
+# gateway proxies. The cluster-wide install in istio-system stays intact
+# so the filter still fans out to every per-case e2e gateway, and no
+# sidecar in the mesh sees the filter anymore. The chart exposes no
+# values knob for this; a post-install patch is the only option short of
+# vendoring the EnvoyFilter ourselves.
+echo "⏳ Scoping BBR EnvoyFilter to context=GATEWAY..."
+kubectl -n istio-system patch envoyfilter body-based-router --type=json \
+  -p='[{"op":"add","path":"/spec/configPatches/0/match/context","value":"GATEWAY"}]' \
+  2>/dev/null || \
+  echo "⚠️  Failed to patch body-based-router EnvoyFilter context (may already be set)."
+
+# ── 7. LLM Gateway Auth (API key ext_authz) ───────────────────────
+# Pulled forward (was step 12) so the apikeys.kaito.sh CRD is present
+# before model-not-found's APIKey CR is applied in step 8. The
+# AuthorizationPolicy this chart installs targets `inference-gateway`
+# by label selector — it activates once the gateway lands in step 11.
+#
+# operator.webhook.enabled=false skips the validating webhook (which
+# would otherwise require cert-manager). TODO: re-enable webhook +
+# cert-manager once the install ordering is sorted out.
 echo ""
-echo "=== 7/10: Deploying routing catch-all, error service ==="
+echo "=== 7/11: Installing LLM Gateway Auth ${LLM_GATEWAY_AUTH_VERSION} ==="
+helm upgrade --install llm-gateway-apikey \
+  oci://mcr.microsoft.com/aks/kaito/helm/llm-gateway-apikey \
+  --version "${LLM_GATEWAY_AUTH_VERSION}" \
+  --namespace llm-gateway-auth \
+  --create-namespace \
+  --set operator.image.repository=mcr.microsoft.com/aks/kaito/apikey-operator \
+  --set operator.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
+  --set authz.image.repository=mcr.microsoft.com/aks/kaito/apikey-authz \
+  --set authz.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
+  --set operator.webhook.enabled=false \
+  --set istio.enabled=true \
+  --set istio.meshConfigConfigMap.patch=true \
+  --set istio.gatewayNamespace=default \
+  --set istio.gatewaySelector."gateway\.networking\.k8s\.io/gateway-name"=inference-gateway \
+  --set crds.install=true \
+  --wait --timeout=300s
+
+echo "⏳ Waiting for apikey-operator..."
+kubectl -n llm-gateway-auth rollout status deployment/apikey-operator --timeout=180s || true
+
+echo "⏳ Waiting for apikey-authz..."
+kubectl -n llm-gateway-auth rollout status deployment/apikey-authz --timeout=180s || true
+
+# ── 8. HTTPRoute catch-all, error service, debug filter, default APIKey ─
+# Per-model InferenceSets, InferencePools, EPP Deployments, and
+# model-specific HTTPRoutes are provisioned by the modeldeployment Helm
+# chart via the E2E test suite. Only cluster-wide routing primitives
+# (catch-all HTTPRoute, error service, debug filter) live here. The
+# manifest also ships an APIKey CR in `default` so the unknown-model
+# probe in gpu_mocker_test.go can authenticate against the cluster-wide
+# ext_authz policy installed in step 7 and reach the catch-all route.
+# The catch-all HTTPRoute parents the default Inference Gateway
+# installed in step 11 — applying it before the gateway exists is
+# harmless; it stays inactive until the gateway controller picks it up.
+echo ""
+echo "=== 8/11: Deploying routing catch-all, error service, default APIKey ==="
 kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
 kubectl apply -f "${MANIFESTS_DIR}/inference-debug-filter.yaml"
 
 echo "⏳ Waiting for model-not-found service..."
 kubectl rollout status deployment/model-not-found --timeout=60s 2>/dev/null || true
 
-# ── 8. KEDA ────────────────────────────────────────────────────────
+echo "⏳ Waiting for default APIKey Secret to be reconciled..."
+for _ in $(seq 1 30); do
+  if kubectl -n default get secret llm-api-key &>/dev/null; then
+    break
+  fi
+  sleep 2
+done
+
+# ── 9. KEDA ────────────────────────────────────────────────────────
 echo ""
-echo "=== 8/10: Installing KEDA ${KEDA_VERSION} ==="
+echo "=== 9/11: Installing KEDA ${KEDA_VERSION} ==="
 helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
 helm repo update kedacore
 helm upgrade --install keda kedacore/keda \
@@ -182,9 +267,9 @@ echo "⏳ Waiting for KEDA operator..."
 kubectl -n keda rollout status deployment/keda-operator --timeout=180s || true
 kubectl -n keda rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
 
-# ── 9. KEDA Kaito Scaler ───────────────────────────────────────────
+# ── 10. KEDA Kaito Scaler ───────────────────────────────────────────
 echo ""
-echo "=== 9/10: Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} ==="
+echo "=== 10/11: Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} ==="
 helm repo add keda-kaito-scaler https://kaito-project.github.io/keda-kaito-scaler/charts/kaito-project 2>/dev/null || true
 helm repo update keda-kaito-scaler
 helm upgrade --install keda-kaito-scaler keda-kaito-scaler/keda-kaito-scaler \
@@ -196,13 +281,14 @@ helm upgrade --install keda-kaito-scaler keda-kaito-scaler/keda-kaito-scaler \
 echo "⏳ Waiting for keda-kaito-scaler..."
 kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
 
-# ── 10. Inference Gateway (default namespace) ──────────────────────────
-# Deployed last so every upstream filter (BBR, GAIE, debug filter) is
-# already in place when the Istio gateway-controller renders the gateway
-# pod. Per-case Gateways for the e2e suite are provisioned at runtime by
-# the test framework (utils.EnsureNamespace) inside per-case namespaces.
+# ── 11. Inference Gateway (default namespace) ──────────────────────────
+# Deployed last so every upstream filter (BBR, GAIE, debug filter,
+# ext_authz from llm-gateway-apikey) is already in place when the Istio
+# gateway-controller renders the gateway pod. Per-case Gateways for the
+# e2e suite are provisioned at runtime by the test framework
+# (utils.EnsureNamespace) inside per-case namespaces.
 echo ""
-echo "=== 10/10: Deploying default inference Gateway ==="
+echo "=== 11/11: Deploying default inference Gateway ==="
 kubectl apply -f "${MANIFESTS_DIR}/gateway.yaml"
 
 echo "⏳ Waiting for Gateway pod..."
@@ -217,6 +303,11 @@ kubectl wait --for=condition=ready pod \
   -l gateway.networking.k8s.io/gateway-name=inference-gateway \
   --timeout=180s 2>/dev/null || \
   echo "⚠️  Gateway pod not ready yet — continuing."
+
+# NOTE: The MeshConfig extensionProvider registration (apikey-ext-authz),
+# the AuthorizationPolicy, and the MeshConfig cleanup on uninstall are
+# all handled by the llm-gateway-apikey chart (installed in step 7 above)
+# when istio.enabled=true.
 
 echo ""
 echo "✅ All components installed."
