@@ -151,12 +151,30 @@ kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api-inference-exten
 # breaking model name extraction and downstream HTTPRoute matching.
 # The chart also rewrites the ext_proc cluster_name FQDN to
 # `body-based-router.istio-system.svc.cluster.local` automatically.
+#
+# We install from the rambohe-ch fork's `support-insecure-serving` branch
+# so that BBR can be launched in insecure-serving mode (no TLS on the
+# ext_proc gRPC listener), which matches the plaintext ext_proc cluster
+# wired up by the Istio EnvoyFilter rendered by the chart. The chart is
+# fetched via a shallow git clone into a temp directory and installed
+# from the local path; the BBR_VERSION variable is retained for log
+# clarity but is not used as a chart version pin in this branch.
 echo ""
-echo "=== 6/11: Installing BBR ${BBR_VERSION} ==="
-helm upgrade --install body-based-router oci://registry.k8s.io/gateway-api-inference-extension/charts/body-based-routing \
-  --version "${BBR_VERSION}" \
+echo "=== 6/11: Installing BBR (rambohe-ch fork, insecure-serving mode, ref: support-insecure-serving) ==="
+BBR_CHART_REPO="https://github.com/rambohe-ch/gateway-api-inference-extension.git"
+BBR_CHART_REF="support-insecure-serving"
+BBR_CHART_SUBPATH="config/charts/body-based-routing"
+BBR_CHART_TMPDIR="$(mktemp -d -t bbr-chart-XXXXXX)"
+trap 'rm -rf "${BBR_CHART_TMPDIR}"' EXIT
+
+echo "Cloning ${BBR_CHART_REPO} (branch: ${BBR_CHART_REF}) into ${BBR_CHART_TMPDIR}..."
+git clone --depth 1 --branch "${BBR_CHART_REF}" \
+  "${BBR_CHART_REPO}" "${BBR_CHART_TMPDIR}/gaie" >/dev/null
+
+helm upgrade --install body-based-router "${BBR_CHART_TMPDIR}/gaie/${BBR_CHART_SUBPATH}" \
   --namespace istio-system \
   --set provider.name=istio \
+  --set bbr.secureServing=false \
   --wait
 
 echo "⏳ Waiting for BBR..."
@@ -164,32 +182,9 @@ kubectl -n istio-system rollout status deployment/body-based-router --timeout=12
   kubectl -n istio-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
   echo "⚠️  BBR not ready yet — continuing."
 
-# Scope the BBR EnvoyFilter to gateway HCMs only.
-#
-# The upstream chart deliberately omits `match.context` (see the chart's
-# templates/istio.yaml: "context omitted so that this applies to both
-# sidecars and gateways"), so Istio fans the ext_proc filter out to every
-# HCM in the mesh — including sidecars on llm-gateway-auth's apikey-authz
-# pod. Inbound gRPC Authorization/Check calls then get routed through
-# BBR's JSON body parser, BBR returns grpc-status:2 with
-# "invalid character '\x00' looking for beginning of value", and because
-# failure_mode_allow:false the sidecar emits a local 500 — which the
-# gateway's ext_authz filter surfaces to the client as 403
-# `ext_authz_error`. That breaks the apikey_auth_test.go suite end-to-end
-# and also makes the unknown-model probe in gpu_mocker_test.go return 403
-# instead of the expected 404 model_not_found.
-#
-# Adding `match.context: GATEWAY` restricts the filter to standalone
-# gateway proxies. The cluster-wide install in istio-system stays intact
-# so the filter still fans out to every per-case e2e gateway, and no
-# sidecar in the mesh sees the filter anymore. The chart exposes no
-# values knob for this; a post-install patch is the only option short of
-# vendoring the EnvoyFilter ourselves.
-echo "⏳ Scoping BBR EnvoyFilter to context=GATEWAY..."
-kubectl -n istio-system patch envoyfilter body-based-router --type=json \
-  -p='[{"op":"add","path":"/spec/configPatches/0/match/context","value":"GATEWAY"}]' \
-  2>/dev/null || \
-  echo "⚠️  Failed to patch body-based-router EnvoyFilter context (may already be set)."
+# NOTE: The fork's chart template already pins the BBR EnvoyFilter to
+# `match.context: GATEWAY`, so the previous post-install JSON patch that
+# scoped the filter to gateway HCMs only is no longer needed.
 
 # ── 7. LLM Gateway Auth (API key ext_authz) ───────────────────────
 # Pulled forward (was step 12) so the apikeys.kaito.sh CRD is present
