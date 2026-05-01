@@ -1,6 +1,6 @@
 # Production Stack
 
-This project provides a reference implementation on how to build an inference stack on top of [Kaito](https://github.com/kaito-project/kaito).
+This project evaluates a production inference stack built on top of existing OSS projects. The stack is designed based on the [**llm-d**](https://github.com/llm-d/llm-d) reference stack. Credits go to llm-d contributors for the reference architecture and the contribution of several core components, such as the EPP. In this stack, KAITO is the inference engine, and we focus on evaluating the request routing and autoscaling performance. We run the [vLLM simulator](https://github.com/llm-d/llm-d-inference-sim) so that the entire stack can be evaluated using CPUs only.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ This project provides a reference implementation on how to build an inference st
 - **[Kaito-Keda-Scaler](https://github.com/kaito-project/keda-kaito-scaler)** — Metric-based autoscaler built on [KEDA](https://keda.sh/) that scales vLLM inference pods up and down based on workload metrics.
 - **Mocked GPU Nodes / CPU Nodes** — Infrastructure layer providing compute resources for inference workloads. The `gpu-node-mocker` controller (E2E-only) fakes GPU nodes on CPU-only clusters and runs the `llm-d-inference-sim` shadow pods on real CPU nodes.
 
-## Resource Layering
+## Resource Management
 
 Production Stack resources are organised into three tiers by scope and
 lifecycle. Operators provision the lower tiers once per cluster; users
