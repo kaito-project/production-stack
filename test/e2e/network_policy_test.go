@@ -174,6 +174,18 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: probeNS}}
 		_, _ = clientset.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{})
 
+		// Wait for the namespace's `default` ServiceAccount to be
+		// created by the SA admission controller. Without this, an
+		// immediate Pod create races the controller and fails with
+		// `error looking up service account <ns>/default: serviceaccount
+		// "default" not found` — most visible on freshly-created
+		// namespaces (e.g. `random-ns`).
+		Eventually(func() error {
+			_, err := clientset.CoreV1().ServiceAccounts(probeNS).Get(ctx, "default", metav1.GetOptions{})
+			return err
+		}, 30*time.Second, time.Second).Should(Succeed(),
+			"default ServiceAccount in %s did not appear", probeNS)
+
 		probePodName := fmt.Sprintf("netpol-probe-%d", rand.Intn(900000)+100000)
 		probePod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{

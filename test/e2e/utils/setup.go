@@ -339,6 +339,11 @@ func DeleteNamespace(ctx context.Context, name string) error {
 	if name == DefaultGatewayNamespace {
 		return nil
 	}
+	// Kill any cached kubectl port-forwards targeting this namespace
+	// before the namespace is gone, so subsequent EnsurePortForwards()
+	// healthchecks don't try to restart a forward against a vanished
+	// namespace (which surfaces as a 90s readiness timeout).
+	RemovePortForwardsForNamespace(name)
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
 	if err := cleanupNamespaceResources(ctx, name); err != nil {

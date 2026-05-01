@@ -231,6 +231,40 @@ func EnsurePortForwards() error {
 	return checkAllPortForwards()
 }
 
+// RemovePortForwardsForNamespace kills and unregisters every kubectl
+// port-forward whose target service lives in the given namespace.
+// Call this from teardown paths that delete a namespace, so subsequent
+// EnsurePortForwards / SendChatCompletion calls do not try to restart
+// a forward against a namespace that no longer exists (which surfaces as
+// `Error from server (NotFound): namespaces "<ns>" not found` and
+// eventually a 90s readiness timeout).
+func RemovePortForwardsForNamespace(namespace string) {
+	portForwardMu.Lock()
+	victims := make([]*portForward, 0)
+	for k, pf := range portForwards {
+		if k.namespace != namespace {
+			continue
+		}
+		victims = append(victims, pf)
+		delete(portForwards, k)
+		if pf.url != "" {
+			delete(portForwardByURL, pf.url)
+		}
+	}
+	portForwardMu.Unlock()
+
+	for _, pf := range victims {
+		if pf.cmd != nil && pf.cmd.Process != nil {
+			_ = pf.cmd.Process.Kill()
+			if pf.done != nil {
+				<-pf.done
+			} else {
+				_ = pf.cmd.Wait()
+			}
+		}
+	}
+}
+
 // CleanupPortForward kills every kubectl port-forward process started by
 // the suite. Safe to call from AfterSuite even if no forwards were ever
 // started.
