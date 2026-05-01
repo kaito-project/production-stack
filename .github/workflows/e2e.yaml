@@ -61,87 +61,22 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
 
-      - name: Load component versions
-        run: |
-          # Source defaults from the centralized version file (loaded exactly once).
-          source versions.env
-          # workflow_dispatch inputs override defaults when non-empty.
-          INPUT_ISTIO="${{ github.event.inputs.istio_version }}"
-          INPUT_GWAPI="${{ github.event.inputs.gateway_api_version }}"
-          INPUT_BBR="${{ github.event.inputs.bbr_version }}"
-          INPUT_KEDA="${{ github.event.inputs.keda_version }}"
-          INPUT_KKS="${{ github.event.inputs.keda_kaito_scaler_version }}"
-          INPUT_LGA="${{ github.event.inputs.llm_gateway_auth_version }}"
-          [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
-          [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
-          [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
-          [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
-          [ -n "${INPUT_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${INPUT_KKS}"
-          [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
-          # Export to GITHUB_ENV so all subsequent steps inherit these.
-          {
-            echo "GO_VERSION=${GO_VERSION}"
-            echo "ISTIO_VERSION=${ISTIO_VERSION}"
-            echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
-            echo "BBR_VERSION=${BBR_VERSION}"
-            echo "KEDA_VERSION=${KEDA_VERSION}"
-            echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
-            echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
-            echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
-            echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
-          } >> "$GITHUB_ENV"
-
-      - name: Print versions
-        run: |
-          echo "GO_VERSION=${GO_VERSION}"
-          echo "ISTIO_VERSION=${ISTIO_VERSION}"
-          echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
-          echo "BBR_VERSION=${BBR_VERSION}"
-          echo "KEDA_VERSION=${KEDA_VERSION}"
-          echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
-          echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
-          echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
-          echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
+      - name: E2E base setup
+        uses: ./.github/actions/e2e-base-setup
         with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Azure Login
-        run: az login --identity
-
-      - name: Build gpu-node-mocker image
-        run: make docker-build
-        env:
-          IMG: ${{ env.GPU_MOCKER_IMAGE }}
-
-      - name: Setup cluster
-        run: make e2e-setup
-        env:
-          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
-          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
-          ACR_NAME: ${{ env.ACR_NAME }}
-          LOCATION: ${{ env.LOCATION }}
-          NODE_COUNT: ${{ env.NODE_COUNT }}
-          NODE_VM_SIZE: ${{ env.NODE_VM_SIZE }}
-
-      - name: Push gpu-node-mocker image
-        id: image
-        run: |
-          OUTPUT=$(make e2e-push-image)
-          echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
-        env:
-          ACR_NAME: ${{ env.ACR_NAME }}
-          GPU_MOCKER_IMAGE: ${{ env.GPU_MOCKER_IMAGE }}
-
-      - name: Install components
-        run: make e2e-install
-        env:
-          SHADOW_CONTROLLER_IMAGE: "${{ steps.image.outputs.image }}"
-
-      - name: Validate components
-        run: make e2e-validate
+          resource-group: ${{ env.RESOURCE_GROUP }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          acr-name: ${{ env.ACR_NAME }}
+          gpu-mocker-image: ${{ env.GPU_MOCKER_IMAGE }}
+          location: ${{ env.LOCATION }}
+          node-count: ${{ env.NODE_COUNT }}
+          node-vm-size: ${{ env.NODE_VM_SIZE }}
+          istio-version: ${{ github.event.inputs.istio_version }}
+          gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
+          bbr-version: ${{ github.event.inputs.bbr_version }}
+          keda-version: ${{ github.event.inputs.keda_version }}
+          keda-kaito-scaler-version: ${{ github.event.inputs.keda_kaito_scaler_version }}
+          llm-gateway-auth-version: ${{ github.event.inputs.llm_gateway_auth_version }}
 
       - name: Run E2E tests
         run: make test-e2e
