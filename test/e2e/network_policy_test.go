@@ -35,10 +35,7 @@ import (
 )
 
 const (
-	netpolModelNameA = "netpol-a"           // unique name to avoid KAITO workspace collision with other test suites
-	netpolModelNameB = "netpol-b"           // different name for namespace B isolation test
-	netpolPreset     = "falcon-7b-instruct" // underlying model preset shared by both
-	probeTimeout     = 10 * time.Second
+	probeTimeout = 10 * time.Second
 )
 
 var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func() {
@@ -47,6 +44,8 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		clientset       *kubernetes.Clientset
 		namespace       string
 		namespaceB      string
+		netpolModelA    string
+		netpolModelB    string
 		serverIP        string
 		serverPort      int32
 		serverIPB       string
@@ -57,189 +56,75 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	BeforeAll(func() {
 		ctx = context.Background()
 		utils.GetClusterClient(utils.TestingCluster)
-		cl := utils.TestingCluster.KubeClient
 
 		var err error
 		clientset, err = utils.GetK8sClientset()
 		Expect(err).NotTo(HaveOccurred(), "failed to create k8s clientset")
 
-		// Create a dynamic namespace for this test run.
-		namespace = fmt.Sprintf("e2e-netpol-%d", rand.Intn(900000)+100000)
-		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
-		Expect(cl.Create(ctx, ns)).To(Succeed(), "failed to create namespace %s", namespace)
+		// Install both workload namespaces (each with default-deny + allow-inference
+		// NetworkPolicy pair) via the shared case framework. InstallCase handles
+		// the per-namespace Gateway, modeldeployment Helm release, EPP / shadow
+		// pod readiness, and gateway routing warmup.
+		InstallCase(CaseNetworkPolicyA)
+		InstallCase(CaseNetworkPolicyB)
 
-		// Deploy InferenceSet with routing.
-		cfg := utils.DefaultInferenceSetConfig(netpolModelNameA)
-		cfg.Namespace = namespace
-		cfg.PresetName = netpolPreset
-		cfg.ModelName = netpolPreset
-		Expect(utils.CreateInferenceSetWithRouting(ctx, cl, cfg)).To(Succeed(),
-			"failed to create InferenceSet with routing in %s", namespace)
+		namespace = CaseNamespace(CaseNetworkPolicyA)
+		namespaceB = CaseNamespace(CaseNetworkPolicyB)
+		netpolModelA = CaseDeployments[CaseNetworkPolicyA][0].Name
+		netpolModelB = CaseDeployments[CaseNetworkPolicyB][0].Name
 
-		// Deploy network policies into the model namespace.
-		Expect(utils.CreateNetworkPoliciesForNamespace(ctx, cl, namespace)).To(Succeed(),
-			"failed to create network policies in %s", namespace)
+		// Resolve the model pod IP + port for namespace A.
+		serverIP, serverPort = readyModelPodEndpoint(ctx, clientset, namespace, netpolModelA)
+		Expect(serverIP).NotTo(BeEmpty(), "could not find a ready model pod IP in %s", namespace)
+		Expect(serverPort).To(BeNumerically(">", 0), "could not determine model pod serving port in %s", namespace)
 
-		// Wait for a model pod to be ready and get its IP.
-		Eventually(func() (string, error) {
-			pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", netpolModelNameA),
-			})
-			if err != nil {
-				return "", err
-			}
-			for _, pod := range pods.Items {
-				for _, cond := range pod.Status.Conditions {
-					if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-						return pod.Status.PodIP, nil
-					}
-				}
-			}
-			return "", fmt.Errorf("no ready model pods found")
-		}, utils.InferenceSetReadyTimeout, utils.PollInterval).ShouldNot(BeEmpty(),
-			"model pod did not become ready in %s", namespace)
+		// Resolve the model pod IP + port for namespace B.
+		serverIPB, serverPortB = readyModelPodEndpoint(ctx, clientset, namespaceB, netpolModelB)
+		Expect(serverIPB).NotTo(BeEmpty(), "could not find a ready model pod IP in %s", namespaceB)
+		Expect(serverPortB).To(BeNumerically(">", 0), "could not determine model pod serving port in %s", namespaceB)
 
-		// Capture the model pod IP.
-		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", netpolModelNameA),
-		})
-		Expect(err).NotTo(HaveOccurred())
-		for _, pod := range pods.Items {
-			for _, cond := range pod.Status.Conditions {
-				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-					serverIP = pod.Status.PodIP
-					break
-				}
-			}
-			if serverIP != "" {
-				break
-			}
-		}
-		Expect(serverIP).NotTo(BeEmpty(), "could not find a ready model pod IP")
-
-		// Get the serving port from the pod spec.
-		for _, pod := range pods.Items {
-			for _, c := range pod.Spec.Containers {
-				for _, p := range c.Ports {
-					if p.ContainerPort > 0 {
-						serverPort = p.ContainerPort
-						break
-					}
-				}
-				if serverPort > 0 {
-					break
-				}
-			}
-			if serverPort > 0 {
-				break
-			}
-		}
-		Expect(serverPort).To(BeNumerically(">", 0), "could not determine model pod serving port")
-
-		// Deploy a second model namespace (namespace B) to test cross-namespace isolation.
-		namespaceB = fmt.Sprintf("e2e-netpol-%d", rand.Intn(900000)+100000)
-		nsB := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceB}}
-		Expect(cl.Create(ctx, nsB)).To(Succeed(), "failed to create namespace %s", namespaceB)
-
-		cfgB := utils.DefaultInferenceSetConfig(netpolModelNameB)
-		cfgB.Namespace = namespaceB
-		cfgB.PresetName = netpolPreset // same underlying model preset
-		cfgB.ModelName = netpolPreset
-		Expect(utils.CreateInferenceSetWithRouting(ctx, cl, cfgB)).To(Succeed(),
-			"failed to create InferenceSet with routing in %s", namespaceB)
-
-		Expect(utils.CreateNetworkPoliciesForNamespace(ctx, cl, namespaceB)).To(Succeed(),
-			"failed to create network policies in %s", namespaceB)
-
-		// Wait for model pod in namespace B.
-		Eventually(func() (string, error) {
-			podsB, err := clientset.CoreV1().Pods(namespaceB).List(ctx, metav1.ListOptions{
-				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", netpolModelNameB),
-			})
-			if err != nil {
-				return "", err
-			}
-			for _, pod := range podsB.Items {
-				for _, cond := range pod.Status.Conditions {
-					if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-						return pod.Status.PodIP, nil
-					}
-				}
-			}
-			return "", fmt.Errorf("no ready model pods found")
-		}, utils.InferenceSetReadyTimeout, utils.PollInterval).ShouldNot(BeEmpty(),
-			"model pod did not become ready in %s", namespaceB)
-
-		podsB, err := clientset.CoreV1().Pods(namespaceB).List(ctx, metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", netpolModelNameB),
-		})
-		Expect(err).NotTo(HaveOccurred())
-		for _, pod := range podsB.Items {
-			for _, c := range pod.Spec.Containers {
-				for _, p := range c.Ports {
-					if p.ContainerPort > 0 {
-						serverPortB = p.ContainerPort
-						break
-					}
-				}
-				if serverPortB > 0 {
-					break
-				}
-			}
-			for _, cond := range pod.Status.Conditions {
-				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
-					serverIPB = pod.Status.PodIP
-					break
-				}
-			}
-			if serverIPB != "" && serverPortB > 0 {
-				break
-			}
-		}
-		Expect(serverIPB).NotTo(BeEmpty(), "could not find a ready model pod IP in namespace B")
-		Expect(serverPortB).To(BeNumerically(">", 0), "could not determine model pod serving port in namespace B")
-
-		// Wait for NetworkPolicy enforcement to be active. On freshly created
-		// clusters Cilium may report Running before its eBPF policy maps are
-		// loaded. We poll by launching a canary probe from an external namespace
-		// and waiting until it is blocked.
+		// Wait for NetworkPolicy enforcement to actually take effect on this
+		// cluster. On freshly created Cilium clusters the policy maps may take
+		// a few seconds to load even after pods report Ready. Use a single
+		// long-lived canary pod in an external namespace and probe with wget,
+		// which (unlike `nc -w` on busybox 1.36) sets a meaningful non-zero
+		// exit code when the connection is refused/blocked.
 		canaryNS := fmt.Sprintf("e2e-netpol-canary-%d", rand.Intn(900000)+100000)
 		probeNamespaces = append(probeNamespaces, canaryNS)
+		_, _ = clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: canaryNS},
+		}, metav1.CreateOptions{})
+
+		canaryPodName := fmt.Sprintf("canary-probe-%d", rand.Intn(900000)+100000)
+		_, err = clientset.CoreV1().Pods(canaryNS).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: canaryPodName, Namespace: canaryNS},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:    "probe",
+					Image:   "busybox:1.36",
+					Command: []string{"sh", "-c", "sleep 3600"},
+				}},
+			},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred(), "failed to create canary probe pod")
+		Expect(utils.WaitForPodReady(ctx, clientset, canaryNS, canaryPodName, utils.PollTimeout)).
+			To(Succeed(), "canary probe pod did not become ready")
+
+		restCfg, err := utils.GetK8sConfig()
+		Expect(err).NotTo(HaveOccurred())
+
 		Eventually(func() bool {
-			nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: canaryNS}}
-			_, _ = clientset.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{})
-
-			probePodName := fmt.Sprintf("canary-probe-%d", rand.Intn(900000)+100000)
-			probePod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Name: probePodName, Namespace: canaryNS},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:    "probe",
-						Image:   "busybox:1.36",
-						Command: []string{"sh", "-c", "sleep 3600"},
-					}},
-				},
-			}
-			_, err := clientset.CoreV1().Pods(canaryNS).Create(ctx, probePod, metav1.CreateOptions{})
-			if err != nil {
-				return false
-			}
-			defer func() {
-				_ = clientset.CoreV1().Pods(canaryNS).Delete(ctx, probePodName, metav1.DeleteOptions{})
-			}()
-
-			if err := utils.WaitForPodReady(ctx, clientset, canaryNS, probePodName, utils.PollTimeout); err != nil {
-				return false
-			}
-
-			restCfg, err := utils.GetK8sConfig()
-			if err != nil {
-				return false
-			}
-
-			cmd := []string{"sh", "-c", fmt.Sprintf("echo test | nc -w 3 %s %d", serverIP, serverPort)}
+			// `nc -z -w 3` does a pure TCP probe and returns 0 on success,
+			// non-zero on refused/blocked/timeout. Echo the exit code to
+			// stdout because client-go's StreamWithContext returns nil even
+			// when the remote command exits non-zero, so we cannot rely on
+			// `err != nil` to mean "blocked".
+			cmd := []string{"sh", "-c", fmt.Sprintf(
+				"nc -z -w 3 %s %d 2>&1; echo EXIT=$?",
+				serverIP, serverPort,
+			)}
 			req := clientset.CoreV1().RESTClient().Post().
-				Resource("pods").Name(probePodName).Namespace(canaryNS).
+				Resource("pods").Name(canaryPodName).Namespace(canaryNS).
 				SubResource("exec").
 				VersionedParams(&corev1.PodExecOptions{
 					Command: cmd, Stdout: true, Stderr: true,
@@ -253,38 +138,26 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			var stdout, stderr bytes.Buffer
 			execCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 			defer cancel()
-
-			err = exec.StreamWithContext(execCtx, remotecommand.StreamOptions{
+			_ = exec.StreamWithContext(execCtx, remotecommand.StreamOptions{
 				Stdout: &stdout, Stderr: &stderr,
 			})
-			// err != nil means connectivity was blocked — enforcement is active.
-			return err != nil
-		}, 2*time.Minute, 10*time.Second).Should(BeTrue(),
+			out := stdout.String() + stderr.String()
+			// Enforcement is active when nc cannot establish the TCP handshake
+			// from the external canary namespace (any non-zero exit).
+			return !bytes.Contains([]byte(out), []byte("EXIT=0"))
+		}, 3*time.Minute, 5*time.Second).Should(BeTrue(),
 			"timed out waiting for NetworkPolicy enforcement to become active — "+
-				"Cilium may not be enforcing policies on this cluster")
+				"Cilium may not be enforcing policies on this cluster, or the "+
+				"allow-inference-traffic rule is too permissive")
 	})
 
 	AfterAll(func() {
-		cl := utils.TestingCluster.KubeClient
-
-		// Clean up routing and InferenceSet.
-		_ = utils.CleanupInferenceSetWithRouting(ctx, cl, netpolModelNameA, namespace)
-		_ = utils.CleanupInferenceSetWithRouting(ctx, cl, netpolModelNameB, namespaceB)
-
-		// Clean up network policies.
-		_ = utils.CleanupNetworkPolicies(ctx, cl, namespace)
-		_ = utils.CleanupNetworkPolicies(ctx, cl, namespaceB)
-
-		// Clean up probe namespaces.
+		// Clean up probe namespaces (canary + any It-block-created probe ns).
 		for _, ns := range probeNamespaces {
 			_ = clientset.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{})
 		}
-
-		// Delete the test namespace.
-		nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
-		_ = cl.Delete(ctx, nsObj)
-		nsBObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespaceB}}
-		_ = cl.Delete(ctx, nsBObj)
+		UninstallCase(CaseNetworkPolicyA)
+		UninstallCase(CaseNetworkPolicyB)
 	})
 
 	// probeTarget launches a busybox pod in probeNS and execs the given command.
@@ -356,19 +229,13 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		return stdout.String(), err
 	}
 
-	// ncCmd builds a netcat TCP connectivity check command.
+	// ncCmd builds a TCP connectivity check using `nc -z` (zero I/O mode),
+	// which is the canonical probe form busybox 1.36's `nc` actually
+	// accepts (the bare `nc -w 3 HOST PORT` form is rejected with a usage
+	// banner). Exit code 0 ⇒ TCP handshake completed, non-zero ⇒ blocked,
+	// refused, or timed out — exactly what NetworkPolicy controls at L3/L4.
 	ncCmd := func(targetIP string, targetPort int32) []string {
-		return []string{"sh", "-c", fmt.Sprintf("echo test | nc -w 3 %s %d", targetIP, targetPort)}
-	}
-
-	// wgetCmd builds a wget chat completion POST command. Exit code 0 means HTTP 2xx.
-	wgetCmd := func(targetIP string, targetPort int32, model string) []string {
-		return []string{"sh", "-c", fmt.Sprintf(
-			`wget -q -O /dev/null --header='Content-Type: application/json' `+
-				`--post-data='{"model":"%s","messages":[{"role":"user","content":"hello"}],"max_tokens":5}' `+
-				`http://%s:%d/v1/chat/completions`,
-			model, targetIP, targetPort,
-		)}
+		return []string{"sh", "-c", fmt.Sprintf("nc -z -w 3 %s %d", targetIP, targetPort)}
 	}
 
 	// probe is a convenience wrapper that checks TCP connectivity to the model pod.
@@ -383,9 +250,13 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	// works but an external namespace is NOT blocked, enforcement is off and
 	// every subsequent deny assertion would be a false positive.
 	It("baseline: should ALLOW ingress from within the model namespace", func() {
-		_, err := probeTarget(namespace, wgetCmd(serverIP, serverPort, netpolPreset), 30*time.Second, nil)
+		// NetworkPolicy is L3/L4, so a TCP-level reachability check is the
+		// correct signal. Hitting the model pod directly with an
+		// HTTP/`/v1/chat/completions` POST would test the EPP+Gateway
+		// pipeline (which only the Gateway pod can reach), not the policy.
+		_, err := probeTarget(namespace, ncCmd(serverIP, serverPort), probeTimeout, nil)
 		Expect(err).NotTo(HaveOccurred(),
-			"intra-namespace inference request should succeed — if this fails, cluster networking is broken")
+			"intra-namespace TCP reach to model pod should succeed — if this fails, NetworkPolicy is over-blocking")
 	})
 
 	It("baseline: should DENY ingress from an external namespace (proves enforcement is active)", func() {
@@ -418,13 +289,17 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	})
 
 	// ── Allow tests ───────────────────────────────────────────────────────
-	It("should ALLOW ingress via gateway-labeled pod with a real inference request", func() {
+	It("should ALLOW ingress via gateway-labeled pod in default namespace", func() {
+		// The allow-inference-traffic NetworkPolicy permits ingress from
+		// pods in `default` carrying the inference-gateway label. Verify at
+		// L4 — the policy decision is independent of what the model pod
+		// chooses to serve on that port.
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
-		_, err := probeTarget("default", wgetCmd(serverIP, serverPort, netpolPreset), 30*time.Second, gatewayLabels)
+		_, err := probeTarget("default", ncCmd(serverIP, serverPort), probeTimeout, gatewayLabels)
 		Expect(err).NotTo(HaveOccurred(),
-			"gateway-labeled pod should receive HTTP 200 from model pod for chat completion request")
+			"gateway-labeled pod in default should be allowed to TCP-connect to the model pod")
 	})
 
 	// ── Cross-namespace isolation ─────────────────────────────────────────
@@ -440,3 +315,62 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			"workload namespace B should not be able to reach model pods in workload namespace A")
 	})
 })
+
+// readyModelPodEndpoint returns the PodIP and first containerPort of a Ready
+// pod owned by the given InferenceSet name in the given namespace. Fails the
+// current Ginkgo spec if no Ready pod has appeared within InferenceSetReadyTimeout.
+func readyModelPodEndpoint(ctx context.Context, clientset *kubernetes.Clientset, ns, deploymentName string) (string, int32) {
+	selector := fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", deploymentName)
+
+	Eventually(func() (string, error) {
+		pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+		if err != nil {
+			return "", err
+		}
+		for _, pod := range pods.Items {
+			for _, cond := range pod.Status.Conditions {
+				if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+					return pod.Status.PodIP, nil
+				}
+			}
+		}
+		return "", fmt.Errorf("no ready model pods found for %s in %s", deploymentName, ns)
+	}, utils.InferenceSetReadyTimeout, utils.PollInterval).ShouldNot(BeEmpty(),
+		"model pod did not become ready in %s", ns)
+
+	pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	Expect(err).NotTo(HaveOccurred())
+
+	var (
+		ip   string
+		port int32
+	)
+	for _, pod := range pods.Items {
+		ready := false
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			continue
+		}
+		ip = pod.Status.PodIP
+		for _, c := range pod.Spec.Containers {
+			for _, p := range c.Ports {
+				if p.ContainerPort > 0 {
+					port = p.ContainerPort
+					break
+				}
+			}
+			if port > 0 {
+				break
+			}
+		}
+		if ip != "" && port > 0 {
+			break
+		}
+	}
+	return ip, port
+}

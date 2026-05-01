@@ -189,57 +189,55 @@ func provisionNamespaceResources(ctx context.Context, name, gatewayName string, 
 	// requests bypass authentication. Selector matches the Istio gateway
 	// Pod via the standard gateway-name label. Skipped when the case
 	// does not opt into API key auth.
-	if !authEnabled {
-		return nil
-	}
-
-	ap := &unstructured.Unstructured{}
-	ap.SetGroupVersionKind(AuthorizationPolicyGVK)
-	ap.SetName("apikey-gateway-ext-authz")
-	ap.SetNamespace(name)
-	if err := unstructured.SetNestedField(ap.Object, "CUSTOM", "spec", "action"); err != nil {
-		return fmt.Errorf("set AuthorizationPolicy.action: %w", err)
-	}
-	if err := unstructured.SetNestedField(ap.Object, "apikey-ext-authz", "spec", "provider", "name"); err != nil {
-		return fmt.Errorf("set AuthorizationPolicy.provider.name: %w", err)
-	}
-	if err := unstructured.SetNestedStringMap(ap.Object, map[string]string{
-		"gateway.networking.k8s.io/gateway-name": gatewayName,
-	}, "spec", "selector", "matchLabels"); err != nil {
-		return fmt.Errorf("set AuthorizationPolicy.selector: %w", err)
-	}
-	if err := unstructured.SetNestedSlice(ap.Object, []interface{}{
-		map[string]interface{}{
-			"to": []interface{}{
-				map[string]interface{}{
-					"operation": map[string]interface{}{
-						"paths": []interface{}{"/*"},
+	if authEnabled {
+		ap := &unstructured.Unstructured{}
+		ap.SetGroupVersionKind(AuthorizationPolicyGVK)
+		ap.SetName("apikey-gateway-ext-authz")
+		ap.SetNamespace(name)
+		if err := unstructured.SetNestedField(ap.Object, "CUSTOM", "spec", "action"); err != nil {
+			return fmt.Errorf("set AuthorizationPolicy.action: %w", err)
+		}
+		if err := unstructured.SetNestedField(ap.Object, "apikey-ext-authz", "spec", "provider", "name"); err != nil {
+			return fmt.Errorf("set AuthorizationPolicy.provider.name: %w", err)
+		}
+		if err := unstructured.SetNestedStringMap(ap.Object, map[string]string{
+			"gateway.networking.k8s.io/gateway-name": gatewayName,
+		}, "spec", "selector", "matchLabels"); err != nil {
+			return fmt.Errorf("set AuthorizationPolicy.selector: %w", err)
+		}
+		if err := unstructured.SetNestedSlice(ap.Object, []interface{}{
+			map[string]interface{}{
+				"to": []interface{}{
+					map[string]interface{}{
+						"operation": map[string]interface{}{
+							"paths": []interface{}{"/*"},
+						},
 					},
 				},
 			},
-		},
-	}, "spec", "rules"); err != nil {
-		return fmt.Errorf("set AuthorizationPolicy.rules: %w", err)
-	}
-	if err := cl.Create(ctx, ap); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create AuthorizationPolicy %s/apikey-gateway-ext-authz: %w", name, err)
-	}
+		}, "spec", "rules"); err != nil {
+			return fmt.Errorf("set AuthorizationPolicy.rules: %w", err)
+		}
+		if err := cl.Create(ctx, ap); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create AuthorizationPolicy %s/apikey-gateway-ext-authz: %w", name, err)
+		}
 
-	// 5. APIKey CR consumed by the apikey-operator, which reconciles it
-	// into a Secret named APIKeySecretName (`llm-api-key`) holding the
-	// bearer token the test client sends. Empty spec uses the operator's
-	// defaults (a generated random key). Previously rendered by the
-	// modeldeployment Helm chart; moved here so all per-namespace auth
-	// plumbing is co-located with the Gateway/AP it serves.
-	apiKey := &unstructured.Unstructured{}
-	apiKey.SetGroupVersionKind(APIKeyGVK)
-	apiKey.SetName("default")
-	apiKey.SetNamespace(name)
-	if err := unstructured.SetNestedMap(apiKey.Object, map[string]interface{}{}, "spec"); err != nil {
-		return fmt.Errorf("set APIKey.spec: %w", err)
-	}
-	if err := cl.Create(ctx, apiKey); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create APIKey %s/default: %w", name, err)
+		// 5. APIKey CR consumed by the apikey-operator, which reconciles it
+		// into a Secret named APIKeySecretName (`llm-api-key`) holding the
+		// bearer token the test client sends. Empty spec uses the operator's
+		// defaults (a generated random key). Previously rendered by the
+		// modeldeployment Helm chart; moved here so all per-namespace auth
+		// plumbing is co-located with the Gateway/AP it serves.
+		apiKey := &unstructured.Unstructured{}
+		apiKey.SetGroupVersionKind(APIKeyGVK)
+		apiKey.SetName("default")
+		apiKey.SetNamespace(name)
+		if err := unstructured.SetNestedMap(apiKey.Object, map[string]interface{}{}, "spec"); err != nil {
+			return fmt.Errorf("set APIKey.spec: %w", err)
+		}
+		if err := cl.Create(ctx, apiKey); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create APIKey %s/default: %w", name, err)
+		}
 	}
 
 	return nil

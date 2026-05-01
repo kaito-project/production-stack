@@ -212,6 +212,25 @@ func resolveGatewayURL(url string) string {
 	return url
 }
 
+// ResolveGatewayURL is the exported form of resolveGatewayURL for use by
+// test sites that build their own *http.Request and bypass the
+// SendChatCompletion* helpers. Combine with EnsurePortForwards() before
+// every raw HTTP call so a port-forward that died between specs is
+// rebound and the URL is refreshed in lock-step.
+func ResolveGatewayURL(url string) string {
+	return resolveGatewayURL(url)
+}
+
+// EnsurePortForwards verifies every registered kubectl port-forward is
+// alive and restarts any that died (transparently re-allocating a fresh
+// local port and updating the cached URL). Test sites that construct
+// requests via http.NewRequest + http.Client.Do should call this — and
+// then re-resolve the gateway URL via ResolveGatewayURL — before each
+// network call. SendChatCompletion* already does this internally.
+func EnsurePortForwards() error {
+	return checkAllPortForwards()
+}
+
 // CleanupPortForward kills every kubectl port-forward process started by
 // the suite. Safe to call from AfterSuite even if no forwards were ever
 // started.
@@ -241,6 +260,14 @@ func startPortForward(pf *portForward, namespace, serviceName string) error {
 		fmt.Sprintf("%d:%d", pf.localPort, DefaultGatewayPort),
 		"-n", namespace)
 
+	// Capture stdout/stderr so a 30s readiness timeout (or an unexpected
+	// exit) can surface kubectl's actual error message instead of failing
+	// silently. Without this, transient bind/RBAC/API-server errors look
+	// identical to "took too long" and are nearly impossible to debug.
+	var pfOut bytes.Buffer
+	cmd.Stdout = &pfOut
+	cmd.Stderr = &pfOut
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start kubectl port-forward: %w", err)
 	}
@@ -255,14 +282,20 @@ func startPortForward(pf *portForward, namespace, serviceName string) error {
 		err := cmd.Wait()
 		portForwardMu.Lock()
 		if pf.cmd == cmd {
-			pf.err = fmt.Errorf("kubectl port-forward exited unexpectedly: %w", err)
+			pf.err = fmt.Errorf("kubectl port-forward exited unexpectedly: %w\nkubectl output:\n%s",
+				err, pfOut.String())
 		}
 		portForwardMu.Unlock()
 		close(done)
 	}()
 
-	// Wait for port-forward to become ready.
-	deadline := time.Now().Add(30 * time.Second)
+	// Wait for port-forward to become ready. The deadline is generous
+	// (90s) because kubectl port-forward setup latency is dominated by
+	// the API server's spdy/exec channel setup, which can take 20-30s
+	// on a busy or slow control plane (and the previous 30s budget
+	// raced right at that boundary, producing identical-looking
+	// "did not become ready" failures).
+	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
 		case <-done:
@@ -277,8 +310,8 @@ func startPortForward(pf *portForward, namespace, serviceName string) error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("kubectl port-forward to %s/%s did not become ready within 30s",
-		namespace, serviceName)
+	return fmt.Errorf("kubectl port-forward to %s/%s did not become ready within 90s\nkubectl output:\n%s",
+		namespace, serviceName, pfOut.String())
 }
 
 // restartPortForward re-spawns kubectl port-forward on a FRESH local
