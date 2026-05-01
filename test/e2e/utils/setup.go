@@ -40,7 +40,7 @@ import (
 // re-create them here.
 //
 // Safe to call repeatedly; existing resources are left untouched.
-func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled bool) error {
+func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled, networkPolicyEnabled bool) error {
 	if name == DefaultGatewayNamespace {
 		// The cluster-wide default Gateway is installed by the e2e
 		// install script — do not duplicate it here.
@@ -58,7 +58,7 @@ func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled 
 		return fmt.Errorf("gatewayName must be set for non-default namespace %q", name)
 	}
 
-	return provisionNamespaceResources(ctx, name, gatewayName, authEnabled)
+	return provisionNamespaceResources(ctx, name, gatewayName, authEnabled, networkPolicyEnabled)
 }
 
 // provisionNamespaceResources is the single source of truth for every
@@ -85,7 +85,7 @@ func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled 
 //  5. APIKey CR `default` (in <ns>): triggers the apikey-operator to
 //     reconcile a Secret named APIKeySecretName the tests pull a Bearer
 //     token from. Created only when authEnabled is true.
-func provisionNamespaceResources(ctx context.Context, name, gatewayName string, authEnabled bool) error {
+func provisionNamespaceResources(ctx context.Context, name, gatewayName string, authEnabled, networkPolicyEnabled bool) error {
 	cl := TestingCluster.KubeClient
 
 	// 1. Gateway in the case namespace.
@@ -238,6 +238,77 @@ func provisionNamespaceResources(ctx context.Context, name, gatewayName string, 
 		if err := cl.Create(ctx, apiKey); err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create APIKey %s/default: %w", name, err)
 		}
+	}
+
+	if !networkPolicyEnabled {
+		return nil
+	}
+
+	// 6a. default-deny-ingress: pin all pods in the namespace to a
+	// deny-by-default ingress posture. Required so the allow rule below
+	// is the only path that grants ingress.
+	denyAll := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "networking.k8s.io/v1",
+			"kind":       "NetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":      "default-deny-ingress",
+				"namespace": name,
+			},
+			"spec": map[string]interface{}{
+				"podSelector": map[string]interface{}{},
+				"policyTypes": []interface{}{"Ingress"},
+			},
+		},
+	}
+	if err := cl.Create(ctx, denyAll); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create NetworkPolicy %s/default-deny-ingress: %w", name, err)
+	}
+
+	// 6b. allow-inference-traffic: re-allow ingress from the cluster-wide
+	// inference Gateway pod in the `default` namespace, and from any pod
+	// in the same namespace (so EPP ↔ inference traffic still works).
+	allow := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "networking.k8s.io/v1",
+			"kind":       "NetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":      "allow-inference-traffic",
+				"namespace": name,
+			},
+			"spec": map[string]interface{}{
+				"podSelector": map[string]interface{}{},
+				"policyTypes": []interface{}{"Ingress"},
+				"ingress": []interface{}{
+					map[string]interface{}{
+						"from": []interface{}{
+							map[string]interface{}{
+								"namespaceSelector": map[string]interface{}{
+									"matchLabels": map[string]interface{}{
+										"kubernetes.io/metadata.name": DefaultGatewayNamespace,
+									},
+								},
+								"podSelector": map[string]interface{}{
+									"matchLabels": map[string]interface{}{
+										"gateway.networking.k8s.io/gateway-name": DefaultGatewayName,
+									},
+								},
+							},
+						},
+					},
+					map[string]interface{}{
+						"from": []interface{}{
+							map[string]interface{}{
+								"podSelector": map[string]interface{}{},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := cl.Create(ctx, allow); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create NetworkPolicy %s/allow-inference-traffic: %w", name, err)
 	}
 
 	return nil

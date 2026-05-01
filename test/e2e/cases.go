@@ -226,7 +226,7 @@ func InstallCase(caseName string) string {
 	Expect(gatewayName).NotTo(BeEmpty(), "case %q has no GatewayName declared in CaseDeployments", caseName)
 
 	ctx := context.Background()
-	Expect(utils.EnsureNamespace(ctx, ns, gatewayName, CaseDeployments[caseName][0].AuthAPIKeyEnabled)).To(Succeed(),
+	Expect(utils.EnsureNamespace(ctx, ns, gatewayName, CaseDeployments[caseName][0].AuthAPIKeyEnabled, CaseDeployments[caseName][0].NetworkPolicyEnabled)).To(Succeed(),
 		"failed to ensure namespace %s (gateway %s) for case %s", ns, gatewayName, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
