@@ -1,0 +1,594 @@
+name: ModelDeployment benchmark
+
+# Workflow that:
+#   1. Reuses the E2E base setup composite action to bring up the AKS
+#      cluster + all stack components (Istio gateway, BBR, EPP, KEDA,
+#      llm-gateway-apikey, gpu-node-mocker, KAITO).
+#   2. Installs the modeldeployment Helm chart in the `default` namespace,
+#      reusing the cluster-wide `inference-gateway` Gateway and the
+#      cluster-wide `default` APIKey (Secret `llm-api-key`).
+#   3. Starts a `kubectl port-forward` against the gateway service so the
+#      complete request path Gateway → BBR → EPP → vLLM (mock) pod can be
+#      exercised from localhost. The endpoint URL and API key are echoed
+#      to the workflow log.
+#   4. Installs guidellm and runs a sweep benchmark against the endpoint,
+#      printing TTFT / TPOT / TPM (and the rest of the guidellm console
+#      summary) into the workflow log.
+#
+# All component versions and benchmark parameters are hard-coded in the
+# `env:` block below — there are no workflow_dispatch inputs. To change a
+# value, edit this file (and rely on the pull_request trigger to validate
+# the change end-to-end).
+
+on:
+  # Run on PRs that touch the benchmark workflow or anything it exercises
+  # (modeldeployment chart, gpu-node-mocker, e2e composite action) so the
+  # full path Gateway → BBR → EPP → vLLM (mock) pod can be debugged from
+  # a PR.
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/benchmark.yaml'
+      - '.github/actions/e2e-base-setup/**'
+      - 'charts/modeldeployment/**'
+      - 'cmd/gpu-node-mocker/**'
+      - 'pkg/gpu-node-mocker/**'
+      - 'docker/Dockerfile'
+      - 'versions.env'
+  workflow_dispatch:
+
+env:
+  RESOURCE_GROUP: "kaito-gw-bench-rg-${{ github.run_id }}"
+  CLUSTER_NAME: "kaito-gw-bench-aks-${{ github.run_id }}"
+  ACR_NAME: "kaitogwbenchaks${{ github.run_id }}acr"
+  GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
+  LOCATION: swedencentral
+  NODE_COUNT: '3'
+  NODE_VM_SIZE: Standard_D8s_v5
+  GATEWAY_NAME: inference-gateway
+  GATEWAY_NAMESPACE: default
+  GATEWAY_LOCAL_PORT: '18080'
+  # The llm-gateway-apikey ext_authz filter resolves the APIKey CR's
+  # namespace from the request's Host header subdomain (
+  # `<namespace>.gw.example.com`). Sending requests to `localhost:<port>`
+  # makes the filter reject them with 401 + body
+  # "cannot determine gateway namespace: set context_extensions[gateway-namespace]
+  # or use subdomain-based host". We map this FQDN to 127.0.0.1 in
+  # /etc/hosts so the kubectl port-forward target carries the correct Host.
+  GATEWAY_HOST: default.gw.example.com
+  APIKEY_SECRET_NAME: llm-api-key
+  APIKEY_SECRET_KEY: apiKey
+  # ----- Benchmark parameters (previously workflow_dispatch inputs) -----
+  # KAITO inference preset to benchmark (must exist in KAITO main HEAD
+  # model_catalog.yaml).
+  MODEL_PRESET: 'phi-4-mini-instruct'
+  # Helm release / InferenceSet name. Also the value of the `model` field
+  # in OpenAI requests (matched by the HTTPRoute as X-Gateway-Model-Name).
+  DEPLOYMENT_NAME: 'benchmark-phi'
+  # VM instance type passed to the InferenceSet (must be a SKU the
+  # gpu-node-mocker labels as a GPU node).
+  INSTANCE_TYPE: 'Standard_NV36ads_A10_v5'
+  # guidellm benchmark profile (sweep / throughput / concurrent /
+  # constant / poisson / synchronous).
+  #
+  # `concurrent` runs a single benchmark point with a fixed number of
+  # in-flight streams (set via BENCHMARK_RATE), so the total runtime is
+  # bounded by BENCHMARK_MAX_SECONDS instead of being multiplied by the
+  # ~10 sub-benchmarks `sweep` would produce. With concurrent streams >1
+  # guidellm still records the full TTFT / TPOT / e2e latency histograms,
+  # so the report contains the same headline numbers as a sweep.
+  BENCHMARK_PROFILE: 'concurrent'
+  # For `concurrent` / `constant` profiles this is the number of
+  # concurrent streams (or requests/sec for `constant`). Ignored by
+  # `sweep` / `throughput` / `synchronous`.
+  #
+  # Capped at 3 to under the maximum concurrency(5) the vLLM (mock) pod is
+  # provisioned for — going above this stops producing meaningful TTFT /
+  # TPOT numbers because requests start queueing on the server side.
+  BENCHMARK_RATE: '3'
+  # Maximum seconds per guidellm sub-benchmark. With BENCHMARK_PROFILE=
+  # `concurrent` there is exactly one sub-benchmark, so this also bounds
+  # the total guidellm runtime. Keep this small enough that the whole
+  # "Run benchmark through Endpoint and API key" step (pip install +
+  # backend validation + benchmark + result serialization) finishes in
+  # under 2 minutes.
+  BENCHMARK_MAX_SECONDS: '60'
+  # guidellm --data spec (synthetic data config or HF dataset).
+  BENCHMARK_DATA: 'prompt_tokens=512,output_tokens=128'
+  # HuggingFace model id used by guidellm as the tokenizer/processor when
+  # generating synthetic prompts from BENCHMARK_DATA. Must be a real HF
+  # repo id — the OpenAI `model` field sent on the wire (DEPLOYMENT_NAME,
+  # e.g. `benchmark-phi`) is a gateway-routing name and is *not* a valid
+  # HF identifier, so guidellm cannot fall back to it. Should match the
+  # tokenizer of MODEL_PRESET above (phi-4-mini-instruct →
+  # microsoft/Phi-4-mini-instruct).
+  BENCHMARK_PROCESSOR: 'microsoft/Phi-4-mini-instruct'
+  # The benchmark always runs against a single InferenceSet replica so the
+  # numbers from guidellm and the per-pod vLLM metrics describe the same
+  # backend.
+  REPLICAS: '1'
+  # Port the vLLM (mock) model server listens on inside each inference pod.
+  # Matches `epp.modelServerPort` in charts/modeldeployment/values.yaml
+  # (KAITO PortInferenceServer = 5000) and is the same port that exposes
+  # the Prometheus `/metrics` endpoint with the `vllm:*` series.
+  MODEL_SERVER_PORT: '5000'
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
+    environment: e2e-test
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: E2E base setup
+        uses: ./.github/actions/e2e-base-setup
+        with:
+          resource-group: ${{ env.RESOURCE_GROUP }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          acr-name: ${{ env.ACR_NAME }}
+          gpu-mocker-image: ${{ env.GPU_MOCKER_IMAGE }}
+          location: ${{ env.LOCATION }}
+          node-count: ${{ env.NODE_COUNT }}
+          node-vm-size: ${{ env.NODE_VM_SIZE }}
+          # All component versions fall through to the defaults baked into
+          # versions.env (consumed by the composite action).
+          istio-version: ''
+          gateway-api-version: ''
+          bbr-version: ''
+          keda-version: ''
+          keda-kaito-scaler-version: ''
+          llm-gateway-auth-version: ''
+
+      - name: Deploy Inference Workload via ModelDeployment
+        run: |
+          set -euo pipefail
+          echo "── Installing modeldeployment chart ──"
+          echo "  release / name : ${DEPLOYMENT_NAME}"
+          echo "  namespace      : ${GATEWAY_NAMESPACE}"
+          echo "  preset model   : ${MODEL_PRESET}"
+          echo "  replicas       : ${REPLICAS}"
+          echo "  instance type  : ${INSTANCE_TYPE}"
+          echo "  gateway        : ${GATEWAY_NAME} (namespace ${GATEWAY_NAMESPACE})"
+
+          helm upgrade --install "${DEPLOYMENT_NAME}" charts/modeldeployment \
+            --namespace "${GATEWAY_NAMESPACE}" \
+            --create-namespace \
+            --set name="${DEPLOYMENT_NAME}" \
+            --set namespace="${GATEWAY_NAMESPACE}" \
+            --set model="${MODEL_PRESET}" \
+            --set replicas="${REPLICAS}" \
+            --set instanceType="${INSTANCE_TYPE}" \
+            --set gatewayName="${GATEWAY_NAME}" \
+            --wait --timeout=5m
+
+      - name: Wait for Inference WorkloadEndpoint and API Key
+        id: endpoint
+        run: |
+          set -euo pipefail
+
+          # ---------- 1. Wait for inference pods to become Ready ----------
+          echo "── Waiting for InferenceSet ${DEPLOYMENT_NAME} pods to be Ready (timeout 10m) ──"
+
+          # Wait for the EPP deployment first (ext_proc gRPC endpoint that the Gateway reaches).
+          kubectl -n "${GATEWAY_NAMESPACE}" rollout status \
+            "deployment/${DEPLOYMENT_NAME}-inferencepool-epp" --timeout=5m
+
+          # Wait for the inference (shadow) pods. KAITO labels each
+          # inference pod with `inferenceset.kaito.sh/created-by=<name>`.
+          deadline=$(( $(date +%s) + 600 ))
+          ready=0
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            ready=$(kubectl -n "${GATEWAY_NAMESPACE}" get pods \
+              -l "inferenceset.kaito.sh/created-by=${DEPLOYMENT_NAME}" \
+              -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+              2>/dev/null | grep -c '^True$' || true)
+            echo "  ready pods: ${ready}/${REPLICAS}"
+            if [ "${ready}" -ge "${REPLICAS}" ]; then
+              echo "✓ all ${REPLICAS} inference pods are Ready"
+              break
+            fi
+            sleep 10
+          done
+          if [ "${ready:-0}" -lt "${REPLICAS}" ]; then
+            echo "✗ inference pods did not all become Ready within 10m"
+            kubectl -n "${GATEWAY_NAMESPACE}" get pods -l "inferenceset.kaito.sh/created-by=${DEPLOYMENT_NAME}" -o wide
+            exit 1
+          fi
+
+          # ---------- 2. Wait for the default APIKey Secret ----------
+          echo "── Waiting for Secret ${GATEWAY_NAMESPACE}/${APIKEY_SECRET_NAME} (created by the apikey-operator from the cluster-wide APIKey CR) ──"
+          secret_found=0
+          for _ in $(seq 1 60); do
+            if kubectl -n "${GATEWAY_NAMESPACE}" get secret "${APIKEY_SECRET_NAME}" >/dev/null 2>&1; then
+              echo "✓ Secret found"
+              secret_found=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "${secret_found}" -ne 1 ]; then
+            echo "✗ Secret ${GATEWAY_NAMESPACE}/${APIKEY_SECRET_NAME} did not appear within 5m"
+            exit 1
+          fi
+
+          # ---------- 3. Start gateway port-forward ----------
+          SERVICE="${GATEWAY_NAME}-istio"
+
+          # Map the subdomain-based gateway host to the loopback address
+          # so curl / guidellm send `Host: ${GATEWAY_HOST}` (which the
+          # llm-gateway-apikey filter parses to derive the APIKey CR's
+          # namespace) while still hitting the local port-forward.
+          if ! grep -qE "[[:space:]]${GATEWAY_HOST}([[:space:]]|$)" /etc/hosts; then
+            echo "127.0.0.1 ${GATEWAY_HOST}" | sudo tee -a /etc/hosts >/dev/null
+            echo "added /etc/hosts entry: 127.0.0.1 ${GATEWAY_HOST}"
+          fi
+
+          # Use the job-scoped RUNNER_TEMP directory (always writable by the
+          # runner user) instead of a shared /tmp path. On self-hosted
+          # runners /tmp may contain leftovers from previous jobs owned by
+          # a different user, which causes "Permission denied" on writes.
+          PF_DIR="${RUNNER_TEMP}/benchmark-pf"
+
+          # Start kubectl port-forward in the background. Output goes to a
+          # log file so the workflow can dump it on failure.
+          mkdir -p "${PF_DIR}"
+          nohup kubectl -n "${GATEWAY_NAMESPACE}" port-forward \
+            "svc/${SERVICE}" "${GATEWAY_LOCAL_PORT}:80" \
+            > "${PF_DIR}/port-forward.log" 2>&1 &
+          PF_PID=$!
+          echo "${PF_PID}" > "${PF_DIR}/pid"
+          echo "started kubectl port-forward (pid=${PF_PID})"
+
+          # Wait for the local port to accept TCP connections.
+          for _ in $(seq 1 30); do
+            if (echo > "/dev/tcp/127.0.0.1/${GATEWAY_LOCAL_PORT}") 2>/dev/null; then
+              echo "✓ port-forward ready on localhost:${GATEWAY_LOCAL_PORT}"
+              break
+            fi
+            sleep 1
+          done
+          if ! (echo > "/dev/tcp/127.0.0.1/${GATEWAY_LOCAL_PORT}") 2>/dev/null; then
+            echo "✗ port-forward did not become ready"
+            cat "${PF_DIR}/port-forward.log" || true
+            exit 1
+          fi
+
+          API_KEY="$(kubectl -n "${GATEWAY_NAMESPACE}" get secret \
+            "${APIKEY_SECRET_NAME}" \
+            -o jsonpath="{.data.${APIKEY_SECRET_KEY}}" | base64 -d)"
+          # Use the subdomain-based FQDN (mapped to 127.0.0.1 above) so the
+          # request Host header lets the llm-gateway-apikey filter resolve
+          # the APIKey CR namespace.
+          ENDPOINT="http://${GATEWAY_HOST}:${GATEWAY_LOCAL_PORT}"
+
+          echo ""
+          echo "════════════════════════════════════════════════════════════════════"
+          echo "ModelDeployment endpoint ready"
+          echo "  endpoint : ${ENDPOINT}"
+          echo "  model    : ${DEPLOYMENT_NAME}"
+          echo "  api key  : ${API_KEY}"
+          echo ""
+          echo "  Example smoke test:"
+          echo "    curl -sS -H \"Authorization: Bearer ${API_KEY}\" \\"
+          echo "         -H 'Content-Type: application/json' \\"
+          echo "         -d '{\"model\":\"${DEPLOYMENT_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}' \\"
+          echo "         ${ENDPOINT}/v1/chat/completions"
+          echo "════════════════════════════════════════════════════════════════════"
+          echo ""
+
+          # Mask the API key in subsequent log output.
+          echo "::add-mask::${API_KEY}"
+
+          # Publish to later steps (the literal value is masked above).
+          {
+            echo "endpoint=${ENDPOINT}"
+            echo "api_key=${API_KEY}"
+          } >> "${GITHUB_OUTPUT}"
+
+          # ---------- 4. Smoke-test the endpoint ----------
+          echo "── Sending a single OpenAI-format request to verify the path Gateway → BBR → EPP → pod ──"
+          curl -sS --fail-with-body \
+            -H "Authorization: Bearer ${API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "{\"model\":\"${DEPLOYMENT_NAME}\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":16}" \
+            "${ENDPOINT}/v1/chat/completions" | tee "${PF_DIR}/smoke.json"
+          echo ""
+
+      - name: Run benchmark through Endpoint and API key
+        env:
+          ENDPOINT: ${{ steps.endpoint.outputs.endpoint }}
+          API_KEY:  ${{ steps.endpoint.outputs.api_key }}
+          MODEL:    ${{ env.DEPLOYMENT_NAME }}
+        run: |
+          set -euo pipefail
+
+          # ---------- 1. Install guidellm ----------
+          python -m pip install --upgrade pip
+          # Mirrors the version pattern used by KAITO's vLLM benchmark
+          # entrypoint (https://github.com/kaito-project/kaito/blob/main/presets/workspace/inference/vllm/benchmark_entrypoint.py).
+          pip install 'guidellm[recommended]'
+          guidellm --version
+
+          # ---------- 2. Run guidellm benchmark ----------
+          mkdir -p ./benchmark-results
+          echo "── Running guidellm against ${ENDPOINT} (model=${MODEL}) ──"
+          echo "    profile=${BENCHMARK_PROFILE}  rate=${BENCHMARK_RATE}  max-seconds=${BENCHMARK_MAX_SECONDS}  data=${BENCHMARK_DATA}"
+          echo "    processor=${BENCHMARK_PROCESSOR}"
+          echo ""
+
+          # `--backend-kwargs` carries the OpenAI bearer token used by the
+          # llm-gateway-apikey AuthorizationPolicy guarding the
+          # `inference-gateway`. The console output below contains the
+          # TTFT, TPOT (per-output-token latency) and request/token
+          # throughput tables that satisfy the "TTFT / TPOT / TPM" report
+          # required by the workflow spec.
+          #
+          # `validate_backend: false` disables guidellm's startup probe
+          # (a `GET /health` against the target). The modeldeployment
+          # HTTPRoute only matches requests carrying the
+          # `X-Gateway-Model-Name` header and routes by model name via
+          # the EPP, so `/health` is not exposed at the gateway and the
+          # probe returns 404. The previous "Wait for Inference
+          # WorkloadEndpoint and API Key" step already smoke-tested the
+          # full path with a real `/v1/chat/completions` request, so
+          # skipping guidellm's redundant validation is safe.
+          guidellm benchmark run \
+            --target "${ENDPOINT}" \
+            --model "${MODEL}" \
+            --processor "${BENCHMARK_PROCESSOR}" \
+            --backend-kwargs "{\"api_key\":\"${API_KEY}\",\"verify\":false,\"validate_backend\":false}" \
+            --profile "${BENCHMARK_PROFILE}" \
+            --rate "${BENCHMARK_RATE}" \
+            --max-seconds "${BENCHMARK_MAX_SECONDS}" \
+            --data "${BENCHMARK_DATA}" \
+            --output-dir ./benchmark-results \
+            --outputs json \
+            --outputs csv \
+            --disable-console-interactive
+
+          echo ""
+          echo "── benchmark-results contents ──"
+          ls -al ./benchmark-results || true
+
+      - name: Collect Metrics For Inference Workload
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p ./benchmark-results/vllm-metrics
+
+          # The metrics produced by this step are emitted twice:
+          #   1. To stdout — visible in the GitHub Actions job log.
+          #   2. To $GITHUB_STEP_SUMMARY — rendered as Markdown on the
+          #      workflow run summary page (the "Summary" tab) so the
+          #      headline numbers are visible without scrolling through
+          #      the raw log. `tee -a "${GITHUB_STEP_SUMMARY}"` is used
+          #      to do both at once where the content is already
+          #      Markdown-friendly.
+          SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+          {
+            echo "# Benchmark results — \`${DEPLOYMENT_NAME}\`"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| model preset | \`${MODEL_PRESET}\` |"
+            echo "| deployment | \`${DEPLOYMENT_NAME}\` |"
+            echo "| namespace | \`${GATEWAY_NAMESPACE}\` |"
+            echo "| replicas | ${REPLICAS} |"
+            echo "| instance type | \`${INSTANCE_TYPE}\` |"
+            echo "| guidellm profile | \`${BENCHMARK_PROFILE}\` |"
+            echo "| guidellm max-seconds | ${BENCHMARK_MAX_SECONDS} |"
+            echo "| guidellm data | \`${BENCHMARK_DATA}\` |"
+            echo ""
+          } >> "${SUMMARY}"
+
+          # ---------- 1. Print guidellm benchmark result files ----------
+          echo "── guidellm benchmark-results files ──"
+          if [ -d ./benchmark-results ]; then
+            find ./benchmark-results -maxdepth 2 -type f -printf '  %p (%s bytes)\n' 2>/dev/null \
+              || find ./benchmark-results -maxdepth 2 -type f -exec ls -l {} \;
+            for f in $(find ./benchmark-results -maxdepth 2 -type f \( -name '*.json' -o -name '*.csv' -o -name '*.txt' -o -name '*.md' \) | sort); do
+              echo ""
+              echo "─── ${f} ───"
+              cat "${f}" || true
+              echo ""
+            done
+          else
+            echo "  (./benchmark-results does not exist — guidellm probably did not run)"
+          fi
+          echo ""
+
+          # Append a compact guidellm summary (one row per sub-benchmark)
+          # to both the log and the Step Summary. The CSV emitted by
+          # `guidellm --outputs csv` already has a row per profile point
+          # with TTFT / TPOT / TPM-equivalent columns, so we surface the
+          # full file verbatim — it is small and self-explanatory.
+          GUIDELLM_CSV="$(find ./benchmark-results -maxdepth 2 -type f -name '*.csv' | sort | head -n1 || true)"
+          {
+            echo "## guidellm summary"
+            echo ""
+            if [ -n "${GUIDELLM_CSV}" ] && [ -s "${GUIDELLM_CSV}" ]; then
+              echo "_Source: \`${GUIDELLM_CSV}\` (TTFT / TPOT / per-second token & request throughput per profile point)._"
+              echo ""
+              echo '```csv'
+              cat "${GUIDELLM_CSV}"
+              echo '```'
+            else
+              echo "_No guidellm CSV produced — the benchmark step probably did not run._"
+            fi
+            echo ""
+          } >> "${SUMMARY}"
+
+          # ---------- 2. Scrape vLLM pod metrics ----------
+          echo "── Scraping vLLM /metrics from each inference pod (port ${MODEL_SERVER_PORT}) ──"
+          echo "  Cross-checks the guidellm summary (TTFT / TPOT / throughput) against the"
+          echo "  authoritative numbers reported by the vLLM (mock) model server itself."
+          echo ""
+
+          # The pods labelled `inferenceset.kaito.sh/created-by=<set>` are
+          # the *original* (placeholder) KAITO inference pods. They are
+          # bound to fake GPU nodes managed by gpu-node-mocker and never
+          # actually run a kubelet, so the apiserver pod-proxy
+          # (/api/v1/.../pods/<name>:<port>/proxy/...) cannot reach them.
+          # The vLLM (mock) model server actually runs inside the matching
+          # *shadow* pod (`shadow-<ns>-<name>`) created by gpu-node-mocker
+          # on a real node and labelled `kaito.sh/managed-by=gpu-mocker` /
+          # `kaito.sh/shadow-pod-for=<ns>.<original-name>`. Resolve each
+          # original pod to its shadow before scraping /metrics.
+          ORIGINAL_PODS="$(kubectl -n "${GATEWAY_NAMESPACE}" get pods \
+            -l "inferenceset.kaito.sh/created-by=${DEPLOYMENT_NAME}" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
+
+          PODS=""
+          for ORIG in ${ORIGINAL_PODS}; do
+            SHADOW_SELECTOR="kaito.sh/shadow-pod-for=${GATEWAY_NAMESPACE}.${ORIG}"
+            SHADOW_POD="$(kubectl -n "${GATEWAY_NAMESPACE}" get pods \
+              -l "${SHADOW_SELECTOR}" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            if [ -z "${SHADOW_POD}" ]; then
+              echo "⚠️  no shadow pod found for original pod ${ORIG} (selector: ${SHADOW_SELECTOR}) — skipping"
+              continue
+            fi
+            echo "  resolved ${ORIG} → ${SHADOW_POD}"
+            PODS="${PODS}${SHADOW_POD} "
+          done
+
+          {
+            echo "## vLLM per-pod metrics"
+            echo ""
+          } >> "${SUMMARY}"
+
+          if [ -z "${PODS//[[:space:]]/}" ]; then
+            echo "✗ no shadow pods found for ${DEPLOYMENT_NAME}"
+            echo "_No shadow pods were found for \`${DEPLOYMENT_NAME}\`._" >> "${SUMMARY}"
+            exit 0
+          fi
+
+          {
+            echo "| pod | requests succeeded | requests failed | prompt tokens | generation tokens | avg TTFT (ms) | avg TPOT (ms) | avg e2e (ms) |"
+            echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+          } >> "${SUMMARY}"
+
+          # Metrics of interest. vLLM exposes TTFT / TPOT / e2e latency as
+          # Prometheus histograms (the *_sum / *_count series let us compute
+          # accurate averages over the entire benchmark window).
+          KEY_METRICS='^(vllm:num_requests_running|vllm:num_requests_waiting|vllm:request_success_total|vllm:request_failure_total|vllm:prompt_tokens_total|vllm:generation_tokens_total|vllm:time_to_first_token_seconds_(sum|count)|vllm:time_per_output_token_seconds_(sum|count)|vllm:e2e_request_latency_seconds_(sum|count)|vllm:request_prompt_tokens_(sum|count)|vllm:request_generation_tokens_(sum|count)|vllm:kv_cache_usage_perc|vllm:gpu_cache_usage_perc)( |\\{)'
+
+          for POD in ${PODS}; do
+            RAW="./benchmark-results/vllm-metrics/${POD}.metrics.txt"
+            echo "── ${POD} ──"
+            if ! kubectl -n "${GATEWAY_NAMESPACE}" get \
+                --raw "/api/v1/namespaces/${GATEWAY_NAMESPACE}/pods/${POD}:${MODEL_SERVER_PORT}/proxy/metrics" \
+                > "${RAW}" 2>/tmp/scrape.err; then
+              echo "  ✗ failed to scrape /metrics:"
+              sed 's/^/    /' /tmp/scrape.err || true
+              echo "| \`${POD}\` | _scrape failed_ | | | | | | |" >> "${SUMMARY}"
+              continue
+            fi
+
+            echo "  raw metrics saved to ${RAW} ($(wc -l < "${RAW}") lines)"
+            echo ""
+            echo "  key vllm:* series:"
+            grep -E "${KEY_METRICS}" "${RAW}" | sed 's/^/    /' || echo "    (no matching series found)"
+            echo ""
+
+            # Derive averages from the histogram *_sum / *_count pairs.
+            # Print a human-readable block to stdout AND a single Markdown
+            # table row to $GITHUB_STEP_SUMMARY. Implemented in awk to
+            # avoid a python heredoc (the YAML block-scalar indentation
+            # would prevent the closing tag from being recognised).
+            awk -v pod="${POD}" -v summary="${SUMMARY}" '
+              /^[#]/   { next }
+              /^[[:space:]]*$/ { next }
+              {
+                # strip optional {label=...} block before the value
+                name = $1
+                sub(/\{.*\}/, "", name)
+                val  = $NF + 0
+                tot[name] += val
+              }
+              END {
+                ok      = tot["vllm:request_success_total"]
+                fail    = tot["vllm:request_failure_total"]
+                ptoks   = tot["vllm:prompt_tokens_total"]
+                gtoks   = tot["vllm:generation_tokens_total"]
+                ttft_n  = tot["vllm:time_to_first_token_seconds_count"]
+                tpot_n  = tot["vllm:time_per_output_token_seconds_count"]
+                e2e_n   = tot["vllm:e2e_request_latency_seconds_count"]
+                ttft_ms = (ttft_n > 0) ? 1000 * tot["vllm:time_to_first_token_seconds_sum"] / ttft_n : -1
+                tpot_ms = (tpot_n > 0) ? 1000 * tot["vllm:time_per_output_token_seconds_sum"] / tpot_n : -1
+                e2e_ms  = (e2e_n  > 0) ? 1000 * tot["vllm:e2e_request_latency_seconds_sum"]   / e2e_n  : -1
+
+                # Stdout (workflow log) — human-readable block.
+                printf("  vLLM-derived summary for pod %s:\n", pod)
+                printf("    requests succeeded            : %d\n", ok)
+                printf("    requests failed               : %d\n", fail)
+                printf("    prompt tokens total           : %d\n", ptoks)
+                printf("    generation tokens total       : %d\n", gtoks)
+                if (ttft_ms >= 0) printf("    avg TTFT  (time-to-first-tok) : %.2f ms\n", ttft_ms); else print "    avg TTFT  (time-to-first-tok) : n/a"
+                if (tpot_ms >= 0) printf("    avg TPOT  (per-output-token)  : %.2f ms\n", tpot_ms); else print "    avg TPOT  (per-output-token)  : n/a"
+                if (e2e_ms  >= 0) printf("    avg e2e   (request latency)   : %.2f ms\n", e2e_ms);  else print "    avg e2e   (request latency)   : n/a"
+
+                # GITHUB_STEP_SUMMARY — single Markdown table row.
+                ttft_s = (ttft_ms >= 0) ? sprintf("%.2f", ttft_ms) : "n/a"
+                tpot_s = (tpot_ms >= 0) ? sprintf("%.2f", tpot_ms) : "n/a"
+                e2e_s  = (e2e_ms  >= 0) ? sprintf("%.2f", e2e_ms ) : "n/a"
+                printf("| `%s` | %d | %d | %d | %d | %s | %s | %s |\n",
+                       pod, ok, fail, ptoks, gtoks, ttft_s, tpot_s, e2e_s) >> summary
+              }
+            ' "${RAW}" || true
+            echo ""
+          done
+
+          {
+            echo ""
+            echo "_Raw \`/metrics\` dumps for every pod are saved under \`./benchmark-results/vllm-metrics/\` on the runner._"
+          } >> "${SUMMARY}"
+
+      - name: Cleanup (stop port-forward, uninstall release, dump state on failure, teardown cluster)
+        if: always()
+        env:
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set +e
+
+          # ---------- 1. Stop gateway port-forward ----------
+          PF_DIR="${RUNNER_TEMP}/benchmark-pf"
+          if [ -f "${PF_DIR}/pid" ]; then
+            PF_PID="$(cat "${PF_DIR}/pid")"
+            echo "stopping kubectl port-forward (pid=${PF_PID})"
+            kill "${PF_PID}" 2>/dev/null || true
+          fi
+          if [ -f "${PF_DIR}/port-forward.log" ]; then
+            echo "── port-forward log tail ──"
+            tail -n 50 "${PF_DIR}/port-forward.log" || true
+          fi
+
+          # ---------- 2. Uninstall modeldeployment Helm release ----------
+          helm uninstall "${DEPLOYMENT_NAME}" \
+            --namespace "${GATEWAY_NAMESPACE}" \
+            --ignore-not-found --wait || true
+
+          # ---------- 3. Dump cluster state on failure ----------
+          if [ "${JOB_STATUS}" = "failure" ]; then
+            echo "── Job failed — dumping cluster state ──"
+            make e2e-dump || true
+          fi
+
+          # ---------- 4. Teardown cluster ----------
+          make e2e-teardown || true
