@@ -50,12 +50,12 @@ env:
   GATEWAY_LOCAL_PORT: '18080'
   # The llm-gateway-apikey ext_authz filter resolves the APIKey CR's
   # namespace from the request's Host header subdomain (
-  # `<namespace>.gw.example.com`). Sending requests to `localhost:<port>`
+  # `<namespace>.gw.kaito.sh`). Sending requests to `localhost:<port>`
   # makes the filter reject them with 401 + body
   # "cannot determine gateway namespace: set context_extensions[gateway-namespace]
   # or use subdomain-based host". We map this FQDN to 127.0.0.1 in
   # /etc/hosts so the kubectl port-forward target carries the correct Host.
-  GATEWAY_HOST: default.gw.example.com
+  GATEWAY_HOST: default.gw.kaito.sh
   APIKEY_SECRET_NAME: llm-api-key
   APIKEY_SECRET_KEY: apiKey
   # ----- Benchmark parameters (previously workflow_dispatch inputs) -----
@@ -134,7 +134,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: E2E base setup
+      - name: Setup AKS and Kaito Stack
         uses: ./.github/actions/e2e-base-setup
         with:
           resource-group: ${{ env.RESOURCE_GROUP }}
@@ -153,7 +153,7 @@ jobs:
           keda-kaito-scaler-version: ''
           llm-gateway-auth-version: ''
 
-      - name: Deploy Inference Workload via ModelDeployment
+      - name: Deploy inference workload via ModelDeployment
         run: |
           set -euo pipefail
           echo "── Installing modeldeployment chart ──"
@@ -175,7 +175,7 @@ jobs:
             --set gatewayName="${GATEWAY_NAME}" \
             --wait --timeout=5m
 
-      - name: Wait for Inference WorkloadEndpoint and API Key
+      - name: Wait for inference workload endpoint and API key
         id: endpoint
         run: |
           set -euo pipefail
@@ -308,7 +308,7 @@ jobs:
             "${ENDPOINT}/v1/chat/completions" | tee "${PF_DIR}/smoke.json"
           echo ""
 
-      - name: Run benchmark through Endpoint and API key
+      - name: Run benchmark test for inference workload
         env:
           ENDPOINT: ${{ steps.endpoint.outputs.endpoint }}
           API_KEY:  ${{ steps.endpoint.outputs.api_key }}
@@ -364,7 +364,7 @@ jobs:
           echo "── benchmark-results contents ──"
           ls -al ./benchmark-results || true
 
-      - name: Collect Metrics For Inference Workload
+      - name: Collect metrics for inference workload
         if: always()
         run: |
           set -euo pipefail
@@ -488,14 +488,23 @@ jobs:
           # accurate averages over the entire benchmark window).
           KEY_METRICS='^(vllm:num_requests_running|vllm:num_requests_waiting|vllm:request_success_total|vllm:request_failure_total|vllm:prompt_tokens_total|vllm:generation_tokens_total|vllm:time_to_first_token_seconds_(sum|count)|vllm:time_per_output_token_seconds_(sum|count)|vllm:e2e_request_latency_seconds_(sum|count)|vllm:request_prompt_tokens_(sum|count)|vllm:request_generation_tokens_(sum|count)|vllm:kv_cache_usage_perc|vllm:gpu_cache_usage_perc)( |\\{)'
 
+          # Use the job-scoped RUNNER_TEMP directory for the per-pod
+          # kubectl stderr capture file. On self-hosted runners /tmp may
+          # contain leftovers from previous jobs owned by a different
+          # user, which causes "Permission denied" when bash tries to
+          # open `2>/tmp/scrape.err` — and because the redirection
+          # target fails to open, the `kubectl get --raw` command never
+          # executes, so every pod is reported as "scrape failed".
+          SCRAPE_ERR="${RUNNER_TEMP}/scrape.err"
+
           for POD in ${PODS}; do
             RAW="./benchmark-results/vllm-metrics/${POD}.metrics.txt"
             echo "── ${POD} ──"
             if ! kubectl -n "${GATEWAY_NAMESPACE}" get \
                 --raw "/api/v1/namespaces/${GATEWAY_NAMESPACE}/pods/${POD}:${MODEL_SERVER_PORT}/proxy/metrics" \
-                > "${RAW}" 2>/tmp/scrape.err; then
+                > "${RAW}" 2>"${SCRAPE_ERR}"; then
               echo "  ✗ failed to scrape /metrics:"
-              sed 's/^/    /' /tmp/scrape.err || true
+              sed 's/^/    /' "${SCRAPE_ERR}" || true
               echo "| \`${POD}\` | _scrape failed_ | | | | | | |" >> "${SUMMARY}"
               continue
             fi
