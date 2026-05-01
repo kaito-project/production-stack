@@ -281,6 +281,30 @@ install_bbr() {
   kubectl -n istio-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
     kubectl -n istio-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
     echo "⚠️  BBR not ready yet — continuing."
+
+  # Strip `spec.targetRefs` from the rendered EnvoyFilter.
+  #
+  # The fork's chart hard-codes a `targetRefs` block pointing at a single
+  # Gateway named `inference-gateway` in the EnvoyFilter's own namespace
+  # (`istio-system`). Istio's EnvoyFilter `targetRefs` is namespace-local
+  # (no `namespace` field), so the filter never attaches to:
+  #   - the cluster-wide `inference-gateway` Gateway in `default`, nor
+  #   - the per-case e2e Gateways provisioned in isolated namespaces
+  #     (e.g., `e2e-prefix-cache`, `e2e-auth`, `e2e-gpu-mocker`, …).
+  # The BBR ext_proc filter therefore never runs, `x-gateway-model-name`
+  # is never injected, and every model-name-based HTTPRoute falls through
+  # to the catch-all `model-not-found` Service — surfaced in tests as
+  # `404 model_not_found` from the gateway.
+  #
+  # Removing `spec.targetRefs` lets Istio fan the filter out cluster-wide;
+  # combined with the chart's existing `match.context: GATEWAY`, this
+  # restores the previous "applies to every Istio-managed gateway, no
+  # sidecars" behavior. Run as a JSON Patch `remove` (idempotent guarded
+  # with `|| true` so subsequent reinstalls don't fail).
+  echo "⏳ Removing spec.targetRefs from body-based-router EnvoyFilter so it applies to all gateways..."
+  kubectl -n istio-system patch envoyfilter body-based-router --type=json \
+    -p='[{"op":"remove","path":"/spec/targetRefs"}]' 2>/dev/null || \
+    echo "⚠️  Failed to remove targetRefs from body-based-router EnvoyFilter (may already be removed)."
 }
 
 install_llm_gateway_auth() {
