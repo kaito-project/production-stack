@@ -2,37 +2,43 @@
 # ---------------------------------------------------------------------------
 # install-components.sh — Install all E2E components onto the AKS cluster.
 #
-# Components installed (in order):
-#   1. KAITO workspace operator (Helm)
-#   2. GPU node mocker / gpu-node-mocker (Helm)
-#   3. Gateway API CRDs
-#   4. Istio v1.29 (minimal profile)
-#   5. GWIE CRDs (InferencePool, InferenceModel)
-#   6. BBR (Body-Based Router) v1.3.1
-#   7. LLM Gateway Auth — API key ext_authz (Helm) — installs the
-#       apikeys.kaito.sh CRD and cluster-wide AuthorizationPolicy that
-#       guards `inference-gateway`. Operator webhook is disabled (no
-#       cert-manager dependency); re-enable later.
-#   8. HTTPRoute catch-all, error service, debug filter, default APIKey
-#       — relies on the CRD from step 7 to provision the APIKey CR in
-#       `default` consumed by the unknown-model probe in
-#       gpu_mocker_test.go.
-#   9. KEDA (Helm)
-#  10. KEDA Kaito Scaler (Helm)
-#  11. Inference Gateway (default namespace) — installed last so all
-#       upstream filters (BBR, GAIE, debug filter, ext_authz) are
-#       already present when the gateway controller renders the
-#       gateway pod.
+# Components are grouped into phases that respect dependency order; within
+# each phase, independent components install in parallel to shorten the
+# critical path. Set INSTALL_PARALLEL=0 to fall back to sequential mode for
+# debugging.
+#
+# Phase 1 (parallel, no deps):
+#   - KAITO workspace operator
+#   - Gateway API CRDs
+#   - GWIE CRDs (InferencePool, InferenceModel)
+#   - KEDA
+#   - BBR chart prefetch (git clone fork repo only)
+#
+# Phase 2 (parallel, depends on Phase 1):
+#   - gpu-node-mocker            (after KAITO CRDs)
+#   - Istio                      (after Gateway API CRDs)
+#   - KEDA Kaito Scaler          (after KEDA)
+#
+# Phase 3 (parallel, depends on Istio):
+#   - BBR (Body-Based Router)    (helm install into istio-system)
+#   - LLM Gateway Auth           (apikeys.kaito.sh CRD + AuthorizationPolicy)
+#
+# Phase 4 (parallel, default-namespace resources, depends on Phase 3):
+#   - HTTPRoute catch-all, error service, debug filter, default APIKey
+#     (depends on LLM Gateway Auth CRD + GWIE CRDs)
+#   - Inference Gateway (default namespace)
+#     (depends on BBR + LLM Gateway Auth + Istio + Gateway API)
 #
 # Environment variables (must be set by caller, e.g. run-e2e-local.sh or CI):
 #   ISTIO_VERSION             — Istio version
 #   GATEWAY_API_VERSION       — Gateway API CRD version
-#   BBR_VERSION               — BBR release version
+#   BBR_VERSION               — BBR release version (informational only)
 #   KEDA_VERSION              — KEDA Helm chart version
 #   KEDA_KAITO_SCALER_VERSION — KEDA Kaito Scaler Helm chart version
 #   LLM_GATEWAY_AUTH_VERSION  — LLM Gateway Auth Helm chart version
 #   LLM_GATEWAY_AUTH_IMAGE_TAG — LLM Gateway Auth container image tag
 #   SHADOW_CONTROLLER_IMAGE   — gpu-node-mocker image (default: ghcr.io/kaito-project/gpu-node-mocker:latest)
+#   INSTALL_PARALLEL          — set to "0" to disable parallelism (default: 1)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -48,6 +54,7 @@ MANIFESTS_DIR="${SCRIPT_DIR}/../manifests"
 : "${LLM_GATEWAY_AUTH_VERSION:?LLM_GATEWAY_AUTH_VERSION is not set. Source versions.env or export it before calling this script.}"
 : "${LLM_GATEWAY_AUTH_IMAGE_TAG:?LLM_GATEWAY_AUTH_IMAGE_TAG is not set. Source versions.env or export it before calling this script.}"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
+INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 
 echo "=== Component versions ==="
 echo "  ISTIO_VERSION:             ${ISTIO_VERSION}"
@@ -58,251 +65,330 @@ echo "  KEDA_KAITO_SCALER_VERSION: ${KEDA_KAITO_SCALER_VERSION}"
 echo "  LLM_GATEWAY_AUTH_VERSION:  ${LLM_GATEWAY_AUTH_VERSION}"
 echo "  LLM_GATEWAY_AUTH_IMAGE_TAG:${LLM_GATEWAY_AUTH_IMAGE_TAG}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
+echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
 echo ""
 
-# ── 0. Ensure helm is available ───────────────────────────────────────────
+# ── Shared state across functions ─────────────────────────────────────────
+LOGDIR="$(mktemp -d -t e2e-install-XXXXXX)"
+BBR_CHART_TMPDIR="$(mktemp -d -t bbr-chart-XXXXXX)"
+BBR_CHART_SUBPATH="config/charts/body-based-routing"
+trap 'rm -rf "${BBR_CHART_TMPDIR}" "${LOGDIR}"' EXIT
+
+# ── Helper: run a list of functions in parallel and aggregate logs ────────
+# Usage: run_phase <phase-name> <fn1> <fn2> ...
+run_phase() {
+  local phase="$1"; shift
+  local phase_dir="${LOGDIR}/${phase}"
+  mkdir -p "${phase_dir}"
+
+  if [[ "${INSTALL_PARALLEL}" != "1" || $# -le 1 ]]; then
+    # Sequential fallback (or single-task phase): stream output directly.
+    for fn in "$@"; do
+      echo ""
+      echo "── [${phase}] ${fn} ──"
+      "${fn}"
+    done
+    return 0
+  fi
+
+  echo ""
+  echo "── [${phase}] launching $# tasks in parallel: $* ──"
+  local pids=() names=()
+  for fn in "$@"; do
+    (
+      set -e
+      "${fn}"
+    ) >"${phase_dir}/${fn}.log" 2>&1 &
+    pids+=($!)
+    names+=("${fn}")
+  done
+
+  local rc=0
+  local failed=()
+  for i in "${!pids[@]}"; do
+    if wait "${pids[$i]}"; then
+      echo "  ✅ [${phase}] ${names[$i]}"
+    else
+      echo "  ❌ [${phase}] ${names[$i]}"
+      failed+=("${names[$i]}")
+      rc=1
+    fi
+  done
+
+  # Always replay logs so users can see what each parallel task did.
+  for n in "${names[@]}"; do
+    echo ""
+    echo "────── [${phase}] ${n} log ──────"
+    cat "${phase_dir}/${n}.log"
+  done
+
+  if [[ $rc -ne 0 ]]; then
+    echo ""
+    echo "❌ Phase '${phase}' failed: ${failed[*]}"
+  fi
+  return "${rc}"
+}
+
+# ── 0. Ensure helm + istioctl are available (sequential prep) ─────────────
 if ! command -v helm &>/dev/null; then
   echo "Installing helm..."
   curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash
 fi
 
-# ── 1. KAITO workspace operator ──────────────────────────────────────────
-echo ""
-echo "=== 1/11: Installing KAITO workspace operator (latest chart, image: nightly-latest) ==="
-helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
-helm repo update kaito
-
-# Install pattern follows the official KAITO nightly install guide verbatim:
-#   https://kaito-project.github.io/kaito/docs/installation/#using-nightly-builds-for-testing-purpose
-# i.e. the latest published chart from the helm repo (no --version pin)
-# combined with image.tag=nightly-latest so both chart templates and
-# controller binary track upstream HEAD.
-#
-# featureGates.gatewayAPIInferenceExtension is intentionally DISABLED.
-# Per-model GAIE artifacts (InferencePool + EPP Deployment/Service/RBAC +
-# HTTPRoute) are now provisioned by the modeldeployment Helm chart at
-# charts/modeldeployment via the E2E test suite. Enabling the feature gate
-# here would cause KAITO to render a duplicate set of resources via Flux
-# and conflict with the chart-managed artifacts.
-helm install kaito kaito/workspace \
-  --namespace kaito-system \
-  --create-namespace \
-  --set featureGates.enableInferenceSetController=true \
-  --set featureGates.gatewayAPIInferenceExtension=false \
-  --set image.repository=ghcr.io/kaito-project/kaito/workspace \
-  --set image.tag=nightly-latest \
-  --set image.pullPolicy=Always \
-  --wait --timeout=300s
-
-echo "⏳ Waiting for KAITO controller..."
-kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=workspace --timeout=120s || true
-kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=workspace --timeout=120s || \
-  echo "⚠️  KAITO pods not ready yet — continuing (will re-check later)."
-
-# ── 2. GPU node mocker (gpu-node-mocker) ──────────────────────────
-echo ""
-echo "=== 2/11: Deploying gpu-node-mocker (GPU node mocker) ==="
-helm install gpu-node-mocker ./charts/gpu-node-mocker \
-  --namespace kaito-system \
-  --create-namespace \
-  --set image.repository="${SHADOW_CONTROLLER_IMAGE%:*}" \
-  --set image.tag="${SHADOW_CONTROLLER_IMAGE##*:}"
-
-echo "⏳ Waiting for gpu-node-mocker..."
-kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=120s || true
-
-# ── 3. Gateway API CRDs ─────────────────────────────────────────────────
-echo ""
-echo "=== 3/11: Installing Gateway API CRDs ${GATEWAY_API_VERSION} ==="
-kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
-
-# ── 4. Istio ─────────────────────────────────────────────────────────────
-echo ""
-echo "=== 4/11: Installing Istio ${ISTIO_VERSION} ==="
 if ! command -v istioctl &>/dev/null; then
-  echo "Installing istioctl..."
+  echo "Installing istioctl ${ISTIO_VERSION}..."
   curl -L https://istio.io/downloadIstio | ISTIO_VERSION="${ISTIO_VERSION}" sh -
   export PATH="${PWD}/istio-${ISTIO_VERSION}/bin:${PATH}"
 fi
+echo "Using istioctl: $(command -v istioctl)"
 
-echo "Using istioctl: $(which istioctl)"
-istioctl install \
-  --set profile=minimal \
-  --set hub=docker.io/istio \
-  --set tag="${ISTIO_VERSION}" \
-  --set "values.pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true" \
-  -y
+# ── Component install functions ───────────────────────────────────────────
 
-echo "⏳ Waiting for istiod..."
-kubectl -n istio-system rollout status deployment/istiod --timeout=180s
+install_kaito() {
+  echo "=== Installing KAITO workspace operator (latest chart, image: nightly-latest) ==="
+  helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
+  helm repo update kaito
 
-# ── 5. GWIE CRDs (InferencePool, InferenceModel) ────────────────────────
-echo ""
-echo "=== 5/11: Installing GWIE CRDs ==="
-kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/latest/download/manifests.yaml"
+  # Install pattern follows the official KAITO nightly install guide verbatim:
+  #   https://kaito-project.github.io/kaito/docs/installation/#using-nightly-builds-for-testing-purpose
+  # i.e. the latest published chart from the helm repo (no --version pin)
+  # combined with image.tag=nightly-latest so both chart templates and
+  # controller binary track upstream HEAD.
+  #
+  # featureGates.gatewayAPIInferenceExtension is intentionally DISABLED.
+  # Per-model GAIE artifacts (InferencePool + EPP Deployment/Service/RBAC +
+  # HTTPRoute) are now provisioned by the modeldeployment Helm chart at
+  # charts/modeldeployment via the E2E test suite. Enabling the feature gate
+  # here would cause KAITO to render a duplicate set of resources via Flux
+  # and conflict with the chart-managed artifacts.
+  helm install kaito kaito/workspace \
+    --namespace kaito-system \
+    --create-namespace \
+    --set featureGates.enableInferenceSetController=true \
+    --set featureGates.gatewayAPIInferenceExtension=false \
+    --set image.repository=ghcr.io/kaito-project/kaito/workspace \
+    --set image.tag=nightly-latest \
+    --set image.pullPolicy=Always \
+    --wait --timeout=300s
 
-# ── 6. BBR (Body-Based Router) ──────────────────────────────────────────
-# Installed into istio-system (Istio's rootNamespace) so that the
-# EnvoyFilter rendered by the chart applies cluster-wide to every
-# Istio-managed gateway, including per-case Gateways provisioned in
-# isolated namespaces by the e2e framework. Without this, the BBR
-# EnvoyFilter would be namespace-scoped to `default` and per-case
-# Gateways would never see the body-based-routing ext_proc filter,
-# breaking model name extraction and downstream HTTPRoute matching.
-# The chart also rewrites the ext_proc cluster_name FQDN to
-# `body-based-router.istio-system.svc.cluster.local` automatically.
-#
-# We install from the rambohe-ch fork's `support-insecure-serving` branch
-# so that BBR can be launched in insecure-serving mode (no TLS on the
-# ext_proc gRPC listener), which matches the plaintext ext_proc cluster
-# wired up by the Istio EnvoyFilter rendered by the chart. The chart is
-# fetched via a shallow git clone into a temp directory and installed
-# from the local path; the BBR_VERSION variable is retained for log
-# clarity but is not used as a chart version pin in this branch.
-echo ""
-echo "=== 6/11: Installing BBR (rambohe-ch fork, insecure-serving mode, ref: support-insecure-serving) ==="
-BBR_CHART_REPO="https://github.com/rambohe-ch/gateway-api-inference-extension.git"
-BBR_CHART_REF="support-insecure-serving"
-BBR_CHART_SUBPATH="config/charts/body-based-routing"
-BBR_CHART_TMPDIR="$(mktemp -d -t bbr-chart-XXXXXX)"
-trap 'rm -rf "${BBR_CHART_TMPDIR}"' EXIT
+  echo "⏳ Waiting for KAITO controller..."
+  kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=workspace --timeout=120s || true
+  kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=workspace --timeout=120s || \
+    echo "⚠️  KAITO pods not ready yet — continuing (will re-check later)."
+}
 
-echo "Cloning ${BBR_CHART_REPO} (branch: ${BBR_CHART_REF}) into ${BBR_CHART_TMPDIR}..."
-git clone --depth 1 --branch "${BBR_CHART_REF}" \
-  "${BBR_CHART_REPO}" "${BBR_CHART_TMPDIR}/gaie" >/dev/null
+install_gateway_api_crds() {
+  echo "=== Installing Gateway API CRDs ${GATEWAY_API_VERSION} ==="
+  kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+}
 
-helm upgrade --install body-based-router "${BBR_CHART_TMPDIR}/gaie/${BBR_CHART_SUBPATH}" \
-  --namespace istio-system \
-  --set provider.name=istio \
-  --set bbr.secureServing=false \
-  --wait
+install_gwie_crds() {
+  echo "=== Installing GWIE CRDs ==="
+  kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/latest/download/manifests.yaml"
+}
 
-echo "⏳ Waiting for BBR..."
-kubectl -n istio-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
-  kubectl -n istio-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
-  echo "⚠️  BBR not ready yet — continuing."
+install_keda() {
+  echo "=== Installing KEDA ${KEDA_VERSION} ==="
+  helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
+  helm repo update kedacore
+  helm upgrade --install keda kedacore/keda \
+    --version "${KEDA_VERSION}" \
+    --namespace keda \
+    --create-namespace \
+    --wait --timeout=300s
 
-# NOTE: The fork's chart template already pins the BBR EnvoyFilter to
-# `match.context: GATEWAY`, so the previous post-install JSON patch that
-# scoped the filter to gateway HCMs only is no longer needed.
+  echo "⏳ Waiting for KEDA operator..."
+  kubectl -n keda rollout status deployment/keda-operator --timeout=180s || true
+  kubectl -n keda rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
+}
 
-# ── 7. LLM Gateway Auth (API key ext_authz) ───────────────────────
-# Pulled forward (was step 12) so the apikeys.kaito.sh CRD is present
-# before model-not-found's APIKey CR is applied in step 8. The
-# AuthorizationPolicy this chart installs targets `inference-gateway`
-# by label selector — it activates once the gateway lands in step 11.
-#
-# operator.webhook.enabled=false skips the validating webhook (which
-# would otherwise require cert-manager). TODO: re-enable webhook +
-# cert-manager once the install ordering is sorted out.
-echo ""
-echo "=== 7/11: Installing LLM Gateway Auth ${LLM_GATEWAY_AUTH_VERSION} ==="
-helm upgrade --install llm-gateway-apikey \
-  oci://mcr.microsoft.com/aks/kaito/helm/llm-gateway-apikey \
-  --version "${LLM_GATEWAY_AUTH_VERSION}" \
-  --namespace llm-gateway-auth \
-  --create-namespace \
-  --set operator.image.repository=mcr.microsoft.com/aks/kaito/apikey-operator \
-  --set operator.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
-  --set authz.image.repository=mcr.microsoft.com/aks/kaito/apikey-authz \
-  --set authz.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
-  --set operator.webhook.enabled=false \
-  --set istio.enabled=true \
-  --set istio.meshConfigConfigMap.patch=true \
-  --set istio.gatewayNamespace=default \
-  --set istio.gatewaySelector."gateway\.networking\.k8s\.io/gateway-name"=inference-gateway \
-  --set crds.install=true \
-  --wait --timeout=300s
+prefetch_bbr_chart() {
+  # We install BBR from the rambohe-ch fork's `support-insecure-serving` branch
+  # so that BBR can be launched in insecure-serving mode (no TLS on the
+  # ext_proc gRPC listener), which matches the plaintext ext_proc cluster
+  # wired up by the Istio EnvoyFilter rendered by the chart. The chart is
+  # fetched via a shallow git clone into a temp directory; the BBR_VERSION
+  # variable is retained for log clarity but is not used as a chart version
+  # pin in this branch.
+  local repo="https://github.com/rambohe-ch/gateway-api-inference-extension.git"
+  local ref="support-insecure-serving"
+  echo "=== Prefetching BBR chart from ${repo} (branch: ${ref}) ==="
+  git clone --depth 1 --branch "${ref}" "${repo}" "${BBR_CHART_TMPDIR}/gaie" >/dev/null
+  echo "BBR chart cloned to ${BBR_CHART_TMPDIR}/gaie/${BBR_CHART_SUBPATH}"
+}
 
-echo "⏳ Waiting for apikey-operator..."
-kubectl -n llm-gateway-auth rollout status deployment/apikey-operator --timeout=180s || true
+install_gpu_mocker() {
+  echo "=== Deploying gpu-node-mocker (GPU node mocker) ==="
+  helm install gpu-node-mocker ./charts/gpu-node-mocker \
+    --namespace kaito-system \
+    --create-namespace \
+    --set image.repository="${SHADOW_CONTROLLER_IMAGE%:*}" \
+    --set image.tag="${SHADOW_CONTROLLER_IMAGE##*:}"
 
-echo "⏳ Waiting for apikey-authz..."
-kubectl -n llm-gateway-auth rollout status deployment/apikey-authz --timeout=180s || true
+  echo "⏳ Waiting for gpu-node-mocker..."
+  kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=120s || true
+}
 
-# ── 8. HTTPRoute catch-all, error service, debug filter, default APIKey ─
-# Per-model InferenceSets, InferencePools, EPP Deployments, and
-# model-specific HTTPRoutes are provisioned by the modeldeployment Helm
-# chart via the E2E test suite. Only cluster-wide routing primitives
-# (catch-all HTTPRoute, error service, debug filter) live here. The
-# manifest also ships an APIKey CR in `default` so the unknown-model
-# probe in gpu_mocker_test.go can authenticate against the cluster-wide
-# ext_authz policy installed in step 7 and reach the catch-all route.
-# The catch-all HTTPRoute parents the default Inference Gateway
-# installed in step 11 — applying it before the gateway exists is
-# harmless; it stays inactive until the gateway controller picks it up.
-echo ""
-echo "=== 8/11: Deploying routing catch-all, error service, default APIKey ==="
-kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
-kubectl apply -f "${MANIFESTS_DIR}/inference-debug-filter.yaml"
+install_istio() {
+  echo "=== Installing Istio ${ISTIO_VERSION} ==="
+  istioctl install \
+    --set profile=minimal \
+    --set hub=docker.io/istio \
+    --set tag="${ISTIO_VERSION}" \
+    --set "values.pilot.env.ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true" \
+    -y
 
-echo "⏳ Waiting for model-not-found service..."
-kubectl rollout status deployment/model-not-found --timeout=60s 2>/dev/null || true
+  echo "⏳ Waiting for istiod..."
+  kubectl -n istio-system rollout status deployment/istiod --timeout=180s
+}
 
-echo "⏳ Waiting for default APIKey Secret to be reconciled..."
-for _ in $(seq 1 30); do
-  if kubectl -n default get secret llm-api-key &>/dev/null; then
-    break
-  fi
-  sleep 2
-done
+install_keda_kaito_scaler() {
+  echo "=== Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} ==="
+  helm repo add keda-kaito-scaler https://kaito-project.github.io/keda-kaito-scaler/charts/kaito-project 2>/dev/null || true
+  helm repo update keda-kaito-scaler
+  helm upgrade --install keda-kaito-scaler keda-kaito-scaler/keda-kaito-scaler \
+    --version "${KEDA_KAITO_SCALER_VERSION}" \
+    --namespace kaito-system \
+    --create-namespace \
+    --wait --timeout=300s
 
-# ── 9. KEDA ────────────────────────────────────────────────────────
-echo ""
-echo "=== 9/11: Installing KEDA ${KEDA_VERSION} ==="
-helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
-helm repo update kedacore
-helm upgrade --install keda kedacore/keda \
-  --version "${KEDA_VERSION}" \
-  --namespace keda \
-  --create-namespace \
-  --wait --timeout=300s
+  echo "⏳ Waiting for keda-kaito-scaler..."
+  kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
+}
 
-echo "⏳ Waiting for KEDA operator..."
-kubectl -n keda rollout status deployment/keda-operator --timeout=180s || true
-kubectl -n keda rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
+install_bbr() {
+  # Installed into istio-system (Istio's rootNamespace) so that the
+  # EnvoyFilter rendered by the chart applies cluster-wide to every
+  # Istio-managed gateway, including per-case Gateways provisioned in
+  # isolated namespaces by the e2e framework. Without this, the BBR
+  # EnvoyFilter would be namespace-scoped to `default` and per-case
+  # Gateways would never see the body-based-routing ext_proc filter,
+  # breaking model name extraction and downstream HTTPRoute matching.
+  # The chart also rewrites the ext_proc cluster_name FQDN to
+  # `body-based-router.istio-system.svc.cluster.local` automatically.
+  #
+  # NOTE: The fork's chart template already pins the BBR EnvoyFilter to
+  # `match.context: GATEWAY`, so the previous post-install JSON patch that
+  # scoped the filter to gateway HCMs only is no longer needed.
+  echo "=== Installing BBR (rambohe-ch fork, insecure-serving mode) ==="
+  helm upgrade --install body-based-router "${BBR_CHART_TMPDIR}/gaie/${BBR_CHART_SUBPATH}" \
+    --namespace istio-system \
+    --set provider.name=istio \
+    --set bbr.secureServing=false \
+    --wait
 
-# ── 10. KEDA Kaito Scaler ───────────────────────────────────────────
-echo ""
-echo "=== 10/11: Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} ==="
-helm repo add keda-kaito-scaler https://kaito-project.github.io/keda-kaito-scaler/charts/kaito-project 2>/dev/null || true
-helm repo update keda-kaito-scaler
-helm upgrade --install keda-kaito-scaler keda-kaito-scaler/keda-kaito-scaler \
-  --version "${KEDA_KAITO_SCALER_VERSION}" \
-  --namespace kaito-system \
-  --create-namespace \
-  --wait --timeout=300s
+  echo "⏳ Waiting for BBR..."
+  kubectl -n istio-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
+    kubectl -n istio-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
+    echo "⚠️  BBR not ready yet — continuing."
+}
 
-echo "⏳ Waiting for keda-kaito-scaler..."
-kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
+install_llm_gateway_auth() {
+  # operator.webhook.enabled=false skips the validating webhook (which
+  # would otherwise require cert-manager). TODO: re-enable webhook +
+  # cert-manager once the install ordering is sorted out.
+  echo "=== Installing LLM Gateway Auth ${LLM_GATEWAY_AUTH_VERSION} ==="
+  helm upgrade --install llm-gateway-apikey \
+    oci://mcr.microsoft.com/aks/kaito/helm/llm-gateway-apikey \
+    --version "${LLM_GATEWAY_AUTH_VERSION}" \
+    --namespace llm-gateway-auth \
+    --create-namespace \
+    --set operator.image.repository=mcr.microsoft.com/aks/kaito/apikey-operator \
+    --set operator.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
+    --set authz.image.repository=mcr.microsoft.com/aks/kaito/apikey-authz \
+    --set authz.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
+    --set operator.webhook.enabled=false \
+    --set istio.enabled=true \
+    --set istio.meshConfigConfigMap.patch=true \
+    --set istio.gatewayNamespace=default \
+    --set istio.gatewaySelector."gateway\.networking\.k8s\.io/gateway-name"=inference-gateway \
+    --set crds.install=true \
+    --wait --timeout=300s
 
-# ── 11. Inference Gateway (default namespace) ──────────────────────────
-# Deployed last so every upstream filter (BBR, GAIE, debug filter,
-# ext_authz from llm-gateway-apikey) is already in place when the Istio
-# gateway-controller renders the gateway pod. Per-case Gateways for the
-# e2e suite are provisioned at runtime by the test framework
-# (utils.EnsureNamespace) inside per-case namespaces.
-echo ""
-echo "=== 11/11: Deploying default inference Gateway ==="
-kubectl apply -f "${MANIFESTS_DIR}/gateway.yaml"
+  echo "⏳ Waiting for apikey-operator..."
+  kubectl -n llm-gateway-auth rollout status deployment/apikey-operator --timeout=180s || true
 
-echo "⏳ Waiting for Gateway pod..."
-for _ in $(seq 1 30); do
-  if kubectl get pods -l gateway.networking.k8s.io/gateway-name=inference-gateway --no-headers 2>/dev/null | grep -q .; then
-    break
-  fi
-  sleep 5
-done
+  echo "⏳ Waiting for apikey-authz..."
+  kubectl -n llm-gateway-auth rollout status deployment/apikey-authz --timeout=180s || true
+}
 
-kubectl wait --for=condition=ready pod \
-  -l gateway.networking.k8s.io/gateway-name=inference-gateway \
-  --timeout=180s 2>/dev/null || \
-  echo "⚠️  Gateway pod not ready yet — continuing."
+install_routing_primitives() {
+  # Per-model InferenceSets, InferencePools, EPP Deployments, and
+  # model-specific HTTPRoutes are provisioned by the modeldeployment Helm
+  # chart via the E2E test suite. Only cluster-wide routing primitives
+  # (catch-all HTTPRoute, error service, debug filter) live here. The
+  # manifest also ships an APIKey CR in `default` so the unknown-model
+  # probe in gpu_mocker_test.go can authenticate against the cluster-wide
+  # ext_authz policy installed by llm-gateway-apikey and reach the
+  # catch-all route. The catch-all HTTPRoute parents the default Inference
+  # Gateway installed in the next phase — applying it before the gateway
+  # exists is harmless; it stays inactive until the gateway controller
+  # picks it up.
+  echo "=== Deploying routing catch-all, error service, default APIKey ==="
+  kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
+  kubectl apply -f "${MANIFESTS_DIR}/inference-debug-filter.yaml"
 
-# NOTE: The MeshConfig extensionProvider registration (apikey-ext-authz),
-# the AuthorizationPolicy, and the MeshConfig cleanup on uninstall are
-# all handled by the llm-gateway-apikey chart (installed in step 7 above)
-# when istio.enabled=true.
+  echo "⏳ Waiting for model-not-found service..."
+  kubectl rollout status deployment/model-not-found --timeout=60s 2>/dev/null || true
+
+  echo "⏳ Waiting for default APIKey Secret to be reconciled..."
+  for _ in $(seq 1 30); do
+    if kubectl -n default get secret llm-api-key &>/dev/null; then
+      break
+    fi
+    sleep 2
+  done
+}
+
+install_inference_gateway() {
+  # Deployed alongside the routing primitives in the final phase. Every
+  # upstream filter (BBR, GAIE, debug filter, ext_authz from
+  # llm-gateway-apikey) is already in place from earlier phases when the
+  # Istio gateway-controller renders the gateway pod. Per-case Gateways
+  # for the e2e suite are provisioned at runtime by the test framework
+  # (utils.EnsureNamespace) inside per-case namespaces.
+  #
+  # NOTE: The MeshConfig extensionProvider registration (apikey-ext-authz),
+  # the AuthorizationPolicy, and the MeshConfig cleanup on uninstall are
+  # all handled by the llm-gateway-apikey chart when istio.enabled=true.
+  echo "=== Deploying default inference Gateway ==="
+  kubectl apply -f "${MANIFESTS_DIR}/gateway.yaml"
+
+  echo "⏳ Waiting for Gateway pod..."
+  for _ in $(seq 1 30); do
+    if kubectl get pods -l gateway.networking.k8s.io/gateway-name=inference-gateway --no-headers 2>/dev/null | grep -q .; then
+      break
+    fi
+    sleep 5
+  done
+
+  kubectl wait --for=condition=ready pod \
+    -l gateway.networking.k8s.io/gateway-name=inference-gateway \
+    --timeout=180s 2>/dev/null || \
+    echo "⚠️  Gateway pod not ready yet — continuing."
+}
+
+# ── Phased execution ──────────────────────────────────────────────────────
+
+run_phase phase1-base \
+  install_kaito \
+  install_gateway_api_crds \
+  install_gwie_crds \
+  install_keda \
+  prefetch_bbr_chart
+
+run_phase phase2-istio-and-mocker \
+  install_gpu_mocker \
+  install_istio \
+  install_keda_kaito_scaler
+
+run_phase phase3-istio-filters \
+  install_bbr \
+  install_llm_gateway_auth
+
+run_phase phase4-default-namespace \
+  install_routing_primitives \
+  install_inference_gateway
 
 echo ""
 echo "✅ All components installed."

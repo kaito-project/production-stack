@@ -1,0 +1,155 @@
+name: 'E2E Base Setup'
+description: >-
+  Reusable composite action that prepares the full E2E base environment:
+  loads component versions, sets up Go, logs in to Azure, builds the
+  gpu-node-mocker image, creates the AKS cluster, pushes the image to ACR,
+  installs all components, and validates them.
+
+inputs:
+  resource-group:
+    description: 'Azure resource group to host the AKS cluster.'
+    required: true
+  cluster-name:
+    description: 'AKS cluster name.'
+    required: true
+  acr-name:
+    description: 'ACR name (no FQDN).'
+    required: true
+  gpu-mocker-image:
+    description: 'Local docker tag for the gpu-node-mocker image (e.g. gpu-node-mocker:latest-<runid>).'
+    required: true
+  location:
+    description: 'Azure region for the cluster.'
+    required: false
+    default: 'swedencentral'
+  node-count:
+    description: 'Number of AKS nodes.'
+    required: false
+    default: '3'
+  node-vm-size:
+    description: 'AKS node VM size.'
+    required: false
+    default: 'Standard_D8s_v5'
+  # Component version overrides — empty string means "use versions.env default".
+  istio-version:
+    description: 'Istio version override.'
+    required: false
+    default: ''
+  gateway-api-version:
+    description: 'Gateway API CRD version override.'
+    required: false
+    default: ''
+  bbr-version:
+    description: 'BBR release version override.'
+    required: false
+    default: ''
+  keda-version:
+    description: 'KEDA Helm chart version override.'
+    required: false
+    default: ''
+  keda-kaito-scaler-version:
+    description: 'KEDA Kaito Scaler Helm chart version override.'
+    required: false
+    default: ''
+  llm-gateway-auth-version:
+    description: 'LLM Gateway Auth Helm chart version override.'
+    required: false
+    default: ''
+
+outputs:
+  image:
+    description: 'Pushed gpu-node-mocker image (ACR FQDN with tag).'
+    value: ${{ steps.image.outputs.image }}
+
+runs:
+  using: composite
+  steps:
+    - name: Load component versions
+      shell: bash
+      run: |
+        # Source defaults from the centralized version file (loaded exactly once).
+        source versions.env
+        # Inputs override defaults when non-empty.
+        INPUT_ISTIO="${{ inputs.istio-version }}"
+        INPUT_GWAPI="${{ inputs.gateway-api-version }}"
+        INPUT_BBR="${{ inputs.bbr-version }}"
+        INPUT_KEDA="${{ inputs.keda-version }}"
+        INPUT_KKS="${{ inputs.keda-kaito-scaler-version }}"
+        INPUT_LGA="${{ inputs.llm-gateway-auth-version }}"
+        [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
+        [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
+        [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
+        [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
+        [ -n "${INPUT_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${INPUT_KKS}"
+        [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
+        # Export to GITHUB_ENV so all subsequent steps inherit these.
+        {
+          echo "GO_VERSION=${GO_VERSION}"
+          echo "ISTIO_VERSION=${ISTIO_VERSION}"
+          echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
+          echo "BBR_VERSION=${BBR_VERSION}"
+          echo "KEDA_VERSION=${KEDA_VERSION}"
+          echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
+          echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
+          echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
+          echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
+        } >> "$GITHUB_ENV"
+
+    - name: Print versions
+      shell: bash
+      run: |
+        echo "GO_VERSION=${GO_VERSION}"
+        echo "ISTIO_VERSION=${ISTIO_VERSION}"
+        echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
+        echo "BBR_VERSION=${BBR_VERSION}"
+        echo "KEDA_VERSION=${KEDA_VERSION}"
+        echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
+        echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
+        echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
+        echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
+
+    - name: Setup Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: ${{ env.GO_VERSION }}
+
+    - name: Azure Login
+      shell: bash
+      run: az login --identity
+
+    - name: Build gpu-node-mocker image
+      shell: bash
+      env:
+        IMG: ${{ inputs.gpu-mocker-image }}
+      run: make docker-build
+
+    - name: Setup cluster
+      shell: bash
+      env:
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        CLUSTER_NAME: ${{ inputs.cluster-name }}
+        ACR_NAME: ${{ inputs.acr-name }}
+        LOCATION: ${{ inputs.location }}
+        NODE_COUNT: ${{ inputs.node-count }}
+        NODE_VM_SIZE: ${{ inputs.node-vm-size }}
+      run: make e2e-setup
+
+    - name: Push gpu-node-mocker image
+      id: image
+      shell: bash
+      env:
+        ACR_NAME: ${{ inputs.acr-name }}
+        GPU_MOCKER_IMAGE: ${{ inputs.gpu-mocker-image }}
+      run: |
+        OUTPUT=$(make e2e-push-image)
+        echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
+
+    - name: Install components
+      shell: bash
+      env:
+        SHADOW_CONTROLLER_IMAGE: ${{ steps.image.outputs.image }}
+      run: make e2e-install
+
+    - name: Validate components
+      shell: bash
+      run: make e2e-validate
