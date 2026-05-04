@@ -82,12 +82,17 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 		caseValues := CaseDeployments[CaseModelDeploymentChart][0]
 		deploymentName := caseValues.Name
 		preset := caseValues.Model
-		gatewayName := caseValues.GatewayName
 
 		var namespace string
+		var gatewayName string
 
 		BeforeEach(func() {
 			namespace = generateNamespace("e2e-inferenceset")
+			// Mirror the chart convention defined in
+			// charts/modeldeployment/templates/_helpers.tpl
+			// (and charts/modelharness): when gatewayName is empty,
+			// the chart derives it as "<namespace>-gw".
+			gatewayName = namespace + "-gw"
 			createNamespace(ctx, namespace)
 
 			values := caseValues

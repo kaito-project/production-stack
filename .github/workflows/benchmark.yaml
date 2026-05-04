@@ -4,37 +4,32 @@ name: ModelDeployment benchmark
 #   1. Reuses the E2E base setup composite action to bring up the AKS
 #      cluster + all stack components (Istio gateway, BBR, EPP, KEDA,
 #      llm-gateway-apikey, gpu-node-mocker, KAITO).
-#   2. Installs the modeldeployment Helm chart in the `default` namespace,
-#      reusing the cluster-wide `inference-gateway` Gateway and the
-#      cluster-wide `default` APIKey (Secret `llm-api-key`).
-#   3. Starts a `kubectl port-forward` against the gateway service so the
+#   2. Provisions a dedicated workload namespace via the
+#      `charts/modelharness` Helm chart (per-namespace Istio Gateway
+#      `<namespace>-gw`, catch-all HTTPRoute + ReferenceGrant pointing
+#      at the cluster-shared `default/model-not-found` Service, plus
+#      the per-namespace `AuthorizationPolicy` + `APIKey` CR when
+#      `auth.enabled=true`).
+#   3. Installs the `modeldeployment` Helm chart in the same workload
+#      namespace, parented to that namespace's Gateway and protected by
+#      the namespace-local APIKey (Secret `llm-api-key`).
+#   4. Starts a `kubectl port-forward` against the gateway service so the
 #      complete request path Gateway → BBR → EPP → vLLM (mock) pod can be
 #      exercised from localhost. The endpoint URL and API key are echoed
 #      to the workflow log.
-#   4. Installs guidellm and runs a sweep benchmark against the endpoint,
+#   5. Installs guidellm and runs a sweep benchmark against the endpoint,
 #      printing TTFT / TPOT / TPM (and the rest of the guidellm console
 #      summary) into the workflow log.
 #
 # All component versions and benchmark parameters are hard-coded in the
 # `env:` block below — there are no workflow_dispatch inputs. To change a
-# value, edit this file (and rely on the pull_request trigger to validate
-# the change end-to-end).
+# value, edit this file and trigger the workflow manually from the
+# Actions tab (the workflow is dispatch-only).
 
 on:
-  # Run on PRs that touch the benchmark workflow or anything it exercises
-  # (modeldeployment chart, gpu-node-mocker, e2e composite action) so the
-  # full path Gateway → BBR → EPP → vLLM (mock) pod can be debugged from
-  # a PR.
-  pull_request:
-    branches: [ main ]
-    paths:
-      - '.github/workflows/benchmark.yaml'
-      - '.github/actions/e2e-base-setup/**'
-      - 'charts/modeldeployment/**'
-      - 'cmd/gpu-node-mocker/**'
-      - 'pkg/gpu-node-mocker/**'
-      - 'docker/Dockerfile'
-      - 'versions.env'
+  # Manual-only: this benchmark spins up a real AKS cluster and runs
+  # guidellm against it, so it must not run automatically on every PR
+  # or push. Trigger from the Actions tab via "Run workflow".
   workflow_dispatch:
 
 env:
@@ -45,8 +40,11 @@ env:
   LOCATION: swedencentral
   NODE_COUNT: '3'
   NODE_VM_SIZE: Standard_D8s_v5
-  GATEWAY_NAME: inference-gateway
-  GATEWAY_NAMESPACE: default
+  # Dedicated workload namespace provisioned by charts/modelharness.
+  # Naming: per-namespace Gateway becomes "<namespace>-gw" by chart
+  # default; the per-namespace APIKey Secret (llm-api-key) lives here.
+  WORKLOAD_NAMESPACE: benchmark
+  GATEWAY_NAME: benchmark-gw
   GATEWAY_LOCAL_PORT: '18080'
   # The llm-gateway-apikey ext_authz filter resolves the APIKey CR's
   # namespace from the request's Host header subdomain (
@@ -55,7 +53,7 @@ env:
   # "cannot determine gateway namespace: set context_extensions[gateway-namespace]
   # or use subdomain-based host". We map this FQDN to 127.0.0.1 in
   # /etc/hosts so the kubectl port-forward target carries the correct Host.
-  GATEWAY_HOST: default.gw.kaito.sh
+  GATEWAY_HOST: benchmark.gw.kaito.sh
   APIKEY_SECRET_NAME: llm-api-key
   APIKEY_SECRET_KEY: apiKey
   # ----- Benchmark parameters (previously workflow_dispatch inputs) -----
@@ -153,22 +151,44 @@ jobs:
           keda-kaito-scaler-version: ''
           llm-gateway-auth-version: ''
 
+      - name: Provision workload namespace via modelharness
+        run: |
+          set -euo pipefail
+          echo "── Installing modelharness chart in ${WORKLOAD_NAMESPACE} ──"
+          # The chart provisions:
+          #   - per-namespace Istio Gateway "<namespace>-gw"
+          #   - catch-all HTTPRoute → cluster-shared `default/model-not-found`
+          #   - ReferenceGrant authorising that cross-ns backendRef
+          #   - AuthorizationPolicy wiring the Gateway pod into the
+          #     cluster-wide `apikey-ext-authz` CUSTOM provider
+          #   - APIKey CR `default` (apikey-operator reconciles it into
+          #     Secret `llm-api-key` in this namespace)
+          # `--create-namespace` lets helm create the workload namespace
+          # on first install — no separate `kubectl create namespace`
+          # step needed.
+          helm upgrade --install modelharness charts/modelharness \
+            --namespace "${WORKLOAD_NAMESPACE}" \
+            --create-namespace \
+            --set namespace="${WORKLOAD_NAMESPACE}" \
+            --set auth.enabled=true \
+            --wait --timeout=5m
+
       - name: Deploy inference workload via ModelDeployment
         run: |
           set -euo pipefail
           echo "── Installing modeldeployment chart ──"
           echo "  release / name : ${DEPLOYMENT_NAME}"
-          echo "  namespace      : ${GATEWAY_NAMESPACE}"
+          echo "  namespace      : ${WORKLOAD_NAMESPACE}"
           echo "  preset model   : ${MODEL_PRESET}"
           echo "  replicas       : ${REPLICAS}"
           echo "  instance type  : ${INSTANCE_TYPE}"
-          echo "  gateway        : ${GATEWAY_NAME} (namespace ${GATEWAY_NAMESPACE})"
+          echo "  gateway        : ${GATEWAY_NAME} (namespace ${WORKLOAD_NAMESPACE})"
 
           helm upgrade --install "${DEPLOYMENT_NAME}" charts/modeldeployment \
-            --namespace "${GATEWAY_NAMESPACE}" \
+            --namespace "${WORKLOAD_NAMESPACE}" \
             --create-namespace \
             --set name="${DEPLOYMENT_NAME}" \
-            --set namespace="${GATEWAY_NAMESPACE}" \
+            --set namespace="${WORKLOAD_NAMESPACE}" \
             --set model="${MODEL_PRESET}" \
             --set replicas="${REPLICAS}" \
             --set instanceType="${INSTANCE_TYPE}" \
@@ -184,7 +204,7 @@ jobs:
           echo "── Waiting for InferenceSet ${DEPLOYMENT_NAME} pods to be Ready (timeout 10m) ──"
 
           # Wait for the EPP deployment first (ext_proc gRPC endpoint that the Gateway reaches).
-          kubectl -n "${GATEWAY_NAMESPACE}" rollout status \
+          kubectl -n "${WORKLOAD_NAMESPACE}" rollout status \
             "deployment/${DEPLOYMENT_NAME}-inferencepool-epp" --timeout=5m
 
           # Wait for the inference (shadow) pods. KAITO labels each
@@ -192,7 +212,7 @@ jobs:
           deadline=$(( $(date +%s) + 600 ))
           ready=0
           while [ "$(date +%s)" -lt "${deadline}" ]; do
-            ready=$(kubectl -n "${GATEWAY_NAMESPACE}" get pods \
+            ready=$(kubectl -n "${WORKLOAD_NAMESPACE}" get pods \
               -l "inferenceset.kaito.sh/created-by=${DEPLOYMENT_NAME}" \
               -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
               2>/dev/null | grep -c '^True$' || true)
@@ -205,15 +225,15 @@ jobs:
           done
           if [ "${ready:-0}" -lt "${REPLICAS}" ]; then
             echo "✗ inference pods did not all become Ready within 10m"
-            kubectl -n "${GATEWAY_NAMESPACE}" get pods -l "inferenceset.kaito.sh/created-by=${DEPLOYMENT_NAME}" -o wide
+            kubectl -n "${WORKLOAD_NAMESPACE}" get pods -l "inferenceset.kaito.sh/created-by=${DEPLOYMENT_NAME}" -o wide
             exit 1
           fi
 
           # ---------- 2. Wait for the default APIKey Secret ----------
-          echo "── Waiting for Secret ${GATEWAY_NAMESPACE}/${APIKEY_SECRET_NAME} (created by the apikey-operator from the cluster-wide APIKey CR) ──"
+          echo "── Waiting for Secret ${WORKLOAD_NAMESPACE}/${APIKEY_SECRET_NAME} (created by the apikey-operator from the cluster-wide APIKey CR) ──"
           secret_found=0
           for _ in $(seq 1 60); do
-            if kubectl -n "${GATEWAY_NAMESPACE}" get secret "${APIKEY_SECRET_NAME}" >/dev/null 2>&1; then
+            if kubectl -n "${WORKLOAD_NAMESPACE}" get secret "${APIKEY_SECRET_NAME}" >/dev/null 2>&1; then
               echo "✓ Secret found"
               secret_found=1
               break
@@ -221,7 +241,7 @@ jobs:
             sleep 5
           done
           if [ "${secret_found}" -ne 1 ]; then
-            echo "✗ Secret ${GATEWAY_NAMESPACE}/${APIKEY_SECRET_NAME} did not appear within 5m"
+            echo "✗ Secret ${WORKLOAD_NAMESPACE}/${APIKEY_SECRET_NAME} did not appear within 5m"
             exit 1
           fi
 
@@ -246,7 +266,7 @@ jobs:
           # Start kubectl port-forward in the background. Output goes to a
           # log file so the workflow can dump it on failure.
           mkdir -p "${PF_DIR}"
-          nohup kubectl -n "${GATEWAY_NAMESPACE}" port-forward \
+          nohup kubectl -n "${WORKLOAD_NAMESPACE}" port-forward \
             "svc/${SERVICE}" "${GATEWAY_LOCAL_PORT}:80" \
             > "${PF_DIR}/port-forward.log" 2>&1 &
           PF_PID=$!
@@ -267,7 +287,7 @@ jobs:
             exit 1
           fi
 
-          API_KEY="$(kubectl -n "${GATEWAY_NAMESPACE}" get secret \
+          API_KEY="$(kubectl -n "${WORKLOAD_NAMESPACE}" get secret \
             "${APIKEY_SECRET_NAME}" \
             -o jsonpath="{.data.${APIKEY_SECRET_KEY}}" | base64 -d)"
           # Use the subdomain-based FQDN (mapped to 127.0.0.1 above) so the
@@ -387,7 +407,7 @@ jobs:
             echo "| --- | --- |"
             echo "| model preset | \`${MODEL_PRESET}\` |"
             echo "| deployment | \`${DEPLOYMENT_NAME}\` |"
-            echo "| namespace | \`${GATEWAY_NAMESPACE}\` |"
+            echo "| namespace | \`${WORKLOAD_NAMESPACE}\` |"
             echo "| replicas | ${REPLICAS} |"
             echo "| instance type | \`${INSTANCE_TYPE}\` |"
             echo "| guidellm profile | \`${BENCHMARK_PROFILE}\` |"
@@ -449,14 +469,14 @@ jobs:
           # on a real node and labelled `kaito.sh/managed-by=gpu-mocker` /
           # `kaito.sh/shadow-pod-for=<ns>.<original-name>`. Resolve each
           # original pod to its shadow before scraping /metrics.
-          ORIGINAL_PODS="$(kubectl -n "${GATEWAY_NAMESPACE}" get pods \
+          ORIGINAL_PODS="$(kubectl -n "${WORKLOAD_NAMESPACE}" get pods \
             -l "inferenceset.kaito.sh/created-by=${DEPLOYMENT_NAME}" \
             -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
 
           PODS=""
           for ORIG in ${ORIGINAL_PODS}; do
-            SHADOW_SELECTOR="kaito.sh/shadow-pod-for=${GATEWAY_NAMESPACE}.${ORIG}"
-            SHADOW_POD="$(kubectl -n "${GATEWAY_NAMESPACE}" get pods \
+            SHADOW_SELECTOR="kaito.sh/shadow-pod-for=${WORKLOAD_NAMESPACE}.${ORIG}"
+            SHADOW_POD="$(kubectl -n "${WORKLOAD_NAMESPACE}" get pods \
               -l "${SHADOW_SELECTOR}" \
               -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
             if [ -z "${SHADOW_POD}" ]; then
@@ -500,8 +520,8 @@ jobs:
           for POD in ${PODS}; do
             RAW="./benchmark-results/vllm-metrics/${POD}.metrics.txt"
             echo "── ${POD} ──"
-            if ! kubectl -n "${GATEWAY_NAMESPACE}" get \
-                --raw "/api/v1/namespaces/${GATEWAY_NAMESPACE}/pods/${POD}:${MODEL_SERVER_PORT}/proxy/metrics" \
+            if ! kubectl -n "${WORKLOAD_NAMESPACE}" get \
+                --raw "/api/v1/namespaces/${WORKLOAD_NAMESPACE}/pods/${POD}:${MODEL_SERVER_PORT}/proxy/metrics" \
                 > "${RAW}" 2>"${SCRAPE_ERR}"; then
               echo "  ✗ failed to scrape /metrics:"
               sed 's/^/    /' "${SCRAPE_ERR}" || true
@@ -590,14 +610,23 @@ jobs:
 
           # ---------- 2. Uninstall modeldeployment Helm release ----------
           helm uninstall "${DEPLOYMENT_NAME}" \
-            --namespace "${GATEWAY_NAMESPACE}" \
+            --namespace "${WORKLOAD_NAMESPACE}" \
             --ignore-not-found --wait || true
 
-          # ---------- 3. Dump cluster state on failure ----------
+          # ---------- 3. Uninstall modelharness Helm release ----------
+          helm uninstall modelharness \
+            --namespace "${WORKLOAD_NAMESPACE}" \
+            --ignore-not-found --wait || true
+
+          # ---------- 4. Delete workload namespace ----------
+          kubectl delete namespace "${WORKLOAD_NAMESPACE}" \
+            --ignore-not-found --wait=false || true
+
+          # ---------- 5. Dump cluster state on failure ----------
           if [ "${JOB_STATUS}" = "failure" ]; then
             echo "── Job failed — dumping cluster state ──"
             make e2e-dump || true
           fi
 
-          # ---------- 4. Teardown cluster ----------
+          # ---------- 6. Teardown cluster ----------
           make e2e-teardown || true

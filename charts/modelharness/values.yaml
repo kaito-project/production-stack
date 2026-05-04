@@ -1,0 +1,60 @@
+# namespace is the workload namespace that owns these shared resources.
+# Defaults to .Release.Namespace when empty.
+namespace: ""
+
+# gatewayName is the per-namespace Istio Gateway resource name. When
+# empty (the default), the chart derives it as "<namespace>-gw" so the
+# Gateway name self-identifies the workload namespace it serves while
+# remaining distinct from the namespace name (avoids accidental
+# conflation in selectors / Service names).
+#
+# Override only when you need a business-specific Gateway name (for
+# example, in a shared / multi-tenant cluster). All HTTPRoutes (the
+# catch-all rendered here, plus the per-deployment HTTPRoutes rendered
+# by charts/modeldeployment) will parent this Gateway. The Gateway's
+# Service follows Istio's "<gatewayName>-istio" convention; tests
+# port-forward to that Service to exercise the dataplane.
+gatewayName: ""
+
+# gatewayPort is the HTTP listener port on the Gateway.
+gatewayPort: 80
+
+# modelNotFound configures the cross-namespace reference to the
+# cluster-shared model-not-found Service that the catch-all HTTPRoute
+# forwards unmatched requests to. The Service itself is installed once
+# per cluster in `modelNotFound.namespace` (typically `default`) by the
+# E2E install script — this chart only renders the catch-all HTTPRoute
+# and the ReferenceGrant authorising the cross-namespace backendRef.
+modelNotFound:
+  namespace: "default"
+  serviceName: "model-not-found"
+
+# auth toggles the per-namespace API-key authentication artifacts. When
+# enabled, the chart renders:
+#   - AuthorizationPolicy `apikey-gateway-ext-authz`: wires this
+#     namespace's Gateway pod into the cluster-wide `apikey-ext-authz`
+#     CUSTOM provider registered in MeshConfig by the llm-gateway-apikey
+#     chart. The upstream chart only installs an AP for the cluster-wide
+#     `inference-gateway`; per-namespace Gateways must get their own AP
+#     or requests bypass authentication.
+#   - APIKey CR `default`: triggers the apikey-operator to reconcile a
+#     Secret named `llm-api-key` holding the bearer token clients send.
+auth:
+  enabled: false
+  # apiKeyName is the name of the APIKey CR rendered when auth.enabled.
+  apiKeyName: "default"
+
+# networkPolicy toggles the per-namespace NetworkPolicies that lock
+# down East-West ingress to inference workloads while keeping the
+# per-namespace Istio Gateway pod reachable from outside the namespace.
+# When enabled, the chart renders:
+#   - NetworkPolicy `default-deny-ingress`: denies all ingress to
+#     non-gateway pods in the namespace.
+#   - NetworkPolicy `allow-inference-traffic`: re-permits
+#     intra-namespace ingress to non-gateway pods so EPP can reach
+#     vLLM and shadow pods.
+# Both selectors exclude the gateway pod (matched via the standard
+# `gateway.networking.k8s.io/gateway-name` label) so North-South
+# traffic into the gateway is unaffected.
+networkPolicy:
+  enabled: false

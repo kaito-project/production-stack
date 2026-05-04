@@ -1,0 +1,29 @@
+{{- if .Values.auth.enabled }}
+{{/*
+Per-namespace Istio AuthorizationPolicy that wires this namespace's
+Gateway pod into the cluster-wide apikey-ext-authz CUSTOM provider
+(registered in MeshConfig by the llm-gateway-apikey chart). The
+upstream chart only installs an AP for the cluster-wide `inference-gateway`,
+so per-namespace Gateways must get their own AP or requests bypass
+authentication.
+*/}}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: apikey-gateway-ext-authz
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  action: CUSTOM
+  provider:
+    name: apikey-ext-authz
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: {{ include "modelharness.gatewayName" . | quote }}
+  rules:
+    - to:
+        - operation:
+            paths:
+              - "/*"
+{{- end }}

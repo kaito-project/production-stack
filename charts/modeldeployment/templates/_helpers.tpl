@@ -13,6 +13,17 @@ Resolved namespace. Falls back to .Release.Namespace when .Values.namespace is e
 {{- end }}
 
 {{/*
+Resolved Gateway name. Falls back to "<namespace>-gw" when
+.Values.gatewayName is empty, matching the convention used by
+charts/modelharness so per-deployment HTTPRoutes attach to the same
+Gateway that modelharness provisions in the workload namespace.
+*/}}
+{{- define "modeldeployment.gatewayName" -}}
+{{- $ns := include "modeldeployment.namespace" . -}}
+{{- default (printf "%s-gw" $ns) .Values.gatewayName -}}
+{{- end }}
+
+{{/*
 Derived InferencePool name, matching KAITO's naming convention.
 */}}
 {{- define "modeldeployment.inferencePoolName" -}}

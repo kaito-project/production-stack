@@ -1,7 +1,15 @@
+# Cluster-shared model-not-found Service.
+#
+# Returns an OpenAI-compatible 404 JSON body (`code: model_not_found`)
+# instead of Envoy's bare 404. Installed once per cluster in `default`
+# by hack/e2e/scripts/install-components.sh and consumed by every
+# workload namespace's catch-all HTTPRoute via a ReferenceGrant
+# rendered by charts/modelharness.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: model-not-found
+  namespace: default
 spec:
   replicas: 1
   selector:
@@ -27,6 +35,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: model-not-found-conf
+  namespace: default
 data:
   default.conf: |
     server {
@@ -41,46 +50,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: model-not-found
+  namespace: default
 spec:
   selector:
     app: model-not-found
   ports:
   - port: 80
----
-# Catch-all HTTPRoute: Routes any request whose model name did not match
-# any model-specific HTTPRoute to a dedicated error service that returns
-# an OpenAI-compatible 404 JSON response instead of Envoy's bare 404.
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: model-not-found-route
-spec:
-  parentRefs:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
-    name: inference-gateway
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /
-    backendRefs:
-    - name: model-not-found
-      kind: Service
-      port: 80
----
-# APIKey CR for the `default` namespace. The apikey-operator reconciles
-# this into a Secret named `llm-api-key` in `default`. The unknown-model
-# probe in gpu_mocker_test.go pulls this bearer so its request can pass
-# the cluster-wide AuthorizationPolicy that guards `inference-gateway`
-# and reach the catch-all HTTPRoute above (which returns the
-# OpenAI-compatible 404 JSON the test asserts on).
-#
-# Requires the apikey-operator + APIKey CRD installed earlier in
-# install-components.sh (the llm-gateway-apikey chart).
-apiVersion: kaito.sh/v1alpha1
-kind: APIKey
-metadata:
-  name: default
-  namespace: default
-spec: {}

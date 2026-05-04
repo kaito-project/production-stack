@@ -30,16 +30,6 @@ import (
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
-const (
-	// testNamespace is the cluster-wide infrastructure namespace where
-	// shared components (the default Istio Gateway, model-not-found, and
-	// the debug filter) are installed by
-	// hack/e2e/scripts/install-components.sh. Per-case modeldeployment
-	// Helm releases live in dedicated namespaces declared on each
-	// deployment in cases.go.
-	testNamespace = "default"
-)
-
 var _ = Describe("GPU Mocker E2E", Ordered, func() {
 	// Per-case deployments owned by gpu_mocker_test.go (see cases.go).
 	// Installed in a dedicated namespace by BeforeAll so this case can
@@ -340,23 +330,15 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 		Context("Non-existent model request", func() {
 			It("should return 404 with an OpenAI-compatible error for an unknown model", func() {
-				// The catch-all model-not-found HTTPRoute parents the
-				// cluster-wide default Gateway only, so this assertion
-				// must target defaultGatewayURL rather than the per-case
-				// gateway (which has no catch-all). The cluster-wide
-				// AuthorizationPolicy installed by llm-gateway-apikey
-				// also guards that gateway, so the probe must
-				// authenticate. install-components.sh provisions an
-				// APIKey CR in `default` whose Secret (default/llm-api-key)
-				// we read here.
-				ctx := context.Background()
-				apiKey, err := utils.GetAPIKeyFromSecret(ctx, "default")
-				Expect(err).NotTo(HaveOccurred(),
-					"default/llm-api-key Secret should be reconciled by apikey-operator from the APIKey CR shipped in model-not-found.yaml")
-
-				resp, err := utils.SendChatCompletionWithAuth(
-					defaultGatewayURL, "non-existent-model-xyz", "hello",
-					apiKey, "default.gw.example.com")
+				// The catch-all model-not-found HTTPRoute is provisioned
+				// per-namespace by the modelharness chart (installed via
+				// EnsureNamespace) and forwards unmatched requests across
+				// namespaces to the cluster-shared `default/model-not-found`
+				// Service (authorised by a ReferenceGrant). The gpu-mocker
+				// case has AuthAPIKeyEnabled=false, so no
+				// AuthorizationPolicy is rendered and the probe needs no
+				// bearer token.
+				resp, err := utils.SendChatCompletion(caseGatewayURL, "non-existent-model-xyz")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 

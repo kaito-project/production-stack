@@ -13,6 +13,9 @@
 #   - GWIE CRDs (InferencePool, InferenceModel)
 #   - KEDA
 #   - BBR chart prefetch (git clone fork repo only)
+#   - Cluster-shared model-not-found Service in `default` (consumed by
+#     every workload namespace's catch-all HTTPRoute via a
+#     ReferenceGrant rendered by charts/modelharness).
 #
 # Phase 2 (parallel, depends on Phase 1):
 #   - gpu-node-mocker            (after KAITO CRDs)
@@ -23,11 +26,11 @@
 #   - BBR (Body-Based Router)    (helm install into istio-system)
 #   - LLM Gateway Auth           (apikeys.kaito.sh CRD + AuthorizationPolicy)
 #
-# Phase 4 (parallel, default-namespace resources, depends on Phase 3):
-#   - HTTPRoute catch-all, error service, debug filter, default APIKey
-#     (depends on LLM Gateway Auth CRD + GWIE CRDs)
-#   - Inference Gateway (default namespace)
-#     (depends on BBR + LLM Gateway Auth + Istio + Gateway API)
+# Per-namespace shared resources (Gateway, catch-all HTTPRoute,
+# ReferenceGrant, AuthorizationPolicy, APIKey CR) are NOT installed by
+# this script. Each E2E test case provisions its own dedicated
+# namespace at runtime via charts/modelharness (see
+# test/e2e/utils/setup.go EnsureNamespace).
 #
 # Environment variables (must be set by caller, e.g. run-e2e-local.sh or CI):
 #   ISTIO_VERSION             — Istio version
@@ -336,70 +339,32 @@ install_llm_gateway_auth() {
   kubectl -n llm-gateway-auth rollout status deployment/apikey-authz --timeout=180s || true
 }
 
-install_routing_primitives() {
-  # Per-model InferenceSets, InferencePools, EPP Deployments, and
-  # model-specific HTTPRoutes are provisioned by the modeldeployment Helm
-  # chart via the E2E test suite. Only cluster-wide routing primitives
-  # (catch-all HTTPRoute, error service, debug filter) live here. The
-  # manifest also ships an APIKey CR in `default` so the unknown-model
-  # probe in gpu_mocker_test.go can authenticate against the cluster-wide
-  # ext_authz policy installed by llm-gateway-apikey and reach the
-  # catch-all route. The catch-all HTTPRoute parents the default Inference
-  # Gateway installed in the next phase — applying it before the gateway
-  # exists is harmless; it stays inactive until the gateway controller
-  # picks it up.
-  echo "=== Deploying routing catch-all, error service, default APIKey ==="
+install_model_not_found() {
+  # Cluster-shared catch-all 404 Service in `default`. Every workload
+  # namespace's modelharness release renders a catch-all HTTPRoute that
+  # forwards unmatched requests to this Service across namespaces,
+  # authorised by a per-namespace ReferenceGrant.
+  echo "=== Deploying cluster-shared model-not-found Service in default ==="
   kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
-  kubectl apply -f "${MANIFESTS_DIR}/inference-debug-filter.yaml"
 
   echo "⏳ Waiting for model-not-found service..."
-  kubectl rollout status deployment/model-not-found --timeout=60s 2>/dev/null || true
-
-  echo "⏳ Waiting for default APIKey Secret to be reconciled..."
-  for _ in $(seq 1 30); do
-    if kubectl -n default get secret llm-api-key &>/dev/null; then
-      break
-    fi
-    sleep 2
-  done
-}
-
-install_inference_gateway() {
-  # Deployed alongside the routing primitives in the final phase. Every
-  # upstream filter (BBR, GAIE, debug filter, ext_authz from
-  # llm-gateway-apikey) is already in place from earlier phases when the
-  # Istio gateway-controller renders the gateway pod. Per-case Gateways
-  # for the e2e suite are provisioned at runtime by the test framework
-  # (utils.EnsureNamespace) inside per-case namespaces.
-  #
-  # NOTE: The MeshConfig extensionProvider registration (apikey-ext-authz),
-  # the AuthorizationPolicy, and the MeshConfig cleanup on uninstall are
-  # all handled by the llm-gateway-apikey chart when istio.enabled=true.
-  echo "=== Deploying default inference Gateway ==="
-  kubectl apply -f "${MANIFESTS_DIR}/gateway.yaml"
-
-  echo "⏳ Waiting for Gateway pod..."
-  for _ in $(seq 1 30); do
-    if kubectl get pods -l gateway.networking.k8s.io/gateway-name=inference-gateway --no-headers 2>/dev/null | grep -q .; then
-      break
-    fi
-    sleep 5
-  done
-
-  kubectl wait --for=condition=ready pod \
-    -l gateway.networking.k8s.io/gateway-name=inference-gateway \
-    --timeout=180s 2>/dev/null || \
-    echo "⚠️  Gateway pod not ready yet — continuing."
+  kubectl -n default rollout status deployment/model-not-found --timeout=120s || true
 }
 
 # ── Phased execution ──────────────────────────────────────────────────────
+#
+# Per-namespace shared resources (Gateway, catch-all HTTPRoute,
+# ReferenceGrant, AuthorizationPolicy, APIKey CR) are provisioned per
+# E2E test case via charts/modelharness, not pre-installed in `default`.
+# Each test case lives in its own namespace.
 
 run_phase phase1-base \
   install_kaito \
   install_gateway_api_crds \
   install_gwie_crds \
   install_keda \
-  prefetch_bbr_chart
+  prefetch_bbr_chart \
+  install_model_not_found
 
 run_phase phase2-istio-and-mocker \
   install_gpu_mocker \
@@ -409,10 +374,6 @@ run_phase phase2-istio-and-mocker \
 run_phase phase3-istio-filters \
   install_bbr \
   install_llm_gateway_auth
-
-run_phase phase4-default-namespace \
-  install_routing_primitives \
-  install_inference_gateway
 
 echo ""
 echo "✅ All components installed."

@@ -24,7 +24,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -34,41 +33,23 @@ import (
 )
 
 const (
-	// DefaultGatewayName is the Gateway resource name used by the
-	// cluster-wide infrastructure gateway provisioned by
-	// hack/e2e/scripts/install-components.sh in the `default` namespace.
-	// Per-case Gateways live in their own namespaces with case-specific
-	// names (see CaseDeployments).
-	DefaultGatewayName = "inference-gateway"
-
-	// DefaultGatewayNamespace is where the cluster-wide default Gateway
-	// (and the catch-all model-not-found service / debug filter) live.
-	DefaultGatewayNamespace = "default"
-
-	// ModelNotFoundServiceName is the cluster-wide nginx-backed Service
-	// that returns OpenAI-compatible 404 JSON for unmatched model names.
-	// Lives in DefaultGatewayNamespace and is referenced by every
-	// per-case catch-all HTTPRoute via a ReferenceGrant.
-	ModelNotFoundServiceName = "model-not-found"
-
-	// GatewayServiceName is the Kubernetes Service name Istio creates for
-	// the default Gateway. Per-case gateway services follow the same
-	// "<gateway-name>-istio" convention; use IstioGatewayServiceName().
-	GatewayServiceName = "inference-gateway-istio"
-
-	// GatewayNamespace retains its historical meaning: the namespace
-	// hosting the default Gateway.
-	//
-	// Deprecated: prefer DefaultGatewayNamespace for clarity. Kept for
-	// backwards compatibility with existing call sites in this file.
-	GatewayNamespace = DefaultGatewayNamespace
-
 	// DefaultGatewayPort is the HTTP listener port on the Gateway.
 	DefaultGatewayPort = 80
 
 	// HTTPTimeout is the default timeout for HTTP requests.
 	// Set high to account for BBR/EPP ext_proc startup latency.
 	HTTPTimeout = 60 * time.Second
+
+	// ModelNotFoundNamespace is the namespace that hosts the cluster-shared
+	// `model-not-found` Deployment + Service installed once per cluster by
+	// hack/e2e/scripts/install-components.sh. Every workload namespace's
+	// catch-all HTTPRoute (rendered by charts/modelharness) forwards
+	// unmatched requests here via a cross-namespace ReferenceGrant.
+	ModelNotFoundNamespace = "default"
+
+	// ModelNotFoundPodLabel is the label selector used to list the
+	// model-not-found Pods (e.g. when scraping nginx access logs).
+	ModelNotFoundPodLabel = "app=model-not-found"
 )
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request body.
@@ -393,16 +374,6 @@ func restartPortForward(key portForwardKey) error {
 	portForwardByURL[newURL] = key
 	pf.url = newURL
 	return nil
-}
-
-// GetGatewayURL returns the base URL for the cluster-wide default
-// Inference Gateway (default namespace). Honours the GATEWAY_URL env
-// override.
-func GetGatewayURL() (string, error) {
-	if url := os.Getenv("GATEWAY_URL"); url != "" {
-		return url, nil
-	}
-	return GetGatewayURLFor(DefaultGatewayNamespace, DefaultGatewayName)
 }
 
 // GetGatewayURLFor returns a base URL that proxies HTTP traffic to the

@@ -27,26 +27,25 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// EnsureNamespace creates the namespace if it does not exist and, when
-// the namespace is non-default, provisions all per-namespace e2e
-// resources (Gateway, catch-all HTTPRoute, ReferenceGrant, and — when
-// authEnabled is true — an Istio AuthorizationPolicy + APIKey CR). The
-// cluster-wide default Gateway and its catch-all are installed
-// out-of-band by hack/e2e/scripts/install-components.sh, so we do not
-// re-create them here.
+// EnsureNamespace creates the namespace if it does not exist and installs
+// the modelharness Helm chart into it. modelharness owns every per-namespace
+// shared resource: the Istio Gateway (named "<name>-gw" by chart
+// default), the catch-all model-not-found HTTPRoute + ReferenceGrant,
+// — when authEnabled is true — the AuthorizationPolicy + APIKey CR
+// that wire the Gateway into the cluster-wide apikey-ext-authz CUSTOM
+// provider, and — when networkPolicyEnabled is true — the
+// default-deny-ingress + allow-inference-traffic NetworkPolicies that
+// lock down East-West ingress while keeping the per-namespace gateway
+// pod reachable from outside the namespace (matched via the standard
+// `gateway.networking.k8s.io/gateway-name` label that Istio stamps on
+// every gateway pod).
 //
-// Safe to call repeatedly; existing resources are left untouched.
-func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled, networkPolicyEnabled bool) error {
-	if name == DefaultGatewayNamespace {
-		// The cluster-wide default Gateway is installed by the e2e
-		// install script — do not duplicate it here.
-		return nil
-	}
-
+// Safe to call repeatedly; the underlying `helm upgrade --install` and
+// namespace Create are both idempotent.
+func EnsureNamespace(ctx context.Context, name string, authEnabled, networkPolicyEnabled bool) error {
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
@@ -54,297 +53,17 @@ func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled,
 		return fmt.Errorf("create namespace %s: %w", name, err)
 	}
 
-	if gatewayName == "" {
-		return fmt.Errorf("gatewayName must be set for non-default namespace %q", name)
-	}
-
-	return provisionNamespaceResources(ctx, name, gatewayName, authEnabled, networkPolicyEnabled)
-}
-
-// provisionNamespaceResources is the single source of truth for every
-// resource that a non-default e2e case namespace owns. Add new
-// per-namespace resources here so callers stay unchanged.
-//
-// Currently provisioned:
-//  1. Gateway <gatewayName>: per-case Istio Gateway (HTTP/80) used by
-//     this namespace's HTTPRoutes and port-forwarded by the test client.
-//  2. HTTPRoute model-not-found-route: catch-all routing every otherwise
-//     unmatched path on the per-case Gateway to the shared
-//     `default/model-not-found` Service so requests for non-existent
-//     models return OpenAI-compatible 404 JSON instead of Envoy's bare
-//  404. Uses a cross-namespace backendRef.
-//  3. ReferenceGrant allow-model-not-found-from-<ns> (in `default`):
-//     authorizes the catch-all HTTPRoute in <ns> to reference the
-//     `default/model-not-found` Service.
-//  4. AuthorizationPolicy apikey-gateway-ext-authz (in <ns>): wires the
-//     per-case Gateway pod into the cluster-wide `apikey-ext-authz` CUSTOM
-//     provider (registered in MeshConfig by the llm-gateway-apikey chart).
-//     The upstream chart only installs an AP for the cluster-wide
-//     `inference-gateway`, so per-case Gateways must get their own.
-//     Created only when authEnabled is true.
-//  5. APIKey CR `default` (in <ns>): triggers the apikey-operator to
-//     reconcile a Secret named APIKeySecretName the tests pull a Bearer
-//     token from. Created only when authEnabled is true.
-func provisionNamespaceResources(ctx context.Context, name, gatewayName string, authEnabled, networkPolicyEnabled bool) error {
-	cl := TestingCluster.KubeClient
-
-	// 1. Gateway in the case namespace.
-	gw := &unstructured.Unstructured{}
-	gw.SetGroupVersionKind(GatewayGVK)
-	gw.SetName(gatewayName)
-	gw.SetNamespace(name)
-	if err := unstructured.SetNestedField(gw.Object, "istio", "spec", "gatewayClassName"); err != nil {
-		return fmt.Errorf("set gatewayClassName: %w", err)
-	}
-	listeners := []interface{}{
-		map[string]interface{}{
-			"name":     "http",
-			"port":     int64(80),
-			"protocol": "HTTP",
-		},
-	}
-	if err := unstructured.SetNestedSlice(gw.Object, listeners, "spec", "listeners"); err != nil {
-		return fmt.Errorf("set listeners: %w", err)
-	}
-	if err := cl.Create(ctx, gw); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create Gateway %s/%s: %w", name, gatewayName, err)
-	}
-
-	// 2. ReferenceGrant in the default (Service-owning) namespace, named
-	// after the consuming namespace so each case fully owns its grant.
-	grantName := fmt.Sprintf("allow-model-not-found-from-%s", name)
-	rg := &unstructured.Unstructured{}
-	rg.SetGroupVersionKind(ReferenceGrantGVK)
-	rg.SetName(grantName)
-	rg.SetNamespace(DefaultGatewayNamespace)
-	if err := unstructured.SetNestedSlice(rg.Object, []interface{}{
-		map[string]interface{}{
-			"group":     "gateway.networking.k8s.io",
-			"kind":      "HTTPRoute",
-			"namespace": name,
-		},
-	}, "spec", "from"); err != nil {
-		return fmt.Errorf("set ReferenceGrant.from: %w", err)
-	}
-	if err := unstructured.SetNestedSlice(rg.Object, []interface{}{
-		map[string]interface{}{
-			"group": "",
-			"kind":  "Service",
-			"name":  ModelNotFoundServiceName,
-		},
-	}, "spec", "to"); err != nil {
-		return fmt.Errorf("set ReferenceGrant.to: %w", err)
-	}
-	if err := cl.Create(ctx, rg); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create ReferenceGrant %s/%s: %w", DefaultGatewayNamespace, grantName, err)
-	}
-
-	// 3. Catch-all HTTPRoute in the case namespace, parented to the
-	// per-case Gateway, sending unmatched paths to default/model-not-found.
-	route := &unstructured.Unstructured{}
-	route.SetGroupVersionKind(HTTPRouteGVK)
-	route.SetName("model-not-found-route")
-	route.SetNamespace(name)
-	if err := unstructured.SetNestedSlice(route.Object, []interface{}{
-		map[string]interface{}{
-			"group": "gateway.networking.k8s.io",
-			"kind":  "Gateway",
-			"name":  gatewayName,
-		},
-	}, "spec", "parentRefs"); err != nil {
-		return fmt.Errorf("set parentRefs: %w", err)
-	}
-	if err := unstructured.SetNestedSlice(route.Object, []interface{}{
-		map[string]interface{}{
-			"matches": []interface{}{
-				map[string]interface{}{
-					"path": map[string]interface{}{
-						"type":  "PathPrefix",
-						"value": "/",
-					},
-				},
-			},
-			"backendRefs": []interface{}{
-				map[string]interface{}{
-					"group":     "",
-					"kind":      "Service",
-					"name":      ModelNotFoundServiceName,
-					"namespace": DefaultGatewayNamespace,
-					"port":      int64(80),
-				},
-			},
-		},
-	}, "spec", "rules"); err != nil {
-		return fmt.Errorf("set rules: %w", err)
-	}
-	if err := cl.Create(ctx, route); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create HTTPRoute %s/model-not-found-route: %w", name, err)
-	}
-
-	// 4. Per-case Istio AuthorizationPolicy wiring this namespace's
-	// Gateway pod into the cluster-wide apikey-ext-authz CUSTOM provider
-	// (registered in MeshConfig by the llm-gateway-apikey chart). The
-	// upstream chart only installs an AP for the cluster-wide
-	// `inference-gateway`; per-case Gateways must get their own AP or
-	// requests bypass authentication. Selector matches the Istio gateway
-	// Pod via the standard gateway-name label. Skipped when the case
-	// does not opt into API key auth.
-	if authEnabled {
-		ap := &unstructured.Unstructured{}
-		ap.SetGroupVersionKind(AuthorizationPolicyGVK)
-		ap.SetName("apikey-gateway-ext-authz")
-		ap.SetNamespace(name)
-		if err := unstructured.SetNestedField(ap.Object, "CUSTOM", "spec", "action"); err != nil {
-			return fmt.Errorf("set AuthorizationPolicy.action: %w", err)
-		}
-		if err := unstructured.SetNestedField(ap.Object, "apikey-ext-authz", "spec", "provider", "name"); err != nil {
-			return fmt.Errorf("set AuthorizationPolicy.provider.name: %w", err)
-		}
-		if err := unstructured.SetNestedStringMap(ap.Object, map[string]string{
-			"gateway.networking.k8s.io/gateway-name": gatewayName,
-		}, "spec", "selector", "matchLabels"); err != nil {
-			return fmt.Errorf("set AuthorizationPolicy.selector: %w", err)
-		}
-		if err := unstructured.SetNestedSlice(ap.Object, []interface{}{
-			map[string]interface{}{
-				"to": []interface{}{
-					map[string]interface{}{
-						"operation": map[string]interface{}{
-							"paths": []interface{}{"/*"},
-						},
-					},
-				},
-			},
-		}, "spec", "rules"); err != nil {
-			return fmt.Errorf("set AuthorizationPolicy.rules: %w", err)
-		}
-		if err := cl.Create(ctx, ap); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("create AuthorizationPolicy %s/apikey-gateway-ext-authz: %w", name, err)
-		}
-
-		// 5. APIKey CR consumed by the apikey-operator, which reconciles it
-		// into a Secret named APIKeySecretName (`llm-api-key`) holding the
-		// bearer token the test client sends. Empty spec uses the operator's
-		// defaults (a generated random key). Previously rendered by the
-		// modeldeployment Helm chart; moved here so all per-namespace auth
-		// plumbing is co-located with the Gateway/AP it serves.
-		apiKey := &unstructured.Unstructured{}
-		apiKey.SetGroupVersionKind(APIKeyGVK)
-		apiKey.SetName("default")
-		apiKey.SetNamespace(name)
-		if err := unstructured.SetNestedMap(apiKey.Object, map[string]interface{}{}, "spec"); err != nil {
-			return fmt.Errorf("set APIKey.spec: %w", err)
-		}
-		if err := cl.Create(ctx, apiKey); err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("create APIKey %s/default: %w", name, err)
-		}
-	}
-
-	if !networkPolicyEnabled {
-		return nil
-	}
-
-	// 6a. default-deny-ingress: pin all pods in the namespace to a
-	// deny-by-default ingress posture EXCEPT the gateway pod itself.
-	// The gateway pod is the namespace's North-South entry point and is
-	// supposed to be reachable from outside (Istio ingress, cluster LBs,
-	// future external clients); covering it here would make the policy
-	// over-restrictive and silently rely on apiserver-mediated paths
-	// (kubectl port-forward, kubelet probes) for reachability — both of
-	// which bypass NetworkPolicy and produce false-positive "works" in
-	// e2e while real CNI traffic is blocked.
-	gatewayPodExclusion := []interface{}{
-		map[string]interface{}{
-			"key":      "gateway.networking.k8s.io/gateway-name",
-			"operator": "DoesNotExist",
-		},
-	}
-	denyAll := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "networking.k8s.io/v1",
-			"kind":       "NetworkPolicy",
-			"metadata": map[string]interface{}{
-				"name":      "default-deny-ingress",
-				"namespace": name,
-			},
-			"spec": map[string]interface{}{
-				"podSelector": map[string]interface{}{
-					"matchExpressions": gatewayPodExclusion,
-				},
-				"policyTypes": []interface{}{"Ingress"},
-			},
-		},
-	}
-	if err := cl.Create(ctx, denyAll); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create NetworkPolicy %s/default-deny-ingress: %w", name, err)
-	}
-
-	// 6b. allow-inference-traffic: re-allow ingress from any pod in the
-	// same namespace (so EPP ↔ inference traffic still works). The
-	// per-namespace gateway pod lives in the same namespace as the EPP /
-	// vLLM workloads, so this intra-namespace allow is sufficient.
-	// Cross-namespace gateway pods (including the cluster-wide gateway in
-	// `default`) must NOT be permitted to reach EPP / vLLM here — each
-	// workload namespace only trusts its own gateway pod. The gateway
-	// pod is excluded from this policy's podSelector for the same reason
-	// as 6a above.
-	allow := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "networking.k8s.io/v1",
-			"kind":       "NetworkPolicy",
-			"metadata": map[string]interface{}{
-				"name":      "allow-inference-traffic",
-				"namespace": name,
-			},
-			"spec": map[string]interface{}{
-				"podSelector": map[string]interface{}{
-					"matchExpressions": gatewayPodExclusion,
-				},
-				"policyTypes": []interface{}{"Ingress"},
-				"ingress": []interface{}{
-					map[string]interface{}{
-						"from": []interface{}{
-							map[string]interface{}{
-								"podSelector": map[string]interface{}{},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	if err := cl.Create(ctx, allow); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create NetworkPolicy %s/allow-inference-traffic: %w", name, err)
+	if err := InstallModelHarness(name, authEnabled, networkPolicyEnabled); err != nil {
+		return fmt.Errorf("install modelharness in %s: %w", name, err)
 	}
 
 	return nil
 }
 
-// cleanupNamespaceResources removes per-namespace artifacts that live
-// outside the case namespace (and therefore are not reaped by the
-// namespace cascade). In-namespace resources (Gateway, HTTPRoute) are
-// deleted automatically when the namespace is deleted.
-func cleanupNamespaceResources(ctx context.Context, name string) error {
-	cl := TestingCluster.KubeClient
-
-	grantName := fmt.Sprintf("allow-model-not-found-from-%s", name)
-	rg := &unstructured.Unstructured{}
-	rg.SetGroupVersionKind(ReferenceGrantGVK)
-	rg.SetName(grantName)
-	rg.SetNamespace(DefaultGatewayNamespace)
-	if err := cl.Delete(ctx, rg); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete ReferenceGrant %s/%s: %w", DefaultGatewayNamespace, grantName, err)
-	}
-	return nil
-}
-
-// DeleteNamespace deletes the given namespace and any out-of-namespace
-// per-case artifacts. The cluster-wide default namespace is never
-// deleted.
+// DeleteNamespace uninstalls the modelharness Helm release in the namespace
+// and then deletes the namespace itself. The release is uninstalled before
+// the namespace cascade so helm release metadata stays consistent.
 func DeleteNamespace(ctx context.Context, name string) error {
-	if name == DefaultGatewayNamespace {
-		return nil
-	}
 	// Kill any cached kubectl port-forwards targeting this namespace
 	// before the namespace is gone, so subsequent EnsurePortForwards()
 	// healthchecks don't try to restart a forward against a vanished
@@ -352,8 +71,8 @@ func DeleteNamespace(ctx context.Context, name string) error {
 	RemovePortForwardsForNamespace(name)
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
-	if err := cleanupNamespaceResources(ctx, name); err != nil {
-		return err
+	if err := UninstallModelHarness(name); err != nil {
+		return fmt.Errorf("uninstall modelharness from %s: %w", name, err)
 	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	if err := cl.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
@@ -371,9 +90,6 @@ func DeleteNamespace(ctx context.Context, name string) error {
 // with no Ready endpoints hangs until those endpoints appear, which
 // causes the 30s port-forward readiness probe to time out.
 func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, timeout time.Duration) error {
-	if namespace == DefaultGatewayNamespace {
-		return nil
-	}
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
 	clientset, err := GetK8sClientset()

@@ -45,9 +45,6 @@ type ModelDeploymentValues struct {
 	Replicas int64
 	// InstanceType is the VM instance type. Defaults to chart default when empty.
 	InstanceType string
-	// GatewayName is the parent Gateway for the HTTPRoute. Defaults to chart
-	// default ("inference-gateway") when empty.
-	GatewayName string
 	// EnableScaling toggles scaledobject.kaito.sh/* annotations.
 	EnableScaling bool
 	// MaxReplicas is the upper bound for autoscaling. Only used when
@@ -101,9 +98,6 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 	}
 	if v.InstanceType != "" {
 		args = append(args, "--set", "instanceType="+v.InstanceType)
-	}
-	if v.GatewayName != "" {
-		args = append(args, "--set", "gatewayName="+v.GatewayName)
 	}
 	if v.EnableScaling {
 		args = append(args, "--set", "enableScaling=true")
@@ -165,6 +159,79 @@ func UninstallModelDeployment(name, namespace string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("helm uninstall %s failed: %w\n%s", name, err, string(out))
+	}
+	return nil
+}
+
+// ModelHarnessReleaseName is the helm release name used by InstallModelHarness
+// / UninstallModelHarness. Each workload namespace owns exactly one release.
+const ModelHarnessReleaseName = "modelharness"
+
+// defaultModelHarnessChartPath is the relative path (from the repo root,
+// where `go test` is invoked by `make test-e2e`) to the modelharness Helm
+// chart. Override via the MODELHARNESS_CHART env var.
+const defaultModelHarnessChartPath = "charts/modelharness"
+
+func modelHarnessChartPath() string {
+	if p := os.Getenv("MODELHARNESS_CHART"); p != "" {
+		return p
+	}
+	return defaultModelHarnessChartPath
+}
+
+// InstallModelHarness runs `helm upgrade --install` for the modelharness chart
+// in `namespace`. It provisions the per-namespace Gateway (named
+// "<namespace>-gw" by chart default), the catch-all model-not-found
+// HTTPRoute + ReferenceGrant, and — when authEnabled is true — the
+// per-namespace AuthorizationPolicy + APIKey CR. When
+// networkPolicyEnabled is true, the chart additionally renders the
+// default-deny-ingress / allow-inference-traffic NetworkPolicies that
+// lock down East-West ingress while keeping the gateway pod reachable.
+//
+// Idempotent: re-running on an existing release reconciles the values.
+func InstallModelHarness(namespace string, authEnabled, networkPolicyEnabled bool) error {
+	if namespace == "" {
+		return fmt.Errorf("modelharness: namespace is required")
+	}
+	chart := modelHarnessChartPath()
+	if _, err := os.Stat(chart); err != nil {
+		alt := filepath.Join("..", "..", chart)
+		if _, err2 := os.Stat(alt); err2 == nil {
+			chart = alt
+		} else {
+			return fmt.Errorf("modelharness chart not found at %q (set MODELHARNESS_CHART): %w", chart, err)
+		}
+	}
+
+	args := []string{
+		"upgrade", "--install", ModelHarnessReleaseName, chart,
+		"--namespace", namespace,
+		"--create-namespace",
+		"--set", "namespace=" + namespace,
+		"--set", "auth.enabled=" + strconv.FormatBool(authEnabled),
+		"--set", "networkPolicy.enabled=" + strconv.FormatBool(networkPolicyEnabled),
+		"--wait",
+	}
+
+	cmd := exec.Command("helm", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("helm upgrade --install %s in %s failed: %w\n%s",
+			ModelHarnessReleaseName, namespace, err, string(out))
+	}
+	return nil
+}
+
+// UninstallModelHarness runs `helm uninstall` for the modelharness release in
+// `namespace`. Missing releases are treated as success.
+func UninstallModelHarness(namespace string) error {
+	args := []string{"uninstall", ModelHarnessReleaseName,
+		"--namespace", namespace, "--ignore-not-found", "--wait"}
+	cmd := exec.Command("helm", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("helm uninstall %s in %s failed: %w\n%s",
+			ModelHarnessReleaseName, namespace, err, string(out))
 	}
 	return nil
 }

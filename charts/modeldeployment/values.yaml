@@ -42,8 +42,12 @@ maxReplicas: 5
 # scaledobject.kaito.sh/threshold annotation.
 scalingThreshold: 10
 
-# gatewayName is the Gateway resource the HTTPRoute attaches to.
-gatewayName: "inference-gateway"
+# gatewayName is the Gateway resource the HTTPRoute attaches to. When
+# empty (the default), the chart derives it as "<namespace>-gw" so the
+# rendered HTTPRoute parents the per-namespace Gateway provisioned by
+# charts/modelharness. Override only when you need to attach to a
+# Gateway with a business-specific name.
+gatewayName: ""
 
 # ----------------------------------------------------------------------------
 # Endpoint Picker (EPP) configuration.

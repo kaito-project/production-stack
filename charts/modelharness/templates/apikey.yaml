@@ -1,0 +1,18 @@
+{{- if .Values.auth.enabled }}
+{{/*
+APIKey CR consumed by the apikey-operator (shipped by llm-gateway-apikey).
+The operator reconciles this into a Secret named `llm-api-key` in the
+same namespace; the bearer token in that Secret is what test clients /
+production clients send in the Authorization header.
+
+Empty spec uses the operator's defaults (a generated random key).
+*/}}
+apiVersion: kaito.sh/v1alpha1
+kind: APIKey
+metadata:
+  name: {{ .Values.auth.apiKeyName | quote }}
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec: {}
+{{- end }}
