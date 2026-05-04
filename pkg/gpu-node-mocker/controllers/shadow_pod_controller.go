@@ -209,6 +209,9 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		LabelManagedBy:    ControllerName,
 		ShadowPodLabelKey: original.Namespace + "." + original.Name,
 	}
+	if v, ok := original.Labels[InferenceSetCreatedByLabelKey]; ok && v != "" {
+		labels[ShadowPodInferenceSetLabelKey] = v
+	}
 
 	udsTokenizerImage := r.Config.UDSTokenizerImage
 	if udsTokenizerImage == "" {

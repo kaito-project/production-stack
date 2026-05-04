@@ -78,6 +78,11 @@ const (
 	// network_policy_test.go used to prove cross-namespace isolation
 	// between two NetworkPolicy-locked-down workload namespaces.
 	CaseNetworkPolicyB = "network-policy-b"
+
+	// CaseScaling covers scaling_test.go (KEDA-driven Scale-Up / Scale-Down
+	// of a single model, fake-node and shadow-pod inventory churn,
+	// background load to assert no 5xx during transitions).
+	CaseScaling = "scaling"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -173,6 +178,34 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			NetworkPolicyEnabled: true,
 		},
 	},
+	CaseScaling: {
+		{
+			// Scaling baseline matches KEDA's minReplicaCount so that
+			// scale-down can converge back to it. With Replicas>1, KEDA's
+			// HPA computes desiredReplicas=ceil(metric/threshold)*1=0 when
+			// the queue drains and clamps to minReplicaCount=1, so the
+			// pool would never return to its starting size and Scale-Down
+			// assertions would fail.
+			Name:             "scaling-phi",
+			Namespace:        "e2e-scaling",
+			Model:            presetPhi,
+			Replicas:         1,
+			InstanceType:     "Standard_NV36ads_A10_v5",
+			EnableScaling:    true,
+			MaxReplicas:      2,
+			ScalingThreshold: 10, // low threshold to trigger scaling during tests
+			// Lock down East-West ingress while still letting
+			// keda-kaito-scaler (in the `keda` namespace) reach vLLM
+			// metric endpoints on shadow pods — without that allowance,
+			// KEDA can't observe vllm:num_requests_waiting and scale-up
+			// never fires. kaito-system is whitelisted as well so the
+			// gpu-node-mocker / kaito-workspace controllers retain
+			// optional direct-pod access for shadow-pod patching paths
+			// that don't go through the apiserver.
+			NetworkPolicyEnabled:           true,
+			NetworkPolicyAllowedNamespaces: []string{"keda", "kaito-system"},
+		},
+	},
 }
 
 // CaseNamespace returns the namespace declared on the first deployment of
@@ -213,7 +246,8 @@ func InstallCase(caseName string) string {
 	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", caseName)
 
 	ctx := context.Background()
-	Expect(utils.EnsureNamespace(ctx, ns, CaseDeployments[caseName][0].AuthAPIKeyEnabled, CaseDeployments[caseName][0].NetworkPolicyEnabled)).To(Succeed(),
+	first := CaseDeployments[caseName][0]
+	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled, first.NetworkPolicyEnabled, first.NetworkPolicyAllowedNamespaces)).To(Succeed(),
 		"failed to ensure namespace %s for case %s", ns, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).

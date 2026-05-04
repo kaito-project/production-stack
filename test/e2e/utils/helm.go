@@ -65,6 +65,15 @@ type ModelDeploymentValues struct {
 	// deployments in a case share a namespace, so the value on the first
 	// deployment is what takes effect.
 	NetworkPolicyEnabled bool
+	// NetworkPolicyAllowedNamespaces lists namespaces (matched by the
+	// standard `kubernetes.io/metadata.name` label) that are granted
+	// cross-namespace ingress to non-gateway pods when
+	// NetworkPolicyEnabled is true. Use this to permit control-plane
+	// scrapers — e.g. `keda-kaito-scaler` in `keda` needs to reach
+	// vLLM metrics on shadow pods to drive autoscaling decisions.
+	// Leave nil/empty to keep the namespace strictly isolated (the
+	// default for the network-policy e2e cases).
+	NetworkPolicyAllowedNamespaces []string
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a
@@ -186,10 +195,13 @@ func modelHarnessChartPath() string {
 // per-namespace AuthorizationPolicy + APIKey CR. When
 // networkPolicyEnabled is true, the chart additionally renders the
 // default-deny-ingress / allow-inference-traffic NetworkPolicies that
-// lock down East-West ingress while keeping the gateway pod reachable.
+// lock down East-West ingress while keeping the gateway pod reachable;
+// `allowedIngressNamespaces` (if non-empty) extends
+// `allow-inference-traffic` with cross-namespace ingress for the named
+// namespaces (matched by the `kubernetes.io/metadata.name` label).
 //
 // Idempotent: re-running on an existing release reconciles the values.
-func InstallModelHarness(namespace string, authEnabled, networkPolicyEnabled bool) error {
+func InstallModelHarness(namespace string, authEnabled, networkPolicyEnabled bool, allowedIngressNamespaces []string) error {
 	if namespace == "" {
 		return fmt.Errorf("modelharness: namespace is required")
 	}
@@ -210,8 +222,12 @@ func InstallModelHarness(namespace string, authEnabled, networkPolicyEnabled boo
 		"--set", "namespace=" + namespace,
 		"--set", "auth.enabled=" + strconv.FormatBool(authEnabled),
 		"--set", "networkPolicy.enabled=" + strconv.FormatBool(networkPolicyEnabled),
-		"--wait",
 	}
+	for i, allowed := range allowedIngressNamespaces {
+		args = append(args, "--set",
+			fmt.Sprintf("networkPolicy.allowedIngressNamespaces[%d]=%s", i, allowed))
+	}
+	args = append(args, "--wait")
 
 	cmd := exec.Command("helm", args...)
 	out, err := cmd.CombinedOutput()

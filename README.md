@@ -74,6 +74,15 @@ auth-related resources are skipped when `auth.enabled=false`.
 > installed once per cluster by
 > [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh).
 
+> **Note — `default` namespace.** The Gateway, the catch-all
+> `HTTPRoute`, the `model-not-found` error service, and the inference
+> debug `EnvoyFilter` for the `default` namespace are pre-installed by
+> [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh)
+> (step 9). `provisionNamespaceResources` therefore does not need to
+> re-create them when a test runs in `default`; it only provisions
+> these per-namespace artifacts for additional, test-isolated
+> namespaces.
+
 ### 3. Workload tier (per model deployment)
 
 Provisioned by the `charts/modeldeployment` Helm chart. One Helm release

@@ -251,12 +251,12 @@ install_keda_kaito_scaler() {
   helm repo update keda-kaito-scaler
   helm upgrade --install keda-kaito-scaler keda-kaito-scaler/keda-kaito-scaler \
     --version "${KEDA_KAITO_SCALER_VERSION}" \
-    --namespace kaito-system \
+    --namespace keda \
     --create-namespace \
     --wait --timeout=300s
 
   echo "⏳ Waiting for keda-kaito-scaler..."
-  kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
+  kubectl -n keda rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
 }
 
 install_bbr() {

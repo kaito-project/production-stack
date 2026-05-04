@@ -79,7 +79,11 @@ jobs:
           llm-gateway-auth-version: ${{ github.event.inputs.llm_gateway_auth_version }}
 
       - name: Run E2E tests
+        # Skip Nightly-labeled specs (slow/destructive scaling cases, etc.).
+        # TheNightly suite runs in e2e-nightly.yaml.
         run: make test-e2e
+        env:
+          E2E_LABEL: "!Nightly"
 
       - name: Dump cluster state
         if: failure()

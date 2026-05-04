@@ -92,6 +92,20 @@ var (
 		Version: "v1alpha1",
 		Kind:    "APIKey",
 	}
+
+	// NodeClaimGVR is the GroupVersionResource for Karpenter NodeClaim objects.
+	NodeClaimGVR = schema.GroupVersionResource{
+		Group:    "karpenter.sh",
+		Version:  "v1",
+		Resource: "nodeclaims",
+	}
+
+	// ScaledObjectGVR is the GroupVersionResource for KEDA ScaledObject objects.
+	ScaledObjectGVR = schema.GroupVersionResource{
+		Group:    "keda.sh",
+		Version:  "v1alpha1",
+		Resource: "scaledobjects",
+	}
 )
 
 // GetDynamicClient returns a dynamic Kubernetes client for working with

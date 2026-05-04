@@ -65,6 +65,17 @@ const (
 	// ShadowPodLabelKey marks shadow pods so we can watch only those.
 	ShadowPodLabelKey = "kaito.sh/shadow-pod-for"
 
+	// ShadowPodInferenceSetLabelKey records the InferenceSet (modeldeployment)
+	// that the shadow pod mirrors. Intentionally distinct from the upstream
+	// `inferenceset.kaito.sh/created-by` label to avoid the InferencePool
+	// selector accidentally treating shadow pods as real inference endpoints.
+	ShadowPodInferenceSetLabelKey = "kaito.sh/shadow-pod-inferenceset"
+
+	// InferenceSetCreatedByLabelKey is the upstream KAITO label that the
+	// InferenceSet controller stamps on its child pods. We read (but never
+	// re-stamp) this value to populate ShadowPodInferenceSetLabelKey.
+	InferenceSetCreatedByLabelKey = "inferenceset.kaito.sh/created-by"
+
 	// DefaultInferenceSimImage is the default llm-d inference simulator image.
 	DefaultInferenceSimImage = "ghcr.io/llm-d/llm-d-inference-sim:v0.8.1"
 
