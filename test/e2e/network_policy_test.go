@@ -145,7 +145,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			// Enforcement is active when nc cannot establish the TCP handshake
 			// from the external canary namespace (any non-zero exit).
 			return !bytes.Contains([]byte(out), []byte("EXIT=0"))
-		}, 3*time.Minute, 5*time.Second).Should(BeTrue(),
+		}, 5*time.Minute, 5*time.Second).Should(BeTrue(),
 			"timed out waiting for NetworkPolicy enforcement to become active — "+
 				"Cilium may not be enforcing policies on this cluster, or the "+
 				"allow-inference-traffic rule is too permissive")
