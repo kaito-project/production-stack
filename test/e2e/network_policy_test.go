@@ -301,17 +301,20 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	})
 
 	// ── Allow tests ───────────────────────────────────────────────────────
-	It("should ALLOW ingress via gateway-labeled pod in default namespace", func() {
-		// The allow-inference-traffic NetworkPolicy permits ingress from
-		// pods in `default` carrying the inference-gateway label. Verify at
-		// L4 — the policy decision is independent of what the model pod
-		// chooses to serve on that port.
+	It("should DENY ingress via gateway-labeled pod in default namespace", func() {
+		// Each workload namespace only trusts its own in-namespace gateway
+		// pod. A pod in `default` carrying the inference-gateway label
+		// (including the cluster-wide gateway pod itself) must NOT be
+		// allowed to reach EPP / vLLM in a workload namespace — otherwise a
+		// compromised or misconfigured cross-namespace gateway could bypass
+		// per-namespace isolation.
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
 		_, err := probeTarget("default", ncCmd(serverIP, serverPort), probeTimeout, gatewayLabels)
-		Expect(err).NotTo(HaveOccurred(),
-			"gateway-labeled pod in default should be allowed to TCP-connect to the model pod")
+		Expect(err).To(HaveOccurred(),
+			"gateway-labeled pod in default should NOT be allowed to TCP-connect to the model pod — "+
+				"only the in-namespace gateway pod is a trusted ingress source")
 	})
 
 	// ── Cross-namespace isolation ─────────────────────────────────────────
@@ -325,6 +328,57 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		_, err := probeTarget(namespaceB, ncCmd(serverIP, serverPort), probeTimeout, nil)
 		Expect(err).To(HaveOccurred(),
 			"workload namespace B should not be able to reach model pods in workload namespace A")
+	})
+
+	// Regression guard: a pod in namespace A that *spoofs* namespace B's
+	// gateway label must still be denied. NetworkPolicy `podSelector`
+	// without a `namespaceSelector` is namespace-scoped by construction,
+	// so labels alone cannot grant cross-namespace access. This test
+	// locks that invariant in: if anyone reintroduces a cross-namespace
+	// allow rule keyed only on a pod label (the X1 regression), this
+	// case will fail while the existing unlabeled X2 tests would not.
+	It("should DENY cross-namespace ingress even when probe pod spoofs the target's gateway label", func() {
+		spoofedLabels := map[string]string{
+			"gateway.networking.k8s.io/gateway-name": fmt.Sprintf("%s-gateway", netpolModelB),
+		}
+		_, err := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout, spoofedLabels)
+		Expect(err).To(HaveOccurred(),
+			"a pod in namespace A carrying namespace B's gateway label must NOT reach model pods in B — "+
+				"labels do not grant cross-namespace trust under the post-X1 policy")
+	})
+
+	// ── North-South positive path ─────────────────────────────────────────
+	// The gateway pod is the namespace's only N/S entry point and must
+	// be reachable from outside the workload namespace via real
+	// pod-to-pod traffic over the CNI dataplane. Probing through
+	// `kubectl port-forward` (as the rest of the suite does for
+	// convenience) goes through the apiserver→kubelet host-side path
+	// and bypasses NetworkPolicy entirely — so port-forward "works"
+	// would be a false positive if the policy were over-restrictive.
+	// This test probes the gateway's Service ClusterIP from a probe pod
+	// in an external namespace, which exercises the real CNI path the
+	// production N/S traffic would use.
+	It("should ALLOW external-namespace ingress to the gateway pod via Service ClusterIP", func() {
+		gwSvcName := utils.IstioGatewayServiceName(fmt.Sprintf("%s-gateway", netpolModelA))
+		svc, err := clientset.CoreV1().Services(namespace).Get(ctx, gwSvcName, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred(), "could not look up gateway Service %s/%s", namespace, gwSvcName)
+		Expect(svc.Spec.ClusterIP).NotTo(BeEmpty(), "gateway Service has no ClusterIP")
+
+		var gwPort int32
+		for _, p := range svc.Spec.Ports {
+			if p.Port == 80 {
+				gwPort = p.Port
+				break
+			}
+		}
+		Expect(gwPort).To(BeNumerically(">", 0), "gateway Service does not expose port 80")
+
+		_, err = probeTarget("e2e-netpol-external-client",
+			ncCmd(svc.Spec.ClusterIP, gwPort), probeTimeout, nil)
+		Expect(err).NotTo(HaveOccurred(),
+			"external-namespace pod should be allowed to TCP-connect to the gateway pod via Service ClusterIP — "+
+				"if this fails, the workload-namespace NetworkPolicy is over-restrictive and is silently relying on "+
+				"apiserver-mediated paths (port-forward / kubelet) for reachability")
 	})
 })
 

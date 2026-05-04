@@ -245,8 +245,20 @@ func provisionNamespaceResources(ctx context.Context, name, gatewayName string, 
 	}
 
 	// 6a. default-deny-ingress: pin all pods in the namespace to a
-	// deny-by-default ingress posture. Required so the allow rule below
-	// is the only path that grants ingress.
+	// deny-by-default ingress posture EXCEPT the gateway pod itself.
+	// The gateway pod is the namespace's North-South entry point and is
+	// supposed to be reachable from outside (Istio ingress, cluster LBs,
+	// future external clients); covering it here would make the policy
+	// over-restrictive and silently rely on apiserver-mediated paths
+	// (kubectl port-forward, kubelet probes) for reachability — both of
+	// which bypass NetworkPolicy and produce false-positive "works" in
+	// e2e while real CNI traffic is blocked.
+	gatewayPodExclusion := []interface{}{
+		map[string]interface{}{
+			"key":      "gateway.networking.k8s.io/gateway-name",
+			"operator": "DoesNotExist",
+		},
+	}
 	denyAll := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "networking.k8s.io/v1",
@@ -256,7 +268,9 @@ func provisionNamespaceResources(ctx context.Context, name, gatewayName string, 
 				"namespace": name,
 			},
 			"spec": map[string]interface{}{
-				"podSelector": map[string]interface{}{},
+				"podSelector": map[string]interface{}{
+					"matchExpressions": gatewayPodExclusion,
+				},
 				"policyTypes": []interface{}{"Ingress"},
 			},
 		},
@@ -265,9 +279,15 @@ func provisionNamespaceResources(ctx context.Context, name, gatewayName string, 
 		return fmt.Errorf("create NetworkPolicy %s/default-deny-ingress: %w", name, err)
 	}
 
-	// 6b. allow-inference-traffic: re-allow ingress from the cluster-wide
-	// inference Gateway pod in the `default` namespace, and from any pod
-	// in the same namespace (so EPP ↔ inference traffic still works).
+	// 6b. allow-inference-traffic: re-allow ingress from any pod in the
+	// same namespace (so EPP ↔ inference traffic still works). The
+	// per-namespace gateway pod lives in the same namespace as the EPP /
+	// vLLM workloads, so this intra-namespace allow is sufficient.
+	// Cross-namespace gateway pods (including the cluster-wide gateway in
+	// `default`) must NOT be permitted to reach EPP / vLLM here — each
+	// workload namespace only trusts its own gateway pod. The gateway
+	// pod is excluded from this policy's podSelector for the same reason
+	// as 6a above.
 	allow := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "networking.k8s.io/v1",
@@ -277,25 +297,11 @@ func provisionNamespaceResources(ctx context.Context, name, gatewayName string, 
 				"namespace": name,
 			},
 			"spec": map[string]interface{}{
-				"podSelector": map[string]interface{}{},
+				"podSelector": map[string]interface{}{
+					"matchExpressions": gatewayPodExclusion,
+				},
 				"policyTypes": []interface{}{"Ingress"},
 				"ingress": []interface{}{
-					map[string]interface{}{
-						"from": []interface{}{
-							map[string]interface{}{
-								"namespaceSelector": map[string]interface{}{
-									"matchLabels": map[string]interface{}{
-										"kubernetes.io/metadata.name": DefaultGatewayNamespace,
-									},
-								},
-								"podSelector": map[string]interface{}{
-									"matchLabels": map[string]interface{}{
-										"gateway.networking.k8s.io/gateway-name": DefaultGatewayName,
-									},
-								},
-							},
-						},
-					},
 					map[string]interface{}{
 						"from": []interface{}{
 							map[string]interface{}{
