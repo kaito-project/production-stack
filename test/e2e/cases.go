@@ -67,6 +67,17 @@ const (
 	// CaseAuth covers apikey_auth_test.go (API key authentication via
 	// Istio ext_authz — valid/invalid/missing key scenarios).
 	CaseAuth = "auth"
+
+	// CaseNetworkPolicyA covers the primary workload namespace in
+	// network_policy_test.go (default-deny-ingress + allow-inference
+	// NetworkPolicy pair). Holds the model pod that the deny / allow
+	// probes target.
+	CaseNetworkPolicyA = "network-policy-a"
+
+	// CaseNetworkPolicyB covers the secondary workload namespace in
+	// network_policy_test.go used to prove cross-namespace isolation
+	// between two NetworkPolicy-locked-down workload namespaces.
+	CaseNetworkPolicyB = "network-policy-b"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -154,6 +165,28 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			AuthAPIKeyEnabled: true,
 		},
 	},
+	CaseNetworkPolicyA: {
+		{
+			Name:                 "netpol-a",
+			Namespace:            "e2e-netpol-a",
+			Model:                presetPhi,
+			Replicas:             1,
+			InstanceType:         "Standard_NV36ads_A10_v5",
+			GatewayName:          "netpol-a-gateway",
+			NetworkPolicyEnabled: true,
+		},
+	},
+	CaseNetworkPolicyB: {
+		{
+			Name:                 "netpol-b",
+			Namespace:            "e2e-netpol-b",
+			Model:                presetPhi,
+			Replicas:             1,
+			InstanceType:         "Standard_NV36ads_A10_v5",
+			GatewayName:          "netpol-b-gateway",
+			NetworkPolicyEnabled: true,
+		},
+	},
 }
 
 // CaseNamespace returns the namespace declared on the first deployment of
@@ -193,7 +226,7 @@ func InstallCase(caseName string) string {
 	Expect(gatewayName).NotTo(BeEmpty(), "case %q has no GatewayName declared in CaseDeployments", caseName)
 
 	ctx := context.Background()
-	Expect(utils.EnsureNamespace(ctx, ns, gatewayName, CaseDeployments[caseName][0].AuthAPIKeyEnabled)).To(Succeed(),
+	Expect(utils.EnsureNamespace(ctx, ns, gatewayName, CaseDeployments[caseName][0].AuthAPIKeyEnabled, CaseDeployments[caseName][0].NetworkPolicyEnabled)).To(Succeed(),
 		"failed to ensure namespace %s (gateway %s) for case %s", ns, gatewayName, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).

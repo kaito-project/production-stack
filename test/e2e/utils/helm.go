@@ -62,6 +62,12 @@ type ModelDeploymentValues struct {
 	// EnsureNamespace; the warmup loop in SetupInferenceSetsWithRouting
 	// reads the resulting Secret and sends Bearer + Host headers.
 	AuthAPIKeyEnabled bool
+	// NetworkPolicyEnabled signals that this deployment's namespace
+	// should be locked down with the default-deny + allow-inference
+	// NetworkPolicy pair (provisioned by EnsureNamespace). All
+	// deployments in a case share a namespace, so the value on the first
+	// deployment is what takes effect.
+	NetworkPolicyEnabled bool
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a

@@ -490,9 +490,15 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		// These tests cover additional negative-path scenarios.
 
 		It("should return 404 for a request with missing model field", func() {
+			// Refresh port-forwards before issuing a raw HTTP request so a
+			// kubectl port-forward channel that died between specs gets
+			// rebound; SendChatCompletion* does this internally.
+			Expect(utils.EnsurePortForwards()).To(Succeed())
+			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
+
 			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`{"messages": [{"role": "user", "content": "hello"}]}`)
-			req, err := http.NewRequest(http.MethodPost, caseGatewayURL+"/v1/chat/completions",
+			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
 				bytes.NewReader(body))
 			Expect(err).NotTo(HaveOccurred())
 			req.Header.Set("Content-Type", "application/json")
@@ -511,9 +517,12 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return a well-formed error for non-string model field", func() {
+			Expect(utils.EnsurePortForwards()).To(Succeed())
+			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
+
 			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`{"model": 42, "messages": [{"role": "user", "content": "hello"}]}`)
-			req, err := http.NewRequest(http.MethodPost, caseGatewayURL+"/v1/chat/completions",
+			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
 				bytes.NewReader(body))
 			Expect(err).NotTo(HaveOccurred())
 			req.Header.Set("Content-Type", "application/json")
@@ -543,9 +552,12 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return a well-formed error for non-JSON body", func() {
+			Expect(utils.EnsurePortForwards()).To(Succeed())
+			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
+
 			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`this is not json`)
-			req, err := http.NewRequest(http.MethodPost, caseGatewayURL+"/v1/chat/completions",
+			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
 				bytes.NewReader(body))
 			Expect(err).NotTo(HaveOccurred())
 			req.Header.Set("Content-Type", "text/plain")
@@ -572,10 +584,13 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should not inject x-gateway-model-name for non-/v1/ paths", func() {
+			Expect(utils.EnsurePortForwards()).To(Succeed())
+			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
+
 			client := &http.Client{Timeout: utils.HTTPTimeout}
 
 			// GET /healthz — should bypass BBR entirely.
-			req, err := http.NewRequest(http.MethodGet, caseGatewayURL+"/healthz", nil)
+			req, err := http.NewRequest(http.MethodGet, gatewayURL+"/healthz", nil)
 			Expect(err).NotTo(HaveOccurred())
 
 			resp, err := client.Do(req)

@@ -40,7 +40,7 @@ import (
 // re-create them here.
 //
 // Safe to call repeatedly; existing resources are left untouched.
-func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled bool) error {
+func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled, networkPolicyEnabled bool) error {
 	if name == DefaultGatewayNamespace {
 		// The cluster-wide default Gateway is installed by the e2e
 		// install script — do not duplicate it here.
@@ -58,7 +58,7 @@ func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled 
 		return fmt.Errorf("gatewayName must be set for non-default namespace %q", name)
 	}
 
-	return provisionNamespaceResources(ctx, name, gatewayName, authEnabled)
+	return provisionNamespaceResources(ctx, name, gatewayName, authEnabled, networkPolicyEnabled)
 }
 
 // provisionNamespaceResources is the single source of truth for every
@@ -85,7 +85,7 @@ func EnsureNamespace(ctx context.Context, name, gatewayName string, authEnabled 
 //  5. APIKey CR `default` (in <ns>): triggers the apikey-operator to
 //     reconcile a Secret named APIKeySecretName the tests pull a Bearer
 //     token from. Created only when authEnabled is true.
-func provisionNamespaceResources(ctx context.Context, name, gatewayName string, authEnabled bool) error {
+func provisionNamespaceResources(ctx context.Context, name, gatewayName string, authEnabled, networkPolicyEnabled bool) error {
 	cl := TestingCluster.KubeClient
 
 	// 1. Gateway in the case namespace.
@@ -189,57 +189,132 @@ func provisionNamespaceResources(ctx context.Context, name, gatewayName string, 
 	// requests bypass authentication. Selector matches the Istio gateway
 	// Pod via the standard gateway-name label. Skipped when the case
 	// does not opt into API key auth.
-	if !authEnabled {
+	if authEnabled {
+		ap := &unstructured.Unstructured{}
+		ap.SetGroupVersionKind(AuthorizationPolicyGVK)
+		ap.SetName("apikey-gateway-ext-authz")
+		ap.SetNamespace(name)
+		if err := unstructured.SetNestedField(ap.Object, "CUSTOM", "spec", "action"); err != nil {
+			return fmt.Errorf("set AuthorizationPolicy.action: %w", err)
+		}
+		if err := unstructured.SetNestedField(ap.Object, "apikey-ext-authz", "spec", "provider", "name"); err != nil {
+			return fmt.Errorf("set AuthorizationPolicy.provider.name: %w", err)
+		}
+		if err := unstructured.SetNestedStringMap(ap.Object, map[string]string{
+			"gateway.networking.k8s.io/gateway-name": gatewayName,
+		}, "spec", "selector", "matchLabels"); err != nil {
+			return fmt.Errorf("set AuthorizationPolicy.selector: %w", err)
+		}
+		if err := unstructured.SetNestedSlice(ap.Object, []interface{}{
+			map[string]interface{}{
+				"to": []interface{}{
+					map[string]interface{}{
+						"operation": map[string]interface{}{
+							"paths": []interface{}{"/*"},
+						},
+					},
+				},
+			},
+		}, "spec", "rules"); err != nil {
+			return fmt.Errorf("set AuthorizationPolicy.rules: %w", err)
+		}
+		if err := cl.Create(ctx, ap); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create AuthorizationPolicy %s/apikey-gateway-ext-authz: %w", name, err)
+		}
+
+		// 5. APIKey CR consumed by the apikey-operator, which reconciles it
+		// into a Secret named APIKeySecretName (`llm-api-key`) holding the
+		// bearer token the test client sends. Empty spec uses the operator's
+		// defaults (a generated random key). Previously rendered by the
+		// modeldeployment Helm chart; moved here so all per-namespace auth
+		// plumbing is co-located with the Gateway/AP it serves.
+		apiKey := &unstructured.Unstructured{}
+		apiKey.SetGroupVersionKind(APIKeyGVK)
+		apiKey.SetName("default")
+		apiKey.SetNamespace(name)
+		if err := unstructured.SetNestedMap(apiKey.Object, map[string]interface{}{}, "spec"); err != nil {
+			return fmt.Errorf("set APIKey.spec: %w", err)
+		}
+		if err := cl.Create(ctx, apiKey); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create APIKey %s/default: %w", name, err)
+		}
+	}
+
+	if !networkPolicyEnabled {
 		return nil
 	}
 
-	ap := &unstructured.Unstructured{}
-	ap.SetGroupVersionKind(AuthorizationPolicyGVK)
-	ap.SetName("apikey-gateway-ext-authz")
-	ap.SetNamespace(name)
-	if err := unstructured.SetNestedField(ap.Object, "CUSTOM", "spec", "action"); err != nil {
-		return fmt.Errorf("set AuthorizationPolicy.action: %w", err)
-	}
-	if err := unstructured.SetNestedField(ap.Object, "apikey-ext-authz", "spec", "provider", "name"); err != nil {
-		return fmt.Errorf("set AuthorizationPolicy.provider.name: %w", err)
-	}
-	if err := unstructured.SetNestedStringMap(ap.Object, map[string]string{
-		"gateway.networking.k8s.io/gateway-name": gatewayName,
-	}, "spec", "selector", "matchLabels"); err != nil {
-		return fmt.Errorf("set AuthorizationPolicy.selector: %w", err)
-	}
-	if err := unstructured.SetNestedSlice(ap.Object, []interface{}{
+	// 6a. default-deny-ingress: pin all pods in the namespace to a
+	// deny-by-default ingress posture EXCEPT the gateway pod itself.
+	// The gateway pod is the namespace's North-South entry point and is
+	// supposed to be reachable from outside (Istio ingress, cluster LBs,
+	// future external clients); covering it here would make the policy
+	// over-restrictive and silently rely on apiserver-mediated paths
+	// (kubectl port-forward, kubelet probes) for reachability — both of
+	// which bypass NetworkPolicy and produce false-positive "works" in
+	// e2e while real CNI traffic is blocked.
+	gatewayPodExclusion := []interface{}{
 		map[string]interface{}{
-			"to": []interface{}{
-				map[string]interface{}{
-					"operation": map[string]interface{}{
-						"paths": []interface{}{"/*"},
+			"key":      "gateway.networking.k8s.io/gateway-name",
+			"operator": "DoesNotExist",
+		},
+	}
+	denyAll := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "networking.k8s.io/v1",
+			"kind":       "NetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":      "default-deny-ingress",
+				"namespace": name,
+			},
+			"spec": map[string]interface{}{
+				"podSelector": map[string]interface{}{
+					"matchExpressions": gatewayPodExclusion,
+				},
+				"policyTypes": []interface{}{"Ingress"},
+			},
+		},
+	}
+	if err := cl.Create(ctx, denyAll); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create NetworkPolicy %s/default-deny-ingress: %w", name, err)
+	}
+
+	// 6b. allow-inference-traffic: re-allow ingress from any pod in the
+	// same namespace (so EPP ↔ inference traffic still works). The
+	// per-namespace gateway pod lives in the same namespace as the EPP /
+	// vLLM workloads, so this intra-namespace allow is sufficient.
+	// Cross-namespace gateway pods (including the cluster-wide gateway in
+	// `default`) must NOT be permitted to reach EPP / vLLM here — each
+	// workload namespace only trusts its own gateway pod. The gateway
+	// pod is excluded from this policy's podSelector for the same reason
+	// as 6a above.
+	allow := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "networking.k8s.io/v1",
+			"kind":       "NetworkPolicy",
+			"metadata": map[string]interface{}{
+				"name":      "allow-inference-traffic",
+				"namespace": name,
+			},
+			"spec": map[string]interface{}{
+				"podSelector": map[string]interface{}{
+					"matchExpressions": gatewayPodExclusion,
+				},
+				"policyTypes": []interface{}{"Ingress"},
+				"ingress": []interface{}{
+					map[string]interface{}{
+						"from": []interface{}{
+							map[string]interface{}{
+								"podSelector": map[string]interface{}{},
+							},
+						},
 					},
 				},
 			},
 		},
-	}, "spec", "rules"); err != nil {
-		return fmt.Errorf("set AuthorizationPolicy.rules: %w", err)
 	}
-	if err := cl.Create(ctx, ap); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create AuthorizationPolicy %s/apikey-gateway-ext-authz: %w", name, err)
-	}
-
-	// 5. APIKey CR consumed by the apikey-operator, which reconciles it
-	// into a Secret named APIKeySecretName (`llm-api-key`) holding the
-	// bearer token the test client sends. Empty spec uses the operator's
-	// defaults (a generated random key). Previously rendered by the
-	// modeldeployment Helm chart; moved here so all per-namespace auth
-	// plumbing is co-located with the Gateway/AP it serves.
-	apiKey := &unstructured.Unstructured{}
-	apiKey.SetGroupVersionKind(APIKeyGVK)
-	apiKey.SetName("default")
-	apiKey.SetNamespace(name)
-	if err := unstructured.SetNestedMap(apiKey.Object, map[string]interface{}{}, "spec"); err != nil {
-		return fmt.Errorf("set APIKey.spec: %w", err)
-	}
-	if err := cl.Create(ctx, apiKey); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create APIKey %s/default: %w", name, err)
+	if err := cl.Create(ctx, allow); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("create NetworkPolicy %s/allow-inference-traffic: %w", name, err)
 	}
 
 	return nil
@@ -270,6 +345,11 @@ func DeleteNamespace(ctx context.Context, name string) error {
 	if name == DefaultGatewayNamespace {
 		return nil
 	}
+	// Kill any cached kubectl port-forwards targeting this namespace
+	// before the namespace is gone, so subsequent EnsurePortForwards()
+	// healthchecks don't try to restart a forward against a vanished
+	// namespace (which surfaces as a 90s readiness timeout).
+	RemovePortForwardsForNamespace(name)
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
 	if err := cleanupNamespaceResources(ctx, name); err != nil {
