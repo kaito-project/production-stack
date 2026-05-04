@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -256,14 +257,27 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	// accepts (the bare `nc -w 3 HOST PORT` form is rejected with a usage
 	// banner). Exit code 0 ⇒ TCP handshake completed, non-zero ⇒ blocked,
 	// refused, or timed out — exactly what NetworkPolicy controls at L3/L4.
+	//
+	// We MUST echo `EXIT=$?` because client-go's StreamWithContext returns
+	// nil even when the remote command exits non-zero, so the caller cannot
+	// rely on `streamErr != nil` to mean "blocked" (this is the same
+	// quirk the canary loop in BeforeAll already handles). Callers should
+	// inspect stdout via `connected()` instead of trusting the returned err.
 	ncCmd := func(targetIP string, targetPort int32) []string {
-		return []string{"sh", "-c", fmt.Sprintf("nc -z -w 3 %s %d", targetIP, targetPort)}
+		return []string{"sh", "-c", fmt.Sprintf("nc -z -w 3 %s %d 2>&1; echo EXIT=$?", targetIP, targetPort)}
+	}
+
+	// connected interprets the stdout/stderr of an ncCmd run via probeTarget.
+	// Returns true iff the embedded EXIT=0 marker is present, meaning the
+	// TCP handshake completed.
+	connected := func(out string) bool {
+		return strings.Contains(out, "EXIT=0")
 	}
 
 	// probe is a convenience wrapper that checks TCP connectivity to the model pod.
 	probe := func(probeNS string) bool {
-		_, err := probeTarget(probeNS, ncCmd(serverIP, serverPort), probeTimeout, nil)
-		return err == nil
+		out, _ := probeTarget(probeNS, ncCmd(serverIP, serverPort), probeTimeout, nil)
+		return connected(out)
 	}
 
 	// ── Enforcement baseline ──────────────────────────────────────────────
@@ -276,9 +290,9 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		// correct signal. Hitting the model pod directly with an
 		// HTTP/`/v1/chat/completions` POST would test the EPP+Gateway
 		// pipeline (which only the Gateway pod can reach), not the policy.
-		_, err := probeTarget(namespace, ncCmd(serverIP, serverPort), probeTimeout, nil)
-		Expect(err).NotTo(HaveOccurred(),
-			"intra-namespace TCP reach to model pod should succeed — if this fails, NetworkPolicy is over-blocking")
+		out, _ := probeTarget(namespace, ncCmd(serverIP, serverPort), probeTimeout, nil)
+		Expect(connected(out)).To(BeTrue(),
+			"intra-namespace TCP reach to model pod should succeed — if this fails, NetworkPolicy is over-blocking. nc output: %q", out)
 	})
 
 	It("baseline: should DENY ingress from an external namespace (proves enforcement is active)", func() {
@@ -321,23 +335,23 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
-		_, err := probeTarget("default", ncCmd(serverIP, serverPort), probeTimeout, gatewayLabels)
-		Expect(err).To(HaveOccurred(),
+		out, _ := probeTarget("default", ncCmd(serverIP, serverPort), probeTimeout, gatewayLabels)
+		Expect(connected(out)).To(BeFalse(),
 			"gateway-labeled pod in default should NOT be allowed to TCP-connect to the model pod — "+
-				"only the in-namespace gateway pod is a trusted ingress source")
+				"only the in-namespace gateway pod is a trusted ingress source. nc output: %q", out)
 	})
 
 	// ── Cross-namespace isolation ─────────────────────────────────────────
 	It("should DENY ingress from workload namespace A to workload namespace B", func() {
-		_, err := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout, nil)
-		Expect(err).To(HaveOccurred(),
-			"workload namespace A should not be able to reach model pods in workload namespace B")
+		out, _ := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout, nil)
+		Expect(connected(out)).To(BeFalse(),
+			"workload namespace A should not be able to reach model pods in workload namespace B. nc output: %q", out)
 	})
 
 	It("should DENY ingress from workload namespace B to workload namespace A", func() {
-		_, err := probeTarget(namespaceB, ncCmd(serverIP, serverPort), probeTimeout, nil)
-		Expect(err).To(HaveOccurred(),
-			"workload namespace B should not be able to reach model pods in workload namespace A")
+		out, _ := probeTarget(namespaceB, ncCmd(serverIP, serverPort), probeTimeout, nil)
+		Expect(connected(out)).To(BeFalse(),
+			"workload namespace B should not be able to reach model pods in workload namespace A. nc output: %q", out)
 	})
 
 	// Regression guard: a pod in namespace A that *spoofs* namespace B's
@@ -351,10 +365,10 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		spoofedLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": fmt.Sprintf("%s-gateway", netpolModelB),
 		}
-		_, err := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout, spoofedLabels)
-		Expect(err).To(HaveOccurred(),
+		out, _ := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout, spoofedLabels)
+		Expect(connected(out)).To(BeFalse(),
 			"a pod in namespace A carrying namespace B's gateway label must NOT reach model pods in B — "+
-				"labels do not grant cross-namespace trust under the post-X1 policy")
+				"labels do not grant cross-namespace trust under the post-X1 policy. nc output: %q", out)
 	})
 
 	// ── North-South positive path ─────────────────────────────────────────
@@ -383,12 +397,12 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		}
 		Expect(gwPort).To(BeNumerically(">", 0), "gateway Service does not expose port 80")
 
-		_, err = probeTarget("e2e-netpol-external-client",
+		out, _ := probeTarget("e2e-netpol-external-client",
 			ncCmd(svc.Spec.ClusterIP, gwPort), probeTimeout, nil)
-		Expect(err).NotTo(HaveOccurred(),
+		Expect(connected(out)).To(BeTrue(),
 			"external-namespace pod should be allowed to TCP-connect to the gateway pod via Service ClusterIP — "+
 				"if this fails, the workload-namespace NetworkPolicy is over-restrictive and is silently relying on "+
-				"apiserver-mediated paths (port-forward / kubelet) for reachability")
+				"apiserver-mediated paths (port-forward / kubelet) for reachability. nc output: %q", out)
 	})
 })
 

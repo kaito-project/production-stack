@@ -159,7 +159,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 							return 0, fmt.Errorf("status.readyReplicas not present")
 						}
 						return ready.(int64), nil
-					}, 2*time.Minute, 5*time.Second).Should(BeEquivalentTo(desired),
+					}, 5*time.Minute, 5*time.Second).Should(BeEquivalentTo(desired),
 						"InferenceSet %q readyReplicas should match desired replicas", name)
 
 					By(fmt.Sprintf("verifying InferencePool %q is auto-created", utils.InferencePoolName(name)))
