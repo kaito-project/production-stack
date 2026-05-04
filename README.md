@@ -17,13 +17,28 @@ This project evaluates a production inference stack built on top of existing OSS
 - **[keda-kaito-scaler](https://github.com/kaito-project/keda-kaito-scaler)** — Metric-based autoscaler built on [KEDA](https://keda.sh/) that scales vLLM inference pods up and down based on workload metrics.
 - **[Mocked GPU Nodes](https://github.com/kaito-project/production-stack/blob/main/pkg/gpu-node-mocker/README.md) / CPU Nodes** — Infrastructure layer providing compute resources for inference workloads. The `gpu-node-mocker` controller (E2E-only) fakes GPU nodes on CPU-only clusters and runs the `llm-d-inference-sim` shadow pods on real CPU nodes.
 
-## Resource Management
+### Request and Scaling Flows
 
-Production Stack resources are organised into three tiers by scope and
-lifecycle. Operators provision the lower tiers once per cluster; users
-provision a model deployment per workload.
+#### Prompt flow
 
-### 1. Cluster tier (one-time, cluster-wide)
+1. **Client → Istio Gateway.** Client sends `POST /v1/chat/completions` to `<namespace>.gw.example.com` with a bearer token.
+2. **Gateway → ext-proc filters.** `llm-gateway-auth` validates the token; BBR parses the body and injects `X-Gateway-Model-Name`.
+3. **Gateway → EPP.** The per-deployment `HTTPRoute` matches the model name and calls `llm-d-inference-scheduler`, which returns the target pod via `x-gateway-destination-endpoint`.
+4. **Gateway → vLLM Pod.** Envoy forwards the request directly to the chosen inference pod; the response streams back along the reverse path.
+5. **Unmatched models.** The namespace's catch-all `HTTPRoute` returns an OpenAI-compatible `404 model_not_found` from the cluster-shared `default/model-not-found` Service.
+
+#### Scaling flow
+
+1. **vLLM pods → metrics.** Each pod exposes `vllm:*` Prometheus metrics (queue depth, KV-cache utilisation, request rate).
+2. **keda-kaito-scaler → KEDA.** The external scaler aggregates per-`InferenceSet` pod metrics and returns a single summed metric value.
+3. **KEDA → HPA → InferenceSet.** KEDA exposes that value through the external metrics API; the HPA computes the desired replica count from it and patches the `InferenceSet`, and the KAITO controller adds or removes vLLM pods.
+
+## Installation
+
+Install the stack in three steps. Step 1 is one-time per cluster;
+steps 2 and 3 are repeated per workload namespace and per model.
+
+### Step 1. Cluster + addons (one-time, cluster-wide)
 
 Installed by [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh)
 (or its production equivalent). These components live across multiple
@@ -41,7 +56,7 @@ namespaces and are shared by every model deployment:
 | KEDA + KEDA Kaito Scaler ([`kaito-project/keda-kaito-scaler`](https://github.com/kaito-project/keda-kaito-scaler), optional)  | `keda` | `KEDA_VERSION` (v2.19.0), `KEDA_KAITO_SCALER_VERSION` (v0.4.1) | helm | Workload-metric autoscaling.                                                    |
 | `model-not-found` (Deployment + ConfigMap + Service) | `default` | repo `HEAD` ([`hack/e2e/manifests/model-not-found.yaml`](hack/e2e/manifests/model-not-found.yaml)) | kubectl | Cluster-shared nginx-backed Service that returns OpenAI-compatible `404 model_not_found` JSON. Referenced cross-namespace by every workload namespace's catch-all `HTTPRoute` (authorised via a `ReferenceGrant` rendered by `charts/modelharness`). |
 
-### 2. Namespace tier (one-time per workload namespace)
+### Step 2. modelharness (one-time per workload namespace)
 
 Provisioned by the [`charts/modelharness`](charts/modelharness) Helm
 chart. One Helm release per workload namespace owns every per-namespace
@@ -69,23 +84,9 @@ from `InstallCase` / `UninstallCase` in
 up the cross-namespace `ReferenceGrant` automatically. The two
 auth-related resources are skipped when `auth.enabled=false`.
 
-> **Note:** The cluster-shared `default/model-not-found` Service that
-> every workload namespace's catch-all `HTTPRoute` references is
-> installed once per cluster by
-> [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh).
+### Step 3. modeldeployment (per model deployment)
 
-> **Note — `default` namespace.** The Gateway, the catch-all
-> `HTTPRoute`, the `model-not-found` error service, and the inference
-> debug `EnvoyFilter` for the `default` namespace are pre-installed by
-> [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh)
-> (step 9). `provisionNamespaceResources` therefore does not need to
-> re-create them when a test runs in `default`; it only provisions
-> these per-namespace artifacts for additional, test-isolated
-> namespaces.
-
-### 3. Workload tier (per model deployment)
-
-Provisioned by the `charts/modeldeployment` Helm chart. One Helm release
+Provisioned by the [`charts/modeldeployment`](charts/modeldeployment) Helm chart. One Helm release
 per model deployment, parented to the namespace's `Gateway`:
 
 | Resource                                         | Version (chart-rendered) | Install method | Role                                                                  |

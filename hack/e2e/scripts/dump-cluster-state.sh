@@ -50,6 +50,47 @@ kubectl get gateways -A 2>/dev/null || true
 kubectl get httproutes -A 2>/dev/null || true
 
 echo ""
+echo "── NetworkPolicies (all namespaces) ───────────────────────────"
+kubectl get networkpolicies.networking.k8s.io -A 2>/dev/null || true
+echo ""
+echo "── NetworkPolicies (yaml, e2e namespaces) ─────────────────────"
+for ns in $(kubectl get ns -o name 2>/dev/null | awk -F/ '/^namespace\/e2e-/{print $2}'); do
+  np_count=$(kubectl -n "${ns}" get networkpolicies.networking.k8s.io --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${np_count}" != "0" ]; then
+    echo "  ── ${ns} ──"
+    kubectl -n "${ns}" get networkpolicies.networking.k8s.io -o yaml 2>/dev/null || true
+  fi
+done
+
+echo ""
+echo "── CiliumNetworkPolicies / CiliumClusterwideNetworkPolicies ──"
+kubectl get ciliumnetworkpolicies.cilium.io -A 2>/dev/null || true
+kubectl get ciliumclusterwidenetworkpolicies.cilium.io 2>/dev/null || true
+
+echo ""
+echo "── CiliumEndpoints (e2e namespaces) ───────────────────────────"
+for ns in $(kubectl get ns -o name 2>/dev/null | awk -F/ '/^namespace\/e2e-/{print $2}'); do
+  ce_count=$(kubectl -n "${ns}" get ciliumendpoints.cilium.io --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${ce_count}" != "0" ]; then
+    echo "  ── ${ns} ──"
+    kubectl -n "${ns}" get ciliumendpoints.cilium.io -o wide 2>/dev/null || true
+  fi
+done
+
+echo ""
+echo "── Cilium agent status (one node) ─────────────────────────────"
+cilium_pod=$(kubectl -n kube-system get pods -l k8s-app=cilium -o name 2>/dev/null | head -1)
+if [ -n "${cilium_pod}" ]; then
+  kubectl -n kube-system exec "${cilium_pod}" -c cilium-agent -- cilium status --brief 2>/dev/null || true
+  echo ""
+  echo "  ── cilium endpoint list (top 30) ──"
+  kubectl -n kube-system exec "${cilium_pod}" -c cilium-agent -- cilium endpoint list 2>/dev/null | head -30 || true
+  echo ""
+  echo "  ── cilium identity list (top 30) ──"
+  kubectl -n kube-system exec "${cilium_pod}" -c cilium-agent -- cilium identity list 2>/dev/null | head -30 || true
+fi
+
+echo ""
 echo "── Recent events (last 5 min) ────────────────────────────────"
 kubectl get events -A --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
 
