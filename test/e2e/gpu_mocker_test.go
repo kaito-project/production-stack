@@ -139,28 +139,20 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					Expect(preset).To(Equal(d.Model),
 						"InferenceSet %q preset.name should match the explicitly-set model", name)
 
-					By(fmt.Sprintf("verifying InferenceSet %q readyReplicas matches desired", name))
-					spec := is.Object["spec"].(map[string]interface{})
-					desired, ok := spec["replicas"]
-					Expect(ok).To(BeTrue(), "spec.replicas should be set")
-
-					Eventually(func() (int64, error) {
-						current, err := dynClient.Resource(utils.InferenceSetGVR).Namespace(caseNamespace).
-							Get(context.Background(), name, metav1.GetOptions{})
-						if err != nil {
-							return 0, err
-						}
-						status, ok := current.Object["status"].(map[string]interface{})
-						if !ok {
-							return 0, fmt.Errorf("status not present")
-						}
-						ready, ok := status["readyReplicas"]
-						if !ok {
-							return 0, fmt.Errorf("status.readyReplicas not present")
-						}
-						return ready.(int64), nil
-					}, 5*time.Minute, 5*time.Second).Should(BeEquivalentTo(desired),
-						"InferenceSet %q readyReplicas should match desired replicas", name)
+					// NOTE: We intentionally do not assert on
+					// InferenceSet.status.readyReplicas (or the
+					// InferenceSetReady condition) on the gpu-mocker setup.
+					// Both are gated on Workspace pods having
+					// WorkspaceConditionTypeSucceeded=True, which the
+					// gpu-mocker never satisfies — it only patches the
+					// original inference pod's Phase/PodIP. Real readiness
+					// of this case is covered by:
+					//   - Gateway connectivity smoke check (returns 200)
+					//   - "shadow pods running" assertion below
+					//   - "original inference pods patched to Running"
+					//     assertion below
+					// See https://github.com/kaito-project/kaito for the
+					// InferenceSet→Workspace readiness chain.
 
 					By(fmt.Sprintf("verifying InferencePool %q is auto-created", utils.InferencePoolName(name)))
 					poolName := utils.InferencePoolName(name)
