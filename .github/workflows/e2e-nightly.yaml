@@ -49,9 +49,11 @@ on:
         default: ''
 
 env:
-  RESOURCE_GROUP: "kaito-gw-e2e-nightly-rg-${{ github.run_id }}"
-  CLUSTER_NAME: "kaito-gw-e2e-nightly-aks-${{ github.run_id }}"
-  ACR_NAME: "kaitogwe2enightly${{ github.run_id }}acr"
+  # Names are kept short so that the AKS-managed node resource group
+  # ("MC_<RG>_<CLUSTER>_<LOCATION>") stays within the 80-char limit.
+  RESOURCE_GROUP: "kaito-nightly-rg-${{ github.run_id }}"
+  CLUSTER_NAME: "kaito-nightly-aks-${{ github.run_id }}"
+  ACR_NAME: "kaitonightly${{ github.run_id }}acr"
   GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
   LOCATION: australiaeast
   NODE_COUNT: '3'
