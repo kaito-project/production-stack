@@ -113,6 +113,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		restCfg, err := utils.GetK8sConfig()
 		Expect(err).NotTo(HaveOccurred())
 
+		var lastCanaryOut, lastCanaryExecErr string
 		Eventually(func() bool {
 			// `nc -z -w 3` does a pure TCP probe and returns 0 on success,
 			// non-zero on refused/blocked/timeout. Echo the exit code to
@@ -132,23 +133,32 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 
 			exec, err := remotecommand.NewSPDYExecutor(restCfg, "POST", req.URL())
 			if err != nil {
+				lastCanaryExecErr = "newSPDYExecutor: " + err.Error()
 				return false
 			}
 
 			var stdout, stderr bytes.Buffer
 			execCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 			defer cancel()
-			_ = exec.StreamWithContext(execCtx, remotecommand.StreamOptions{
+			streamErr := exec.StreamWithContext(execCtx, remotecommand.StreamOptions{
 				Stdout: &stdout, Stderr: &stderr,
 			})
 			out := stdout.String() + stderr.String()
+			lastCanaryOut = out
+			if streamErr != nil {
+				lastCanaryExecErr = "stream: " + streamErr.Error()
+			} else {
+				lastCanaryExecErr = ""
+			}
 			// Enforcement is active when nc cannot establish the TCP handshake
 			// from the external canary namespace (any non-zero exit).
 			return !bytes.Contains([]byte(out), []byte("EXIT=0"))
 		}, 5*time.Minute, 5*time.Second).Should(BeTrue(),
 			"timed out waiting for NetworkPolicy enforcement to become active — "+
 				"Cilium may not be enforcing policies on this cluster, or the "+
-				"allow-inference-traffic rule is too permissive")
+				"allow-inference-traffic rule is too permissive\n"+
+				"last nc output: %q\nlast exec error: %q\nserverIP=%s serverPort=%d canaryNS=%s",
+			lastCanaryOut, lastCanaryExecErr, serverIP, serverPort, canaryNS)
 	})
 
 	AfterAll(func() {
