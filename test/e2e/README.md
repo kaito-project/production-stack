@@ -4,26 +4,26 @@ End-to-end test suite for production-stack, built with [Ginkgo v2](https://onsi.
 
 ## Test cases
 
-Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry carries `Name`, `Namespace`, `Model` (preset), `Replicas`, `InstanceType`, `GatewayName`.
+Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry carries `Name`, `Namespace`, `Model` (preset), `Replicas`, `InstanceType`. The Gateway name is derived as `<namespace>-gw` by both `charts/modelharness` and `charts/modeldeployment`.
 
 | Case key | Test file | Namespace | Gateway | Deployments | Lifecycle |
 | --- | --- | --- | --- | --- | --- |
-| `CaseGPUMocker` | `gpu_mocker_test.go` | `e2e-gpu-mocker` | `gpu-mocker-gateway` | `gpu-mocker-phi` | `BeforeAll` / `AfterAll` |
-| `CaseModelRouting` | `model_routing_test.go` | `e2e-model-routing` | `model-routing-gateway` | `routing-phi`, `routing-ministral` | `BeforeAll` / `AfterAll` |
-| `CasePrefixCache` | `prefix_cache_routing_test.go` | `e2e-prefix-cache` | `prefix-cache-gateway` | `prefix-cache-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
-| `CaseModelDeploymentChart` | `modeldeployment_chart_test.go` | `e2e-inferenceset-<rand>` | `inference-gateway` (default) | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
+| `CaseGPUMocker` | `gpu_mocker_test.go` | `e2e-gpu-mocker` | `e2e-gpu-mocker-gw` | `gpu-mocker-phi` | `BeforeAll` / `AfterAll` |
+| `CaseModelRouting` | `model_routing_test.go` | `e2e-model-routing` | `e2e-model-routing-gw` | `routing-phi`, `routing-ministral` | `BeforeAll` / `AfterAll` |
+| `CasePrefixCache` | `prefix_cache_routing_test.go` | `e2e-prefix-cache` | `e2e-prefix-cache-gw` | `prefix-cache-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
+| `CaseModelDeploymentChart` | `modeldeployment_chart_test.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
 
 `Name` is unique cluster-wide and is the value matched by `X-Gateway-Model-Name` (i.e. the `model` field clients send in OpenAI-compatible requests). `Model` is the KAITO preset only — multiple deployments may share a preset under different `Name`s.
 
-Edge tests in `model_routing_test.go` (catch-all 404, malformed JSON, `/healthz`) target the cluster-wide **`defaultGatewayURL`** because they exercise default-namespace artifacts; inference tests target the case's **`caseGatewayURL`**.
+Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets its own Gateway, catch-all `model-not-found` route, and (when enabled) API-key auth artifacts via the [`charts/modelharness`](../../charts/modelharness) chart installed by `EnsureNamespace`.
 
 ## Helpers
 
 `utils/`:
 
-- [`setup.go`](utils/setup.go) — `EnsureNamespace`, `DeleteNamespace`, `provisionNamespaceResources`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
-- [`http.go`](utils/http.go) — multi-gateway port-forward (`GetGatewayURL`, `GetGatewayURLFor`), `SendChatCompletion`.
-- [`helm.go`](utils/helm.go) — `InstallModelDeployment`, `UninstallModelDeployment`.
+- [`setup.go`](utils/setup.go) — `EnsureNamespace` (installs the modelharness chart per namespace), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
+- [`http.go`](utils/http.go) — multi-gateway port-forward (`GetGatewayURLFor`), `SendChatCompletion`.
+- [`helm.go`](utils/helm.go) — `InstallModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`.
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).
 
@@ -97,7 +97,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
             Model:        presetPhi,
             Replicas:     2,
             InstanceType: "Standard_NV36ads_A10_v5",
-            GatewayName:  "my-feature-gateway",   // per-namespace Gateway
         },
     },
 }
@@ -148,7 +147,7 @@ var _ = Describe("My Feature", Ordered, utils.GinkgoLabelMyFeature, func() {
 })
 ```
 
-Use `caseGatewayURL` for traffic that targets your case's deployments. Use the package-level `defaultGatewayURL` (set in [`e2e_test.go`](e2e_test.go) `BeforeSuite`) only when asserting cluster-wide artifacts that live in `default`.
+Use `caseGatewayURL` for traffic that targets your case's deployments. The case namespace's catch-all and Gateway are provisioned by the modelharness chart in `EnsureNamespace`.
 
 ### 4. Add a Ginkgo label (only if no existing label fits)
 
@@ -160,7 +159,7 @@ var GinkgoLabelMyFeature = ginkgo.Label("MyFeature")
 
 ### 5. Add per-namespace resources (rare)
 
-If your case needs additional cluster-side resources beyond Gateway / catch-all HTTPRoute / ReferenceGrant, add them to [`provisionNamespaceResources`](utils/setup.go) — that function is the single place where per-namespace resources are declared. Mirror any out-of-namespace creation in [`cleanupNamespaceResources`](utils/setup.go).
+If your case needs additional cluster-side resources beyond what the [`charts/modelharness`](../../charts/modelharness) chart already provisions (Gateway, catch-all `model-not-found` Service + HTTPRoute, optional `AuthorizationPolicy` + `APIKey`), add them as templates in `charts/modelharness` so every workload namespace picks them up consistently.
 
 ### 6. Validate
 

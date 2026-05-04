@@ -1,0 +1,55 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/*
+Per-namespace NetworkPolicies that lock down East-West ingress to
+inference workloads (EPP / vLLM) while keeping the per-namespace Istio
+Gateway pod (matched via `gateway.networking.k8s.io/gateway-name`,
+which Istio stamps onto every gateway pod) reachable from outside the
+namespace.
+
+Two policies are rendered:
+  1. `default-deny-ingress` — denies all ingress to non-gateway pods.
+  2. `allow-inference-traffic` — re-permits intra-namespace ingress to
+     non-gateway pods, so EPP can reach vLLM and shadow pods, etc.
+
+The gateway pod is excluded from both selectors so:
+  - North-South traffic into the gateway (Istio ingress, external
+    clients) is unaffected — it is the namespace's entry point.
+  - The gateway can still send East-West traffic to EPP / vLLM in the
+    same namespace via the standard intra-namespace allow rule.
+
+The gateway pod is owned by this chart's Gateway resource; the
+exclusion label is stamped automatically by Istio.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: gateway.networking.k8s.io/gateway-name
+        operator: DoesNotExist
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-inference-traffic
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: gateway.networking.k8s.io/gateway-name
+        operator: DoesNotExist
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+{{- end }}

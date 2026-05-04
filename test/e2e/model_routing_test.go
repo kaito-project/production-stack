@@ -73,9 +73,8 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 	var ctx context.Context
 
 	// caseGatewayURL routes to this case's dedicated Gateway. Resolved
-	// in BeforeAll. Edge tests that depend on cluster-wide artifacts
-	// (catch-all model-not-found / debug filter) target defaultGatewayURL
-	// instead.
+	// in BeforeAll. Per-namespace catch-all model-not-found / Gateway
+	// resources are provisioned by the modelharness chart.
 	var caseGatewayURL string
 
 	BeforeAll(func() {
@@ -268,8 +267,13 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(err).NotTo(HaveOccurred())
 
 			By("recording model-not-found pod request count before test")
-			mnfPods, err := clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
-				LabelSelector: "app=model-not-found",
+			// model-not-found is a cluster-shared Service installed once in
+			// utils.ModelNotFoundNamespace by
+			// hack/e2e/scripts/install-components.sh; every workload
+			// namespace's catch-all HTTPRoute references it via a
+			// ReferenceGrant rendered by charts/modelharness.
+			mnfPods, err := clientset.CoreV1().Pods(utils.ModelNotFoundNamespace).List(ctx, metav1.ListOptions{
+				LabelSelector: utils.ModelNotFoundPodLabel,
 				FieldSelector: "status.phase=Running",
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -277,7 +281,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Capture the nginx access log line count before traffic.
 			mnfPodName := mnfPods.Items[0].Name
-			beforeLogCount := countNginxAccessLogs(clientset, testNamespace, mnfPodName)
+			beforeLogCount := countNginxAccessLogs(clientset, utils.ModelNotFoundNamespace, mnfPodName)
 
 			By("sending requests to known models")
 			for _, model := range modelNames {
@@ -290,7 +294,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			}
 
 			By("verifying model-not-found service received no new requests")
-			afterLogCount := countNginxAccessLogs(clientset, testNamespace, mnfPodName)
+			afterLogCount := countNginxAccessLogs(clientset, utils.ModelNotFoundNamespace, mnfPodName)
 			Expect(afterLogCount).To(Equal(beforeLogCount),
 				"model-not-found service should not have received any requests for known models")
 		})
@@ -435,7 +439,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(err).NotTo(HaveOccurred())
 
 			// Identify the Gateway pod created by the Kubernetes Gateway API.
-			gwPods, err := clientset.CoreV1().Pods(testNamespace).List(ctx, metav1.ListOptions{
+			gwPods, err := clientset.CoreV1().Pods(caseNamespace).List(ctx, metav1.ListOptions{
 				LabelSelector: "gateway.networking.k8s.io/gateway-name=inference-gateway",
 				FieldSelector: "status.phase=Running",
 			})

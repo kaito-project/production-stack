@@ -1,0 +1,34 @@
+{{/*
+Catch-all HTTPRoute. Routes any request whose model name did not match
+a deployment-specific HTTPRoute (rendered by charts/modeldeployment) to
+the cluster-shared model-not-found Service so unknown models receive
+an OpenAI-compatible 404 JSON body instead of Envoy's bare 404.
+
+The Service lives in `.Values.modelNotFound.namespace` (typically
+`default`) and is shared by every workload namespace. The cross-namespace
+backendRef is authorised by the ReferenceGrant rendered alongside this
+route (see referencegrant.yaml).
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: model-not-found-route
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "modelharness.gatewayName" . | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - group: ""
+          kind: Service
+          name: {{ .Values.modelNotFound.serviceName }}
+          namespace: {{ .Values.modelNotFound.namespace }}
+          port: 80

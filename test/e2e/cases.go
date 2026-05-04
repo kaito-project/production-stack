@@ -93,13 +93,10 @@ const (
 //     spec.template.inference.preset.name.
 //   - Namespace: per-case namespace — the suite installs into this
 //     namespace directly. Each non-default namespace gets its own
-//     dedicated Istio Gateway (named GatewayName) so parallel Ginkgo
-//     workers can target independent dataplanes.
-//   - GatewayName: the Gateway resource the HTTPRoute parents into. For
-//     non-default namespaces this Gateway is provisioned by EnsureNamespace
-//     during InstallCase. For the `default` namespace, the cluster-wide
-//     "inference-gateway" installed by hack/e2e/scripts/install-components.sh
-//     is reused.
+//     dedicated Istio Gateway (named "<namespace>-gw" by chart
+//     convention) so parallel Ginkgo workers can target independent
+//     dataplanes. The Gateway is provisioned by EnsureNamespace via
+//     the modelharness chart during InstallCase.
 //   - Replicas / InstanceType: explicit so test assertions can compare
 //     against a known-good value.
 var CaseDeployments = map[string][]utils.ModelDeploymentValues{
@@ -110,7 +107,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetPhi,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "gpu-mocker-gateway",
 		},
 	},
 	CaseModelRouting: {
@@ -120,7 +116,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetPhi,
 			Replicas:     2,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "model-routing-gateway",
 		},
 		{
 			Name:         "routing-ministral",
@@ -128,7 +123,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetMinistral,
 			Replicas:     2,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "model-routing-gateway",
 		},
 	},
 	CasePrefixCache: {
@@ -138,20 +132,15 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetPhi,
 			Replicas:     2, // prefix-cache tests require ≥2 shadow pods.
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  "prefix-cache-gateway",
 		},
 	},
 	CaseModelDeploymentChart: {
 		{
-			// Per-test case — Namespace is filled in at runtime with a
-			// random suffix by modeldeployment_chart_test.go. The
-			// GatewayName references the cluster-wide default Gateway
-			// because the chart test asserts spec.parentRefs[0].name.
 			Name:         "mdchart-phi",
+			Namespace:    "e2e-mdchart",
 			Model:        presetPhi,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			GatewayName:  utils.DefaultGatewayName,
 		},
 	},
 	CaseAuth: {
@@ -161,7 +150,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:             presetPhi,
 			Replicas:          2,
 			InstanceType:      "Standard_NV36ads_A10_v5",
-			GatewayName:       "inference-gateway",
 			AuthAPIKeyEnabled: true,
 		},
 	},
@@ -172,7 +160,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:                presetPhi,
 			Replicas:             1,
 			InstanceType:         "Standard_NV36ads_A10_v5",
-			GatewayName:          "netpol-a-gateway",
 			NetworkPolicyEnabled: true,
 		},
 	},
@@ -183,7 +170,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:                presetPhi,
 			Replicas:             1,
 			InstanceType:         "Standard_NV36ads_A10_v5",
-			GatewayName:          "netpol-b-gateway",
 			NetworkPolicyEnabled: true,
 		},
 	},
@@ -199,14 +185,15 @@ func CaseNamespace(caseName string) string {
 	return deployments[0].Namespace
 }
 
-// CaseGatewayName returns the Gateway resource name declared on the first
-// deployment of the case (all deployments in a case share a gateway).
+// CaseGatewayName returns the Gateway name owned by the case namespace.
+// Mirrors the chart convention "<namespace>-gw" (see
+// charts/modelharness/templates/_helpers.tpl).
 func CaseGatewayName(caseName string) string {
-	deployments := CaseDeployments[caseName]
-	if len(deployments) == 0 {
+	ns := CaseNamespace(caseName)
+	if ns == "" {
 		return ""
 	}
-	return deployments[0].GatewayName
+	return ns + "-gw"
 }
 
 // InstallCase provisions every modeldeployment Helm release owned by the
@@ -214,20 +201,20 @@ func CaseGatewayName(caseName string) string {
 // for the EPP / inference pods + gateway routing to be ready. Returns the
 // gateway URL that routes to this case's deployments.
 //
-// For non-default namespaces, EnsureNamespace also creates the case's
-// dedicated Istio Gateway so each case has an isolated dataplane and
-// parallel Ginkgo workers do not contend on a shared gateway.
+// EnsureNamespace installs the modelharness chart (Gateway, catch-all
+// HTTPRoute, ReferenceGrant, and optional auth artifacts) so each case
+// has an isolated dataplane and parallel Ginkgo workers do not contend
+// on a shared gateway.
 //
 // Intended to be called from a Ginkgo Ordered Describe's BeforeAll.
 func InstallCase(caseName string) string {
 	ns := CaseNamespace(caseName)
 	gatewayName := CaseGatewayName(caseName)
 	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", caseName)
-	Expect(gatewayName).NotTo(BeEmpty(), "case %q has no GatewayName declared in CaseDeployments", caseName)
 
 	ctx := context.Background()
-	Expect(utils.EnsureNamespace(ctx, ns, gatewayName, CaseDeployments[caseName][0].AuthAPIKeyEnabled, CaseDeployments[caseName][0].NetworkPolicyEnabled)).To(Succeed(),
-		"failed to ensure namespace %s (gateway %s) for case %s", ns, gatewayName, caseName)
+	Expect(utils.EnsureNamespace(ctx, ns, CaseDeployments[caseName][0].AuthAPIKeyEnabled, CaseDeployments[caseName][0].NetworkPolicyEnabled)).To(Succeed(),
+		"failed to ensure namespace %s for case %s", ns, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
 		To(Succeed(), "gateway service for %s did not appear", caseName)

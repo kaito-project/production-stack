@@ -9,7 +9,7 @@ spec:
   parentRefs:
     - group: gateway.networking.k8s.io
       kind: Gateway
-      name: {{ .Values.gatewayName | quote }}
+      name: {{ include "modeldeployment.gatewayName" . | quote }}
   rules:
     - matches:
         - headers:

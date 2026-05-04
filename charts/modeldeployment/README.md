@@ -24,7 +24,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `enableScaling`           | optional | `false`                                                              | Wired to `scaledobject.kaito.sh/auto-provision`.                                           |
 | `maxReplicas`             | optional | `5`                                                                  | Wired to `scaledobject.kaito.sh/max-replicas` (only when `enableScaling=true`).            |
 | `scalingThreshold`        | optional | `10`                                                                 | Wired to `scaledobject.kaito.sh/threshold` (only when `enableScaling=true`).               |
-| `gatewayName`             | required | `inference-gateway`                                                  | Gateway the HTTPRoute attaches to.                                                         |
+| `gatewayName`             | optional | _empty_ → `<namespace>-gw`                                          | Gateway the HTTPRoute attaches to. Defaults to the per-namespace Gateway provisioned by `charts/modelharness`. |
 | `epp.image.repository`    | optional | `mcr.microsoft.com/oss/v2/llm-d/llm-d-inference-scheduler`           | EPP container image.                                                                       |
 | `epp.image.tag`           | optional | `v0.7.1`                                                             | EPP image tag.                                                                             |
 | `epp.image.pullPolicy`    | optional | `IfNotPresent`                                                       | EPP image pull policy.                                                                     |
@@ -45,9 +45,13 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 
 ## Example
 
+Install into a workload namespace whose `Gateway` was provisioned by
+[`charts/modelharness`](../modelharness) (Gateway name follows the
+`<namespace>-gw` convention shared by both charts):
+
 ```sh
 helm install qwen ./charts/modeldeployment \
-  --namespace default \
+  --namespace my-models \
   --set name=qwen \
   --set model=qwen2-5-coder-7b-instruct \
   --set replicas=2 \
@@ -55,6 +59,10 @@ helm install qwen ./charts/modeldeployment \
   --set enableScaling=true \
   --set scalingThreshold=10
 ```
+
+The rendered `HTTPRoute` parents into the `my-models-gw` `Gateway`
+because `gatewayName` is left empty. Override `--set gatewayName=...`
+only when attaching to a Gateway with a business-specific name.
 
 ## Compatibility note
 

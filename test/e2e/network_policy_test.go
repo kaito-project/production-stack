@@ -96,6 +96,17 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			ObjectMeta: metav1.ObjectMeta{Name: canaryNS},
 		}, metav1.CreateOptions{})
 
+		// Wait for the namespace's `default` ServiceAccount to be
+		// created by the SA admission controller. Without this, an
+		// immediate Pod create races the controller and fails with
+		// `error looking up service account <ns>/default: serviceaccount
+		// "default" not found` on freshly-created namespaces.
+		Eventually(func() error {
+			_, err := clientset.CoreV1().ServiceAccounts(canaryNS).Get(ctx, "default", metav1.GetOptions{})
+			return err
+		}, 30*time.Second, time.Second).Should(Succeed(),
+			"default ServiceAccount in %s did not appear", canaryNS)
+
 		canaryPodName := fmt.Sprintf("canary-probe-%d", rand.Intn(900000)+100000)
 		_, err = clientset.CoreV1().Pods(canaryNS).Create(ctx, &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Name: canaryPodName, Namespace: canaryNS},
@@ -383,7 +394,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	// in an external namespace, which exercises the real CNI path the
 	// production N/S traffic would use.
 	It("should ALLOW external-namespace ingress to the gateway pod via Service ClusterIP", func() {
-		gwSvcName := utils.IstioGatewayServiceName(fmt.Sprintf("%s-gateway", netpolModelA))
+		gwSvcName := utils.IstioGatewayServiceName(CaseGatewayName(CaseNetworkPolicyA))
 		svc, err := clientset.CoreV1().Services(namespace).Get(ctx, gwSvcName, metav1.GetOptions{})
 		Expect(err).NotTo(HaveOccurred(), "could not look up gateway Service %s/%s", namespace, gwSvcName)
 		Expect(svc.Spec.ClusterIP).NotTo(BeEmpty(), "gateway Service has no ClusterIP")
