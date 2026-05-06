@@ -311,9 +311,6 @@ install_bbr() {
 }
 
 install_llm_gateway_auth() {
-  # operator.webhook.enabled=false skips the validating webhook (which
-  # would otherwise require cert-manager). TODO: re-enable webhook +
-  # cert-manager once the install ordering is sorted out.
   echo "=== Installing LLM Gateway Auth ${LLM_GATEWAY_AUTH_VERSION} ==="
   helm upgrade --install llm-gateway-apikey \
     oci://mcr.microsoft.com/aks/kaito/helm/llm-gateway-apikey \
@@ -324,7 +321,6 @@ install_llm_gateway_auth() {
     --set operator.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
     --set authz.image.repository=mcr.microsoft.com/aks/kaito/apikey-authz \
     --set authz.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
-    --set operator.webhook.enabled=false \
     --set istio.enabled=true \
     --set istio.meshConfigConfigMap.patch=true \
     --set istio.gatewayNamespace=default \
