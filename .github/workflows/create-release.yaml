@@ -1,0 +1,124 @@
+name: Create release (manually)
+
+# Single manual entry point for releasing production-stack. Orchestrates:
+#   1. publish-image.yaml      — create tag, build & push multi-arch image, scan
+#   2. publish-helm-chart.yaml — push releasable charts to gh-pages
+#   3. create-gh-release       — create the GitHub Release with auto-generated notes
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version (e.g., v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+  packages: write
+  actions: read
+  deployments: read
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        run: |
+          if [[ ! "${{ github.event.inputs.release_version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Release version must follow format vX.Y.Z (got '${{ github.event.inputs.release_version }}')"
+            exit 1
+          fi
+
+  publish-image:
+    needs: [validate]
+    uses: ./.github/workflows/publish-image.yaml
+    with:
+      release_version: ${{ github.event.inputs.release_version }}
+    secrets: inherit
+
+  publish-helm-charts:
+    needs: [publish-image]
+    uses: ./.github/workflows/publish-helm-chart.yaml
+    with:
+      release_version: ${{ github.event.inputs.release_version }}
+    secrets: inherit
+
+  create-gh-release:
+    needs: [publish-image, publish-helm-charts]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+          disable-sudo: true
+          disable-telemetry: true
+
+      - name: Checkout the repository at the release tag
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.release_version }}
+
+      - name: Check if release already exists
+        id: check-release
+        run: |
+          TAG="${{ github.event.inputs.release_version }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release $TAG already exists, skipping creation"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Release $TAG does not exist, proceeding with creation"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub release
+        if: steps.check-release.outputs.exists == 'false'
+        run: |
+          TAG="${{ github.event.inputs.release_version }}"
+          IMG_TAG="${TAG#v}"
+          NOTES_FILE=$(mktemp)
+          cat > "${NOTES_FILE}" <<EOF
+          ## Production Stack ${TAG}
+
+          ### Container image
+          \`\`\`
+          ghcr.io/kaito-project/gpu-node-mocker:${IMG_TAG}
+          \`\`\`
+
+          ### Helm charts
+          Add the chart repository (once):
+          \`\`\`
+          helm repo add production-stack https://kaito-project.github.io/production-stack/charts/kaito-project
+          helm repo update production-stack
+          \`\`\`
+
+          The following charts are published from this release (versions taken
+          from each chart's \`Chart.yaml\` at this tag):
+
+          - \`production-stack/gpu-node-mocker\`
+          - \`production-stack/modeldeployment\`
+          - \`production-stack/modelharness\`
+
+          See [README.md](https://github.com/kaito-project/production-stack/blob/${TAG}/README.md) for installation steps.
+
+          ### Changes
+          EOF
+
+          gh release create "${TAG}" \
+            --target "${TAG}" \
+            --title "${TAG}" \
+            --generate-notes \
+            --notes-file "${NOTES_FILE}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release already exists
+        if: steps.check-release.outputs.exists == 'true'
+        run: |
+          echo "Release ${{ github.event.inputs.release_version }} already exists."

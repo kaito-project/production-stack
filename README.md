@@ -135,6 +135,54 @@ guide, helper API, and the
 [**Adding a new e2e test**](test/e2e/README.md#adding-a-new-e2e-test)
 workflow.
 
+## Release Process
+
+Releases are driven by **a single manual GitHub Actions workflow**,
+[`Create release (manually)`](.github/workflows/create-release.yaml), which
+chains two reusable workflows
+([`publish-image.yaml`](.github/workflows/publish-image.yaml) and
+[`publish-helm-chart.yaml`](.github/workflows/publish-helm-chart.yaml))
+into one synchronous run. A release publishes:
+
+- a multi-arch container image at
+  `ghcr.io/kaito-project/gpu-node-mocker:<X.Y.Z>` (no leading `v`);
+- the three Helm charts under [`charts/`](charts/) — `gpu-node-mocker`,
+  `modeldeployment`, and `modelharness` — to the chart repository hosted on
+  this repo's `gh-pages` branch
+  (`https://kaito-project.github.io/production-stack/charts/kaito-project`);
+- a GitHub Release at the same `vX.Y.Z` tag with auto-generated changelog
+  notes.
+
+To publish `vX.Y.Z`:
+
+1. **Open a PR against `main`** that bumps the chart versions for any chart
+   whose contents changed in this release. For each touched chart in
+   [`charts/`](charts/), update its `Chart.yaml` (`version` and `appVersion`).
+   When `charts/gpu-node-mocker` ships a new mocker image, also update its
+   `values.yaml` `image.tag`. A typical bump touches:
+   - [`charts/gpu-node-mocker/Chart.yaml`](charts/gpu-node-mocker/Chart.yaml) and
+     [`charts/gpu-node-mocker/values.yaml`](charts/gpu-node-mocker/values.yaml)
+   - [`charts/modeldeployment/Chart.yaml`](charts/modeldeployment/Chart.yaml)
+   - [`charts/modelharness/Chart.yaml`](charts/modelharness/Chart.yaml)
+
+2. **After the PR is merged**, run **Actions → "Create release (manually)"**
+   with `release_version=vX.Y.Z`.
+
+Notes:
+
+- Use the same `vX.Y.Z` value across all jobs. Git tags / Release names
+  carry the leading `v`; container image tags do not (`X.Y.Z`).
+- Each Helm chart is published with the version declared in its own
+  `Chart.yaml`; the workflow does not rewrite chart versions. Always bump
+  charts you intend to ship in step 1.
+- If a job fails part-way through (e.g. Trivy finds a new CVE), fix the
+  underlying issue and rerun the workflow — `publish-image` and
+  `create-gh-release` are idempotent (they skip tag/release creation when
+  they already exist).
+- When publishing patch releases on an older minor while `main` has moved
+  on, cut a `release-vX.Y` branch (e.g. `release-v0.3`) and run
+  "Create release (manually)" against that branch's tag.
+
 ## License
 
 Production Stack is licensed under the [Apache License 2.0](LICENSE).

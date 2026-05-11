@@ -1,0 +1,131 @@
+name: Publish gpu-node-mocker image
+
+# Reusable workflow. Invoked by create-release.yaml as the first stage of a
+# release. Creates the git tag (if missing), builds & pushes a multi-arch
+# image to GHCR, and scans it with Trivy.
+on:
+  workflow_call:
+    inputs:
+      release_version:
+        description: 'tag to be created for this release (i.e. vX.Y.Z)'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: write
+  packages: write
+
+env:
+  GO_VERSION: '1.26'
+  IMAGE_NAME: 'gpu-node-mocker'
+  REGISTRY: ghcr.io
+
+jobs:
+  check-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.get-tag.outputs.tag }}
+    steps:
+      - name: Validate version
+        run: |
+          echo "${{ inputs.release_version }}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'
+
+      - id: get-tag
+        name: Get tag
+        run: |
+          echo "tag=${{ inputs.release_version }}" >> $GITHUB_OUTPUT
+
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+          disable-sudo: true
+          disable-telemetry: true
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - id: check-tag
+        name: Check for existing tag
+        run: |
+          TAG="${{ steps.get-tag.outputs.tag }}"
+          if git show-ref --tags --verify --quiet "refs/tags/${TAG}"; then
+            echo "create_tag=false" >> $GITHUB_OUTPUT
+          else
+            echo "create_tag=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create tag
+        if: steps.check-tag.outputs.create_tag == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'refs/tags/${{ steps.get-tag.outputs.tag }}',
+              sha: context.sha
+            })
+
+  build-scan-publish-gh-images:
+    runs-on: ubuntu-latest
+    needs: [check-tag]
+    outputs:
+      registry_repository: ${{ steps.get-registry.outputs.registry_repository }}
+      git_commit: ${{ steps.get-commit.outputs.git_commit }}
+    steps:
+      - id: get-registry
+        run: |
+          # registry must be in lowercase
+          echo "registry_repository=$(echo "${{ env.REGISTRY }}/kaito-project" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - id: get-tag
+        name: Get IMG_TAG (no leading v)
+        run: |
+          echo "IMG_TAG=$(echo ${{ needs.check-tag.outputs.tag }} | tr -d v)" >> $GITHUB_ENV
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          fetch-depth: 0
+          ref: ${{ needs.check-tag.outputs.tag }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Login to ${{ steps.get-registry.outputs.registry_repository }}
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get short commit ID
+        id: get-commit
+        run: |
+          echo "git_commit=$(git rev-parse --short=6 HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build and push image
+        run: |
+          OUTPUT_TYPE=type=registry make docker-buildx
+        env:
+          REGISTRY: ${{ steps.get-registry.outputs.registry_repository }}
+          IMG_NAME: ${{ env.IMAGE_NAME }}
+          IMG_TAG: ${{ env.IMG_TAG }}
+
+      - name: Scan ${{ steps.get-registry.outputs.registry_repository }}/${{ env.IMAGE_NAME }}:${{ env.IMG_TAG }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.get-registry.outputs.registry_repository }}/${{ env.IMAGE_NAME }}:${{ env.IMG_TAG }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
