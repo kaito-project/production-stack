@@ -303,6 +303,19 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				Name:      probePodName,
 				Namespace: probeNS,
 				Labels:    labels,
+				// Disable Istio sidecar injection on the probe pod. Without
+				// this, a probe created in a meshed namespace (e.g.
+				// `istio-system`, or any namespace the llm-gateway-auth
+				// operator has touched via its mesh-config patch) gets an
+				// istio-proxy sidecar. The sidecar wraps outbound traffic
+				// in mTLS and the EPP pod sees the source as 127.0.0.1
+				// (the local proxy), trivially matching
+				// `allow-inference-traffic`'s intra-pod selector and
+				// bypassing NetworkPolicy entirely. A bare busybox probe
+				// is the only way to assert L3/L4 policy honestly.
+				Annotations: map[string]string{
+					"sidecar.istio.io/inject": "false",
+				},
 			},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
