@@ -80,8 +80,20 @@ jobs:
       - name: Create GitHub release
         if: steps.check-release.outputs.exists == 'false'
         run: |
+          set -euo pipefail
           TAG="${{ github.event.inputs.release_version }}"
           IMG_TAG="${TAG#v}"
+
+          # Generate changelog notes via the GitHub API. We do this manually
+          # (instead of `gh release create --generate-notes`) so we can
+          # prepend our own header in --notes-file (the two flags are
+          # mutually exclusive in `gh release create`).
+          GENERATED_NOTES=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${TAG}" \
+            --jq '.body')
+
           NOTES_FILE=$(mktemp)
           cat > "${NOTES_FILE}" <<EOF
           ## Production Stack ${TAG}
@@ -107,16 +119,20 @@ jobs:
 
           See [README.md](https://github.com/kaito-project/production-stack/blob/${TAG}/README.md) for installation steps.
 
-          ### Changes
+          ---
+
+          ${GENERATED_NOTES}
           EOF
 
+          # Note: do NOT pass --target — it expects a branch or commit SHA,
+          # not a tag. The tag was already created by publish-image.yaml,
+          # so `gh release create TAG` will use the tag's existing commit.
           gh release create "${TAG}" \
-            --target "${TAG}" \
             --title "${TAG}" \
-            --generate-notes \
             --notes-file "${NOTES_FILE}"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
 
       - name: Release already exists
         if: steps.check-release.outputs.exists == 'true'
