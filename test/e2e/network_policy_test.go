@@ -42,16 +42,30 @@ const (
 
 var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func() {
 	var (
-		ctx             context.Context
-		clientset       *kubernetes.Clientset
-		namespace       string
-		namespaceB      string
-		netpolModelA    string
-		netpolModelB    string
-		serverIP        string
-		serverPort      int32
-		serverIPB       string
-		serverPortB     int32
+		ctx          context.Context
+		clientset    *kubernetes.Clientset
+		namespace    string
+		namespaceB   string
+		netpolModelA string
+		netpolModelB string
+		serverIP     string
+		serverPort   int32
+		serverIPB    string
+		serverPortB  int32
+		// EPP pod endpoints — used as the policy-enforcement sentinel for
+		// the deny / cross-namespace tests. The model pod's IP is patched
+		// by gpu-node-mocker to its shadow pod's IP and the original is
+		// bound to a fake node, which confuses Cilium identity allocation
+		// and makes K8s NetworkPolicy enforcement against the model pod
+		// IP unreliable on AKS. EPP is a regular Deployment pod in the
+		// same workload namespace, lacks the gateway label, and is
+		// therefore selected by `default-deny-ingress` identically to the
+		// model pod — so probing it asserts the same policy contract on a
+		// pod whose identity Cilium actually programs.
+		eppIP           string
+		eppPort         int32
+		eppIPB          string
+		eppPortB        int32
 		probeNamespaces []string
 	)
 
@@ -94,21 +108,21 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		Expect(serverIPB).NotTo(BeEmpty(), "could not find a ready model pod IP in %s", namespaceB)
 		Expect(serverPortB).To(BeNumerically(">", 0), "could not determine model pod serving port in %s", namespaceB)
 
-		// Resolve the EPP pod IP + port for namespace A. The BeforeAll
-		// enforcement-readiness canary check probes the EPP pod (rather than
-		// the model pod) because the model pod created by gpu-node-mocker
-		// uses a dual-pod arrangement (the original pod's status.podIP is
-		// patched to match its shadow pod's IP, and the original is bound to
-		// a fake node that runs no Cilium agent). That arrangement confuses
-		// Cilium identity allocation on AKS and the K8s NetworkPolicy is not
-		// reliably enforced for the patched IP. The EPP pod is a regular
-		// Deployment pod in the same workload namespace, lacks the gateway
-		// label, and is therefore equally selected by `default-deny-ingress`
-		// — making it the correct, deterministic sentinel for verifying that
-		// the policy is actually loaded by the dataplane.
-		canaryServerIP, canaryServerPort := readyEPPPodEndpoint(ctx, clientset, namespace, netpolModelA)
-		Expect(canaryServerIP).NotTo(BeEmpty(), "could not find a ready EPP pod IP in %s", namespace)
-		Expect(canaryServerPort).To(BeNumerically(">", 0), "could not determine EPP pod port in %s", namespace)
+		// Resolve the EPP pod IP + port for both workload namespaces. EPP
+		// is the policy-enforcement sentinel for this suite (see the
+		// `eppIP`/`eppIPB` declaration above for why model-pod IPs are
+		// unreliable under gpu-node-mocker's patched-IP arrangement).
+		// The BeforeAll canary loop below uses the namespace-A EPP
+		// endpoint to wait for enforcement to come up; the deny / cross-
+		// namespace `It`s reuse the same endpoints so they assert against
+		// pod identities Cilium has actually programmed.
+		eppIP, eppPort = readyEPPPodEndpoint(ctx, clientset, namespace, netpolModelA)
+		Expect(eppIP).NotTo(BeEmpty(), "could not find a ready EPP pod IP in %s", namespace)
+		Expect(eppPort).To(BeNumerically(">", 0), "could not determine EPP pod port in %s", namespace)
+
+		eppIPB, eppPortB = readyEPPPodEndpoint(ctx, clientset, namespaceB, netpolModelB)
+		Expect(eppIPB).NotTo(BeEmpty(), "could not find a ready EPP pod IP in %s", namespaceB)
+		Expect(eppPortB).To(BeNumerically(">", 0), "could not determine EPP pod port in %s", namespaceB)
 
 		// Wait for NetworkPolicy enforcement to actually take effect on this
 		// cluster. On freshly created Cilium clusters the policy maps may take
@@ -166,7 +180,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			// `err != nil` to mean "blocked".
 			cmd := []string{"sh", "-c", fmt.Sprintf(
 				"nc -z -w 3 %s %d 2>&1; echo EXIT=$?",
-				canaryServerIP, canaryServerPort,
+				eppIP, eppPort,
 			)}
 			req := clientset.CoreV1().RESTClient().Post().
 				Resource("pods").Name(canaryPodName).Namespace(canaryNS).
@@ -204,7 +218,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				// printed exactly once, not on every iteration.
 				if connectedCount == 12 {
 					AddReportEntry("netpol-enforcement-diag",
-						networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, canaryServerIP))
+						networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP))
 				}
 				return false
 			}
@@ -231,18 +245,18 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				// state at the moment the timeout fires, not at Should() call
 				// time. Helps distinguish "policies missing" from "policies
 				// present but unenforced by Cilium".
-				diag := networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, canaryServerIP)
+				diag := networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP)
 				return fmt.Sprintf(
 					"timed out waiting for NetworkPolicy enforcement to become active — "+
 						"Cilium may not be enforcing policies on this cluster, or the "+
 						"allow-inference-traffic rule is too permissive\n"+
 						"polled %d times; %d probes saw EXIT=0 (canary reached the EPP pod)\n"+
 						"last nc output: %q\nlast exec error: %q\n"+
-						"canaryServerIP=%s canaryServerPort=%d canaryNS=%s\n"+
+						"eppIP=%s eppPort=%d canaryNS=%s\n"+
 						"--- diagnostics ---\n%s",
 					pollAttempts, connectedCount,
 					lastCanaryOut, lastCanaryExecErr,
-					canaryServerIP, canaryServerPort, canaryNS,
+					eppIP, eppPort, canaryNS,
 					diag,
 				)
 			})
@@ -289,6 +303,19 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				Name:      probePodName,
 				Namespace: probeNS,
 				Labels:    labels,
+				// Disable Istio sidecar injection on the probe pod. Without
+				// this, a probe created in a meshed namespace (e.g.
+				// `istio-system`, or any namespace the llm-gateway-auth
+				// operator has touched via its mesh-config patch) gets an
+				// istio-proxy sidecar. The sidecar wraps outbound traffic
+				// in mTLS and the EPP pod sees the source as 127.0.0.1
+				// (the local proxy), trivially matching
+				// `allow-inference-traffic`'s intra-pod selector and
+				// bypassing NetworkPolicy entirely. A bare busybox probe
+				// is the only way to assert L3/L4 policy honestly.
+				Annotations: map[string]string{
+					"sidecar.istio.io/inject": "false",
+				},
 			},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
@@ -360,9 +387,12 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		return strings.Contains(out, "EXIT=0")
 	}
 
-	// probe is a convenience wrapper that checks TCP connectivity to the model pod.
+	// probe is a convenience wrapper that checks TCP connectivity to the
+	// namespace-A EPP pod (see the `eppIP` declaration for why EPP, not
+	// the model pod, is the policy-enforcement sentinel under
+	// gpu-node-mocker).
 	probe := func(probeNS string) bool {
-		out, _ := probeTarget(probeNS, ncCmd(serverIP, serverPort), probeTimeout, nil)
+		out, _ := probeTarget(probeNS, ncCmd(eppIP, eppPort), probeTimeout, nil)
 		return connected(out)
 	}
 
@@ -376,9 +406,11 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		// correct signal. Hitting the model pod directly with an
 		// HTTP/`/v1/chat/completions` POST would test the EPP+Gateway
 		// pipeline (which only the Gateway pod can reach), not the policy.
-		out, _ := probeTarget(namespace, ncCmd(serverIP, serverPort), probeTimeout, nil)
+		// We probe the EPP pod (not the model pod) for the same reason the
+		// deny tests do — see `eppIP` declaration.
+		out, _ := probeTarget(namespace, ncCmd(eppIP, eppPort), probeTimeout, nil)
 		Expect(connected(out)).To(BeTrue(),
-			"intra-namespace TCP reach to model pod should succeed — if this fails, NetworkPolicy is over-blocking. nc output: %q", out)
+			"intra-namespace TCP reach to EPP pod should succeed — if this fails, NetworkPolicy is over-blocking. nc output: %q", out)
 	})
 
 	It("baseline: should DENY ingress from an external namespace (proves enforcement is active)", func() {
@@ -421,23 +453,23 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
-		out, _ := probeTarget("default", ncCmd(serverIP, serverPort), probeTimeout, gatewayLabels)
+		out, _ := probeTarget("default", ncCmd(eppIP, eppPort), probeTimeout, gatewayLabels)
 		Expect(connected(out)).To(BeFalse(),
-			"gateway-labeled pod in default should NOT be allowed to TCP-connect to the model pod — "+
+			"gateway-labeled pod in default should NOT be allowed to TCP-connect to the EPP pod — "+
 				"only the in-namespace gateway pod is a trusted ingress source. nc output: %q", out)
 	})
 
 	// ── Cross-namespace isolation ─────────────────────────────────────────
 	It("should DENY ingress from workload namespace A to workload namespace B", func() {
-		out, _ := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout, nil)
+		out, _ := probeTarget(namespace, ncCmd(eppIPB, eppPortB), probeTimeout, nil)
 		Expect(connected(out)).To(BeFalse(),
-			"workload namespace A should not be able to reach model pods in workload namespace B. nc output: %q", out)
+			"workload namespace A should not be able to reach EPP pods in workload namespace B. nc output: %q", out)
 	})
 
 	It("should DENY ingress from workload namespace B to workload namespace A", func() {
-		out, _ := probeTarget(namespaceB, ncCmd(serverIP, serverPort), probeTimeout, nil)
+		out, _ := probeTarget(namespaceB, ncCmd(eppIP, eppPort), probeTimeout, nil)
 		Expect(connected(out)).To(BeFalse(),
-			"workload namespace B should not be able to reach model pods in workload namespace A. nc output: %q", out)
+			"workload namespace B should not be able to reach EPP pods in workload namespace A. nc output: %q", out)
 	})
 
 	// Regression guard: a pod in namespace A that *spoofs* namespace B's
@@ -451,9 +483,9 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		spoofedLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": fmt.Sprintf("%s-gateway", netpolModelB),
 		}
-		out, _ := probeTarget(namespace, ncCmd(serverIPB, serverPortB), probeTimeout, spoofedLabels)
+		out, _ := probeTarget(namespace, ncCmd(eppIPB, eppPortB), probeTimeout, spoofedLabels)
 		Expect(connected(out)).To(BeFalse(),
-			"a pod in namespace A carrying namespace B's gateway label must NOT reach model pods in B — "+
+			"a pod in namespace A carrying namespace B's gateway label must NOT reach EPP pods in B — "+
 				"labels do not grant cross-namespace trust under the post-X1 policy. nc output: %q", out)
 	})
 
