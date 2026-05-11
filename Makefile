@@ -96,6 +96,22 @@ CONTAINER_TOOL ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/
 docker-build: ## Build docker image for the target ARCH.
 	$(CONTAINER_TOOL) build --platform linux/$(ARCH) -f docker/Dockerfile -t $(IMG) .
 
+# Multi-arch buildx target used by the release workflow. Set
+#   OUTPUT_TYPE=type=registry  to push directly to $(IMG), or
+#   OUTPUT_TYPE=type=docker    to load into the local daemon (single arch only).
+PLATFORMS ?= linux/amd64,linux/arm64
+OUTPUT_TYPE ?= type=docker
+
+.PHONY: docker-buildx
+docker-buildx: ## Multi-arch build (and optionally push) the gpu-node-mocker image.
+	$(CONTAINER_TOOL) buildx inspect production-stack-builder >/dev/null 2>&1 || \
+		$(CONTAINER_TOOL) buildx create --name production-stack-builder --use
+	$(CONTAINER_TOOL) buildx build \
+		--platform $(PLATFORMS) \
+		--output=$(OUTPUT_TYPE) \
+		-f docker/Dockerfile \
+		-t $(IMG) .
+
 ## --------------------------------------
 ## E2E Tests
 ## --------------------------------------
