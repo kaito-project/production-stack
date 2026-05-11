@@ -42,16 +42,16 @@ const (
 
 var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func() {
 	var (
-		ctx             context.Context
-		clientset       *kubernetes.Clientset
-		namespace       string
-		namespaceB      string
-		netpolModelA    string
-		netpolModelB    string
-		serverIP        string
-		serverPort      int32
-		serverIPB       string
-		serverPortB     int32
+		ctx          context.Context
+		clientset    *kubernetes.Clientset
+		namespace    string
+		namespaceB   string
+		netpolModelA string
+		netpolModelB string
+		serverIP     string
+		serverPort   int32
+		serverIPB    string
+		serverPortB  int32
 		// EPP pod endpoints — used as the policy-enforcement sentinel for
 		// the deny / cross-namespace tests. The model pod's IP is patched
 		// by gpu-node-mocker to its shadow pod's IP and the original is
