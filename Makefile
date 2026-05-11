@@ -134,6 +134,12 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 ## Component versions are centralized in versions.env (repo root).
 ## Override any version via environment variables, e.g.:
 ##   ISTIO_VERSION=1.30.0 BBR_VERSION=v1.4.0 make e2e-install
+##
+## The E2E_PROVIDER master switch (default: upstream) selects how
+## infrastructure components are sourced:
+##   upstream → install everything via Helm/upstream manifests
+##   azure    → enable the AKS managed KEDA add-on at cluster create
+##              time and skip the standalone Helm KEDA install
 ## --------------------------------------
 
 .PHONY: e2e

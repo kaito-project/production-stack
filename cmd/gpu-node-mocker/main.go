@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -26,7 +27,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -82,7 +85,22 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restCfg := ctrl.GetConfigOrDie()
+
+	// Fail fast if required CRDs are not yet installed in the cluster. The
+	// gpu-node-mocker controllers watch karpenter.sh/v1 NodeClaim objects;
+	// without the CRD, controller-runtime's informers loop on "no kind is
+	// registered" errors instead of failing. Exiting with a non-zero status
+	// here lets the Deployment's restart policy back off and retry until
+	// the KAITO operator (which ships the karpenter CRDs) finishes
+	// installing them. This unblocks parallel install ordering at the
+	// shell level (no need to gate on KAITO CRDs before deploying us).
+	if err := checkRequiredCRDs(restCfg); err != nil {
+		setupLog.Error(err, "required CRDs are not ready; exiting so the pod is restarted")
+		os.Exit(1)
+	}
+
+	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
@@ -119,4 +137,45 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// checkRequiredCRDs verifies that every API resource the gpu-node-mocker
+// controllers depend on is already registered with the API server. The
+// check is done via discovery so it does not require the CRD types to be
+// served — only that the apiserver advertises the resource. A single
+// missing resource returns an error; the caller is expected to exit so
+// the kubelet restarts the pod (the simplest "wait for CRDs" strategy).
+func checkRequiredCRDs(cfg *rest.Config) error {
+	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	if err != nil {
+		return err
+	}
+
+	required := []struct {
+		groupVersion string
+		resource     string
+	}{
+		// Karpenter NodeClaim CRD is installed by the KAITO workspace
+		// operator's chart; the NodeClaimReconciler watches it.
+		{groupVersion: "karpenter.sh/v1", resource: "nodeclaims"},
+	}
+
+	for _, r := range required {
+		list, err := dc.ServerResourcesForGroupVersion(r.groupVersion)
+		if err != nil {
+			return fmt.Errorf("discovering resources for %s: %w", r.groupVersion, err)
+		}
+		found := false
+		for _, api := range list.APIResources {
+			if api.Name == r.resource {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("required resource %s.%s is not yet registered with the apiserver", r.resource, r.groupVersion)
+		}
+		setupLog.Info("required CRD is ready", "groupVersion", r.groupVersion, "resource", r.resource)
+	}
+	return nil
 }

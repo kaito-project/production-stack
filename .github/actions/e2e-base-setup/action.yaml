@@ -30,6 +30,10 @@ inputs:
     description: 'AKS node VM size.'
     required: false
     default: 'Standard_D8s_v5'
+  provider:
+    description: 'E2E provider (upstream|azure) — master switch for component install mix. Empty defaults to upstream.'
+    required: false
+    default: ''
   # Component version overrides — empty string means "use versions.env default".
   istio-version:
     description: 'Istio version override.'
@@ -70,21 +74,41 @@ runs:
         # Source defaults from the centralized version file (loaded exactly once).
         source versions.env
         # Inputs override defaults when non-empty.
+        INPUT_PROVIDER="${{ inputs.provider }}"
         INPUT_ISTIO="${{ inputs.istio-version }}"
         INPUT_GWAPI="${{ inputs.gateway-api-version }}"
         INPUT_BBR="${{ inputs.bbr-version }}"
         INPUT_KEDA="${{ inputs.keda-version }}"
         INPUT_KKS="${{ inputs.keda-kaito-scaler-version }}"
         INPUT_LGA="${{ inputs.llm-gateway-auth-version }}"
+        [ -n "${INPUT_PROVIDER}" ] && E2E_PROVIDER="${INPUT_PROVIDER}"
         [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
         [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
         [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
         [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
         [ -n "${INPUT_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${INPUT_KKS}"
         [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
+
+        # Validate provider value.
+        case "${E2E_PROVIDER}" in
+          upstream|azure) ;;
+          *)
+            echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
+            exit 1
+            ;;
+        esac
+
+        # Derive KEDA install namespace from provider.
+        case "${E2E_PROVIDER}" in
+          upstream) KEDA_NAMESPACE="keda" ;;
+          azure)    KEDA_NAMESPACE="kube-system" ;;
+        esac
+
         # Export to GITHUB_ENV so all subsequent steps inherit these.
         {
           echo "GO_VERSION=${GO_VERSION}"
+          echo "E2E_PROVIDER=${E2E_PROVIDER}"
+          echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
           echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
           echo "BBR_VERSION=${BBR_VERSION}"
@@ -98,6 +122,8 @@ runs:
     - name: Print versions
       shell: bash
       run: |
+        echo "E2E_PROVIDER=${E2E_PROVIDER}"
+        echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
         echo "GO_VERSION=${GO_VERSION}"
         echo "ISTIO_VERSION=${ISTIO_VERSION}"
         echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
