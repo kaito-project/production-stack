@@ -1,0 +1,44 @@
+apiVersion: v1
+entries:
+  gpu-node-mocker:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-05-11T12:15:58.492036873Z"
+    description: GPU Node Mocker controller for KAITO production-stack
+    digest: ca8ec950780dab75c298ba9cbd771c0cdcc492fabe48c5adbb93e0433e95beb1
+    name: gpu-node-mocker
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/gpu-node-mocker-0.1.0.tgz
+    version: 0.1.0
+  modeldeployment:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-05-11T12:15:58.492436697Z"
+    description: 'Deploys a KAITO InferenceSet together with the Istio DestinationRule
+      and Gateway API HTTPRoute required to route inference traffic to it. '
+    digest: ea50efe7261f9650577544b9d2a2c1960dc98c2fbb773cbe416309f587746bb4
+    name: modeldeployment
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/modeldeployment-0.1.0.tgz
+    version: 0.1.0
+  modelharness:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-05-11T12:15:58.493266791Z"
+    description: 'Per-namespace shared resources for production-stack workloads. One
+      modelharness release per workload namespace provisions the artifacts every model
+      deployment in that namespace shares: the Istio Gateway, the catch-all HTTPRoute
+      (forwards unknown-model requests to the cluster-shared model-not-found Service
+      via a ReferenceGrant), and — when enabled — the AuthorizationPolicy + APIKey
+      CR that wire the Gateway into the cluster-wide apikey-ext-authz CUSTOM provider.
+      The shared model-not-found Service itself is installed once per cluster by the
+      E2E install script. '
+    digest: b40ef733c132bc03d3d5de7be13b83a7f5f33214f5b554c6f9eb876d3e915214
+    name: modelharness
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/modelharness-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-05-11T12:15:58.491652077Z"
