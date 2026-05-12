@@ -13,7 +13,7 @@
 # Environment variables (override defaults as needed):
 #   RESOURCE_GROUP   (default: kaito-e2e-local)
 #   CLUSTER_NAME     (default: kaito-e2e-local)
-#   LOCATION         (default: swedencentral)
+#   LOCATION         (default: australiaeast)
 #   NODE_COUNT       (default: 2)
 #   NODE_VM_SIZE     (default: Standard_D8s_v5)
 #   E2E_PARALLEL     (default: 2) — Ginkgo parallel worker count
@@ -84,7 +84,7 @@ echo ""
 
 export RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-e2e-local}"
 export CLUSTER_NAME="${CLUSTER_NAME:-kaito-e2e-local}"
-export LOCATION="${LOCATION:-swedencentral}"
+export LOCATION="${LOCATION:-australiaeast}"
 export NODE_COUNT="${NODE_COUNT:-2}"
 export NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v5}"
 export E2E_PARALLEL="${E2E_PARALLEL:-2}"

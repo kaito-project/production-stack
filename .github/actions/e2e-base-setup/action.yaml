@@ -21,7 +21,7 @@ inputs:
   location:
     description: 'Azure region for the cluster.'
     required: false
-    default: 'swedencentral'
+    default: 'australiaeast'
   node-count:
     description: 'Number of AKS nodes.'
     required: false
