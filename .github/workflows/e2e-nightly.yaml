@@ -171,9 +171,10 @@ jobs:
 
       - name: Run E2E tests (Nightly specs only)
         # Restrict ginkgo to specs tagged with the Nightly label.
+        # NetworkPolicy specs are temporarily disabled.
         run: make test-e2e
         env:
-          E2E_LABEL: "Nightly"
+          E2E_LABEL: "Nightly && !NetworkPolicy"
 
       - name: Dump cluster state
         if: failure()

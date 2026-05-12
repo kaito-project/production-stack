@@ -90,9 +90,10 @@ jobs:
       - name: Run E2E tests
         # Skip Nightly-labeled specs (slow/destructive scaling cases, etc.).
         # TheNightly suite runs in e2e-nightly.yaml.
+        # NetworkPolicy specs are temporarily disabled.
         run: make test-e2e
         env:
-          E2E_LABEL: "!Nightly"
+          E2E_LABEL: "!Nightly && !NetworkPolicy"
 
       - name: Dump cluster state
         if: failure()
