@@ -518,10 +518,19 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			"random-ns should be silently dropped by default-deny-ingress. state=%q output=%q", state, out)
 	})
 
-	It("should DENY ingress from kube-system namespace", func() {
+	It("should ALLOW ingress from kube-system namespace (chart allowlist)", func() {
+		// kube-system is included in modelharness's
+		// `allowedIngressNamespaces` defaults so cluster-control-plane
+		// components (kube-proxy health probes, konnectivity agent,
+		// kubelet exec proxy, etc.) can reach EPP / vLLM. If this
+		// assertion fails, the chart's `allow-inference-traffic` rule
+		// has regressed — verify charts/modelharness/values.yaml still
+		// lists "kube-system" under networkPolicy.allowedIngressNamespaces.
 		state, out := probeClassified("kube-system")
-		Expect(state).To(Equal("blocked"),
-			"kube-system should be silently dropped by default-deny-ingress. state=%q output=%q", state, out)
+		Expect(state).To(Equal("connected"),
+			"kube-system should be allowed by allow-inference-traffic — "+
+				"see networkPolicy.allowedIngressNamespaces in modelharness values.yaml. "+
+				"state=%q output=%q", state, out)
 	})
 
 	// ── Allow tests ───────────────────────────────────────────────────────
