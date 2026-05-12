@@ -202,3 +202,15 @@ e2e-up: ## One command to set up full local E2E env (cluster, build, push, insta
 	echo "  Resource Group: $(E2E_RESOURCE_GROUP)" && \
 	echo "Run tests with: make test-e2e" && \
 	echo "Tear down with: CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) make e2e-teardown"
+
+## --------------------------------------
+## Helm
+## --------------------------------------
+
+##@ Helm
+
+.PHONY: helm-package-and-push
+helm-package-and-push: ## Package and Push Helm Chart.
+	sed -Ei 's/^(appVersion|version):.*$$/\1: $(CHART_VERSION)/g' ./charts/$(CHART_NAME)/Chart.yaml
+	cd ./charts/$(CHART_NAME) && helm package .
+	helm push ./charts/$(CHART_NAME)/$(CHART_NAME)-$(CHART_VERSION).tgz oci://$(CHART_REGISTRY)
