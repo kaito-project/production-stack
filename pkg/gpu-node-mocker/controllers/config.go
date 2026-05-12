@@ -90,6 +90,9 @@ const (
 
 	// DefaultModelName is used when model name cannot be extracted from the original pod.
 	DefaultModelName = "default-model"
+
+	// MaxLabelValueLength is the maximum length of a Kubernetes label value.
+	MaxLabelValueLength = 63
 )
 
 // Config holds operator-wide settings injected via CLI flags.

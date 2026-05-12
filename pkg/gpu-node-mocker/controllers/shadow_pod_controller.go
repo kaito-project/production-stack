@@ -205,9 +205,13 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		return nil, fmt.Errorf("ensure sim configmap: %w", err)
 	}
 
+	shadowPodLabel := original.Namespace + "." + original.Name
+	if len(shadowPodLabel) > MaxLabelValueLength {
+		shadowPodLabel = shadowPodLabel[:MaxLabelValueLength]
+	}
 	labels := map[string]string{
 		LabelManagedBy:    ControllerName,
-		ShadowPodLabelKey: original.Namespace + "." + original.Name,
+		ShadowPodLabelKey: shadowPodLabel,
 	}
 	if v, ok := original.Labels[InferenceSetCreatedByLabelKey]; ok && v != "" {
 		labels[ShadowPodInferenceSetLabelKey] = v
