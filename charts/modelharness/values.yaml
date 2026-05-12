@@ -74,3 +74,5 @@ networkPolicy:
   allowedIngressNamespaces:
     - keda
     - kaito-system
+    - kube-system
+    - monitoring
