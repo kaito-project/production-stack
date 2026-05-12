@@ -9,6 +9,19 @@ set -euo pipefail
 
 FAILED=0
 TIMEOUT="${VALIDATE_TIMEOUT:-120s}"
+E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+
+# Derive KEDA namespace from provider when not explicitly provided.
+if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
+  case "${E2E_PROVIDER}" in
+    upstream) KEDA_NAMESPACE="keda" ;;
+    azure)    KEDA_NAMESPACE="kube-system" ;;
+    *)
+      echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 pass() { echo "  ✅ $*"; }
 fail() { echo "  ❌ $*"; FAILED=1; }
@@ -84,28 +97,28 @@ kubectl -n default get pods -l app=model-not-found 2>/dev/null || true
 echo ""
 
 # ── KEDA ─────────────────────────────────────────────────────────────────
-echo "=== KEDA ==="
-if kubectl -n keda wait --for=condition=ready pod -l app=keda-operator --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+echo "=== KEDA (namespace: ${KEDA_NAMESPACE}, provider: ${E2E_PROVIDER}) ==="
+if kubectl -n "${KEDA_NAMESPACE}" wait --for=condition=ready pod -l app=keda-operator --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "keda-operator is Running"
 else
   fail "keda-operator is NOT Running"
 fi
-if kubectl -n keda wait --for=condition=ready pod -l app=keda-operator-metrics-apiserver --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n "${KEDA_NAMESPACE}" wait --for=condition=ready pod -l app=keda-operator-metrics-apiserver --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "keda-operator-metrics-apiserver is Running"
 else
   fail "keda-operator-metrics-apiserver is NOT Running"
 fi
-kubectl -n keda get pods 2>/dev/null || true
+kubectl -n "${KEDA_NAMESPACE}" get pods 2>/dev/null || true
 echo ""
 
 # ── KEDA Kaito Scaler ────────────────────────────────────────────────────
-echo "=== KEDA Kaito Scaler ==="
-if kubectl -n keda wait --for=condition=ready pod -l app.kubernetes.io/name=keda-kaito-scaler --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+echo "=== KEDA Kaito Scaler (namespace: ${KEDA_NAMESPACE}) ==="
+if kubectl -n "${KEDA_NAMESPACE}" wait --for=condition=ready pod -l app.kubernetes.io/name=keda-kaito-scaler --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "keda-kaito-scaler is Running"
 else
   fail "keda-kaito-scaler is NOT Running"
 fi
-kubectl -n keda get pods -l app.kubernetes.io/name=keda-kaito-scaler 2>/dev/null || true
+kubectl -n "${KEDA_NAMESPACE}" get pods -l app.kubernetes.io/name=keda-kaito-scaler 2>/dev/null || true
 echo ""
 
 # ── LLM Gateway Auth (apikey-operator) ──────────────────────────────────

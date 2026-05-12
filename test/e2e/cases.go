@@ -18,12 +18,33 @@ package e2e
 
 import (
 	"context"
+	"os"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
+
+// kedaScalerNamespace returns the namespace where keda + keda-kaito-scaler
+// are installed for the active E2E provider:
+//   - upstream (default) → "keda"          (helm-installed)
+//   - azure              → "kube-system"   (AKS managed KEDA add-on)
+//
+// Mirrors the KEDA_NAMESPACE derivation in hack/e2e/scripts/run-e2e-local.sh
+// and is consulted by test fixtures that need to allow ingress from KEDA
+// (e.g. the scaling case's NetworkPolicy allow-list).
+func kedaScalerNamespace() string {
+	if ns := os.Getenv("KEDA_NAMESPACE"); ns != "" {
+		return ns
+	}
+	switch os.Getenv("E2E_PROVIDER") {
+	case "azure":
+		return "kube-system"
+	default:
+		return "keda"
+	}
+}
 
 // Inference preset names. These are the underlying KAITO presets and become
 // the InferenceSet's spec.template.inference.preset.name. They do NOT appear
@@ -206,6 +227,31 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			NetworkPolicyAllowedNamespaces: []string{"keda", "kaito-system"},
 		},
 	},
+}
+
+// init wires provider-dependent fields into CaseDeployments. The KEDA
+// installation namespace switches between "keda" (upstream provider) and
+// "kube-system" (azure provider, AKS managed KEDA add-on), and the
+// scaling-case NetworkPolicy allow-list must follow.
+func init() {
+	kedaNS := kedaScalerNamespace()
+	if kedaNS == "keda" {
+		return // default already covers this
+	}
+	for i, dep := range CaseDeployments[CaseScaling] {
+		allowed := dep.NetworkPolicyAllowedNamespaces
+		// Replace the placeholder "keda" entry with the actual KEDA
+		// namespace; preserve the rest of the list verbatim.
+		updated := make([]string, 0, len(allowed))
+		for _, ns := range allowed {
+			if ns == "keda" {
+				updated = append(updated, kedaNS)
+			} else {
+				updated = append(updated, ns)
+			}
+		}
+		CaseDeployments[CaseScaling][i].NetworkPolicyAllowedNamespaces = updated
+	}
 }
 
 // CaseNamespace returns the namespace declared on the first deployment of

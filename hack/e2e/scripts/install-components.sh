@@ -12,15 +12,21 @@
 #   - Gateway API CRDs
 #   - GWIE CRDs (InferencePool, InferenceModel)
 #   - KEDA
+#   - KEDA Kaito Scaler         (no dep on KEDA at chart-install time;
+#                                only emits ScaledObjects later, so safe
+#                                to install in parallel with KEDA)
+#   - gpu-node-mocker            (no install-time dep on KAITO CRDs; the
+#                                 binary discovery-checks `karpenter.sh/v1
+#                                 NodeClaim` at startup and exits if the
+#                                 CRD is not yet served, so kubelet retries
+#                                 until KAITO finishes installing it)
 #   - BBR chart prefetch (git clone fork repo only)
 #   - Cluster-shared model-not-found Service in `default` (consumed by
 #     every workload namespace's catch-all HTTPRoute via a
 #     ReferenceGrant rendered by charts/modelharness).
 #
 # Phase 2 (parallel, depends on Phase 1):
-#   - gpu-node-mocker            (after KAITO CRDs)
 #   - Istio                      (after Gateway API CRDs)
-#   - KEDA Kaito Scaler          (after KEDA)
 #
 # Phase 3 (parallel, depends on Istio):
 #   - BBR (Body-Based Router)    (helm install into istio-system)
@@ -58,8 +64,29 @@ MANIFESTS_DIR="${SCRIPT_DIR}/../manifests"
 : "${LLM_GATEWAY_AUTH_IMAGE_TAG:?LLM_GATEWAY_AUTH_IMAGE_TAG is not set. Source versions.env or export it before calling this script.}"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
+E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+
+# Derive KEDA install namespace from provider when not explicitly provided.
+#   upstream -> install KEDA via Helm into the dedicated `keda` namespace.
+#   azure    -> KEDA is provided by the AKS managed add-on, which lives in
+#               `kube-system`. The keda-kaito-scaler chart must be installed
+#               in the same namespace as KEDA so KEDA can resolve the
+#               ClusterTriggerAuthentication Secrets it ships.
+if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
+  case "${E2E_PROVIDER}" in
+    upstream) KEDA_NAMESPACE="keda" ;;
+    azure)    KEDA_NAMESPACE="kube-system" ;;
+    *)
+      echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
+      exit 1
+      ;;
+  esac
+fi
+export KEDA_NAMESPACE
 
 echo "=== Component versions ==="
+echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
+echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  ISTIO_VERSION:             ${ISTIO_VERSION}"
 echo "  GATEWAY_API_VERSION:       ${GATEWAY_API_VERSION}"
 echo "  BBR_VERSION:               ${BBR_VERSION}"
@@ -77,42 +104,74 @@ BBR_CHART_TMPDIR="$(mktemp -d -t bbr-chart-XXXXXX)"
 BBR_CHART_SUBPATH="config/charts/body-based-routing"
 trap 'rm -rf "${BBR_CHART_TMPDIR}" "${LOGDIR}"' EXIT
 
+# ── Helper: format an elapsed-seconds count as a human-friendly duration ──
+fmt_dur() {
+  local s="$1"
+  if (( s < 60 )); then
+    printf '%ds' "${s}"
+  else
+    printf '%dm%02ds' "$((s/60))" "$((s%60))"
+  fi
+}
+
 # ── Helper: run a list of functions in parallel and aggregate logs ────────
 # Usage: run_phase <phase-name> <fn1> <fn2> ...
+#
+# Per-task and per-phase wall-clock timings are printed at the end of each
+# phase; the master summary is printed once after the final phase.
+PHASE_TIMINGS=()  # "<phase-name>=<seconds>"
+TASK_TIMINGS=()   # "<phase-name>/<task>=<seconds>"
 run_phase() {
   local phase="$1"; shift
   local phase_dir="${LOGDIR}/${phase}"
   mkdir -p "${phase_dir}"
+  local phase_start=${SECONDS}
 
   if [[ "${INSTALL_PARALLEL}" != "1" || $# -le 1 ]]; then
     # Sequential fallback (or single-task phase): stream output directly.
     for fn in "$@"; do
       echo ""
       echo "── [${phase}] ${fn} ──"
+      local task_start=${SECONDS}
       "${fn}"
+      local task_dur=$((SECONDS - task_start))
+      TASK_TIMINGS+=("${phase}/${fn}=${task_dur}")
+      echo "  ⏱  [${phase}] ${fn} took $(fmt_dur "${task_dur}")"
     done
+    PHASE_TIMINGS+=("${phase}=$((SECONDS - phase_start))")
+    echo ""
+    echo "⏱  Phase '${phase}' total: $(fmt_dur "$((SECONDS - phase_start))")"
     return 0
   fi
 
   echo ""
   echo "── [${phase}] launching $# tasks in parallel: $* ──"
-  local pids=() names=()
+  local pids=() names=() task_starts=()
   for fn in "$@"; do
+    local task_start=${SECONDS}
     (
       set -e
       "${fn}"
     ) >"${phase_dir}/${fn}.log" 2>&1 &
     pids+=($!)
     names+=("${fn}")
+    task_starts+=("${task_start}")
   done
 
   local rc=0
   local failed=()
+  local task_durs=()
   for i in "${!pids[@]}"; do
     if wait "${pids[$i]}"; then
-      echo "  ✅ [${phase}] ${names[$i]}"
+      local d=$((SECONDS - task_starts[i]))
+      task_durs+=("${d}")
+      echo "  ✅ [${phase}] ${names[$i]} ($(fmt_dur "${d}"))"
+      TASK_TIMINGS+=("${phase}/${names[$i]}=${d}")
     else
-      echo "  ❌ [${phase}] ${names[$i]}"
+      local d=$((SECONDS - task_starts[i]))
+      task_durs+=("${d}")
+      echo "  ❌ [${phase}] ${names[$i]} ($(fmt_dur "${d}"))"
+      TASK_TIMINGS+=("${phase}/${names[$i]}=${d}")
       failed+=("${names[$i]}")
       rc=1
     fi
@@ -124,6 +183,11 @@ run_phase() {
     echo "────── [${phase}] ${n} log ──────"
     cat "${phase_dir}/${n}.log"
   done
+
+  local phase_dur=$((SECONDS - phase_start))
+  PHASE_TIMINGS+=("${phase}=${phase_dur}")
+  echo ""
+  echo "⏱  Phase '${phase}' total: $(fmt_dur "${phase_dur}") (longest task gates this phase)"
 
   if [[ $rc -ne 0 ]]; then
     echo ""
@@ -181,6 +245,21 @@ install_kaito() {
 }
 
 install_gateway_api_crds() {
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    echo "=== Skipping upstream Gateway API CRDs (provider=azure, AKS managed Gateway API add-on is enabled) ==="
+    echo "Verifying gateways.gateway.networking.k8s.io is served..."
+    # The managed add-on installs the standard-channel CRDs at cluster-create
+    # time. Block briefly in case the install hasn't propagated yet.
+    for _ in $(seq 1 30); do
+      if kubectl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1; then
+        echo "  ✅ gateways CRD is served by the managed add-on"
+        return 0
+      fi
+      sleep 2
+    done
+    echo "  ❌ Managed Gateway API CRDs not present after 60s — falling back to upstream install"
+  fi
+
   echo "=== Installing Gateway API CRDs ${GATEWAY_API_VERSION} ==="
   kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
 }
@@ -191,18 +270,28 @@ install_gwie_crds() {
 }
 
 install_keda() {
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    echo "=== Skipping Helm KEDA install (provider=azure, AKS managed KEDA add-on is enabled) ==="
+    echo "Verifying managed KEDA in ${KEDA_NAMESPACE}..."
+    # The managed add-on installs KEDA at cluster-create time; wait briefly
+    # in case the controller rollout has not fully completed.
+    kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator --timeout=180s || true
+    kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
+    return 0
+  fi
+
   echo "=== Installing KEDA ${KEDA_VERSION} ==="
   helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
   helm repo update kedacore
   helm upgrade --install keda kedacore/keda \
     --version "${KEDA_VERSION}" \
-    --namespace keda \
+    --namespace "${KEDA_NAMESPACE}" \
     --create-namespace \
     --wait --timeout=300s
 
   echo "⏳ Waiting for KEDA operator..."
-  kubectl -n keda rollout status deployment/keda-operator --timeout=180s || true
-  kubectl -n keda rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
+  kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator --timeout=180s || true
+  kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
 }
 
 prefetch_bbr_chart() {
@@ -228,8 +317,14 @@ install_gpu_mocker() {
     --set image.repository="${SHADOW_CONTROLLER_IMAGE%:*}" \
     --set image.tag="${SHADOW_CONTROLLER_IMAGE##*:}"
 
-  echo "⏳ Waiting for gpu-node-mocker..."
-  kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=120s || true
+  # The mocker starts with a discovery check for `nodeclaims.karpenter.sh`
+  # and exits if the CRD is not yet served. Because we now install in
+  # parallel with KAITO (which ships that CRD) in phase1, the first few
+  # restarts are expected; allow enough time for kubelet's CrashLoopBackOff
+  # to retry once KAITO finishes (which is bounded by KAITO's own
+  # --timeout=300s + a CRD-rollout grace window).
+  echo "⏳ Waiting for gpu-node-mocker (will tolerate restarts while KAITO CRDs come online)..."
+  kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=420s || true
 }
 
 install_istio() {
@@ -246,17 +341,17 @@ install_istio() {
 }
 
 install_keda_kaito_scaler() {
-  echo "=== Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} ==="
+  echo "=== Installing KEDA Kaito Scaler ${KEDA_KAITO_SCALER_VERSION} into ${KEDA_NAMESPACE} ==="
   helm repo add keda-kaito-scaler https://kaito-project.github.io/keda-kaito-scaler/charts/kaito-project 2>/dev/null || true
   helm repo update keda-kaito-scaler
   helm upgrade --install keda-kaito-scaler keda-kaito-scaler/keda-kaito-scaler \
     --version "${KEDA_KAITO_SCALER_VERSION}" \
-    --namespace keda \
+    --namespace "${KEDA_NAMESPACE}" \
     --create-namespace \
     --wait --timeout=300s
 
   echo "⏳ Waiting for keda-kaito-scaler..."
-  kubectl -n keda rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
+  kubectl -n "${KEDA_NAMESPACE}" rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
 }
 
 install_bbr() {
@@ -359,13 +454,13 @@ run_phase phase1-base \
   install_gateway_api_crds \
   install_gwie_crds \
   install_keda \
+  install_keda_kaito_scaler \
+  install_gpu_mocker \
   prefetch_bbr_chart \
   install_model_not_found
 
-run_phase phase2-istio-and-mocker \
-  install_gpu_mocker \
-  install_istio \
-  install_keda_kaito_scaler
+run_phase phase2-istio \
+  install_istio
 
 run_phase phase3-istio-filters \
   install_bbr \
@@ -373,3 +468,23 @@ run_phase phase3-istio-filters \
 
 echo ""
 echo "✅ All components installed."
+
+# ── Timing summary ────────────────────────────────────────────────────────
+echo ""
+echo "================ install-components.sh timing summary ================"
+TOTAL=0
+for entry in "${PHASE_TIMINGS[@]}"; do
+  name="${entry%%=*}"
+  secs="${entry##*=}"
+  TOTAL=$((TOTAL + secs))
+  printf '  phase  %-30s %s\n' "${name}" "$(fmt_dur "${secs}")"
+done
+printf '  TOTAL  %-30s %s\n' "(sum of phase wall-clocks)" "$(fmt_dur "${TOTAL}")"
+echo ""
+echo "  Per-task wall-clocks (within a parallel phase, the longest task gates the phase):"
+for entry in "${TASK_TIMINGS[@]}"; do
+  name="${entry%%=*}"
+  secs="${entry##*=}"
+  printf '    %-50s %s\n' "${name}" "$(fmt_dur "${secs}")"
+done
+echo "======================================================================"

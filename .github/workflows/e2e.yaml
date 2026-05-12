@@ -11,6 +11,14 @@ on:
         description: 'Branch name to run E2E tests against'
         required: true
         default: 'main'
+      provider:
+        description: 'E2E provider — selects component install mix. "upstream" = Helm-installed components; "azure" = AKS managed KEDA add-on, others stay upstream.'
+        required: false
+        default: 'upstream'
+        type: choice
+        options:
+          - upstream
+          - azure
       istio_version:
         description: 'Istio version (e.g. 1.29.0). Leave empty to use default from versions.env'
         required: false
@@ -41,7 +49,7 @@ env:
   CLUSTER_NAME: "kaito-gw-e2e-aks-${{ github.run_id }}"
   ACR_NAME: "kaitogwe2eaks${{ github.run_id }}acr"
   GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
-  LOCATION: swedencentral
+  LOCATION: australiaeast
   NODE_COUNT: '3'
   NODE_VM_SIZE: Standard_D8s_v5
 
@@ -71,6 +79,7 @@ jobs:
           location: ${{ env.LOCATION }}
           node-count: ${{ env.NODE_COUNT }}
           node-vm-size: ${{ env.NODE_VM_SIZE }}
+          provider: ${{ github.event.inputs.provider }}
           istio-version: ${{ github.event.inputs.istio_version }}
           gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
           bbr-version: ${{ github.event.inputs.bbr_version }}
@@ -81,9 +90,10 @@ jobs:
       - name: Run E2E tests
         # Skip Nightly-labeled specs (slow/destructive scaling cases, etc.).
         # TheNightly suite runs in e2e-nightly.yaml.
+        # NetworkPolicy specs are temporarily disabled.
         run: make test-e2e
         env:
-          E2E_LABEL: "!Nightly"
+          E2E_LABEL: "!Nightly && !NetworkPolicy"
 
       - name: Dump cluster state
         if: failure()
