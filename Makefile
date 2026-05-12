@@ -147,17 +147,19 @@ e2e: ## Run full E2E cycle: setup cluster, install, validate, test, teardown.
 	hack/e2e/scripts/run-e2e-local.sh all
 
 .PHONY: e2e-setup
-e2e-setup: ## Create AKS cluster and build/push images.
+e2e-setup: ## Create AKS cluster (requires RG+ACR; run e2e-prepare-image first).
 	hack/e2e/scripts/run-e2e-local.sh setup
 
-GPU_MOCKER_IMAGE ?= gpu-node-mocker:latest
+.PHONY: e2e-prepare-image
+e2e-prepare-image: ## Create RG+ACR and build/push the gpu-node-mocker image to ACR.
+	hack/e2e/scripts/prepare-image.sh
 
 .PHONY: e2e-push-image
 e2e-push-image: ## Tag and push image to ACR. Sets SHADOW_CONTROLLER_IMAGE.
 	az acr login --name "$${ACR_NAME}" >&2; \
 	IMAGE_TAG="latest-$$(head -c 8 /dev/urandom | xxd -p)"; \
 	IMAGE="$${ACR_NAME}.azurecr.io/gpu-node-mocker:$${IMAGE_TAG}"; \
-	$(CONTAINER_TOOL) tag $(GPU_MOCKER_IMAGE) "$${IMAGE}" >&2; \
+	$(CONTAINER_TOOL) tag $(IMG) "$${IMAGE}" >&2; \
 	$(CONTAINER_TOOL) push "$${IMAGE}" >&2; \
 	echo "image=$${IMAGE}"
 
@@ -191,16 +193,20 @@ E2E_RESOURCE_GROUP ?= kaito-$(USER_ID)
 
 .PHONY: e2e-up
 e2e-up: ## One command to set up full local E2E env (cluster, build, push, install, validate).
-	@export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) && \
-	hack/e2e/scripts/run-e2e-local.sh setup && \
-	hack/e2e/scripts/run-e2e-local.sh build-push && \
-	hack/e2e/scripts/run-e2e-local.sh install && \
-	hack/e2e/scripts/run-e2e-local.sh validate && \
-	echo "" && \
-	echo "=== E2E environment is ready ===" && \
-	echo "  Cluster: $(E2E_CLUSTER_NAME)" && \
-	echo "  Resource Group: $(E2E_RESOURCE_GROUP)" && \
-	echo "Run tests with: make test-e2e" && \
+	@set -e; \
+	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \
+	IMAGE_LINE=$$(hack/e2e/scripts/prepare-image.sh | grep '^image='); \
+	export SHADOW_CONTROLLER_IMAGE=$${IMAGE_LINE#image=}; \
+	echo "Using SHADOW_CONTROLLER_IMAGE=$${SHADOW_CONTROLLER_IMAGE}"; \
+	hack/e2e/scripts/run-e2e-local.sh setup; \
+	hack/e2e/scripts/run-e2e-local.sh install; \
+	hack/e2e/scripts/run-e2e-local.sh validate; \
+	echo ""; \
+	echo "=== E2E environment is ready ==="; \
+	echo "  Cluster: $(E2E_CLUSTER_NAME)"; \
+	echo "  Resource Group: $(E2E_RESOURCE_GROUP)"; \
+	echo "  Image:   $${SHADOW_CONTROLLER_IMAGE}"; \
+	echo "Run tests with: make test-e2e"; \
 	echo "Tear down with: CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) make e2e-teardown"
 
 ## --------------------------------------

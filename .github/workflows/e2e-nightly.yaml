@@ -161,7 +161,7 @@ jobs:
           echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
         env:
           ACR_NAME: ${{ env.ACR_NAME }}
-          GPU_MOCKER_IMAGE: ${{ env.GPU_MOCKER_IMAGE }}
+          IMG: ${{ env.GPU_MOCKER_IMAGE }}
 
       - name: Install components
         run: make e2e-install
