@@ -3,9 +3,9 @@ entries:
   gpu-node-mocker:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-05-11T12:34:39.025609367Z"
+    created: "2026-05-12T21:19:50.058927075Z"
     description: GPU Node Mocker controller for KAITO production-stack
-    digest: 57079dda1189812850aa689edc43a7e1d312f18cbfe3502e58dbcbdd5a9de221
+    digest: b21b51108086f9da690b52179230d8d451852e44c397b0651e3f902b50b1c18b
     name: gpu-node-mocker
     type: application
     urls:
@@ -14,10 +14,10 @@ entries:
   modeldeployment:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-05-11T12:34:39.028092806Z"
+    created: "2026-05-12T21:19:50.059230882Z"
     description: 'Deploys a KAITO InferenceSet together with the Istio DestinationRule
       and Gateway API HTTPRoute required to route inference traffic to it. '
-    digest: 09102417d054fd61503b5388326ac06afb77295d53968dfb88f152be1eacd852
+    digest: eab9b9dd1164ec22e3c30e67052ca92deec34bde364228d95f28eb85cb75a862
     name: modeldeployment
     type: application
     urls:
@@ -26,7 +26,7 @@ entries:
   modelharness:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-05-11T12:34:39.028504823Z"
+    created: "2026-05-12T21:19:50.059902003Z"
     description: 'Per-namespace shared resources for production-stack workloads. One
       modelharness release per workload namespace provisions the artifacts every model
       deployment in that namespace shares: the Istio Gateway, the catch-all HTTPRoute
@@ -35,10 +35,10 @@ entries:
       CR that wire the Gateway into the cluster-wide apikey-ext-authz CUSTOM provider.
       The shared model-not-found Service itself is installed once per cluster by the
       E2E install script. '
-    digest: 50128648f347b948f75befbc2a04bcc10649e351cab24e39c87b6692c436ddf7
+    digest: 5c9e0aedad7c5c1c73e7cbf56fe4ea4ea11f7dd8e58791353194bca7a8b84482
     name: modelharness
     type: application
     urls:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/modelharness-0.1.0.tgz
     version: 0.1.0
-generated: "2026-05-11T12:34:39.025125793Z"
+generated: "2026-05-12T21:19:50.058600113Z"
