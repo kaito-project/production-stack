@@ -109,7 +109,20 @@ cleanup() {
   exit "${exit_code}"
 }
 
-CONTAINER_TOOL="${CONTAINER_TOOL:-$(command -v podman 2>/dev/null || command -v docker 2>/dev/null)}"
+CONTAINER_TOOL="${CONTAINER_TOOL:-$(command -v podman 2>/dev/null || command -v docker 2>/dev/null || true)}"
+
+require_container_tool() {
+  if [[ -z "${CONTAINER_TOOL}" ]]; then
+    echo "Error: neither 'docker' nor 'podman' found in PATH." >&2
+    echo "Install Docker (e.g. 'sudo apt-get install docker.io') or set CONTAINER_TOOL." >&2
+    exit 1
+  fi
+  if ! "${CONTAINER_TOOL}" info &>/dev/null; then
+    echo "Error: '${CONTAINER_TOOL}' is installed but the daemon is not running." >&2
+    echo "Start it with: sudo systemctl start $(basename "${CONTAINER_TOOL}")" >&2
+    exit 1
+  fi
+}
 
 # ── Step-level timing ─────────────────────────────────────────────────────
 # Tracks wall-clock per top-level do_<step> invocation so we can spot the
@@ -157,6 +170,7 @@ derive_acr() {
 }
 
 do_build_push() {
+  require_container_tool
   derive_acr
   echo "=== Building and pushing image to ACR (${ACR_NAME}) ==="
   TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
