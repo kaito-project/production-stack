@@ -59,21 +59,6 @@ type ModelDeploymentValues struct {
 	// EnsureNamespace; the warmup loop in SetupInferenceSetsWithRouting
 	// reads the resulting Secret and sends Bearer + Host headers.
 	AuthAPIKeyEnabled bool
-	// NetworkPolicyEnabled signals that this deployment's namespace
-	// should be locked down with the default-deny + allow-inference
-	// NetworkPolicy pair (provisioned by EnsureNamespace). All
-	// deployments in a case share a namespace, so the value on the first
-	// deployment is what takes effect.
-	NetworkPolicyEnabled bool
-	// NetworkPolicyAllowedNamespaces lists namespaces (matched by the
-	// standard `kubernetes.io/metadata.name` label) that are granted
-	// cross-namespace ingress to non-gateway pods when
-	// NetworkPolicyEnabled is true. Use this to permit control-plane
-	// scrapers — e.g. `keda-kaito-scaler` in `keda` needs to reach
-	// vLLM metrics on shadow pods to drive autoscaling decisions.
-	// Leave nil/empty to keep the namespace strictly isolated (the
-	// default for the network-policy e2e cases).
-	NetworkPolicyAllowedNamespaces []string
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a
@@ -192,16 +177,15 @@ func modelHarnessChartPath() string {
 // in `namespace`. It provisions the per-namespace Gateway (named
 // "<namespace>-gw" by chart default), the catch-all model-not-found
 // HTTPRoute + ReferenceGrant, and — when authEnabled is true — the
-// per-namespace AuthorizationPolicy + APIKey CR. When
-// networkPolicyEnabled is true, the chart additionally renders the
-// default-deny-ingress / allow-inference-traffic NetworkPolicies that
+// per-namespace AuthorizationPolicy + APIKey CR. The chart always renders
+// the default-deny-ingress / allow-inference-traffic NetworkPolicies that
 // lock down East-West ingress while keeping the gateway pod reachable;
-// `allowedIngressNamespaces` (if non-empty) extends
-// `allow-inference-traffic` with cross-namespace ingress for the named
-// namespaces (matched by the `kubernetes.io/metadata.name` label).
+// the chart-default `allowedIngressNamespaces` (currently
+// keda + kaito-system) covers the control-plane scrapers every workload
+// in this repo needs.
 //
 // Idempotent: re-running on an existing release reconciles the values.
-func InstallModelHarness(namespace string, authEnabled, networkPolicyEnabled bool, allowedIngressNamespaces []string) error {
+func InstallModelHarness(namespace string, authEnabled bool) error {
 	if namespace == "" {
 		return fmt.Errorf("modelharness: namespace is required")
 	}
@@ -221,11 +205,6 @@ func InstallModelHarness(namespace string, authEnabled, networkPolicyEnabled boo
 		"--create-namespace",
 		"--set", "namespace=" + namespace,
 		"--set", "auth.enabled=" + strconv.FormatBool(authEnabled),
-		"--set", "networkPolicy.enabled=" + strconv.FormatBool(networkPolicyEnabled),
-	}
-	for i, allowed := range allowedIngressNamespaces {
-		args = append(args, "--set",
-			fmt.Sprintf("networkPolicy.allowedIngressNamespaces[%d]=%s", i, allowed))
 	}
 	args = append(args, "--wait")
 

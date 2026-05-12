@@ -160,22 +160,20 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	},
 	CaseNetworkPolicyA: {
 		{
-			Name:                 "netpol-a",
-			Namespace:            "e2e-netpol-a",
-			Model:                presetPhi,
-			Replicas:             1,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "netpol-a",
+			Namespace:    "e2e-netpol-a",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseNetworkPolicyB: {
 		{
-			Name:                 "netpol-b",
-			Namespace:            "e2e-netpol-b",
-			Model:                presetPhi,
-			Replicas:             1,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "netpol-b",
+			Namespace:    "e2e-netpol-b",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseScaling: {
@@ -194,16 +192,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			EnableScaling:    true,
 			MaxReplicas:      2,
 			ScalingThreshold: 10, // low threshold to trigger scaling during tests
-			// Lock down East-West ingress while still letting
-			// keda-kaito-scaler (in the `keda` namespace) reach vLLM
-			// metric endpoints on shadow pods — without that allowance,
-			// KEDA can't observe vllm:num_requests_waiting and scale-up
-			// never fires. kaito-system is whitelisted as well so the
-			// gpu-node-mocker / kaito-workspace controllers retain
-			// optional direct-pod access for shadow-pod patching paths
-			// that don't go through the apiserver.
-			NetworkPolicyEnabled:           true,
-			NetworkPolicyAllowedNamespaces: []string{"keda", "kaito-system"},
 		},
 	},
 }
@@ -247,7 +235,7 @@ func InstallCase(caseName string) string {
 
 	ctx := context.Background()
 	first := CaseDeployments[caseName][0]
-	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled, first.NetworkPolicyEnabled, first.NetworkPolicyAllowedNamespaces)).To(Succeed(),
+	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled)).To(Succeed(),
 		"failed to ensure namespace %s for case %s", ns, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).

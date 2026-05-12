@@ -36,20 +36,19 @@ import (
 // default), the catch-all model-not-found HTTPRoute + ReferenceGrant,
 // — when authEnabled is true — the AuthorizationPolicy + APIKey CR
 // that wire the Gateway into the cluster-wide apikey-ext-authz CUSTOM
-// provider, and — when networkPolicyEnabled is true — the
-// default-deny-ingress + allow-inference-traffic NetworkPolicies that
-// lock down East-West ingress while keeping the per-namespace gateway
-// pod reachable from outside the namespace (matched via the standard
-// `gateway.networking.k8s.io/gateway-name` label that Istio stamps on
-// every gateway pod). `npAllowedNamespaces` (only honored when
-// networkPolicyEnabled is true) grants cross-namespace ingress to
-// non-gateway pods for the named namespaces — required for control-plane
-// scrapers like `keda-kaito-scaler` that live outside the workload
-// namespace.
+// provider, and the default-deny-ingress + allow-inference-traffic
+// NetworkPolicies that lock down East-West ingress while keeping the
+// per-namespace gateway pod reachable from outside the namespace
+// (matched via the standard `gateway.networking.k8s.io/gateway-name`
+// label that Istio stamps on every gateway pod). The chart-default
+// `allowedIngressNamespaces` (currently keda + kaito-system) covers
+// the control-plane scrapers — `keda-kaito-scaler` and the
+// gpu-node-mocker / kaito-workspace controllers — that need to reach
+// shadow pods directly from outside the workload namespace.
 //
 // Safe to call repeatedly; the underlying `helm upgrade --install` and
 // namespace Create are both idempotent.
-func EnsureNamespace(ctx context.Context, name string, authEnabled, networkPolicyEnabled bool, npAllowedNamespaces []string) error {
+func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
@@ -57,7 +56,7 @@ func EnsureNamespace(ctx context.Context, name string, authEnabled, networkPolic
 		return fmt.Errorf("create namespace %s: %w", name, err)
 	}
 
-	if err := InstallModelHarness(name, authEnabled, networkPolicyEnabled, npAllowedNamespaces); err != nil {
+	if err := InstallModelHarness(name, authEnabled); err != nil {
 		return fmt.Errorf("install modelharness in %s: %w", name, err)
 	}
 
