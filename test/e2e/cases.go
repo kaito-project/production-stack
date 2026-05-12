@@ -107,81 +107,73 @@ const (
 var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	CaseGPUMocker: {
 		{
-			Name:                 "gpu-mocker-phi",
-			Namespace:            "e2e-gpu-mocker",
-			Model:                presetPhi,
-			Replicas:             1,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "gpu-mocker-phi",
+			Namespace:    "e2e-gpu-mocker",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseModelRouting: {
 		{
-			Name:                 "routing-phi",
-			Namespace:            "e2e-model-routing",
-			Model:                presetPhi,
-			Replicas:             2,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "routing-phi",
+			Namespace:    "e2e-model-routing",
+			Model:        presetPhi,
+			Replicas:     2,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 		{
-			Name:                 "routing-ministral",
-			Namespace:            "e2e-model-routing",
-			Model:                presetMinistral,
-			Replicas:             2,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "routing-ministral",
+			Namespace:    "e2e-model-routing",
+			Model:        presetMinistral,
+			Replicas:     2,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CasePrefixCache: {
 		{
-			Name:                 "prefix-cache-phi",
-			Namespace:            "e2e-prefix-cache",
-			Model:                presetPhi,
-			Replicas:             2, // prefix-cache tests require ≥2 shadow pods.
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "prefix-cache-phi",
+			Namespace:    "e2e-prefix-cache",
+			Model:        presetPhi,
+			Replicas:     2, // prefix-cache tests require ≥2 shadow pods.
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseModelDeploymentChart: {
 		{
-			Name:                 "mdchart-phi",
-			Namespace:            "e2e-mdchart",
-			Model:                presetPhi,
-			Replicas:             1,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "mdchart-phi",
+			Namespace:    "e2e-mdchart",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseAuth: {
 		{
-			Name:                 "auth-phi",
-			Namespace:            "e2e-auth",
-			Model:                presetPhi,
-			Replicas:             2,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			AuthAPIKeyEnabled:    true,
-			NetworkPolicyEnabled: true,
+			Name:              "auth-phi",
+			Namespace:         "e2e-auth",
+			Model:             presetPhi,
+			Replicas:          2,
+			InstanceType:      "Standard_NV36ads_A10_v5",
+			AuthAPIKeyEnabled: true,
 		},
 	},
 	CaseNetworkPolicyA: {
 		{
-			Name:                 "netpol-a",
-			Namespace:            "e2e-netpol-a",
-			Model:                presetPhi,
-			Replicas:             1,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "netpol-a",
+			Namespace:    "e2e-netpol-a",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseNetworkPolicyB: {
 		{
-			Name:                 "netpol-b",
-			Namespace:            "e2e-netpol-b",
-			Model:                presetPhi,
-			Replicas:             1,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "netpol-b",
+			Namespace:    "e2e-netpol-b",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseScaling: {
@@ -200,14 +192,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			EnableScaling:    true,
 			MaxReplicas:      2,
 			ScalingThreshold: 10, // low threshold to trigger scaling during tests
-			// Lock down East-West ingress. The chart's default
-			// `allowedIngressNamespaces` whitelists `keda` (so
-			// keda-kaito-scaler can reach vLLM `num_requests_waiting` on
-			// shadow pods) and `kaito-system` (so the gpu-node-mocker /
-			// kaito-workspace controllers retain optional direct-pod
-			// access for shadow-pod patching paths that don't go
-			// through the apiserver).
-			NetworkPolicyEnabled: true,
 		},
 	},
 }
@@ -251,7 +235,7 @@ func InstallCase(caseName string) string {
 
 	ctx := context.Background()
 	first := CaseDeployments[caseName][0]
-	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled, first.NetworkPolicyEnabled, first.NetworkPolicyAllowedNamespaces)).To(Succeed(),
+	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled)).To(Succeed(),
 		"failed to ensure namespace %s for case %s", ns, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).

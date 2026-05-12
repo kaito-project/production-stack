@@ -57,7 +57,7 @@ auth:
 # `gateway.networking.k8s.io/gateway-name` label) so North-South
 # traffic into the gateway is unaffected.
 networkPolicy:
-  enabled: false
+  enabled: true
 
   # allowedIngressNamespaces grants cross-namespace ingress to
   # non-gateway pods in this workload namespace, matched by the
