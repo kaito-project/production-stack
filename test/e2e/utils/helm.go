@@ -190,8 +190,9 @@ func modelHarnessChartPath() string {
 
 // InstallModelHarness runs `helm upgrade --install` for the modelharness chart
 // in `namespace`. It provisions the per-namespace Gateway (named
-// "<namespace>-gw" by chart default), the catch-all model-not-found
-// HTTPRoute + ReferenceGrant, and — when authEnabled is true — the
+// "<namespace>-gw" by chart default), the catch-all
+// `model-not-found-direct` EnvoyFilter (Envoy `direct_response` returning
+// 404 + OpenAI-compatible JSON), and — when authEnabled is true — the
 // per-namespace AuthorizationPolicy + APIKey CR. When
 // networkPolicyEnabled is true, the chart additionally renders the
 // default-deny-ingress / allow-inference-traffic NetworkPolicies that

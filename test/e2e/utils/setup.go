@@ -33,7 +33,9 @@ import (
 // EnsureNamespace creates the namespace if it does not exist and installs
 // the modelharness Helm chart into it. modelharness owns every per-namespace
 // shared resource: the Istio Gateway (named "<name>-gw" by chart
-// default), the catch-all model-not-found HTTPRoute + ReferenceGrant,
+// default), the catch-all `model-not-found-direct` EnvoyFilter (Envoy
+// `direct_response` returning 404 + OpenAI-compatible JSON for any
+// request not matched by a deployment-specific HTTPRoute),
 // — when authEnabled is true — the AuthorizationPolicy + APIKey CR
 // that wire the Gateway into the cluster-wide apikey-ext-authz CUSTOM
 // provider, and — when networkPolicyEnabled is true — the

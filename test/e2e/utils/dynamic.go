@@ -57,23 +57,6 @@ var (
 		Kind:    "Gateway",
 	}
 
-	// HTTPRouteGVK identifies HTTPRoute resources (used to create the
-	// per-namespace catch-all that returns OpenAI-compatible 404 JSON).
-	HTTPRouteGVK = schema.GroupVersionKind{
-		Group:   "gateway.networking.k8s.io",
-		Version: "v1",
-		Kind:    "HTTPRoute",
-	}
-
-	// ReferenceGrantGVK identifies the ReferenceGrant used to permit a
-	// per-case HTTPRoute to reference the shared model-not-found Service
-	// living in the default namespace.
-	ReferenceGrantGVK = schema.GroupVersionKind{
-		Group:   "gateway.networking.k8s.io",
-		Version: "v1beta1",
-		Kind:    "ReferenceGrant",
-	}
-
 	// AuthorizationPolicyGVK identifies the Istio AuthorizationPolicy used
 	// to wire each per-case Gateway into the apikey-ext-authz CUSTOM
 	// provider. The upstream llm-gateway-apikey chart only installs an AP

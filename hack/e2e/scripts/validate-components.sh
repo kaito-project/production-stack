@@ -79,22 +79,9 @@ fi
 kubectl -n istio-system get pods -l app=body-based-router 2>/dev/null || true
 echo ""
 
-# ── Cluster-shared model-not-found backend ──────────────────────────────
-# After the modelharness refactor, per-namespace Istio Gateways
-# ("<namespace>-gw") are provisioned at test time by EnsureNamespace
-# (charts/modelharness), so no `inference-gateway` Gateway pod exists in
-# `default` to validate at install time. The only namespace-tier
-# component install-components.sh still pre-installs is the
-# cluster-shared 404 Service that every workload namespace's catch-all
-# HTTPRoute references via a ReferenceGrant — validate that here.
-echo "=== model-not-found (cluster-shared 404 backend) ==="
-if kubectl -n default wait --for=condition=ready pod -l app=model-not-found --timeout="${TIMEOUT}" >/dev/null 2>&1; then
-  pass "model-not-found pod is Running"
-else
-  fail "model-not-found pod is NOT Running"
-fi
-kubectl -n default get pods -l app=model-not-found 2>/dev/null || true
-echo ""
+# (Catch-all 404 handling is now produced by an EnvoyFilter
+# direct_response rendered per-namespace by charts/modelharness — no
+# cluster-shared Service exists to validate.)
 
 # ── KEDA ─────────────────────────────────────────────────────────────────
 echo "=== KEDA (namespace: ${KEDA_NAMESPACE}, provider: ${E2E_PROVIDER}) ==="
