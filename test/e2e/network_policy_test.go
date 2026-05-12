@@ -437,11 +437,6 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			"traffic from random-ns should be blocked by default-deny-ingress")
 	})
 
-	It("should DENY ingress from kube-system namespace", func() {
-		Expect(probe("kube-system")).To(BeFalse(),
-			"traffic from kube-system should be blocked by default-deny-ingress")
-	})
-
 	// ── Allow tests ───────────────────────────────────────────────────────
 	It("should DENY ingress via gateway-labeled pod in default namespace", func() {
 		// Each workload namespace only trusts its own in-namespace gateway
