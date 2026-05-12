@@ -73,6 +73,6 @@ networkPolicy:
   # strict per-namespace isolation used by the network-policy e2e
   # cases (which assert that label-only spoofing across namespaces is
   # always denied).
-  allowedIngressNamespaces: []
-  #   - keda
-  #   - kaito-system
+  allowedIngressNamespaces:
+    - keda
+    - kaito-system
