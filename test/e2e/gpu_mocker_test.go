@@ -330,14 +330,14 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 		Context("Non-existent model request", func() {
 			It("should return 404 with an OpenAI-compatible error for an unknown model", func() {
-				// The catch-all model-not-found HTTPRoute is provisioned
-				// per-namespace by the modelharness chart (installed via
-				// EnsureNamespace) and forwards unmatched requests across
-				// namespaces to the cluster-shared `default/model-not-found`
-				// Service (authorised by a ReferenceGrant). The gpu-mocker
-				// case has AuthAPIKeyEnabled=false, so no
-				// AuthorizationPolicy is rendered and the probe needs no
-				// bearer token.
+				// The catch-all `model-not-found-direct` EnvoyFilter is
+				// provisioned per-namespace by the modelharness chart
+				// (installed via EnsureNamespace) and patches an Envoy
+				// `direct_response` (status 404 + OpenAI-compatible JSON) onto
+				// the Gateway's virtual host as a catch-all route. No backend
+				// Pod / Service is involved. The gpu-mocker case has
+				// AuthAPIKeyEnabled=false, so no AuthorizationPolicy is
+				// rendered and the probe needs no bearer token.
 				resp, err := utils.SendChatCompletion(caseGatewayURL, "non-existent-model-xyz")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))

@@ -21,9 +21,11 @@
 #                                 CRD is not yet served, so kubelet retries
 #                                 until KAITO finishes installing it)
 #   - BBR chart prefetch (git clone fork repo only)
-#   - Cluster-shared model-not-found Service in `default` (consumed by
-#     every workload namespace's catch-all HTTPRoute via a
-#     ReferenceGrant rendered by charts/modelharness).
+#
+# (Catch-all 404 handling is now provided by an EnvoyFilter
+# direct_response rendered per-namespace by charts/modelharness — no
+# cluster-shared Service is required, so install_model_not_found has
+# been removed from this script.)
 #
 # Phase 2 (parallel, depends on Phase 1):
 #   - Istio                      (after Gateway API CRDs)
@@ -52,7 +54,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MANIFESTS_DIR="${SCRIPT_DIR}/../manifests"
 
 # Validate required version variables are set.
 : "${ISTIO_VERSION:?ISTIO_VERSION is not set. Source versions.env or export it before calling this script.}"
@@ -265,8 +266,19 @@ install_gateway_api_crds() {
 }
 
 install_gwie_crds() {
+  # Use server-side apply (--server-side --force-conflicts) instead of the
+  # default client-side apply. install_gwie_crds runs in parallel with
+  # install_kaito in phase1-base, and the KAITO chart bundles the same
+  # GWIE CRDs (inferencepools / inferenceobjectives in both
+  # inference.networking.k8s.io and inference.networking.x-k8s.io groups).
+  # Client-side apply does GET → CREATE-if-missing, which races with KAITO
+  # creating the CRD between the GET and the CREATE and fails with
+  # `AlreadyExists`. Server-side apply is a single atomic POST with a
+  # field manager: if the object already exists it is merged in place
+  # (with --force-conflicts taking ownership of any fields KAITO set).
   echo "=== Installing GWIE CRDs ==="
-  kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/latest/download/manifests.yaml"
+  kubectl apply --server-side --force-conflicts \
+    -f "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/latest/download/manifests.yaml"
 }
 
 install_keda() {
@@ -430,18 +442,6 @@ install_llm_gateway_auth() {
   kubectl -n llm-gateway-auth rollout status deployment/apikey-authz --timeout=180s || true
 }
 
-install_model_not_found() {
-  # Cluster-shared catch-all 404 Service in `default`. Every workload
-  # namespace's modelharness release renders a catch-all HTTPRoute that
-  # forwards unmatched requests to this Service across namespaces,
-  # authorised by a per-namespace ReferenceGrant.
-  echo "=== Deploying cluster-shared model-not-found Service in default ==="
-  kubectl apply -f "${MANIFESTS_DIR}/model-not-found.yaml"
-
-  echo "⏳ Waiting for model-not-found service..."
-  kubectl -n default rollout status deployment/model-not-found --timeout=120s || true
-}
-
 # ── Phased execution ──────────────────────────────────────────────────────
 #
 # Per-namespace shared resources (Gateway, catch-all HTTPRoute,
@@ -456,8 +456,7 @@ run_phase phase1-base \
   install_keda \
   install_keda_kaito_scaler \
   install_gpu_mocker \
-  prefetch_bbr_chart \
-  install_model_not_found
+  prefetch_bbr_chart
 
 run_phase phase2-istio \
   install_istio

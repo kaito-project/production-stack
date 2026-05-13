@@ -15,7 +15,7 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 
 `Name` is unique cluster-wide and is the value matched by `X-Gateway-Model-Name` (i.e. the `model` field clients send in OpenAI-compatible requests). `Model` is the KAITO preset only — multiple deployments may share a preset under different `Name`s.
 
-Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets its own Gateway, catch-all `model-not-found` route, and (when enabled) API-key auth artifacts via the [`charts/modelharness`](../../charts/modelharness) chart installed by `EnsureNamespace`.
+Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets its own Gateway, catch-all `model-not-found-direct` EnvoyFilter (Envoy `direct_response` 404), and (when enabled) API-key auth artifacts via the [`charts/modelharness`](../../charts/modelharness) chart installed by `EnsureNamespace`.
 
 ## Helpers
 
@@ -159,7 +159,7 @@ var GinkgoLabelMyFeature = ginkgo.Label("MyFeature")
 
 ### 5. Add per-namespace resources (rare)
 
-If your case needs additional cluster-side resources beyond what the [`charts/modelharness`](../../charts/modelharness) chart already provisions (Gateway, catch-all `model-not-found` Service + HTTPRoute, optional `AuthorizationPolicy` + `APIKey`), add them as templates in `charts/modelharness` so every workload namespace picks them up consistently.
+If your case needs additional cluster-side resources beyond what the [`charts/modelharness`](../../charts/modelharness) chart already provisions (Gateway, catch-all `model-not-found-direct` EnvoyFilter, optional `AuthorizationPolicy` + `APIKey`), add them as templates in `charts/modelharness` so every workload namespace picks them up consistently.
 
 ### 6. Validate
 

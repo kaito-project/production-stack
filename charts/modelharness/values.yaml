@@ -19,15 +19,13 @@ gatewayName: ""
 # gatewayPort is the HTTP listener port on the Gateway.
 gatewayPort: 80
 
-# modelNotFound configures the cross-namespace reference to the
-# cluster-shared model-not-found Service that the catch-all HTTPRoute
-# forwards unmatched requests to. The Service itself is installed once
-# per cluster in `modelNotFound.namespace` (typically `default`) by the
-# E2E install script — this chart only renders the catch-all HTTPRoute
-# and the ReferenceGrant authorising the cross-namespace backendRef.
-modelNotFound:
-  namespace: "default"
-  serviceName: "model-not-found"
+# Catch-all "model not found" responses are now produced by an Envoy
+# direct_response patched onto the Gateway's HCM via the
+# `model-not-found-direct` EnvoyFilter (see
+# templates/envoyfilter-not-found.yaml). No backend Pod / Service /
+# ReferenceGrant is required, so the previous `modelNotFound` config
+# (which pointed at a cluster-shared `default/model-not-found` Service)
+# has been removed.
 
 # auth toggles the per-namespace API-key authentication artifacts. When
 # enabled, the chart renders:

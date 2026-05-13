@@ -28,7 +28,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
@@ -48,7 +47,8 @@ import (
 //   - Istio Gateway with Body-Based Routing (BBR) configured
 //   - At least two KAITO InferenceSets serving different models
 //   - GPU node mocker creating shadow pods with llm-d-inference-sim
-//   - model-not-found catch-all HTTPRoute deployed
+//   - Catch-all `model-not-found-direct` EnvoyFilter (Envoy
+//     direct_response, rendered per-namespace by charts/modelharness)
 
 var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func() {
 	// Per-case deployments owned by model_routing_test.go (see cases.go).
@@ -73,8 +73,9 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 	var ctx context.Context
 
 	// caseGatewayURL routes to this case's dedicated Gateway. Resolved
-	// in BeforeAll. Per-namespace catch-all model-not-found / Gateway
-	// resources are provisioned by the modelharness chart.
+	// in BeforeAll. Per-namespace Gateway + catch-all
+	// `model-not-found-direct` EnvoyFilter are provisioned by the
+	// modelharness chart.
 	var caseGatewayURL string
 
 	BeforeAll(func() {
@@ -262,41 +263,26 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 	})
 
 	Context("Model-specific route wins over catch-all", func() {
-		It("should not route known model requests to the model-not-found service", func() {
-			clientset, err := utils.GetK8sClientset()
-			Expect(err).NotTo(HaveOccurred())
-
-			By("recording model-not-found pod request count before test")
-			// model-not-found is a cluster-shared Service installed once in
-			// utils.ModelNotFoundNamespace by
-			// hack/e2e/scripts/install-components.sh; every workload
-			// namespace's catch-all HTTPRoute references it via a
-			// ReferenceGrant rendered by charts/modelharness.
-			mnfPods, err := clientset.CoreV1().Pods(utils.ModelNotFoundNamespace).List(ctx, metav1.ListOptions{
-				LabelSelector: utils.ModelNotFoundPodLabel,
-				FieldSelector: "status.phase=Running",
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(mnfPods.Items).NotTo(BeEmpty(), "model-not-found pods should be running")
-
-			// Capture the nginx access log line count before traffic.
-			mnfPodName := mnfPods.Items[0].Name
-			beforeLogCount := countNginxAccessLogs(clientset, utils.ModelNotFoundNamespace, mnfPodName)
-
+		// The catch-all is now an Envoy `direct_response` (status 404)
+		// patched onto the Gateway by the `model-not-found-direct`
+		// EnvoyFilter (charts/modelharness/templates/envoyfilter-not-found.yaml).
+		// If the catch-all ever hijacked a known-model request, the
+		// response would be 404 instead of 200, and the model field in
+		// the body would be missing. Assert both directly.
+		It("should not absorb known model requests into the catch-all 404", func() {
 			By("sending requests to known models")
 			for _, model := range modelNames {
 				for i := 0; i < 3; i++ {
 					resp, err := sendChat(caseGatewayURL, model)
 					Expect(err).NotTo(HaveOccurred())
-					Expect(resp.StatusCode).To(Equal(http.StatusOK))
-					resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusOK),
+						"known-model request to %s should not fall through to catch-all 404", model)
+					parsed, perr := utils.ParseChatCompletionResponse(resp)
+					Expect(perr).NotTo(HaveOccurred())
+					Expect(parsed.Model).To(Equal(model),
+						"response for %s should echo the requested model name", model)
 				}
 			}
-
-			By("verifying model-not-found service received no new requests")
-			afterLogCount := countNginxAccessLogs(clientset, utils.ModelNotFoundNamespace, mnfPodName)
-			Expect(afterLogCount).To(Equal(beforeLogCount),
-				"model-not-found service should not have received any requests for known models")
 		})
 	})
 
@@ -662,24 +648,6 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 })
-
-// countNginxAccessLogs counts POST request lines in the nginx access log.
-// Only POST lines are counted to exclude Kubernetes health probe traffic
-// (GET /) which would cause false positives.
-func countNginxAccessLogs(clientset *kubernetes.Clientset, namespace, podName string) int {
-	logs, err := utils.GetPodLogs(clientset, namespace, podName, "nginx")
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, line := range strings.Split(logs, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" && strings.Contains(line, "\"POST ") {
-			count++
-		}
-	}
-	return count
-}
 
 // findDebugLogTriple searches istio-ingressgateway logs for a request-id that
 // has [PRE-BBR], [POST-EPP], and [RESPONSE] lines, where the POST-EPP line

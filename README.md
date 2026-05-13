@@ -54,7 +54,6 @@ namespaces and are shared by every model deployment:
 | BBR (Body-Based Router)              | `istio-system`   | `BBR_VERSION` (v1.3.1)                  | helm           | Installed in Istio's rootNamespace so its EnvoyFilter applies cluster-wide; injects `X-Gateway-Model-Name`. |
 | `llm-gateway-auth` ([`kaito-project/llm-gateway-auth`](https://github.com/kaito-project/llm-gateway-auth)) | `llm-gateway-auth` | `LLM_GATEWAY_AUTH_VERSION` | helm           | API-key ext_authz for the `inference-gateway`. Installs the `APIKey` CRD, the `apikey-operator` (reconciles `APIKey` → per-namespace Secret), and the `apikey-authz` ext_authz dataplane wired into Istio via `MeshConfig` + `AuthorizationPolicy`. |
 | KEDA + KEDA Kaito Scaler ([`kaito-project/keda-kaito-scaler`](https://github.com/kaito-project/keda-kaito-scaler), optional)  | `keda` | `KEDA_VERSION` (v2.19.0), `KEDA_KAITO_SCALER_VERSION` (v0.4.1) | helm | Workload-metric autoscaling.                                                    |
-| `model-not-found` (Deployment + ConfigMap + Service) | `default` | repo `HEAD` ([`hack/e2e/manifests/model-not-found.yaml`](hack/e2e/manifests/model-not-found.yaml)) | kubectl | Cluster-shared nginx-backed Service that returns OpenAI-compatible `404 model_not_found` JSON. Referenced cross-namespace by every workload namespace's catch-all `HTTPRoute` (authorised via a `ReferenceGrant` rendered by `charts/modelharness`). |
 
 ### Step 2. modelharness (one-time per workload namespace)
 

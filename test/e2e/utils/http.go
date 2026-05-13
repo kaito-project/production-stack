@@ -39,17 +39,6 @@ const (
 	// HTTPTimeout is the default timeout for HTTP requests.
 	// Set high to account for BBR/EPP ext_proc startup latency.
 	HTTPTimeout = 60 * time.Second
-
-	// ModelNotFoundNamespace is the namespace that hosts the cluster-shared
-	// `model-not-found` Deployment + Service installed once per cluster by
-	// hack/e2e/scripts/install-components.sh. Every workload namespace's
-	// catch-all HTTPRoute (rendered by charts/modelharness) forwards
-	// unmatched requests here via a cross-namespace ReferenceGrant.
-	ModelNotFoundNamespace = "default"
-
-	// ModelNotFoundPodLabel is the label selector used to list the
-	// model-not-found Pods (e.g. when scraping nginx access logs).
-	ModelNotFoundPodLabel = "app=model-not-found"
 )
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request body.
