@@ -24,11 +24,10 @@ import (
 
 // NewControllers sets up all controllers with the given manager.
 func NewControllers(mgr ctrl.Manager, cfg Config) error {
-	ncr := &NodeClaimReconciler{
+	if err := (&NodeClaimReconciler{
 		Client: mgr.GetClient(),
 		Config: cfg,
-	}
-	if err := ncr.SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create NodeClaim controller: %w", err)
 	}
 
@@ -37,17 +36,6 @@ func NewControllers(mgr ctrl.Manager, cfg Config) error {
 		Config: cfg,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create ShadowPod controller: %w", err)
-	}
-
-	if err := (&FakeNodeGCReconciler{
-		Client:           mgr.GetClient(),
-		StopLeaseRenewer: ncr.stopLeaseRenewer,
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create FakeNodeGC controller: %w", err)
-	}
-
-	if err := (&ShadowPodGCReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create ShadowPodGC controller: %w", err)
 	}
 
 	return nil

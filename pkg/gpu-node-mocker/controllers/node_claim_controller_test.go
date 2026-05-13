@@ -17,6 +17,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -304,10 +305,13 @@ func TestEnsureLease_CreatesNew(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme()
 
+	nc := &karpenterv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-test1", UID: "uid-1"},
+	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &NodeClaimReconciler{Client: cl, Config: testConfig(), cancelFuncs: make(map[string]context.CancelFunc)}
 
-	if err := r.ensureLease(ctx, "fake-ws-test1"); err != nil {
+	if err := r.ensureLease(ctx, nc, "fake-ws-test1"); err != nil {
 		t.Fatalf("ensureLease: %v", err)
 	}
 
@@ -321,6 +325,9 @@ func TestEnsureLease_CreatesNew(t *testing.T) {
 	if lease.Labels[LabelManagedBy] != ControllerName {
 		t.Errorf("label = %q", lease.Labels[LabelManagedBy])
 	}
+	if len(lease.OwnerReferences) != 1 || lease.OwnerReferences[0].Name != "ws-test1" {
+		t.Errorf("expected OwnerReference to NodeClaim ws-test1, got %v", lease.OwnerReferences)
+	}
 }
 
 func TestEnsureLease_UpdatesExisting(t *testing.T) {
@@ -333,10 +340,13 @@ func TestEnsureLease_UpdatesExisting(t *testing.T) {
 		},
 	}
 
+	nc := &karpenterv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-test1", UID: "uid-1"},
+	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existingLease).Build()
 	r := &NodeClaimReconciler{Client: cl, Config: testConfig(), cancelFuncs: make(map[string]context.CancelFunc)}
 
-	if err := r.ensureLease(ctx, "fake-ws-test1"); err != nil {
+	if err := r.ensureLease(ctx, nc, "fake-ws-test1"); err != nil {
 		t.Fatalf("ensureLease: %v", err)
 	}
 
@@ -344,6 +354,10 @@ func TestEnsureLease_UpdatesExisting(t *testing.T) {
 	_ = cl.Get(ctx, types.NamespacedName{Namespace: "kube-node-lease", Name: "fake-ws-test1"}, updated)
 	if updated.Spec.RenewTime == nil {
 		t.Error("renewTime should be set")
+	}
+	// OwnerReference should be backfilled on existing leases that lack one.
+	if len(updated.OwnerReferences) != 1 || updated.OwnerReferences[0].Name != "ws-test1" {
+		t.Errorf("expected OwnerReference backfilled to NodeClaim ws-test1, got %v", updated.OwnerReferences)
 	}
 }
 
@@ -357,8 +371,12 @@ func TestRenewLease(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(lease).Build()
 	r := &NodeClaimReconciler{Client: cl, Config: testConfig(), cancelFuncs: make(map[string]context.CancelFunc)}
 
-	if err := r.renewLease(ctx, "fake-ws-test1"); err != nil {
+	gone, err := r.renewLease(ctx, "fake-ws-test1")
+	if err != nil {
 		t.Fatalf("renewLease: %v", err)
+	}
+	if gone {
+		t.Error("renewLease should not report gone when lease exists")
 	}
 
 	updated := &coordinationv1.Lease{}
@@ -374,9 +392,13 @@ func TestRenewLease_NotFound(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &NodeClaimReconciler{Client: cl, Config: testConfig(), cancelFuncs: make(map[string]context.CancelFunc)}
 
-	// Should not error when lease doesn't exist
-	if err := r.renewLease(ctx, "nonexistent"); err != nil {
+	// Should not error when lease doesn't exist, and should report gone
+	gone, err := r.renewLease(ctx, "nonexistent")
+	if err != nil {
 		t.Fatalf("renewLease should not fail for missing lease: %v", err)
+	}
+	if !gone {
+		t.Error("renewLease should report gone when lease is not found")
 	}
 }
 
@@ -436,6 +458,38 @@ func TestEnsureLeaseRenewer_StartsOnce(t *testing.T) {
 
 	// Cleanup
 	r.stopLeaseRenewer("fake-ws-test1")
+}
+
+func TestLeaseRenewer_SelfExitsOnNotFound(t *testing.T) {
+	scheme := testScheme()
+	// No Lease object in the fake client — renewLease will return gone=true.
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &NodeClaimReconciler{
+		Client:      cl,
+		Config:      Config{LeaseDurationSec: 40, LeaseRenewIntervalSec: 1},
+		cancelFuncs: make(map[string]context.CancelFunc),
+	}
+
+	ctx := context.Background()
+	r.ensureLeaseRenewer(ctx, "fake-ws-gone")
+
+	// The goroutine should self-exit within a few seconds once it discovers
+	// the Lease is NotFound and calls stopLeaseRenewer.
+	var exited bool
+	for i := 0; i < 30; i++ {
+		time.Sleep(200 * time.Millisecond)
+		r.mu.Lock()
+		_, exists := r.cancelFuncs["fake-ws-gone"]
+		r.mu.Unlock()
+		if !exists {
+			exited = true
+			break
+		}
+	}
+	if !exited {
+		r.stopLeaseRenewer("fake-ws-gone") // cleanup
+		t.Error("lease renewer goroutine should self-exit when lease is not found")
+	}
 }
 
 func TestReconcileDelete(t *testing.T) {

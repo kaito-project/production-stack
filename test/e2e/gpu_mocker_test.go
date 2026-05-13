@@ -357,11 +357,24 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				}
 				Expect(ncName).NotTo(BeEmpty(), "fake node %q should have a NodeClaim owner reference", targetNode.Name)
 
+				By("verifying the lease has an OwnerReference to the NodeClaim")
+				lease, err := clientset.CoordinationV1().Leases("kube-node-lease").Get(ctx, targetNode.Name, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred(), "lease %q should exist", targetNode.Name)
+				var leaseOwnedByNC bool
+				for _, ref := range lease.OwnerReferences {
+					if ref.Kind == "NodeClaim" && ref.Name == ncName {
+						leaseOwnedByNC = true
+						break
+					}
+				}
+				Expect(leaseOwnedByNC).To(BeTrue(),
+					"lease %q should have an OwnerReference to NodeClaim %q", targetNode.Name, ncName)
+
 				By(fmt.Sprintf("deleting NodeClaim %q (owner of fake node %q)", ncName, targetNode.Name))
 				err = dynClient.Resource(utils.NodeClaimGVR).Delete(ctx, ncName, metav1.DeleteOptions{})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("waiting for the GC controller to delete the orphaned fake node")
+				By("waiting for Kubernetes GC to delete the orphaned fake node")
 				Eventually(func() bool {
 					_, err := clientset.CoreV1().Nodes().Get(ctx, targetNode.Name, metav1.GetOptions{})
 					return errors.IsNotFound(err)
@@ -378,37 +391,68 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 		})
 
 		Context("Shadow pod GC", func() {
-			It("should delete orphaned shadow pods when the original pod is removed", func() {
+			It("should delete shadow pods via native Kubernetes GC when the original pod is removed", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
 				ctx := context.Background()
 
-				// Find a shadow pod belonging to our case.
+				// Find a running shadow pod belonging to our case.
 				shadowPods, err := clientset.CoreV1().Pods(caseNamespace).List(ctx, metav1.ListOptions{
 					LabelSelector: "kaito.sh/managed-by=gpu-mocker",
 					FieldSelector: "status.phase=Running",
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(shadowPods.Items).NotTo(BeEmpty(), "need at least one shadow pod")
+				Expect(shadowPods.Items).NotTo(BeEmpty(), "need at least one running shadow pod")
 
 				shadow := shadowPods.Items[0]
 
-				// Resolve the original pod reference from annotation.
+				By("verifying shadow pod has an OwnerReference to the original pod")
+				Expect(shadow.OwnerReferences).NotTo(BeEmpty(),
+					"shadow pod %q should have OwnerReferences", shadow.Name)
+				var ownerPodName, ownerPodNS string
+				for _, ref := range shadow.OwnerReferences {
+					if ref.Kind == "Pod" {
+						ownerPodName = ref.Name
+						break
+					}
+				}
+				Expect(ownerPodName).NotTo(BeEmpty(),
+					"shadow pod %q should have an OwnerReference of kind Pod", shadow.Name)
+
+				// Resolve the original pod namespace from annotation.
 				ref, ok := shadow.Annotations["kaito.sh/original-pod"]
 				Expect(ok).To(BeTrue(), "shadow pod %q should have kaito.sh/original-pod annotation", shadow.Name)
 				parts := strings.SplitN(ref, "/", 2)
 				Expect(parts).To(HaveLen(2), "annotation should be namespace/name")
-				originalNS, originalName := parts[0], parts[1]
+				ownerPodNS = parts[0]
 
-				By(fmt.Sprintf("deleting original pod %s/%s (referenced by shadow %q)", originalNS, originalName, shadow.Name))
-				err = clientset.CoreV1().Pods(originalNS).Delete(ctx, originalName, metav1.DeleteOptions{})
+				// Record the shadow pod's UID so we can detect GC even if
+				// the InferenceSet controller recreates the original pod
+				// (and the ShadowPodReconciler in turn creates a new shadow
+				// pod with the same deterministic name).
+				oldShadowUID := shadow.UID
+
+				By(fmt.Sprintf("deleting original pod %s/%s (owner of shadow %q)", ownerPodNS, ownerPodName, shadow.Name))
+				err = clientset.CoreV1().Pods(ownerPodNS).Delete(ctx, ownerPodName, metav1.DeleteOptions{})
 				Expect(err).NotTo(HaveOccurred())
 
-				By("waiting for the GC controller to delete the orphaned shadow pod")
+				By("waiting for Kubernetes GC to delete the orphaned shadow pod")
+				// The InferenceSet controller may recreate the original pod
+				// after deletion. When that happens the ShadowPodReconciler
+				// creates a new shadow pod with the same name but a different
+				// UID (proving the old one was GC'd). Accept either outcome:
+				//   - NotFound  → GC'd and not yet recreated
+				//   - New UID   → GC'd and already recreated for the new original pod
 				Eventually(func() bool {
-					_, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, shadow.Name, metav1.GetOptions{})
-					return errors.IsNotFound(err)
+					current, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, shadow.Name, metav1.GetOptions{})
+					if errors.IsNotFound(err) {
+						return true // shadow pod was deleted by GC
+					}
+					if err != nil {
+						return false
+					}
+					return current.UID != oldShadowUID // recreated with a new UID ⇒ old one was GC'd
 				}, 2*time.Minute, 5*time.Second).Should(BeTrue(),
 					"shadow pod %q should be garbage collected after original pod deletion", shadow.Name)
 			})

@@ -117,7 +117,7 @@ func (r *NodeClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Ensure Lease and background renewal
-	if err := r.ensureLease(ctx, nodeName); err != nil {
+	if err := r.ensureLease(ctx, nc, nodeName); err != nil {
 		log.Error(err, "failed to ensure node lease")
 		return ctrl.Result{}, err
 	}
@@ -352,7 +352,7 @@ func (r *NodeClaimReconciler) ensureNodeClaimReady(ctx context.Context, nc *karp
 // ensureLease creates (or updates) a kube-node-lease Lease for nodeName.
 // The Lease is what the node-lifecycle-controller inspects; without a
 // sufficiently recent renewTime the node transitions to Unknown.
-func (r *NodeClaimReconciler) ensureLease(ctx context.Context, nodeName string) error {
+func (r *NodeClaimReconciler) ensureLease(ctx context.Context, nc *karpenterv1.NodeClaim, nodeName string) error {
 	now := metav1.NewMicroTime(time.Now())
 	holderID := controllerName(nodeName)
 
@@ -367,6 +367,12 @@ func (r *NodeClaimReconciler) ensureLease(ctx context.Context, nodeName string) 
 					LabelManagedBy: ControllerName,
 					LabelFakeNode:  "true",
 				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "karpenter.sh/v1",
+					Kind:       "NodeClaim",
+					Name:       nc.Name,
+					UID:        nc.UID,
+				}},
 			},
 			Spec: coordinationv1.LeaseSpec{
 				HolderIdentity:       &holderID,
@@ -384,11 +390,27 @@ func (r *NodeClaimReconciler) ensureLease(ctx context.Context, nodeName string) 
 		return fmt.Errorf("get lease: %w", err)
 	}
 
-	// Lease already exists — just ensure our fields are current.
+	// Lease already exists — ensure our fields are current.
 	patch := client.MergeFrom(lease.DeepCopy())
 	lease.Spec.HolderIdentity = &holderID
 	lease.Spec.LeaseDurationSeconds = ptr.To(r.Config.LeaseDurationSec)
 	lease.Spec.RenewTime = &now
+	// Backfill OwnerReference for leases created before this change.
+	hasRef := false
+	for _, ref := range lease.OwnerReferences {
+		if ref.Kind == "NodeClaim" && ref.Name == nc.Name {
+			hasRef = true
+			break
+		}
+	}
+	if !hasRef {
+		lease.OwnerReferences = append(lease.OwnerReferences, metav1.OwnerReference{
+			APIVersion: "karpenter.sh/v1",
+			Kind:       "NodeClaim",
+			Name:       nc.Name,
+			UID:        nc.UID,
+		})
+	}
 	if patchErr := r.Patch(ctx, lease, patch); patchErr != nil {
 		return fmt.Errorf("patch lease: %w", patchErr)
 	}
@@ -418,8 +440,14 @@ func (r *NodeClaimReconciler) ensureLeaseRenewer(parentCtx context.Context, node
 				log.Info("lease renewer stopped")
 				return
 			case <-ticker.C:
-				if err := r.renewLease(renewCtx, nodeName); err != nil {
+				gone, err := r.renewLease(renewCtx, nodeName)
+				if err != nil {
 					log.Error(err, "failed to renew lease — will retry next tick")
+				}
+				if gone {
+					log.Info("lease not found, stopping renewer")
+					r.stopLeaseRenewer(nodeName)
+					return
 				}
 			}
 		}
@@ -437,22 +465,26 @@ func (r *NodeClaimReconciler) stopLeaseRenewer(nodeName string) {
 }
 
 // renewLease patches the renewTime on the kube-node-lease Lease.
-func (r *NodeClaimReconciler) renewLease(ctx context.Context, nodeName string) error {
+// It returns true if the Lease was not found, signalling the caller to stop.
+func (r *NodeClaimReconciler) renewLease(ctx context.Context, nodeName string) (gone bool, err error) {
 	lease := &coordinationv1.Lease{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: "kube-node-lease", Name: nodeName}, lease); err != nil {
 		if errors.IsNotFound(err) {
-			return nil // node already cleaned up
+			return true, nil
 		}
-		return fmt.Errorf("get lease for renew: %w", err)
+		return false, fmt.Errorf("get lease for renew: %w", err)
 	}
 
 	patch := client.MergeFrom(lease.DeepCopy())
 	now := metav1.NewMicroTime(time.Now())
 	lease.Spec.RenewTime = &now
 	if err := r.Patch(ctx, lease, patch); err != nil {
-		return fmt.Errorf("patch renewTime: %w", err)
+		if errors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("patch renewTime: %w", err)
 	}
-	return nil
+	return false, nil
 }
 
 // fakeNodeName derives the fake Node name from the NodeClaim.
