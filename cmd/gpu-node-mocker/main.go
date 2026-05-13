@@ -110,6 +110,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	if leaseRenewIntervalSec <= 0 {
+		setupLog.Error(nil, "--lease-renew-interval-seconds must be > 0")
+		os.Exit(1)
+	}
+	if leaseDurationSec <= 0 {
+		setupLog.Error(nil, "--lease-duration-seconds must be > 0")
+		os.Exit(1)
+	}
+
 	cfg := controllers.Config{
 		ShadowPodImage:        shadowPodImage,
 		UDSTokenizerImage:     udsTokenizerImage,
