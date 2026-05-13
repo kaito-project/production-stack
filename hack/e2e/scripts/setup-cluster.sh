@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# setup-cluster.sh — Create an AKS cluster + ACR for E2E testing.
+# setup-cluster.sh — Create an AKS cluster for E2E testing.
+#
+# Prerequisite: the resource group and ACR must already exist (created by
+# `prepare-image.sh` or the CI "Prepare gpu-node-mocker image" step). This
+# script intentionally only creates the AKS cluster so its wall time can be
+# measured in isolation.
 #
 # Environment variables (all required unless defaults are acceptable):
 #   RESOURCE_GROUP   — Azure resource group name  (default: kaito-rg)
@@ -9,9 +14,6 @@
 #   LOCATION         — Azure region               (default: australiaeast)
 #   NODE_COUNT       — Number of worker nodes      (default: 2)
 #   NODE_VM_SIZE     — VM SKU for the node pool    (default: Standard_D8s_v5)
-#
-# Outputs (exported for use by install-components.sh):
-#   ACR_LOGIN_SERVER — e.g. kaitoaksacr.azurecr.io
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -85,21 +87,6 @@ case "${E2E_PROVIDER}" in
     ;;
 esac
 
-echo "=== Creating resource group ${RESOURCE_GROUP} in ${LOCATION} ==="
-az group create \
-  --name "${RESOURCE_GROUP}" \
-  --location "${LOCATION}"
-
-echo "=== Creating ACR ${ACR_NAME} ==="
-az acr create \
-  --resource-group "${RESOURCE_GROUP}" \
-  --name "${ACR_NAME}" \
-  --sku Basic
-
-ACR_LOGIN_SERVER=$(az acr show --name "${ACR_NAME}" --query loginServer -o tsv)
-export ACR_LOGIN_SERVER
-echo "ACR login server: ${ACR_LOGIN_SERVER}"
-
 echo "=== Creating AKS cluster ${CLUSTER_NAME} (provider=${E2E_PROVIDER}) ==="
 az aks create \
   --resource-group "${RESOURCE_GROUP}" \
@@ -127,6 +114,5 @@ kubectl wait --for=condition=ready nodes --all --timeout=300s
 
 echo ""
 echo "✅ AKS cluster ${CLUSTER_NAME} is ready."
-echo "   ACR: ${ACR_LOGIN_SERVER}"
 echo ""
 kubectl get nodes -o wide

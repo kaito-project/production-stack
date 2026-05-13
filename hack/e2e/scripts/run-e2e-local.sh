@@ -4,7 +4,7 @@
 #
 # Usage:
 #   hack/e2e/scripts/run-e2e-local.sh           # full cycle: setup → install → validate → test → teardown
-#   hack/e2e/scripts/run-e2e-local.sh setup      # only create cluster + build images
+#   hack/e2e/scripts/run-e2e-local.sh setup      # only create AKS cluster (RG+ACR must already exist; run prepare-image.sh first)
 #   hack/e2e/scripts/run-e2e-local.sh install     # only install components (cluster must exist)
 #   hack/e2e/scripts/run-e2e-local.sh validate    # only validate components
 #   hack/e2e/scripts/run-e2e-local.sh test        # only run Go e2e tests
@@ -109,21 +109,6 @@ cleanup() {
   exit "${exit_code}"
 }
 
-CONTAINER_TOOL="${CONTAINER_TOOL:-$(command -v podman 2>/dev/null || command -v docker 2>/dev/null || true)}"
-
-require_container_tool() {
-  if [[ -z "${CONTAINER_TOOL}" ]]; then
-    echo "Error: neither 'docker' nor 'podman' found in PATH." >&2
-    echo "Install Docker (e.g. 'sudo apt-get install docker.io') or set CONTAINER_TOOL." >&2
-    exit 1
-  fi
-  if ! "${CONTAINER_TOOL}" info &>/dev/null; then
-    echo "Error: '${CONTAINER_TOOL}' is installed but the daemon is not running." >&2
-    echo "Start it with: sudo systemctl start $(basename "${CONTAINER_TOOL}")" >&2
-    exit 1
-  fi
-}
-
 # ── Step-level timing ─────────────────────────────────────────────────────
 # Tracks wall-clock per top-level do_<step> invocation so we can spot the
 # real bottleneck (cluster create vs. image build vs. component install vs.
@@ -162,23 +147,6 @@ print_step_timings() {
   echo "=================================================================="
 }
 
-derive_acr() {
-  ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
-  ACR_LOGIN_SERVER=$(az acr show --name "${ACR_NAME}" --query loginServer -o tsv)
-  export ACR_LOGIN_SERVER
-  export SHADOW_CONTROLLER_IMAGE="${ACR_LOGIN_SERVER}/gpu-node-mocker:latest"
-}
-
-do_build_push() {
-  require_container_tool
-  derive_acr
-  echo "=== Building and pushing image to ACR (${ACR_NAME}) ==="
-  TOKEN=$(az acr login --name "${ACR_NAME}" --expose-token --query accessToken -o tsv)
-  echo "${TOKEN}" | "${CONTAINER_TOOL}" login "${ACR_LOGIN_SERVER}" --username 00000000-0000-0000-0000-000000000000 --password-stdin
-  "${CONTAINER_TOOL}" build --platform linux/amd64 -f "${REPO_ROOT}/docker/Dockerfile" -t "${SHADOW_CONTROLLER_IMAGE}" "${REPO_ROOT}"
-  "${CONTAINER_TOOL}" push "${SHADOW_CONTROLLER_IMAGE}"
-}
-
 do_setup() {
   echo "=== Setting up cluster ==="
   "${SCRIPT_DIR}/setup-cluster.sh"
@@ -186,7 +154,8 @@ do_setup() {
 
 do_install() {
   if [[ -z "${SHADOW_CONTROLLER_IMAGE:-}" ]]; then
-    derive_acr
+    echo "❌ SHADOW_CONTROLLER_IMAGE is not set. Run prepare-image.sh first and export the resulting image= value." >&2
+    exit 1
   fi
   echo "=== Installing components ==="
   "${SCRIPT_DIR}/install-components.sh"
@@ -216,7 +185,6 @@ do_teardown() {
 
 case "${STEP}" in
   setup)      time_step setup      do_setup ;;
-  build-push) time_step build-push do_build_push ;;
   install)    time_step install    do_install ;;
   validate)   time_step validate   do_validate ;;
   test)       time_step test       do_test ;;

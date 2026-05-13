@@ -143,11 +143,18 @@ runs:
       shell: bash
       run: az login --identity
 
-    - name: Build gpu-node-mocker image
+    - name: Prepare gpu-node-mocker image
+      id: image
       shell: bash
       env:
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        CLUSTER_NAME: ${{ inputs.cluster-name }}
+        ACR_NAME: ${{ inputs.acr-name }}
+        LOCATION: ${{ inputs.location }}
         IMG: ${{ inputs.gpu-mocker-image }}
-      run: make docker-build
+      run: |
+        OUTPUT=$(make e2e-prepare-image)
+        echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
 
     - name: Setup cluster
       shell: bash
@@ -159,16 +166,6 @@ runs:
         NODE_COUNT: ${{ inputs.node-count }}
         NODE_VM_SIZE: ${{ inputs.node-vm-size }}
       run: make e2e-setup
-
-    - name: Push gpu-node-mocker image
-      id: image
-      shell: bash
-      env:
-        ACR_NAME: ${{ inputs.acr-name }}
-        GPU_MOCKER_IMAGE: ${{ inputs.gpu-mocker-image }}
-      run: |
-        OUTPUT=$(make e2e-push-image)
-        echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
 
     - name: Install components
       shell: bash
