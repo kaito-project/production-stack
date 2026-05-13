@@ -25,7 +25,7 @@ This project evaluates a production inference stack built on top of existing OSS
 2. **Gateway → ext-proc filters.** `llm-gateway-auth` validates the token; BBR parses the body and injects `X-Gateway-Model-Name`.
 3. **Gateway → EPP.** The per-deployment `HTTPRoute` matches the model name and calls `llm-d-inference-scheduler`, which returns the target pod via `x-gateway-destination-endpoint`.
 4. **Gateway → vLLM Pod.** Envoy forwards the request directly to the chosen inference pod; the response streams back along the reverse path.
-5. **Unmatched models.** The namespace's catch-all `HTTPRoute` returns an OpenAI-compatible `404 model_not_found` from the cluster-shared `default/model-not-found` Service.
+5. **Unmatched models.** The namespace's `model-not-found-direct` `EnvoyFilter` (rendered by `charts/modelharness`) patches a catch-all `direct_response` onto the Gateway's HCM, returning an OpenAI-compatible `404 model_not_found` directly from Envoy with no backend Pod / Service / `ReferenceGrant`. The catch-all is also required to keep API-key ext_authz running on unknown-model requests (Istio's CUSTOM `AuthorizationPolicy` is gated on metadata written during route matching).
 
 #### Scaling flow
 
@@ -52,36 +52,36 @@ namespaces and are shared by every model deployment:
 | Istio control plane (`istiod`)       | `istio-system`   | `ISTIO_VERSION` (1.29.2)                | istioctl       | Implements the Gateway dataplane (Envoy) and ext_proc filter chain.                   |
 | GAIE CRDs                            | _cluster-scoped_ | latest                                  | kubectl        | `InferencePool`, `InferenceObjective`.                                                |
 | BBR (Body-Based Router)              | `istio-system`   | `BBR_VERSION` (v1.3.1)                  | helm           | Installed in Istio's rootNamespace so its EnvoyFilter applies cluster-wide; injects `X-Gateway-Model-Name`. |
-| `llm-gateway-auth` ([`kaito-project/llm-gateway-auth`](https://github.com/kaito-project/llm-gateway-auth)) | `llm-gateway-auth` | `LLM_GATEWAY_AUTH_VERSION` | helm           | API-key ext_authz for the `inference-gateway`. Installs the `APIKey` CRD, the `apikey-operator` (reconciles `APIKey` → per-namespace Secret), and the `apikey-authz` ext_authz dataplane wired into Istio via `MeshConfig` + `AuthorizationPolicy`. |
-| KEDA + KEDA Kaito Scaler ([`kaito-project/keda-kaito-scaler`](https://github.com/kaito-project/keda-kaito-scaler), optional)  | `keda` | `KEDA_VERSION` (v2.19.0), `KEDA_KAITO_SCALER_VERSION` (v0.4.1) | helm | Workload-metric autoscaling.                                                    |
+| `llm-gateway-auth` ([`kaito-project/llm-gateway-auth`](https://github.com/kaito-project/llm-gateway-auth)) | `llm-gateway-auth` | `LLM_GATEWAY_AUTH_VERSION` (0.0.7-alpha) | helm           | API-key ext_authz for the `inference-gateway`. Installs the `APIKey` CRD, the `apikey-operator` (reconciles `APIKey` → per-namespace Secret), and the `apikey-authz` ext_authz dataplane wired into Istio via `MeshConfig` + `AuthorizationPolicy`. |
+| KEDA + KEDA Kaito Scaler ([`kaito-project/keda-kaito-scaler`](https://github.com/kaito-project/keda-kaito-scaler), optional)  | `keda` (or `kube-system` when `E2E_PROVIDER=azure`) | `KEDA_VERSION` (v2.19.0), `KEDA_KAITO_SCALER_VERSION` (v0.5.1) | helm | Workload-metric autoscaling. With `E2E_PROVIDER=azure`, KEDA is provided by the AKS managed add-on in `kube-system` and the keda-kaito-scaler chart is installed alongside it. |
 
 ### Step 2. modelharness (one-time per workload namespace)
 
 Provisioned by the [`charts/modelharness`](charts/modelharness) Helm
 chart. One Helm release per workload namespace owns every per-namespace
 shared resource — the Istio `Gateway` that fronts the namespace, the
-catch-all `HTTPRoute` (forwards unknown-model requests to the
-cluster-shared `default/model-not-found` Service), the
-`ReferenceGrant` authorising that cross-namespace `backendRef`, and —
-when API-key auth is enabled — the per-namespace `AuthorizationPolicy`
-+ `APIKey` CR that wire that Gateway into the cluster-wide
-`apikey-ext-authz` CUSTOM provider. A namespace may host one or more
-model deployments, all of which share its Gateway:
+catch-all `EnvoyFilter` (`model-not-found-direct`) that returns an
+OpenAI-compatible 404 for unknown models directly from Envoy, and —
+when enabled — the per-namespace `AuthorizationPolicy` + `APIKey` CR
+that wire that Gateway into the cluster-wide `apikey-ext-authz` CUSTOM
+provider, plus optional `NetworkPolicy` resources that lock down
+East-West ingress to inference workloads. A namespace may host one or
+more model deployments, all of which share its Gateway:
 
 | Resource                                                       | Where                     | Version                | Source                                | Role                                                                                                                                       |
 | -------------------------------------------------------------- | ------------------------- | ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `Gateway` (`gateway.networking.k8s.io/v1`)                     | Per namespace             | API `v1`               | `charts/modelharness`                 | Public entry point; `gatewayClassName: istio`, HTTP/80.                                                                                    |
-| Catch-all `HTTPRoute` `model-not-found-route`                  | Per namespace             | API `v1`               | `charts/modelharness`                 | Forwards unmatched paths on the namespace's Gateway to the cluster-shared `default/model-not-found` Service via a cross-namespace `backendRef`. |
-| `ReferenceGrant` `allow-model-not-found-from-<ns>`             | `default`                 | API `v1beta1`          | `charts/modelharness`                 | Authorises the per-namespace catch-all `HTTPRoute` to reference `default/model-not-found` across namespaces.                                |
+| Catch-all `EnvoyFilter` `model-not-found-direct`               | Per namespace             | `networking.istio.io/v1alpha3` | `charts/modelharness`         | Patches a `direct_response` onto the namespace Gateway's HCM, returning an OpenAI 404 for any path not matched by a deployment-specific `HTTPRoute`. Required to keep API-key ext_authz running on unknown-model requests. |
 | `AuthorizationPolicy` `apikey-gateway-ext-authz` (auth-enabled) | Per namespace             | `security.istio.io/v1` | `charts/modelharness` (`auth.enabled`) | Wires the per-namespace Gateway pod into the cluster-wide `apikey-ext-authz` CUSTOM provider (registered in `MeshConfig` by `llm-gateway-auth`). |
 | `APIKey` `default` (auth-enabled)                              | Per namespace             | `apikeys.kaito.sh/v1alpha1` | `charts/modelharness` (`auth.enabled`) | Triggers the `apikey-operator` to reconcile a Secret (`llm-api-key`) holding the bearer token clients send.                                 |
+| `NetworkPolicy` `default-deny-ingress` + `allow-inference-traffic` (network-policy enabled) | Per namespace | `networking.k8s.io/v1` | `charts/modelharness` (`networkPolicy.enabled`) | Denies all ingress to non-gateway pods, then re-permits intra-namespace ingress so EPP can reach vLLM/shadow pods. Cross-namespace ingress can be opened via `networkPolicy.allowedIngressNamespaces` (e.g. `keda` for the keda-kaito-scaler). |
 
 In the E2E suite the chart is installed and uninstalled by
 [`EnsureNamespace` / `DeleteNamespace`](test/e2e/utils/setup.go) (called
 from `InstallCase` / `UninstallCase` in
-[`cases.go`](test/e2e/cases.go)). `helm uninstall modelharness` cleans
-up the cross-namespace `ReferenceGrant` automatically. The two
-auth-related resources are skipped when `auth.enabled=false`.
+[`cases.go`](test/e2e/cases.go)). The auth- and network-policy-related
+resources are skipped when `auth.enabled=false` /
+`networkPolicy.enabled=false`.
 
 ### Step 3. modeldeployment (per model deployment)
 
@@ -111,15 +111,14 @@ implementation details of the charts above and are not listed here.
 | Resource (Kind) | Group / Version | Source | Purpose |
 | --- | --- | --- | --- |
 | `Workspace` | `kaito.sh/v1alpha1` | KAITO | Aggregates inference workloads (used indirectly via `InferenceSet`). |
-| `InferenceSet` | `kaito.sh/v1alpha1` | KAITO | Declares one model deployment; KAITO renders inference pods. |cluster-shared `default/model-not-found` for an OpenAI 404. |
-| `ReferenceGrant` | `gateway.networking.k8s.io/v1beta1` | Kubernetes Gateway API | Authorises each workload namespace's catch-all `HTTPRoute` to reference the cluster-shared `default/model-not-found` Service
+| `InferenceSet` | `kaito.sh/v1alpha1` | KAITO | Declares one model deployment; KAITO renders inference pods. |
 | `InferencePool` | `inference.networking.k8s.io/v1` | Gateway API Inference Extension (GAIE) | GAIE pool selecting the inference pods backing a deployment. |
 | `InferenceObjective` | `inference.networking.k8s.io/v1` | Gateway API Inference Extension (GAIE) | API object defining objective contracts; CRD only — not authored by this stack. |
 | `APIKey` | `apikeys.kaito.sh/v1alpha1` | [`kaito-project/llm-gateway-auth`](https://github.com/kaito-project/llm-gateway-auth) | Declares an API key for a gateway namespace; the `apikey-operator` reconciles it into a `Secret` (`llm-api-key` by default) consumed by the `apikey-authz` ext_authz filter. |
 | `Gateway` | `gateway.networking.k8s.io/v1` | Kubernetes Gateway API | Per-namespace public entry point; `gatewayClassName: istio`, HTTP/80. |
-| `HTTPRoute` | `gateway.networking.k8s.io/v1` | Kubernetes Gateway API | Model-specific routes match `X-Gateway-Model-Name == <name>` → InferencePool; per-namespace catch-all routes unmatched paths to the namespace-local `model-not-found` for an OpenAI 404. |
-| `EnvoyFilter` | `networking.istio.io/v1alpha3` | Istio | BBR injects ext_proc into every Istio Gateway via rootNamespace. |
-| `AuthorizationPolicy` | `security.istio.io/v1` | Istio (rendered by `llm-gateway-auth`) | Targets the `inference-gateway` Pod and routes ext_authz to the `apikey-authz` provider so every request must carry a valid `APIKey`-derived bearer token. |
+| `HTTPRoute` | `gateway.networking.k8s.io/v1` | Kubernetes Gateway API | Per-deployment routes match `X-Gateway-Model-Name == <name>` and forward to the deployment's `InferencePool`. |
+| `EnvoyFilter` | `networking.istio.io/v1alpha3` | Istio | BBR injects ext_proc into every Istio Gateway via rootNamespace. `charts/modelharness` also renders the per-namespace `model-not-found-direct` filter, which patches an OpenAI 404 `direct_response` onto the namespace Gateway's HCM as the catch-all for unknown models. |
+| `AuthorizationPolicy` | `security.istio.io/v1` | Istio (rendered by `llm-gateway-auth` + `charts/modelharness`) | `llm-gateway-auth` targets the cluster-wide `inference-gateway`; `charts/modelharness` renders a per-namespace `apikey-gateway-ext-authz` policy that wires each workload namespace's Gateway pod into the `apikey-ext-authz` CUSTOM provider. |
 
 ## Testing
 
