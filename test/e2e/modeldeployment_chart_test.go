@@ -154,10 +154,14 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 			Expect(ok).To(BeTrue())
 			Expect(parentRef["name"]).To(Equal(gatewayName))
 
-			// Verify the HTTPRoute matches the deploymentName in the
-			// X-Gateway-Model-Name header (this is what user requests carry
-			// in their `model` field). Multiple deployments of the same
-			// preset can coexist in a namespace under distinct deploymentNames.
+			// Verify the HTTPRoute matches the deploymentName in either the
+			// X-Gateway-Model-Name header (BBR-injected routed-model header,
+			// what user requests carry in their `model` field) or the
+			// X-Gateway-Base-Model-Name header (used for adapter / LoRA
+			// requests where the client-visible model differs from the
+			// underlying base). The two match entries are OR'd by Gateway
+			// API semantics. Multiple deployments of the same preset can
+			// coexist in a namespace under distinct deploymentNames.
 			rules, found, _ := unstructured.NestedSlice(hr.Object, "spec", "rules")
 			Expect(found).To(BeTrue())
 			Expect(rules).To(HaveLen(1))
@@ -165,15 +169,18 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 			Expect(ok).To(BeTrue())
 			matches, ok := rule["matches"].([]interface{})
 			Expect(ok).To(BeTrue())
-			Expect(matches).To(HaveLen(1))
-			match := matches[0].(map[string]interface{})
-			headers, ok := match["headers"].([]interface{})
-			Expect(ok).To(BeTrue())
-			Expect(headers).To(HaveLen(1))
-			header := headers[0].(map[string]interface{})
-			Expect(header["name"]).To(Equal("X-Gateway-Model-Name"))
-			Expect(header["value"]).To(Equal(deploymentName),
-				"HTTPRoute header match value should equal the deploymentName, not the preset")
+			Expect(matches).To(HaveLen(2))
+			expectedHeaderNames := []string{"X-Gateway-Model-Name", "X-Gateway-Base-Model-Name"}
+			for i, expectedName := range expectedHeaderNames {
+				match := matches[i].(map[string]interface{})
+				headers, ok := match["headers"].([]interface{})
+				Expect(ok).To(BeTrue())
+				Expect(headers).To(HaveLen(1))
+				header := headers[0].(map[string]interface{})
+				Expect(header["name"]).To(Equal(expectedName))
+				Expect(header["value"]).To(Equal(deploymentName),
+					"HTTPRoute header match value should equal the deploymentName, not the preset")
+			}
 
 			backendRefs, ok := rule["backendRefs"].([]interface{})
 			Expect(ok).To(BeTrue())

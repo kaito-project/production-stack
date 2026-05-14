@@ -1,0 +1,15 @@
+Body-Based Router (BBR) installed cluster-wide.
+
+  Release          : {{ .Release.Name }}
+  Namespace        : {{ .Release.Namespace }}
+  Service          : {{ .Values.bbr.name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.bbr.port }}
+  Provider         : {{ .Values.provider.name }}
+  Secure serving   : {{ .Values.bbr.secureServing }}
+{{- if eq .Values.provider.name "istio" }}
+  Filter operation : {{ .Values.provider.istio.envoyFilter.operation }}{{ if .Values.provider.istio.envoyFilter.anchorSubFilter }} (anchor: {{ .Values.provider.istio.envoyFilter.anchorSubFilter }}){{ end }}
+
+  The rendered EnvoyFilter has NO targetRefs and is scoped to
+  `match.context: GATEWAY`, so it attaches to every Istio-managed
+  Gateway in the mesh. Per-namespace Gateways therefore see BBR
+  automatically — no extra wiring needed per workload namespace.
+{{- end }}

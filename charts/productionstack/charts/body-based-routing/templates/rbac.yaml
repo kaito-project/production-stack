@@ -1,0 +1,42 @@
+# Cluster-wide ConfigMap watch.
+#
+# BBR is deployed as a CLUSTER-WIDE singleton in Istio's root namespace,
+# while the LoRA-adapter → base-model ConfigMaps consumed by the
+# default `base-model-to-header` plugin live in workload namespaces
+# alongside each model deployment. The controller-runtime cache MUST
+# therefore watch ConfigMaps cluster-wide; a namespace-scoped Role
+# would leave the adapters store empty and silently break
+# adapter-aware routing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.bbr.name }}-{{ .Release.Name }}-configmap-reader
+  labels:
+    {{- include "bbr.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.bbr.name }}-{{ .Release.Name }}-configmap-reader
+  labels:
+    {{- include "bbr.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "bbr.serviceAccountName" . }}
+    namespace: {{ include "bbr.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.bbr.name }}-{{ .Release.Name }}-configmap-reader
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "bbr.serviceAccountName" . }}
+  namespace: {{ include "bbr.namespace" . }}
+  labels:
+    {{- include "bbr.labels" . | nindent 4 }}

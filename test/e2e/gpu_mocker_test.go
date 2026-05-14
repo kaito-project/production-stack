@@ -339,15 +339,40 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 				ctx := context.Background()
 
-				// Find a fake node belonging to our case.
-				nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
-					LabelSelector: "kaito.sh/fake-node=true,kaito.sh/managed-by=gpu-mocker",
+				// Find a fake node hosting one of THIS case's original pods.
+				// Fake nodes are cluster-scoped, so picking any fake node by
+				// label alone (kaito.sh/fake-node=true) can target a node that
+				// belongs to a different test case running in parallel — the
+				// subsequent NodeClaim deletion would then disrupt that case's
+				// pods (e.g. evicting a routing-phi inference pod) and surface
+				// as flaky failures in unrelated specs (load distribution,
+				// shadow pod GC). Scoping the target to a node that hosts a
+				// pod in caseNamespace guarantees isolation between cases.
+				deploymentName := caseDeployments[0].Name
+				pods, err := clientset.CoreV1().Pods(caseNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", deploymentName),
 				})
 				Expect(err).NotTo(HaveOccurred())
-				Expect(nodes.Items).NotTo(BeEmpty(), "need at least one fake node")
+				Expect(pods.Items).NotTo(BeEmpty(),
+					"need at least one original pod in %s for deployment %q", caseNamespace, deploymentName)
 
-				// Pick the first fake node and find its owning NodeClaim.
-				targetNode := nodes.Items[0]
+				var targetNodeName string
+				for _, p := range pods.Items {
+					if strings.HasPrefix(p.Spec.NodeName, "fake-") {
+						targetNodeName = p.Spec.NodeName
+						break
+					}
+				}
+				Expect(targetNodeName).NotTo(BeEmpty(),
+					"no original pod for %q is scheduled on a fake- node yet", deploymentName)
+
+				targetNode, err := clientset.CoreV1().Nodes().Get(ctx, targetNodeName, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred(), "fake node %q should exist", targetNodeName)
+				Expect(targetNode.Labels).To(HaveKeyWithValue("kaito.sh/fake-node", "true"),
+					"node %q should be a fake node", targetNodeName)
+				Expect(targetNode.Labels).To(HaveKeyWithValue("kaito.sh/managed-by", "gpu-mocker"),
+					"node %q should be managed by gpu-mocker", targetNodeName)
+
 				var ncName string
 				for _, ref := range targetNode.OwnerReferences {
 					if ref.Kind == "NodeClaim" {

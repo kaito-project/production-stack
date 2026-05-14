@@ -20,7 +20,8 @@ Why a catch-all is REQUIRED (and not just a UX nicety):
   of model name. Removing this template re-opens that bypass.
 
 The patch is anchored to BBR's filter name as a `subFilter` so it
-attaches to the same HCM that `install_bbr` injects BBR into. The
+attaches to the same HCM that the productionstack umbrella chart's
+`body-based-routing` subchart injects BBR into. The
 `workloadSelector` scopes it to this namespace's Gateway pod only.
 */}}
 apiVersion: networking.istio.io/v1alpha3
