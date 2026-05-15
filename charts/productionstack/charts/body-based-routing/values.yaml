@@ -1,0 +1,153 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# body-based-routing chart values.
+#
+# Design intent for this fork:
+#   1. BBR is a CLUSTER-WIDE singleton. Install once into Istio's root
+#      namespace (istio-system) and all Istio-managed Gateways across
+#      every workload namespace consume it via a single EnvoyFilter.
+#      See README.md for the rationale (and trade-off analysis vs the
+#      per-namespace alternative).
+#
+#   2. BBR is launched in INSECURE serving mode (--secure-serving=false)
+#      so the ext_proc gRPC listener speaks plaintext HTTP/2. Istio's
+#      EnvoyFilter wires the upstream cluster as a plain HTTP/2
+#      `outbound|<port>||body-based-router.istio-system.svc.cluster.local`
+#      with no upstream TLS and no DestinationRule, eliminating the
+#      self-signed-cert handshake hop on every inference request.
+#
+#   3. The Envoy HTTP filter chain order on every inference Gateway is:
+#         ext_authz  →  bbr  →  router (HTTPRoute match → epp / not-found)
+#      To enforce that order, BBR's EnvoyFilter is inserted AFTER the
+#      Istio CUSTOM ext_authz filter (anchorSubFilter below). The
+#      llm-gateway-apikey chart MUST be installed before this chart so
+#      the anchor filter exists; otherwise the patch silently no-ops
+#      and BBR will never run.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Install namespace for every namespaced resource rendered by this
+# chart (Deployment, Service, ServiceAccount, RBAC, EnvoyFilter,
+# optional DestinationRule). Also drives the upstream cluster FQDN
+# (`<svc>.<ns>.svc.cluster.local`) baked into the rendered EnvoyFilter.
+# Empty string ⇒ inherit the Helm release namespace (standard Helm
+# behavior).
+#
+# Set this when the chart is consumed as a subchart of an umbrella
+# release installed into a different namespace than where BBR must
+# actually run. BBR MUST live in Istio's root namespace
+# (`istio-system`) so the cluster-wide EnvoyFilter is visible to every
+# Istio-managed Gateway, so pin this to `istio-system` whenever the
+# umbrella release lives elsewhere. The target namespace MUST already
+# exist — Helm only auto-creates the release namespace.
+namespaceOverride: ""
+
+bbr:
+  # Singleton Deployment + Service name. Kept identical to the upstream
+  # default so any tooling that hard-codes `body-based-router` (the
+  # upstream chart's default) continues to work.
+  name: body-based-router
+
+  # One replica is sufficient. BBR is stateless and per-request work is
+  # cheap (regex/JSON field extraction); the bottleneck is the gateway
+  # data plane, not BBR. Bump this if you need HA.
+  replicas: 1
+
+  image:
+    registry: us-central1-docker.pkg.dev/k8s-staging-images
+    repository: gateway-api-inference-extension/bbr
+    tag: v1.5.0
+    pullPolicy: Always
+
+  # ext_proc gRPC port. Must match the cluster_name port in the
+  # rendered EnvoyFilter (templates/istio.yaml).
+  port: 9004
+  # gRPC health-check port consumed by liveness/readiness probes (and
+  # by the GKE provider's HealthCheckPolicy when that provider is wired
+  # up — not used in this repo, kept for upstream parity).
+  healthCheckPort: 9005
+
+  # When true, BBR's ext_proc gRPC listener serves over a self-signed
+  # TLS certificate and the rendered EnvoyFilter wires an upstream
+  # DestinationRule with `tls.mode=SIMPLE, insecureSkipVerify=true`.
+  # When false (the default in this fork), BBR runs plaintext HTTP/2
+  # and no DestinationRule is rendered. See top-of-file note (2).
+  secureServing: false
+
+  # Extra cmd-line flags forwarded to BBR as `--<key>=<value>`. The
+  # `secure-serving` flag is rendered automatically from
+  # `bbr.secureServing` above and MUST NOT be duplicated here.
+  flags:
+    # Log verbosity.
+    v: 3
+
+  # BBR plugin pipeline. When this list is non-empty the runner skips
+  # its built-in default auto-load, so the two entries below replicate
+  # upstream's default behavior (extract `model` body field into
+  # `X-Gateway-Model-Name`, then map base-model aliases to their
+  # canonical model names).
+  plugins:
+    - type: body-field-to-header
+      name: model-extractor
+      json:
+        fieldName: model
+        headerName: X-Gateway-Model-Name
+    - type: base-model-to-header
+      name: base-model-mapper
+
+  tracing:
+    enabled: false
+    otelServiceName: "gateway-api-inference-extension/bbr"
+    otelExporterEndpoint: "http://localhost:4317"
+    sampling:
+      sampler: "parentbased_traceidratio"
+      samplerArg: "0.1"
+
+provider:
+  # `istio` renders the EnvoyFilter that wires BBR into every
+  # Istio-managed Gateway in the cluster. Set to `none` to render only
+  # the Deployment + Service + RBAC (useful for non-Istio providers
+  # that wire BBR via their own mechanism).
+  name: istio
+
+  # Which HTTP lifecycle events Envoy forwards to BBR. Defaults match
+  # upstream. Only `requestHeaders` + `requestBody` are required for
+  # the default plugin pipeline above; flip the response/trailer
+  # toggles off in your overrides if your plugins do not need them
+  # (each extra event is an extra round-trip per request).
+  supportedEvents:
+    requestHeaders: true
+    requestBody: true
+    requestTrailers: true
+    responseHeaders: true
+    responseBody: true
+    responseTrailers: true
+
+  istio:
+    envoyFilter:
+      # Filter-chain placement.
+      #
+      # BBR injects `X-Gateway-Model-Name` from the JSON request body
+      # so the per-Gateway HTTPRoute (and the Istio-injected
+      # InferencePool ext_proc filter that points at EPP) can route
+      # the request to the correct deployment / pod. For that to work
+      # BBR MUST run BEFORE the InferencePool ext_proc filter — if
+      # ext_proc runs first, it resolves its per-route override at a
+      # time when the BBR-injected header is not yet present, so the
+      # route falls through to the catch-all and ext_proc silently
+      # uses its default `cluster: dummy` config (a no-op). Requests
+      # then bypass EPP entirely and Envoy load-balances directly
+      # across the InferencePool selector pods (round-robin), which
+      # breaks every EPP-driven feature (prefix-cache routing,
+      # KV-cache awareness, queue scoring, …). See
+      # `test/e2e/prefix_cache_routing_test.go` for the regression.
+      #
+      # Anchor on Istio's auto-injected
+      # `envoy.filters.http.ext_proc` (InferencePool) and INSERT_BEFORE
+      # so the final chain is:
+      #   istio.metadata_exchange → bbr → ext_proc (InferencePool) → … → router
+      #
+      # On gateways without an InferencePool the InferencePool
+      # ext_proc filter is absent and this patch silently no-ops; BBR
+      # is unused on those gateways anyway because no HTTPRoute
+      # matches on the BBR-injected header.
+      operation: INSERT_BEFORE
+      anchorSubFilter: envoy.filters.http.ext_proc

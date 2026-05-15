@@ -32,6 +32,23 @@ import (
 // correctly routes requests with the same prefix to the same backend pod,
 // leveraging KV-cache locality for better performance.
 //
+// Prompt length / BlockSizeTokens note:
+//   The EPP prefix-cache-scorer hashes the prompt into fixed-size token
+//   blocks (`BlockSizeTokens`, default 16 — see
+//   sigs.k8s.io/gateway-api-inference-extension/pkg/epp/framework/plugins/
+//   requestcontrol/dataproducer/approximateprefix/types.go).  Only FULL
+//   blocks are recorded in the per-pod LRU index that drives the sticky
+//   routing decision.  Prompts shorter than one block produce zero hashes
+//   and the scorer contributes nothing — routing then falls back to the
+//   queue-scorer / KV-cache-scorer weights and the "sticky pod" assertion
+//   becomes flaky.
+//
+//   Each prompt below is sized to span at least eight full 16-token
+//   blocks (~128 tokens ≈ ~512+ ASCII characters, using the GAIE
+//   averageCharactersPerToken = 4 heuristic) so the scorer always has
+//   multiple block hashes to match on and the sticky-routing assertion
+//   is deterministic.
+//
 // Validation approach:
 //   - Determine which backend pod served a request by scraping per-pod
 //     vllm:request_success_total deltas from shadow pods.
@@ -75,7 +92,16 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 
 	Context("Same prompt repeated requests", func() {
 		const numRequests = 5
-		const prompt = "Explain quantum computing in simple terms for a beginner audience"
+		// ~700 chars ≈ ~175 tokens ≈ ~11 full 16-token blocks. Well above
+		// the single-block floor required for the prefix-cache-scorer to
+		// produce stable hashes; see the file-level comment.
+		const prompt = "Explain in considerable depth the foundations of quantum computing for a curious beginner. " +
+			"Start with the difference between a classical bit and a quantum bit, then introduce the principles " +
+			"of superposition and entanglement using small concrete examples. Walk through the operation of a " +
+			"single-qubit Hadamard gate, a two-qubit CNOT gate, and explain how these gates compose into circuits " +
+			"that solve problems faster than any classical algorithm. Conclude by surveying real hardware platforms, " +
+			"including superconducting qubits, trapped ions, and photonic systems, and the engineering challenges " +
+			"of decoherence and error correction in current noisy intermediate-scale quantum devices."
 
 		It("should route identical requests to the same backend pod", func() {
 			clientset, err := utils.GetK8sClientset()
@@ -114,7 +140,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			for pod, delta := range diff {
 				if delta > 0 {
 					Expect(delta).To(BeNumerically("==", float64(numRequests)),
-						"pod %s received %.0f requests, expected all %d (prefix cache should make EPP sticky)", pod, delta, numRequests)
+						"pod %s received %.0f requests, expected all %d (prefix cache should make EPP sticky); full distribution: %v", pod, delta, numRequests, diff)
 					stickyPod = pod
 				}
 			}
@@ -141,8 +167,21 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 
 	Context("Different prompt categories sticky routing", func() {
 		const numPerCategory = 3
-		const promptA = "Explain quantum computing and the principles of superposition and entanglement in detail"
-		const promptB = "Write a Python function to sort a list using the merge sort algorithm with detailed comments"
+		// promptA and promptB share NO common prefix, so the EPP
+		// prefix-cache-scorer must steer each category to a different pod.
+		// Each is sized to span ~9 full 16-token blocks (~570+ chars).
+		const promptA = "Write a comprehensive Python implementation of the merge sort algorithm with detailed inline " +
+			"commentary. The function must accept a list of integers, recursively split it in halves until " +
+			"singleton sublists remain, then merge the halves back together while preserving sort order. " +
+			"Include explicit handling for empty and single-element inputs, a suite of unit tests covering " +
+			"already sorted, reverse sorted, and uniformly random inputs, and a short paragraph at the end " +
+			"that analyses the time and space complexity using big-O notation."
+		const promptB = "Describe the historical development of the special theory of relativity, starting with the " +
+			"Michelson and Morley aether-drift experiment of 1887 and ending with Albert Einstein's foundational " +
+			"1905 paper. Explain how the postulate that the vacuum speed of light is the same in every inertial " +
+			"frame forces a re-examination of simultaneity, gives rise to the phenomena of time dilation and " +
+			"length contraction, and unifies three-dimensional space with one-dimensional time into a single " +
+			"four-dimensional spacetime manifold."
 
 		It("should route each category to a consistent pod", func() {
 			clientset, err := utils.GetK8sClientset()
@@ -176,7 +215,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 				}
 			}
 			Expect(podA).NotTo(BeEmpty(),
-				"category A should be sticky — one pod should have received all %d requests", numPerCategory)
+				"category A should be sticky — one pod should have received all %d requests; full distribution: %v", numPerCategory, diffA)
 
 			By(fmt.Sprintf("sending category B prompt %d times", numPerCategory))
 			beforeB, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
@@ -202,7 +241,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 				}
 			}
 			Expect(podB).NotTo(BeEmpty(),
-				"category B should be sticky — one pod should have received all %d requests", numPerCategory)
+				"category B should be sticky — one pod should have received all %d requests; full distribution: %v", numPerCategory, diffB)
 
 			By("checking prefix cache hits on each sticky pod")
 			afterCacheHits, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
@@ -218,7 +257,14 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 	})
 
 	Context("Pod deletion fallback", utils.GinkgoLabelNightly, func() {
-		const prompt = "Explain the theory of relativity and its implications for modern physics"
+		// ~590 chars ≈ ~9 full 16-token blocks; see file-level comment for
+		// the prompt-length rationale.
+		const prompt = "Outline the major scientific revolutions of the twentieth century in chronological order. " +
+			"Begin with the introduction of relativity, then the development of quantum mechanics, the discovery " +
+			"of the double-helix structure of DNA, the formulation of the standard model of particle physics, " +
+			"the experimental confirmation of plate tectonics, and conclude with the sequencing of the human " +
+			"genome. For each revolution, summarise the key experiments that drove the paradigm shift and " +
+			"identify the principal scientists involved."
 
 		It("should re-route to another pod when the sticky pod is deleted", func() {
 			clientset, err := utils.GetK8sClientset()

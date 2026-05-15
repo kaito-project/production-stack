@@ -12,9 +12,22 @@ spec:
       name: {{ include "modeldeployment.gatewayName" . | quote }}
   rules:
     - matches:
+        # Two match entries are OR'd by the Gateway API spec: a request is
+        # routed to this deployment if EITHER the BBR-injected routed-model
+        # header (X-Gateway-Model-Name) OR the base-model header
+        # (X-Gateway-Base-Model-Name, used for adapter / LoRA requests where
+        # the client-visible model differs from the underlying base) matches
+        # this deployment's name.
         - headers:
             - type: Exact
               name: X-Gateway-Model-Name
+              value: {{ include "modeldeployment.name" . | quote }}
+          path:
+            type: PathPrefix
+            value: /
+        - headers:
+            - type: Exact
+              name: X-Gateway-Base-Model-Name
               value: {{ include "modeldeployment.name" . | quote }}
           path:
             type: PathPrefix

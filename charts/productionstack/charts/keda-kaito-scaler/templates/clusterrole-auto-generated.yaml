@@ -1,0 +1,70 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: keda-kaito-scaler-clusterrole
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - get
+  - patch
+  - update
+- apiGroups:
+  - kaito.sh
+  resources:
+  - inferencesets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kaito.sh
+  resources:
+  - workspaces
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - keda.sh
+  resources:
+  - clustertriggerauthentications
+  verbs:
+  - create
+  - get
+  - patch
+  - update
+- apiGroups:
+  - keda.sh
+  resources:
+  - scaledobjects
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch

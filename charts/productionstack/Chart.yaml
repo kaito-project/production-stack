@@ -1,0 +1,49 @@
+apiVersion: v2
+name: productionstack
+description: |
+  Umbrella Helm chart that installs all CLUSTER-LEVEL components and CRDs
+  required by the Kaito production stack: body-based routing (BBR),
+  KEDA Kaito scaler, LLM gateway auth, and other shared infrastructure.
+
+  This chart is intended to be consumed as a dependency of the top-level
+  `kaito` Helm chart. Each component is shipped as a subchart under
+  `charts/` and can be enabled or disabled individually via the
+  `<component>.enabled` toggle in values.yaml. Component-specific values
+  are passed through by nesting them under the subchart's name, e.g.:
+
+      body-based-routing:
+        enabled: true
+        bbr:
+          replicas: 2
+
+  Adding a new cluster-level component is a matter of dropping its chart
+  under `charts/` and appending a new entry to the `dependencies` list
+  below (with a matching `<name>.enabled` toggle in values.yaml).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kaito
+  - production-stack
+  - inference
+  - gateway-api-inference-extension
+  - keda
+home: https://github.com/kaito-project/production-stack
+sources:
+  - https://github.com/kaito-project/production-stack
+maintainers:
+  - name: kaito-project
+    url: https://github.com/kaito-project
+
+dependencies:
+  - name: body-based-routing
+    version: 0.1.0
+    condition: body-based-routing.enabled
+    tags:
+      - gateway
+      - routing
+  - name: keda-kaito-scaler
+    version: 0.5.1
+    condition: keda-kaito-scaler.enabled
+    tags:
+      - autoscaling

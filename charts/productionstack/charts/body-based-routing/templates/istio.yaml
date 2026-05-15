@@ -1,0 +1,89 @@
+{{- if eq .Values.provider.name "istio" }}
+# ─────────────────────────────────────────────────────────────────────────────
+# Cluster-wide BBR EnvoyFilter.
+#
+# Notable differences vs the upstream chart in
+# sigs.k8s.io/gateway-api-inference-extension/config/charts/body-based-routing:
+#
+#   * NO `spec.targetRefs`. The upstream chart hard-codes a targetRefs
+#     pointing at a single Gateway named `inference-gateway` in the
+#     EnvoyFilter's own namespace. Istio's EnvoyFilter `targetRefs` is
+#     namespace-local (no `namespace` field), which would prevent this
+#     filter from attaching to per-namespace Gateways provisioned by
+#     each E2E case (e.g. `e2e-prefix-cache`, `e2e-auth`, …) and break
+#     model-name extraction across the cluster. By omitting targetRefs
+#     and pinning `match.context: GATEWAY`, this filter fans out to
+#     every Istio-managed Gateway pod in the mesh while leaving
+#     sidecars untouched.
+#
+#   * Default `operation: INSERT_BEFORE` anchored on the terminal
+#     `envoy.filters.http.router` filter (always present on every
+#     Istio-managed Gateway HCM chain), giving the order:
+#       ext_authz (if any)  →  bbr  →  router (HTTPRoute → epp / not-found)
+#     Anchoring on ext_authz instead would silently no-op on every
+#     auth-disabled gateway (no CUSTOM AuthorizationPolicy ⇒ no
+#     ext_authz filter ⇒ patch skipped). Override via
+#     `provider.istio.envoyFilter.{operation,anchorSubFilter}` when a
+#     different placement is required.
+#
+#   * When `bbr.secureServing=false` (the default in this fork) NO
+#     DestinationRule is rendered, so Envoy speaks plaintext HTTP/2 to
+#     BBR. A DestinationRule with `tls.mode=SIMPLE,
+#     insecureSkipVerify=true` is rendered only when secureServing is
+#     enabled.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: {{ .Values.bbr.name }}
+  namespace: {{ include "bbr.namespace" . }}
+  labels:
+    {{- include "bbr.labels" . | nindent 4 }}
+spec:
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              {{- if .Values.provider.istio.envoyFilter.anchorSubFilter }}
+              subFilter:
+                name: {{ .Values.provider.istio.envoyFilter.anchorSubFilter }}
+              {{- end }}
+      patch:
+        operation: {{ .Values.provider.istio.envoyFilter.operation }}
+        value:
+          name: envoy.filters.http.ext_proc.bbr
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+            failure_mode_allow: false
+            allow_mode_override: true
+            processing_mode:
+              request_header_mode: {{ if .Values.provider.supportedEvents.requestHeaders }}"SEND"{{ else }}"SKIP"{{ end }}
+              response_header_mode: {{ if .Values.provider.supportedEvents.responseHeaders }}"SEND"{{ else }}"SKIP"{{ end }}
+              request_body_mode: {{ if .Values.provider.supportedEvents.requestBody }}"FULL_DUPLEX_STREAMED"{{ else }}"NONE"{{ end }}
+              response_body_mode: {{ if .Values.provider.supportedEvents.responseBody }}"FULL_DUPLEX_STREAMED"{{ else }}"NONE"{{ end }}
+              request_trailer_mode: {{ if .Values.provider.supportedEvents.requestTrailers }}"SEND"{{ else }}"SKIP"{{ end }}
+              response_trailer_mode: {{ if .Values.provider.supportedEvents.responseTrailers }}"SEND"{{ else }}"SKIP"{{ end }}
+            grpc_service:
+              envoy_grpc:
+                cluster_name: outbound|{{ .Values.bbr.port }}||{{ .Values.bbr.name }}.{{ include "bbr.namespace" . }}.svc.cluster.local
+{{- if .Values.bbr.secureServing }}
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ .Values.bbr.name }}
+  namespace: {{ include "bbr.namespace" . }}
+  labels:
+    {{- include "bbr.labels" . | nindent 4 }}
+spec:
+  host: {{ .Values.bbr.name }}.{{ include "bbr.namespace" . }}.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: SIMPLE
+      insecureSkipVerify: true
+{{- end }}
+{{- end }}

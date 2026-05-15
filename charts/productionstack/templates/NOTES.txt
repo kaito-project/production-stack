@@ -1,0 +1,13 @@
+productionstack {{ .Chart.AppVersion }} installed in namespace {{ .Release.Namespace }}.
+
+Enabled cluster-level components:
+{{- if index .Values "body-based-routing" "enabled" }}
+  - body-based-routing (BBR ext_proc + Istio EnvoyFilter)
+{{- end }}
+{{- if index .Values "keda-kaito-scaler" "enabled" }}
+  - keda-kaito-scaler (KEDA external scaler for vLLM / InferenceSet)
+{{- end }}
+
+To inspect rendered resources for a single component, use:
+  helm get manifest {{ .Release.Name }} --namespace {{ .Release.Namespace }} \
+    | yq 'select(.metadata.labels."app.kubernetes.io/part-of" == "productionstack")'

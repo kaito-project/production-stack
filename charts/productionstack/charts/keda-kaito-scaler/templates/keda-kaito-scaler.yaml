@@ -1,0 +1,137 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keda-kaito-scaler-client-certs
+  namespace: {{ include "keda-kaito-scaler.namespace" . }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keda-kaito-scaler-server-certs
+  namespace: {{ include "keda-kaito-scaler.namespace" . }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keda-kaito-scaler-sa
+  namespace: {{ include "keda-kaito-scaler.namespace" . }}
+  labels:
+    {{- include "keda-kaito-scaler.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: keda-kaito-scaler-clusterrole-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: keda-kaito-scaler-clusterrole
+subjects:
+- kind: ServiceAccount
+  name: keda-kaito-scaler-sa
+  namespace: {{ include "keda-kaito-scaler.namespace" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keda-kaito-scaler-svc
+  namespace: {{ include "keda-kaito-scaler.namespace" . }}
+  labels:
+    {{- include "keda-kaito-scaler.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: grpc
+      port: {{ .Values.ports.grpc }}
+      protocol: TCP
+      targetPort: grpc-server
+  selector:
+    {{- include "keda-kaito-scaler.selectorLabels" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    {{- include "keda-kaito-scaler.labels" . | nindent 4 }}
+  name: keda-kaito-scaler
+  namespace: {{ include "keda-kaito-scaler.namespace" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "keda-kaito-scaler.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "keda-kaito-scaler.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- if not (empty .Values.image.pullSecrets) }}
+      imagePullSecrets:
+{{ toYaml .Values.image.pullSecrets | indent 8 }}
+      {{- end }}
+      tolerations:
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/master
+        - effect: NoSchedule
+          key: node-role.kubernetes.io/control-plane
+      containers:
+        - args:
+            - --v={{ .Values.log.level }}
+            - --metrics-port={{ .Values.ports.metrics }}
+            - --grpc-health-port={{ .Values.ports.grpcHealth }}
+            - --working-namespace={{ include "keda-kaito-scaler.namespace" . }}
+            {{- if .Values.certDuration }}
+            - --cert-duration={{ .Values.certDuration }}
+            {{- end }}
+          command:
+            - /keda-kaito-scaler
+          image: {{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+          imagePullPolicy: IfNotPresent
+          name: keda-kaito-scaler
+          ports:
+            - containerPort: {{ .Values.ports.grpc }}
+              name: grpc-server
+              protocol: TCP
+            - containerPort: {{ .Values.ports.metrics }}
+              name: metrics
+              protocol: TCP
+            - containerPort: {{ .Values.ports.grpcHealth }}
+              name: grpc-health
+              protocol: TCP
+          livenessProbe:
+            grpc:
+              port: {{ .Values.ports.grpcHealth }}
+              service: liveness
+            initialDelaySeconds: 30
+            timeoutSeconds: 2
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            grpc:
+              port: {{ .Values.ports.grpcHealth }}
+              service: readiness
+            initialDelaySeconds: 30
+            timeoutSeconds: 2
+            periodSeconds: 10
+            failureThreshold: 2
+          {{- if .Values.resources }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: server-certs
+              mountPath: /tmp/keda-kaito-scaler-certs/server
+              readOnly: true
+            - name: client-certs
+              mountPath: /tmp/keda-kaito-scaler-certs/client
+              readOnly: true
+      volumes:
+        - name: server-certs
+          secret:
+            secretName: keda-kaito-scaler-server-certs
+            defaultMode: 0644
+        - name: client-certs
+          secret:
+            secretName: keda-kaito-scaler-client-certs
+            defaultMode: 0644
+      serviceAccountName: keda-kaito-scaler-sa

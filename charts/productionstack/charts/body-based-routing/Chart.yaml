@@ -1,0 +1,12 @@
+apiVersion: v2
+name: body-based-routing
+description: |
+  Cluster-wide Body-Based Router (BBR) for the Gateway API Inference
+  Extension. BBR runs as a single shared ext_proc service that every
+  Istio-managed inference Gateway in the cluster consults to extract
+  the OpenAI-style `model` field from the request body and surface it
+  as the `X-Gateway-Model-Name` HTTP header so per-model HTTPRoutes
+  can match.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -25,7 +25,7 @@ instanceType: "Standard_NV36ads_A10_v5"
 
 # replicas is the desired number of InferenceSet replicas. Also wired to the
 # scaledobject.kaito.sh/min-replicas annotation.
-replicas: 2
+replicas: 1
 
 # enableScaling toggles KAITO ScaledObject auto-provisioning. When false,
 # none of the scaledobject.kaito.sh/* annotations are rendered on the
@@ -35,7 +35,7 @@ enableScaling: false
 # maxReplicas is the upper bound for autoscaling. Only used when
 # enableScaling is true. Wired to the scaledobject.kaito.sh/max-replicas
 # annotation.
-maxReplicas: 5
+maxReplicas: 3
 
 # scalingThreshold is the queue depth threshold used by the ScaledObject.
 # Only used when enableScaling is true. Wired to the

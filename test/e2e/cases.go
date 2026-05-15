@@ -104,6 +104,14 @@ const (
 	// of a single model, fake-node and shadow-pod inventory churn,
 	// background load to assert no 5xx during transitions).
 	CaseScaling = "scaling"
+
+	// CaseFilterOrder covers filter_order_test.go — verifies the Envoy
+	// HTTP filter chain execution order on a per-namespace Gateway:
+	//   ext_authz  →  ext_proc.bbr  →  ext_proc (InferencePool/EPP)  →  router
+	// The case provisions an API-key-enabled deployment so that
+	// ext_authz, BBR, EPP and the catch-all route are all exercised by
+	// the same dataplane.
+	CaseFilterOrder = "filter-order"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -197,6 +205,22 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Replicas:             1,
 			InstanceType:         "Standard_NV36ads_A10_v5",
 			NetworkPolicyEnabled: true,
+		},
+	},
+	CaseFilterOrder: {
+		{
+			// Auth-enabled deployment so the full Envoy HTTP filter
+			// chain (ext_authz → bbr → ext_proc(EPP) → router) is
+			// materialised on this case's per-namespace Gateway. Two
+			// replicas let the load / endpoint-picker assertions in
+			// filter_order_test.go observe non-trivial routing
+			// decisions across more than one shadow pod.
+			Name:              "filter-order-phi",
+			Namespace:         "e2e-filter-order",
+			Model:             presetPhi,
+			Replicas:          2,
+			InstanceType:      "Standard_NV36ads_A10_v5",
+			AuthAPIKeyEnabled: true,
 		},
 	},
 	CaseScaling: {

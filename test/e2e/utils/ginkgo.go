@@ -57,4 +57,10 @@ var (
 	// GinkgoLabelAntiFlapping marks anti-flapping tests that verify KEDA
 	// does not oscillate replicas near the threshold or during cooldown.
 	GinkgoLabelAntiFlapping = g.Label("AntiFlapping")
+
+	// GinkgoLabelFilterOrder marks tests that verify the Envoy HTTP
+	// filter chain execution order on the per-namespace Gateway:
+	//   ext_authz → ext_proc.bbr → ext_proc (InferencePool/EPP) → router
+	// See test/e2e/filter_order_test.go for the test matrix.
+	GinkgoLabelFilterOrder = g.Label("FilterOrder")
 )

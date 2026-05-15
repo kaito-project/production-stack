@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# productionstack — umbrella chart values.
+#
+# This chart bundles every CLUSTER-LEVEL component and CRD needed by the
+# Kaito production stack. Each component is a Helm subchart under
+# `charts/` and is independently toggleable via `<component>.enabled`.
+#
+# Per-subchart install namespace
+# ──────────────────────────────
+# Helm itself only accepts a single `--namespace` for the whole release.
+# To install each subchart into its OWN namespace inside a single
+# `helm install`, every subchart in this umbrella exposes a
+# `namespaceOverride` value. When set, all of that subchart's
+# namespaced resources are rendered into the override namespace
+# instead of the release namespace; cluster-scoped resources
+# (ClusterRole, ClusterRoleBinding, EnvoyFilter targeting handled via
+# context) are unaffected.
+#
+# Caveats:
+#   1. Target namespaces MUST already exist. `helm install
+#      --create-namespace` only creates the RELEASE namespace, not the
+#      override targets.
+#   2. The Helm release metadata (Secret) is still stored in the
+#      release namespace, but `helm uninstall` correctly cleans up
+#      resources in every override namespace because it tracks the
+#      rendered manifest, not the namespace.
+#
+# Override a subchart's own values by nesting them under the subchart
+# name. The keys below mirror each subchart's `values.yaml` exactly;
+# see the subchart's own README for the full set of supported keys.
+#
+# Example — install BBR into istio-system and the scaler into keda
+# while the umbrella release itself lives in kaito-system:
+#   helm upgrade --install productionstack charts/productionstack \
+#     --namespace kaito-system --create-namespace \
+#     --set body-based-routing.namespaceOverride=istio-system \
+#     --set keda-kaito-scaler.namespaceOverride=keda
+# (`istio-system` and `keda` must already exist.)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Body-Based Router (BBR) for the Gateway API Inference Extension.
+# Cluster-wide singleton; install once into Istio's root namespace.
+# See charts/body-based-routing/README.md for the full value reference.
+body-based-routing:
+  enabled: true
+  # MUST be Istio's root namespace so the rendered EnvoyFilter is
+  # visible to every Istio-managed Gateway in the mesh. Override only
+  # if you have moved Istio's root namespace.
+  namespaceOverride: istio-system
+
+# KEDA external scaler for vLLM / InferenceSet workloads.
+# See charts/keda-kaito-scaler/values.yaml for the full value reference.
+keda-kaito-scaler:
+  enabled: true
+  # Co-locate with the KEDA control plane by default. Set to "" to
+  # inherit the umbrella release namespace instead.
+  namespaceOverride: keda

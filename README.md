@@ -51,9 +51,20 @@ namespaces and are shared by every model deployment:
 | Gateway API CRDs                     | _cluster-scoped_ | `GATEWAY_API_VERSION` (v1.2.0)          | kubectl        | Required for `Gateway`, `HTTPRoute`, `ReferenceGrant`.                                |
 | Istio control plane (`istiod`)       | `istio-system`   | `ISTIO_VERSION` (1.29.2)                | istioctl       | Implements the Gateway dataplane (Envoy) and ext_proc filter chain.                   |
 | GAIE CRDs                            | _cluster-scoped_ | latest                                  | kubectl        | `InferencePool`, `InferenceObjective`.                                                |
-| BBR (Body-Based Router)              | `istio-system`   | `BBR_VERSION` (v1.3.1)                  | helm           | Installed in Istio's rootNamespace so its EnvoyFilter applies cluster-wide; injects `X-Gateway-Model-Name`. |
-| `llm-gateway-auth` ([`kaito-project/llm-gateway-auth`](https://github.com/kaito-project/llm-gateway-auth)) | `llm-gateway-auth` | `LLM_GATEWAY_AUTH_VERSION` (0.0.7-alpha) | helm           | API-key ext_authz for the `inference-gateway`. Installs the `APIKey` CRD, the `apikey-operator` (reconciles `APIKey` → per-namespace Secret), and the `apikey-authz` ext_authz dataplane wired into Istio via `MeshConfig` + `AuthorizationPolicy`. |
-| KEDA + KEDA Kaito Scaler ([`kaito-project/keda-kaito-scaler`](https://github.com/kaito-project/keda-kaito-scaler), optional)  | `keda` (or `kube-system` when `E2E_PROVIDER=azure`) | `KEDA_VERSION` (v2.19.0), `KEDA_KAITO_SCALER_VERSION` (v0.5.1) | helm | Workload-metric autoscaling. With `E2E_PROVIDER=azure`, KEDA is provided by the AKS managed add-on in `kube-system` and the keda-kaito-scaler chart is installed alongside it. |
+| KEDA                                 | `keda` (upstream) / `kube-system` (azure) | `KEDA_VERSION` (v2.19.0) | helm (upstream) / AKS managed add-on (azure) | Workload-metric autoscaling control plane.                                            |
+| `productionstack` umbrella chart ([`charts/productionstack`](charts/productionstack)) | release in `kaito-system`; subcharts pinned per-namespace via `namespaceOverride` | in-tree (`charts/productionstack`) | helm | Single Helm release that bundles every cluster-level helper. Currently ships **two** subcharts: `body-based-routing` → `istio-system` (BBR ext_proc + cluster-wide `EnvoyFilter` injecting `X-Gateway-Model-Name`) and `keda-kaito-scaler` → KEDA's namespace (vLLM / `InferenceSet` metric aggregator for KEDA-driven autoscaling). |
+| `llm-gateway-auth` ([`kaito-project/llm-gateway-auth`](https://github.com/kaito-project/llm-gateway-auth)) | `llm-gateway-auth` | `LLM_GATEWAY_AUTH_VERSION` | helm           | API-key ext_authz for the `inference-gateway`. Installs the `APIKey` CRD, the `apikey-operator` (reconciles `APIKey` → per-namespace Secret), and the `apikey-authz` ext_authz dataplane wired into Istio via `MeshConfig` + `AuthorizationPolicy`. |
+
+The `productionstack` umbrella chart consolidates the BBR and KEDA-Kaito-Scaler installs into a **single `helm install`**. The E2E suite installs it via [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh) with the following overrides:
+
+```sh
+helm upgrade --install productionstack charts/productionstack \
+  --namespace kaito-system --create-namespace \
+  --set body-based-routing.namespaceOverride=istio-system \
+  --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}"
+```
+
+Each subchart can be independently disabled via `<subchart>.enabled=false` (see [`charts/productionstack/README.md`](charts/productionstack/README.md) for the full value reference). Additional cluster-level components will be folded into this umbrella over time.
 
 ### Step 2. modelharness (one-time per workload namespace)
 

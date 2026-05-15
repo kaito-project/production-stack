@@ -1,0 +1,39 @@
+log:
+  level: 3
+
+replicaCount: 1
+certDuration: 43800h
+nameOverrider: ""
+
+# Install namespace for every namespaced resource rendered by this chart
+# (Deployment, Service, ServiceAccount, Secrets) and the namespace
+# referenced by the ClusterRoleBinding subject + the controller's
+# --working-namespace flag. Empty string ⇒ inherit the Helm release
+# namespace (the standard Helm behavior).
+#
+# Set this when the chart is consumed as a subchart of an umbrella
+# release that is installed into a different namespace than where the
+# scaler should actually run (e.g. parent installed into
+# `kaito-system`, scaler pinned to `keda`). The target namespace MUST
+# already exist — Helm only auto-creates the release namespace.
+namespaceOverride: ""
+
+image:
+    registry: ghcr.io
+    repository: kaito-project/keda-kaito-scaler
+    tag: 0.5.1
+    pullSecrets: []
+
+ports:
+  grpc: 10450
+  metrics: 10451
+  grpcHealth: 10452
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 512Mi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  

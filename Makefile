@@ -183,13 +183,15 @@ e2e-validate: ## Validate all E2E components are healthy.
 e2e-dump: ## Dump cluster state for debugging.
 	hack/e2e/scripts/dump-cluster-state.sh
 
+USER_ID ?= $(shell whoami)
+# Honor pre-set CLUSTER_NAME / RESOURCE_GROUP env vars (e.g. from CI) so they
+# are not silently overwritten with the local-developer default of kaito-$(USER_ID).
+E2E_CLUSTER_NAME ?= $(if $(CLUSTER_NAME),$(CLUSTER_NAME),kaito-$(USER_ID))
+E2E_RESOURCE_GROUP ?= $(if $(RESOURCE_GROUP),$(RESOURCE_GROUP),kaito-$(USER_ID))
+
 .PHONY: e2e-teardown
 e2e-teardown: ## Tear down the E2E cluster.
-	hack/e2e/scripts/run-e2e-local.sh teardown
-
-USER_ID ?= $(shell whoami)
-E2E_CLUSTER_NAME ?= kaito-$(USER_ID)
-E2E_RESOURCE_GROUP ?= kaito-$(USER_ID)
+	CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) hack/e2e/scripts/run-e2e-local.sh teardown
 
 .PHONY: e2e-up
 e2e-up: ## One command to set up full local E2E env (cluster, build, push, install, validate).
