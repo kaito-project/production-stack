@@ -146,9 +146,7 @@ jobs:
           # versions.env (consumed by the composite action).
           istio-version: ''
           gateway-api-version: ''
-          bbr-version: ''
           keda-version: ''
-          keda-kaito-scaler-version: ''
           llm-gateway-auth-version: ''
 
       - name: Provision workload namespace via modelharness

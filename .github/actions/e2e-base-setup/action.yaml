@@ -43,16 +43,8 @@ inputs:
     description: 'Gateway API CRD version override.'
     required: false
     default: ''
-  bbr-version:
-    description: 'BBR release version override.'
-    required: false
-    default: ''
   keda-version:
     description: 'KEDA Helm chart version override.'
-    required: false
-    default: ''
-  keda-kaito-scaler-version:
-    description: 'KEDA Kaito Scaler Helm chart version override.'
     required: false
     default: ''
   llm-gateway-auth-version:
@@ -77,16 +69,12 @@ runs:
         INPUT_PROVIDER="${{ inputs.provider }}"
         INPUT_ISTIO="${{ inputs.istio-version }}"
         INPUT_GWAPI="${{ inputs.gateway-api-version }}"
-        INPUT_BBR="${{ inputs.bbr-version }}"
         INPUT_KEDA="${{ inputs.keda-version }}"
-        INPUT_KKS="${{ inputs.keda-kaito-scaler-version }}"
         INPUT_LGA="${{ inputs.llm-gateway-auth-version }}"
         [ -n "${INPUT_PROVIDER}" ] && E2E_PROVIDER="${INPUT_PROVIDER}"
         [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
         [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
-        [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
         [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
-        [ -n "${INPUT_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${INPUT_KKS}"
         [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
 
         # Validate provider value.
@@ -111,9 +99,7 @@ runs:
           echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
           echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
-          echo "BBR_VERSION=${BBR_VERSION}"
           echo "KEDA_VERSION=${KEDA_VERSION}"
-          echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
           echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
           echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
           echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
@@ -127,9 +113,7 @@ runs:
         echo "GO_VERSION=${GO_VERSION}"
         echo "ISTIO_VERSION=${ISTIO_VERSION}"
         echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
-        echo "BBR_VERSION=${BBR_VERSION}"
         echo "KEDA_VERSION=${KEDA_VERSION}"
-        echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
         echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
         echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
         echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
