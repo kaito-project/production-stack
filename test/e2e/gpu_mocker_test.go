@@ -415,6 +415,99 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 			})
 		})
 
+		Context("NodeClaim reconcile idempotency", func() {
+			It("should not create duplicate fake Nodes or Leases when the same NodeClaim is re-applied", func() {
+				clientset, err := utils.GetK8sClientset()
+				Expect(err).NotTo(HaveOccurred())
+				dynClient, err := utils.GetDynamicClient()
+				Expect(err).NotTo(HaveOccurred())
+
+				ctx := context.Background()
+
+				// Find an existing NodeClaim to re-apply.
+				nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+					LabelSelector: "kaito.sh/fake-node=true,kaito.sh/managed-by=gpu-mocker",
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(nodes.Items).NotTo(BeEmpty(), "need at least one fake node")
+
+				targetNode := nodes.Items[0]
+				var ncName string
+				for _, ref := range targetNode.OwnerReferences {
+					if ref.Kind == "NodeClaim" {
+						ncName = ref.Name
+						break
+					}
+				}
+				Expect(ncName).NotTo(BeEmpty(),
+					"fake node %q should have a NodeClaim owner reference", targetNode.Name)
+
+				By("recording baseline fake node and lease counts")
+				baselineNodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+					LabelSelector: "kaito.sh/fake-node=true,kaito.sh/managed-by=gpu-mocker",
+				})
+				Expect(err).NotTo(HaveOccurred())
+				baselineNodeCount := len(baselineNodes.Items)
+
+				baselineLeases, err := clientset.CoordinationV1().Leases("kube-node-lease").List(ctx, metav1.ListOptions{})
+				Expect(err).NotTo(HaveOccurred())
+				// Count only leases that correspond to fake nodes.
+				fakeNodeNames := make(map[string]bool)
+				for _, n := range baselineNodes.Items {
+					fakeNodeNames[n.Name] = true
+				}
+				var baselineLeaseCount int
+				for _, l := range baselineLeases.Items {
+					if fakeNodeNames[l.Name] {
+						baselineLeaseCount++
+					}
+				}
+
+				By(fmt.Sprintf("re-applying NodeClaim %q to trigger duplicate reconcile", ncName))
+				nc, err := dynClient.Resource(utils.NodeClaimGVR).Get(ctx, ncName, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Force a reconcile by updating a harmless annotation.
+				annotations := nc.GetAnnotations()
+				if annotations == nil {
+					annotations = make(map[string]string)
+				}
+				annotations["e2e-test/idempotency-trigger"] = fmt.Sprintf("%d", time.Now().UnixNano())
+				nc.SetAnnotations(annotations)
+				_, err = dynClient.Resource(utils.NodeClaimGVR).Update(ctx, nc, metav1.UpdateOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Allow reconcile to process.
+				time.Sleep(10 * time.Second)
+
+				By("verifying no duplicate fake Nodes were created")
+				afterNodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+					LabelSelector: "kaito.sh/fake-node=true,kaito.sh/managed-by=gpu-mocker",
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(len(afterNodes.Items)).To(Equal(baselineNodeCount),
+					"re-applying NodeClaim should not create duplicate fake nodes (before=%d, after=%d)",
+					baselineNodeCount, len(afterNodes.Items))
+
+				By("verifying no duplicate Leases were created")
+				afterLeases, err := clientset.CoordinationV1().Leases("kube-node-lease").List(ctx, metav1.ListOptions{})
+				Expect(err).NotTo(HaveOccurred())
+				afterFakeNodeNames := make(map[string]bool)
+				for _, n := range afterNodes.Items {
+					afterFakeNodeNames[n.Name] = true
+				}
+				var afterLeaseCount int
+				for _, l := range afterLeases.Items {
+					if afterFakeNodeNames[l.Name] {
+						afterLeaseCount++
+					}
+				}
+				Expect(afterLeaseCount).To(Equal(baselineLeaseCount),
+					"re-applying NodeClaim should not create duplicate leases (before=%d, after=%d)",
+					baselineLeaseCount, afterLeaseCount)
+			})
+		})
+
 		Context("Shadow pod GC", func() {
 			It("should delete shadow pods via native Kubernetes GC when the original pod is removed", func() {
 				clientset, err := utils.GetK8sClientset()
@@ -459,7 +552,14 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				oldShadowUID := shadow.UID
 
 				By(fmt.Sprintf("deleting original pod %s/%s (owner of shadow %q)", ownerPodNS, ownerPodName, shadow.Name))
-				err = clientset.CoreV1().Pods(ownerPodNS).Delete(ctx, ownerPodName, metav1.DeleteOptions{})
+				// Force-delete: the original pod lives on a fake node with no
+				// kubelet, so a graceful delete would leave it stuck in
+				// Terminating indefinitely (no kubelet to confirm shutdown).
+				// The GC only cascades once the owner is fully removed from
+				// the API server, so we must use GracePeriodSeconds=0.
+				err = clientset.CoreV1().Pods(ownerPodNS).Delete(ctx, ownerPodName, metav1.DeleteOptions{
+					GracePeriodSeconds: new(int64),
+				})
 				Expect(err).NotTo(HaveOccurred())
 
 				By("waiting for Kubernetes GC to delete the orphaned shadow pod")

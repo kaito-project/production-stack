@@ -290,12 +290,6 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		const numRequests = 5
 
 		It("should show EPP scheduler success counts matching requests sent", func() {
-			// TODO: EPP pods have Istio sidecars that intercept traffic on port 9090,
-			// causing 401 Unauthorized when accessing via K8s API pod proxy.
-			// Re-enable once EPP metrics port is excluded from Istio interception
-			// (e.g., via traffic.sidecar.istio.io/excludeInboundPorts annotation)
-			// or when we switch to scraping via the EPP Service instead of pod proxy.
-			Skip("EPP metrics port is intercepted by Istio sidecar (401 Unauthorized via pod proxy)")
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -629,6 +623,13 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			successDiff := utils.DiffSnapshots(beforeSuccess, afterSuccess)
 			Expect(utils.TotalDelta(successDiff)).To(BeNumerically("==", 0),
 				"vllm:request_success_total should not increment for a rejected request")
+
+			By("verifying EPP scheduler success count incremented (request was routed, backend rejected it)")
+			afterSchedulerSuccess, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
+				"inference_extension_scheduler_attempts_total", map[string]string{"status": "success"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(afterSchedulerSuccess).To(BeNumerically(">", 0),
+				"inference_extension_scheduler_attempts_total{status=success} should increment — EPP scheduled the request, backend rejected it")
 
 			// Verify subsequent valid requests still succeed — the rejection
 			// did not wedge the connection or the ext_proc filter chain.
