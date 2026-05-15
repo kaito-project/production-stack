@@ -54,11 +54,12 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 	var ctx context.Context
 	var caseGatewayURL string
 
-	// sendChatWithPrompt forwards to the non-auth helper — the
+	// sendChatWithPrompt forwards to the retry-capable helper — the
 	// prefix-cache case no longer enables the API-key
-	// AuthorizationPolicy (see cases.go).
+	// AuthorizationPolicy (see cases.go). Retries handle transient
+	// kubectl port-forward EOF errors without masking HTTP-level failures.
 	sendChatWithPrompt := func(url, model, prompt string) (*http.Response, error) {
-		return utils.SendChatCompletionWithPrompt(url, model, prompt)
+		return utils.SendChatCompletionWithPromptRetry(url, model, prompt)
 	}
 
 	BeforeAll(func() {

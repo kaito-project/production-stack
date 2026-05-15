@@ -489,6 +489,29 @@ func SendChatCompletionWithRetry(gatewayURL, model string) (*http.Response, erro
 	return nil, fmt.Errorf("after %d attempts: %w", maxAttempts, lastErr)
 }
 
+// SendChatCompletionWithPromptRetry sends a chat completion request with a
+// custom prompt and retries on transport-level errors (EOF, connection reset,
+// etc.) caused by transient kubectl port-forward connection drops. It does NOT
+// retry on HTTP-level errors — any non-nil response is returned to the caller
+// as-is so status-code assertions remain meaningful. The retry budget matches
+// SendChatCompletionWithRetry (3 attempts, 500ms backoff).
+func SendChatCompletionWithPromptRetry(gatewayURL, model, prompt string) (*http.Response, error) {
+	const maxAttempts = 3
+	var lastErr error
+	for i := 0; i < maxAttempts; i++ {
+		resp, err := SendChatCompletionWithPrompt(gatewayURL, model, prompt)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		// Only retry on transport errors (e.g., EOF, connection reset).
+		// If the port-forward is permanently dead, checkAllPortForwards()
+		// will short-circuit on the next iteration anyway.
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("after %d attempts: %w", maxAttempts, lastErr)
+}
+
 // SendChatCompletionWithPrompt sends a chat completion request with a custom
 // prompt message.
 func SendChatCompletionWithPrompt(gatewayURL, model, prompt string) (*http.Response, error) {

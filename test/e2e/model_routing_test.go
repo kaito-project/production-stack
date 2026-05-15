@@ -371,7 +371,12 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
-					resp, err := sendChatWithRetry(caseGatewayURL, model)
+					// Use a unique prompt per request so the EPP's
+					// prefix-cache-scorer does not route all requests to
+					// the same pod. Load distribution is meaningful only
+					// when requests carry distinct prefixes.
+					prompt := fmt.Sprintf("load distribution request %d: what is the capital of France?", i)
+					resp, err := sendChatWithPrompt(caseGatewayURL, model, prompt)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					resp.Body.Close()
