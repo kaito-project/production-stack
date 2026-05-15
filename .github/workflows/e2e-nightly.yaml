@@ -35,16 +35,8 @@ on:
         description: 'Gateway API CRD version (e.g. v1.2.0). Leave empty to use default from versions.env'
         required: false
         default: ''
-      bbr_version:
-        description: 'BBR release version (e.g. v1.3.1). Leave empty to use default from versions.env'
-        required: false
-        default: ''
       keda_version:
         description: 'KEDA Helm chart version (e.g. v2.19.0). Leave empty to use default from versions.env'
-        required: false
-        default: ''
-      keda_kaito_scaler_version:
-        description: 'KEDA Kaito Scaler Helm chart version (e.g. v0.3.3). Leave empty to use default from versions.env'
         required: false
         default: ''
 
@@ -83,15 +75,11 @@ jobs:
           INPUT_PROVIDER="${{ github.event.inputs.provider }}"
           INPUT_ISTIO="${{ github.event.inputs.istio_version }}"
           INPUT_GWAPI="${{ github.event.inputs.gateway_api_version }}"
-          INPUT_BBR="${{ github.event.inputs.bbr_version }}"
           INPUT_KEDA="${{ github.event.inputs.keda_version }}"
-          INPUT_KKS="${{ github.event.inputs.keda_kaito_scaler_version }}"
           [ -n "${INPUT_PROVIDER}" ] && E2E_PROVIDER="${INPUT_PROVIDER}"
           [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
           [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
-          [ -n "${INPUT_BBR}" ]   && BBR_VERSION="${INPUT_BBR}"
           [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
-          [ -n "${INPUT_KKS}" ]   && KEDA_KAITO_SCALER_VERSION="${INPUT_KKS}"
 
           # Validate provider value.
           case "${E2E_PROVIDER}" in
@@ -113,9 +101,7 @@ jobs:
             echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
             echo "ISTIO_VERSION=${ISTIO_VERSION}"
             echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
-            echo "BBR_VERSION=${BBR_VERSION}"
             echo "KEDA_VERSION=${KEDA_VERSION}"
-            echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
             echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
           } >> "$GITHUB_ENV"
 
@@ -126,9 +112,7 @@ jobs:
           echo "GO_VERSION=${GO_VERSION}"
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
           echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
-          echo "BBR_VERSION=${BBR_VERSION}"
           echo "KEDA_VERSION=${KEDA_VERSION}"
-          echo "KEDA_KAITO_SCALER_VERSION=${KEDA_KAITO_SCALER_VERSION}"
           echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
 
       - name: Setup Go

@@ -27,16 +27,8 @@ on:
         description: 'Gateway API CRD version (e.g. v1.2.0). Leave empty to use default from versions.env'
         required: false
         default: ''
-      bbr_version:
-        description: 'BBR release version (e.g. v1.3.1). Leave empty to use default from versions.env'
-        required: false
-        default: ''
       keda_version:
         description: 'KEDA Helm chart version (e.g. v2.19.0). Leave empty to use default from versions.env'
-        required: false
-        default: ''
-      keda_kaito_scaler_version:
-        description: 'KEDA Kaito Scaler Helm chart version (e.g. v0.3.3). Leave empty to use default from versions.env'
         required: false
         default: ''
       llm_gateway_auth_version:
@@ -82,9 +74,7 @@ jobs:
           provider: ${{ github.event.inputs.provider }}
           istio-version: ${{ github.event.inputs.istio_version }}
           gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
-          bbr-version: ${{ github.event.inputs.bbr_version }}
           keda-version: ${{ github.event.inputs.keda_version }}
-          keda-kaito-scaler-version: ${{ github.event.inputs.keda_kaito_scaler_version }}
           llm-gateway-auth-version: ${{ github.event.inputs.llm_gateway_auth_version }}
 
       - name: Run E2E tests
