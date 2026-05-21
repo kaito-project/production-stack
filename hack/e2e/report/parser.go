@@ -1,0 +1,152 @@
+/*
+Copyright 2026 The KAITO Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package main
+
+import (
+	"bufio"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+var (
+	// Matches: GinkgoLabelFoo = g.Label("Foo")
+	labelConstRe = regexp.MustCompile(`(\w+)\s*=\s*\w+\.Label\("([^"]+)"\)`)
+	// Matches: Describe("title" | Context("title" | It("title"
+	blockRe = regexp.MustCompile(`(Describe|Context|It)\("([^"]+)"`)
+	// Matches: utils.GinkgoLabelFoo
+	utilsLabelRe = regexp.MustCompile(`utils\.(GinkgoLabel\w+)`)
+	// Matches: Label("Foo")
+	inlineLabelRe = regexp.MustCompile(`Label\("([^"]+)"\)`)
+)
+
+// parseLabelConstants reads utils/ginkgo.go and returns a map from
+// Go constant name (e.g. "GinkgoLabelSmoke") to label string (e.g. "Smoke").
+func parseLabelConstants(path string) map[string]string {
+	m := make(map[string]string)
+	f, err := os.Open(path)
+	if err != nil {
+		return m
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		if matches := labelConstRe.FindStringSubmatch(sc.Text()); matches != nil {
+			m[matches[1]] = matches[2]
+		}
+	}
+	return m
+}
+
+// extractLabels pulls all Ginkgo labels from a single source line.
+// It handles both utils.GinkgoLabelFoo references and inline Label("Foo") calls.
+func extractLabels(line string, labelMap map[string]string) []string {
+	var labels []string
+	seen := make(map[string]bool)
+
+	for _, m := range utilsLabelRe.FindAllStringSubmatch(line, -1) {
+		varName := m[1]
+		display := labelMap[varName]
+		if display == "" {
+			display = strings.TrimPrefix(varName, "GinkgoLabel")
+		}
+		if !seen[display] {
+			labels = append(labels, display)
+			seen[display] = true
+		}
+	}
+
+	for _, m := range inlineLabelRe.FindAllStringSubmatch(line, -1) {
+		lbl := m[1]
+		if !seen[lbl] {
+			labels = append(labels, lbl)
+			seen[lbl] = true
+		}
+	}
+
+	return labels
+}
+
+// parseTestFiles scans every *_test.go file in e2eDir (skipping e2e_test.go)
+// and returns the parsed blocks grouped by file.
+func parseTestFiles(e2eDir string, labelMap map[string]string) []TestFile {
+	matches, _ := filepath.Glob(filepath.Join(e2eDir, "*_test.go"))
+	sort.Strings(matches)
+
+	var files []TestFile
+	for _, path := range matches {
+		name := filepath.Base(path)
+		if name == "e2e_test.go" {
+			continue
+		}
+
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+
+		var blocks []Block
+		tests, suites, contexts := 0, 0, 0
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			line := sc.Text()
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			m := blockRe.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			// When the block call spans multiple lines (e.g. labels on the
+			// next line), concatenate continuation lines until we see func()
+			// or hit a reasonable limit.
+			full := line
+			for i := 0; i < 5 && !strings.Contains(full, "func()"); i++ {
+				if !sc.Scan() {
+					break
+				}
+				full += " " + strings.TrimSpace(sc.Text())
+			}
+			b := Block{
+				Type:   m[1],
+				Title:  m[2],
+				Labels: extractLabels(full, labelMap),
+			}
+			blocks = append(blocks, b)
+			switch b.Type {
+			case "It":
+				tests++
+			case "Describe":
+				suites++
+			case "Context":
+				contexts++
+			}
+		}
+		f.Close()
+
+		files = append(files, TestFile{
+			Name:         name,
+			Blocks:       blocks,
+			TestCount:    tests,
+			SuiteCount:   suites,
+			ContextCount: contexts,
+		})
+	}
+	return files
+}

@@ -1,0 +1,260 @@
+/*
+Copyright 2026 The KAITO Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func sampleFiles() []TestFile {
+	return []TestFile{
+		{
+			Name: "alpha_test.go",
+			Blocks: []Block{
+				{Type: "Describe", Title: "Alpha Suite", Labels: []string{"Smoke", "Infra"}},
+				{Type: "Context", Title: "when running", Labels: nil},
+				{Type: "It", Title: "test 1", Labels: []string{"Smoke"}},
+				{Type: "It", Title: "test 2", Labels: nil},
+			},
+			TestCount:    2,
+			SuiteCount:   1,
+			ContextCount: 1,
+		},
+		{
+			Name: "beta_test.go",
+			Blocks: []Block{
+				{Type: "Describe", Title: "Beta Suite", Labels: []string{"Auth"}},
+				{Type: "It", Title: "test A", Labels: []string{"Auth"}},
+			},
+			TestCount:    1,
+			SuiteCount:   1,
+			ContextCount: 0,
+		},
+	}
+}
+
+func TestBuildReportData_Totals(t *testing.T) {
+	data := buildReportData(sampleFiles(), "CI", "!Nightly")
+
+	if data.Workflow != "CI" {
+		t.Errorf("expected Workflow=CI, got %q", data.Workflow)
+	}
+	if data.LabelFilter != "!Nightly" {
+		t.Errorf("expected LabelFilter=!Nightly, got %q", data.LabelFilter)
+	}
+	if data.TotalFiles != 2 {
+		t.Errorf("expected 2 files, got %d", data.TotalFiles)
+	}
+	if data.TotalDescribes != 2 {
+		t.Errorf("expected 2 describes, got %d", data.TotalDescribes)
+	}
+	if data.TotalContexts != 1 {
+		t.Errorf("expected 1 context, got %d", data.TotalContexts)
+	}
+	if data.TotalIts != 3 {
+		t.Errorf("expected 3 Its, got %d", data.TotalIts)
+	}
+}
+
+func TestBuildReportData_BarChart(t *testing.T) {
+	data := buildReportData(sampleFiles(), "", "")
+
+	if len(data.BarChart) != 2 {
+		t.Fatalf("expected 2 bar entries, got %d", len(data.BarChart))
+	}
+
+	// alpha_test.go has 2 tests (max), so its percent should be 100.
+	if data.BarChart[0].Label != "alpha" {
+		t.Errorf("expected bar[0].Label=alpha, got %q", data.BarChart[0].Label)
+	}
+	if data.BarChart[0].Value != 2 {
+		t.Errorf("expected bar[0].Value=2, got %d", data.BarChart[0].Value)
+	}
+	if data.BarChart[0].Percent != 100 {
+		t.Errorf("expected bar[0].Percent=100, got %d", data.BarChart[0].Percent)
+	}
+
+	// beta_test.go has 1 test → 50%.
+	if data.BarChart[1].Label != "beta" {
+		t.Errorf("expected bar[1].Label=beta, got %q", data.BarChart[1].Label)
+	}
+	if data.BarChart[1].Percent != 50 {
+		t.Errorf("expected bar[1].Percent=50, got %d", data.BarChart[1].Percent)
+	}
+}
+
+func TestBuildReportData_DonutGradient(t *testing.T) {
+	data := buildReportData(sampleFiles(), "", "")
+
+	if data.ConicGradient == "" {
+		t.Fatal("expected non-empty ConicGradient")
+	}
+	if !strings.Contains(data.ConicGradient, "deg") {
+		t.Errorf("expected degree values in gradient, got %q", data.ConicGradient)
+	}
+	if len(data.DonutLegend) != 2 {
+		t.Errorf("expected 2 legend entries, got %d", len(data.DonutLegend))
+	}
+}
+
+func TestBuildReportData_DonutGradient_NoFiles(t *testing.T) {
+	data := buildReportData(nil, "", "")
+
+	if data.ConicGradient != "var(--bd) 0deg 360deg" {
+		t.Errorf("expected fallback gradient, got %q", data.ConicGradient)
+	}
+}
+
+func TestBuildReportData_LabelCards(t *testing.T) {
+	data := buildReportData(sampleFiles(), "", "")
+
+	cardMap := make(map[string]int)
+	for _, c := range data.LabelCards {
+		cardMap[c.Name] = c.Count
+	}
+
+	// Smoke appears on Describe + It = 2 blocks.
+	if cardMap["Smoke"] != 2 {
+		t.Errorf("expected Smoke count=2, got %d", cardMap["Smoke"])
+	}
+	// Auth appears on Describe + It = 2 blocks.
+	if cardMap["Auth"] != 2 {
+		t.Errorf("expected Auth count=2, got %d", cardMap["Auth"])
+	}
+	// Infra appears only on 1 Describe.
+	if cardMap["Infra"] != 1 {
+		t.Errorf("expected Infra count=1, got %d", cardMap["Infra"])
+	}
+	// Routing should be 0.
+	if cardMap["Routing"] != 0 {
+		t.Errorf("expected Routing count=0, got %d", cardMap["Routing"])
+	}
+}
+
+func TestBuildReportData_Timestamp(t *testing.T) {
+	data := buildReportData(nil, "", "")
+
+	if !strings.HasSuffix(data.Timestamp, "UTC") {
+		t.Errorf("expected timestamp ending in UTC, got %q", data.Timestamp)
+	}
+}
+
+func TestWriteMarkdown(t *testing.T) {
+	data := buildReportData(sampleFiles(), "E2E tests", "!Nightly")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	if err := writeMarkdown(data, path); err != nil {
+		t.Fatalf("writeMarkdown: %v", err)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := string(content)
+
+	checks := []string{
+		"# ✅ E2E Test Coverage Report",
+		"**Workflow:** E2E tests",
+		"**Label filter:** `!Nightly`",
+		"📄 Test Files | **2**",
+		"🧪 Test Cases | **3**",
+		"alpha_test.go",
+		"beta_test.go",
+		"🟢 test 1",
+		"🟢 test A",
+		// Mermaid pie chart.
+		"```mermaid",
+		"pie title Tests by File",
+		`"alpha" : 2`,
+		`"beta" : 1`,
+		// Mermaid bar chart.
+		"xychart-beta horizontal",
+		// Label coverage table.
+		"Coverage by Label",
+		"| `Smoke` | **2**",
+		"| `Auth` | **2**",
+	}
+
+	for _, want := range checks {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown missing %q", want)
+		}
+	}
+}
+
+func TestWriteMarkdown_NoWorkflow(t *testing.T) {
+	data := buildReportData(sampleFiles(), "", "(all)")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+
+	if err := writeMarkdown(data, path); err != nil {
+		t.Fatalf("writeMarkdown: %v", err)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(content), "**Workflow:**") {
+		t.Error("expected no Workflow line when workflow is empty")
+	}
+}
+
+func TestWriteHTML(t *testing.T) {
+	data := buildReportData(sampleFiles(), "Nightly", "Nightly")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.html")
+
+	if err := writeHTML(data, path); err != nil {
+		t.Fatalf("writeHTML: %v", err)
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(content)
+
+	checks := []string{
+		"<!DOCTYPE html>",
+		"Nightly",
+		"Alpha Suite",
+		"Beta Suite",
+		"conic-gradient",
+	}
+	for _, want := range checks {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML missing %q", want)
+		}
+	}
+}
+
+func TestWriteHTML_EmptyFiles(t *testing.T) {
+	data := buildReportData(nil, "", "(all)")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.html")
+
+	if err := writeHTML(data, path); err != nil {
+		t.Fatalf("writeHTML should not error with empty files: %v", err)
+	}
+}
