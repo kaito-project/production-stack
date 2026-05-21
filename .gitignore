@@ -44,6 +44,9 @@ config/
 # Coverage reports
 coverage.out
 coverage.html
+e2e-coverage-report.md
+e2e-coverage-report.html
+e2e-report-preview.html
 
 # Local development
 .env
