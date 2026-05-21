@@ -178,6 +178,25 @@ jobs:
         env:
           E2E_LABEL: "Nightly && !NetworkPolicy"
 
+      - name: Generate E2E coverage report
+        if: always()
+        run: |
+          go run ./hack/e2e/report \
+            --label-filter 'Nightly && !NetworkPolicy' \
+            --workflow 'E2E tests (nightly, full suite)' \
+            --output-md e2e-coverage-report.md \
+            --output-html e2e-coverage-report.html
+          cat e2e-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload E2E coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-coverage-report
+          path: |
+            e2e-coverage-report.md
+            e2e-coverage-report.html
+
       - name: Dump cluster state
         if: failure()
         run: make e2e-dump
