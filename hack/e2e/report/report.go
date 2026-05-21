@@ -233,8 +233,6 @@ func writeMarkdown(data *ReportData, path string) error {
 	p("| Metric | Count |")
 	p("|--------|------:|")
 	p("| 📄 Test Files | **%d** |", data.TotalFiles)
-	p("| 📋 Suites | **%d** |", data.TotalDescribes)
-	p("| 📂 Contexts | **%d** |", data.TotalContexts)
 	p("| 🧪 Test Cases | **%d** |", data.TotalIts)
 	p("")
 	p("---")
@@ -282,7 +280,7 @@ func writeMarkdown(data *ReportData, path string) error {
 
 	for _, tf := range data.Files {
 		p("<details>")
-		p("<summary><strong>📄 %s</strong> &mdash; %d tests, %d suite(s)</summary>", tf.Name, tf.TestCount, tf.SuiteCount)
+		p("<summary><strong>📄 %s</strong> &mdash; %d tests</summary>", tf.Name, tf.TestCount)
 		p("")
 		for _, b := range tf.Blocks {
 			badges := ""
