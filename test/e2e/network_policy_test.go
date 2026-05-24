@@ -175,8 +175,8 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			ObjectMeta: metav1.ObjectMeta{Name: canaryPodName, Namespace: canaryNS},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
-					Name:    "probe",
-					Image:   probeImage,
+					Name:  "probe",
+					Image: probeImage,
 					// `agnhost pause` keeps the container alive
 					// indefinitely (equivalent to `sleep infinity`)
 					// without a shell wrapper, so the probe binary is
