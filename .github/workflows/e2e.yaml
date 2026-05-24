@@ -90,16 +90,15 @@ jobs:
       - name: Run E2E tests
         # Skip Nightly-labeled specs (slow/destructive scaling cases, etc.).
         # TheNightly suite runs in e2e-nightly.yaml.
-        # NetworkPolicy specs are temporarily disabled.
         run: make test-e2e
         env:
-          E2E_LABEL: "!Nightly && !NetworkPolicy"
+          E2E_LABEL: "!Nightly"
 
       - name: Generate E2E coverage report
         if: always()
         run: |
           go run ./hack/e2e/report \
-            --label-filter '!Nightly && !NetworkPolicy' \
+            --label-filter '!Nightly' \
             --workflow 'E2E tests' \
             --output-md e2e-coverage-report.md \
             --output-html e2e-coverage-report.html
