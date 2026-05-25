@@ -67,93 +67,20 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
 
-      - name: Load component versions
-        run: |
-          # Source defaults from the centralized version file (loaded exactly once).
-          source versions.env
-          # workflow_dispatch inputs override defaults when non-empty.
-          INPUT_PROVIDER="${{ github.event.inputs.provider }}"
-          INPUT_ISTIO="${{ github.event.inputs.istio_version }}"
-          INPUT_GWAPI="${{ github.event.inputs.gateway_api_version }}"
-          INPUT_KEDA="${{ github.event.inputs.keda_version }}"
-          [ -n "${INPUT_PROVIDER}" ] && E2E_PROVIDER="${INPUT_PROVIDER}"
-          [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
-          [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
-          [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
-
-          # Validate provider value.
-          case "${E2E_PROVIDER}" in
-            upstream|azure) ;;
-            *)
-              echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
-              exit 1
-              ;;
-          esac
-          case "${E2E_PROVIDER}" in
-            upstream) KEDA_NAMESPACE="keda" ;;
-            azure)    KEDA_NAMESPACE="kube-system" ;;
-          esac
-
-          # Export to GITHUB_ENV so all subsequent steps inherit these.
-          {
-            echo "GO_VERSION=${GO_VERSION}"
-            echo "E2E_PROVIDER=${E2E_PROVIDER}"
-            echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
-            echo "ISTIO_VERSION=${ISTIO_VERSION}"
-            echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
-            echo "KEDA_VERSION=${KEDA_VERSION}"
-            echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
-          } >> "$GITHUB_ENV"
-
-      - name: Print versions
-        run: |
-          echo "E2E_PROVIDER=${E2E_PROVIDER}"
-          echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
-          echo "GO_VERSION=${GO_VERSION}"
-          echo "ISTIO_VERSION=${ISTIO_VERSION}"
-          echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
-          echo "KEDA_VERSION=${KEDA_VERSION}"
-          echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
-
-      - name: Setup Go
-        uses: actions/setup-go@v6
+      - name: E2E base setup
+        uses: ./.github/actions/e2e-base-setup
         with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Azure Login
-        run: az login --identity
-
-      - name: Build gpu-node-mocker image
-        run: make docker-build
-        env:
-          IMG: ${{ env.GPU_MOCKER_IMAGE }}
-
-      - name: Setup cluster
-        run: make e2e-setup
-        env:
-          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
-          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
-          ACR_NAME: ${{ env.ACR_NAME }}
-          LOCATION: ${{ env.LOCATION }}
-          NODE_COUNT: ${{ env.NODE_COUNT }}
-          NODE_VM_SIZE: ${{ env.NODE_VM_SIZE }}
-
-      - name: Push gpu-node-mocker image
-        id: image
-        run: |
-          OUTPUT=$(make e2e-push-image)
-          echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
-        env:
-          ACR_NAME: ${{ env.ACR_NAME }}
-          IMG: ${{ env.GPU_MOCKER_IMAGE }}
-
-      - name: Install components
-        run: make e2e-install
-        env:
-          SHADOW_CONTROLLER_IMAGE: "${{ steps.image.outputs.image }}"
-
-      - name: Validate components
-        run: make e2e-validate
+          resource-group: ${{ env.RESOURCE_GROUP }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          acr-name: ${{ env.ACR_NAME }}
+          gpu-mocker-image: ${{ env.GPU_MOCKER_IMAGE }}
+          location: ${{ env.LOCATION }}
+          node-count: ${{ env.NODE_COUNT }}
+          node-vm-size: ${{ env.NODE_VM_SIZE }}
+          provider: ${{ github.event.inputs.provider }}
+          istio-version: ${{ github.event.inputs.istio_version }}
+          gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
+          keda-version: ${{ github.event.inputs.keda_version }}
 
       - name: Run E2E tests (Nightly specs only)
         # Restrict ginkgo to specs tagged with the Nightly label.
