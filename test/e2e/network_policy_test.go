@@ -248,7 +248,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				// printed exactly once, not on every iteration.
 				if connectedCount == 12 {
 					AddReportEntry("netpol-enforcement-diag",
-						networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP))
+						networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP, canaryNS))
 				}
 				return false
 			}
@@ -275,7 +275,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				// state at the moment the timeout fires, not at Should() call
 				// time. Helps distinguish "policies missing" from "policies
 				// present but unenforced by Cilium".
-				diag := networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP)
+				diag := networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP, canaryNS)
 				return fmt.Sprintf(
 					"timed out waiting for NetworkPolicy enforcement to become active — "+
 						"Cilium may not be enforcing policies on this cluster, or the "+
@@ -874,7 +874,7 @@ func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kuberne
 		}
 		any := false
 		for _, p := range probePods.Items {
-			if !strings.HasPrefix(p.Name, "netpol-probe-") && !strings.HasPrefix(p.Name, "netpol-canary-") {
+			if !strings.HasPrefix(p.Name, "netpol-probe-") && !strings.HasPrefix(p.Name, "canary-probe-") {
 				continue
 			}
 			any = true
