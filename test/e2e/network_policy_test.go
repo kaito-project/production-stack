@@ -472,6 +472,38 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		return classifyResult(out), out
 	}
 
+	// expectDenied probes from probeNS to the namespace-A EPP pod and
+	// asserts the probe is silently dropped. On any non-"blocked" outcome,
+	// it attaches a full enforcement-diagnostic snapshot (rendered policy
+	// `from:` peers, EPP pod identity, probe namespace labels, probe pod
+	// container list + Istio injection markers) to the spec report
+	// BEFORE failing — otherwise the AfterAll teardown wipes the
+	// probe-side state and the failing CI log shows only the one-line
+	// "expected connected to equal blocked" with no way to root-cause.
+	expectDenied := func(probeNS, msg string) {
+		state, out := probeClassified(probeNS)
+		if state != "blocked" {
+			AddReportEntry("netpol-deny-diag",
+				networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP, probeNS))
+		}
+		Expect(state).To(Equal("blocked"),
+			"%s. state=%q output=%q", msg, state, out)
+	}
+
+	// expectDeniedLabeled is the labeled-probe variant of expectDenied,
+	// used by tests that need to assert that label-only spoofing across
+	// namespaces does NOT grant access (the X1 regression guard).
+	expectDeniedLabeled := func(probeNS string, labels map[string]string, targetIP string, targetPort int32, msg string) {
+		out, _ := probeTarget(probeNS, connectCmd(targetIP, targetPort), probeTimeout, labels)
+		state := classifyResult(out)
+		if state != "blocked" {
+			AddReportEntry("netpol-deny-diag",
+				networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, targetIP, probeNS))
+		}
+		Expect(state).To(Equal("blocked"),
+			"%s. state=%q output=%q", msg, state, out)
+	}
+
 	// ── Enforcement baseline ──────────────────────────────────────────────
 	// These two tests run first (suite is Ordered) and together prove that
 	// NetworkPolicy enforcement is active. If intra-namespace connectivity
@@ -500,22 +532,17 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 
 	// ── Deny tests ────────────────────────────────────────────────────────
 	It("should DENY ingress from a non-gateway pod in default namespace", func() {
-		state, out := probeClassified("default")
-		Expect(state).To(Equal("blocked"),
-			"non-gateway pod in default should be silently dropped. state=%q output=%q", state, out)
+		expectDenied("default", "non-gateway pod in default should be silently dropped")
 	})
 
 	It("should DENY ingress from istio-system namespace", func() {
-		state, out := probeClassified("istio-system")
-		Expect(state).To(Equal("blocked"),
-			"istio-system should be silently dropped — only the gateway pod in default is allowed. state=%q output=%q",
-			state, out)
+		expectDenied("istio-system",
+			"istio-system should be silently dropped — only the gateway pod in default is allowed")
 	})
 
 	It("should DENY ingress from a random namespace", func() {
-		state, out := probeClassified("random-ns")
-		Expect(state).To(Equal("blocked"),
-			"random-ns should be silently dropped by default-deny-ingress. state=%q output=%q", state, out)
+		expectDenied("random-ns",
+			"random-ns should be silently dropped by default-deny-ingress")
 	})
 
 	It("should ALLOW ingress from kube-system namespace (chart allowlist)", func() {
@@ -544,28 +571,20 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
-		out, _ := probeTarget("default", connectCmd(eppIP, eppPort), probeTimeout, gatewayLabels)
-		state := classifyResult(out)
-		Expect(state).To(Equal("blocked"),
+		expectDeniedLabeled("default", gatewayLabels, eppIP, eppPort,
 			"gateway-labeled pod in default should be silently dropped — only the in-namespace "+
-				"gateway pod is a trusted ingress source. state=%q output=%q", state, out)
+				"gateway pod is a trusted ingress source")
 	})
 
 	// ── Cross-namespace isolation ─────────────────────────────────────────
 	It("should DENY ingress from workload namespace A to workload namespace B", func() {
-		out, _ := probeTarget(namespace, connectCmd(eppIPB, eppPortB), probeTimeout, nil)
-		state := classifyResult(out)
-		Expect(state).To(Equal("blocked"),
-			"workload namespace A should be silently dropped by namespace B's default-deny. "+
-				"state=%q output=%q", state, out)
+		expectDeniedLabeled(namespace, nil, eppIPB, eppPortB,
+			"workload namespace A should be silently dropped by namespace B's default-deny")
 	})
 
 	It("should DENY ingress from workload namespace B to workload namespace A", func() {
-		out, _ := probeTarget(namespaceB, connectCmd(eppIP, eppPort), probeTimeout, nil)
-		state := classifyResult(out)
-		Expect(state).To(Equal("blocked"),
-			"workload namespace B should be silently dropped by namespace A's default-deny. "+
-				"state=%q output=%q", state, out)
+		expectDeniedLabeled(namespaceB, nil, eppIP, eppPort,
+			"workload namespace B should be silently dropped by namespace A's default-deny")
 	})
 
 	// Regression guard: a pod in namespace A that *spoofs* namespace B's
@@ -579,12 +598,9 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		spoofedLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": fmt.Sprintf("%s-gateway", netpolModelB),
 		}
-		out, _ := probeTarget(namespace, connectCmd(eppIPB, eppPortB), probeTimeout, spoofedLabels)
-		state := classifyResult(out)
-		Expect(state).To(Equal("blocked"),
+		expectDeniedLabeled(namespace, spoofedLabels, eppIPB, eppPortB,
 			"a pod in namespace A carrying namespace B's gateway label must be silently dropped — "+
-				"labels do not grant cross-namespace trust under the post-X1 policy. state=%q output=%q",
-			state, out)
+				"labels do not grant cross-namespace trust under the post-X1 policy")
 	})
 
 	// ── North-South positive path ─────────────────────────────────────────
@@ -753,16 +769,26 @@ func readyEPPPodEndpoint(ctx context.Context, clientset *kubernetes.Clientset, n
 // looks like. Helps distinguish "policies missing" from "policies present
 // but unenforced by Cilium".
 //
+// `probeNS` is optional — pass "" to skip the probe-side dump. When
+// supplied, the helper also reports the probe namespace's labels and any
+// Istio-injection markers on probe pods in it, since either can cause a
+// probe to short-circuit NetworkPolicy enforcement (mesh mTLS makes the
+// destination see 127.0.0.1; namespace labels can match an unintended
+// `allowedIngressNamespaces` selector).
+//
 // It is intentionally lenient: every clientset call swallows errors and
 // degrades to a marker string, because the failure message is best-effort
 // and must never panic from inside Gomega's lazy formatter.
-func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kubernetes.Clientset, ns, targetIP string) string {
+func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kubernetes.Clientset, ns, targetIP string, probeNS ...string) string {
 	var b strings.Builder
 
 	// 1. List the NetworkPolicies in the workload namespace. If empty,
 	//    the modelharness Helm chart never rendered them (or they were
 	//    already torn down by the time we got here) — that alone fully
-	//    explains the canary reaching the EPP pod.
+	//    explains the canary reaching the EPP pod. Dump each ingress
+	//    rule's `from:` peers so a chart regression that accidentally
+	//    widens `allowedIngressNamespaces` (e.g. to include `default`)
+	//    is visible in the failure log without re-running with kubectl.
 	fmt.Fprintf(&b, "NetworkPolicies in %s:\n", ns)
 	nps, err := clientset.NetworkingV1().NetworkPolicies(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -771,9 +797,19 @@ func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kuberne
 		fmt.Fprintf(&b, "  <none found — modelharness chart did not render NetworkPolicies, or they were uninstalled>\n")
 	} else {
 		for _, np := range nps.Items {
-			fmt.Fprintf(&b, "  - %s (policyTypes=%v, ingressRules=%d, podSelector=%s)\n",
-				np.Name, np.Spec.PolicyTypes, len(np.Spec.Ingress),
+			fmt.Fprintf(&b, "  - %s (policyTypes=%v, podSelector=%s)\n",
+				np.Name, np.Spec.PolicyTypes,
 				formatPodSelector(np.Spec.PodSelector))
+			for i, rule := range np.Spec.Ingress {
+				if len(rule.From) == 0 {
+					fmt.Fprintf(&b, "      ingress[%d]: from=<all> (allow-all)\n", i)
+					continue
+				}
+				for j, peer := range rule.From {
+					fmt.Fprintf(&b, "      ingress[%d].from[%d]: %s\n",
+						i, j, formatNetworkPolicyPeer(peer))
+				}
+			}
 		}
 	}
 
@@ -810,7 +846,78 @@ func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kuberne
 	} else {
 		fmt.Fprintf(&b, "  %v\n", nsObj.Labels)
 	}
+
+	// 4. Probe-side dump. The probe namespace's labels expose any
+	//    accidental match against `allowedIngressNamespaces`. The probe
+	//    pod's container list + Istio annotations expose a smuggled-in
+	//    `istio-proxy` sidecar (which would wrap traffic in mTLS and
+	//    make the destination see `127.0.0.1`, trivially matching the
+	//    `podSelector: {}` intra-namespace clause and short-circuiting
+	//    the namespace deny rule). The probe creator sets
+	//    `sidecar.istio.io/inject: "false"` to avoid this, but a
+	//    cluster-wide mutating webhook can override the annotation.
+	for _, pns := range probeNS {
+		if pns == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "Probe namespace %s labels:\n", pns)
+		if nsObj, err := clientset.CoreV1().Namespaces().Get(ctx, pns, metav1.GetOptions{}); err != nil {
+			fmt.Fprintf(&b, "  <get error: %v>\n", err)
+		} else {
+			fmt.Fprintf(&b, "  %v\n", nsObj.Labels)
+		}
+		fmt.Fprintf(&b, "Probe pods in %s (istio sidecar check):\n", pns)
+		probePods, err := clientset.CoreV1().Pods(pns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			fmt.Fprintf(&b, "  <list error: %v>\n", err)
+			continue
+		}
+		any := false
+		for _, p := range probePods.Items {
+			if !strings.HasPrefix(p.Name, "netpol-probe-") && !strings.HasPrefix(p.Name, "netpol-canary-") {
+				continue
+			}
+			any = true
+			hasSidecar := false
+			for _, c := range p.Spec.Containers {
+				if c.Name == "istio-proxy" {
+					hasSidecar = true
+					break
+				}
+			}
+			_, sidecarStatus := p.Annotations["sidecar.istio.io/status"]
+			injectAnn := p.Annotations["sidecar.istio.io/inject"]
+			fmt.Fprintf(&b, "  - %s node=%s containers=%d hasIstioProxy=%v sidecarStatusAnnotation=%v inject=%q\n",
+				p.Name, p.Spec.NodeName, len(p.Spec.Containers), hasSidecar, sidecarStatus, injectAnn)
+		}
+		if !any {
+			fmt.Fprintf(&b, "  <no netpol-* probe pods found — probe was already torn down>\n")
+		}
+	}
 	return b.String()
+}
+
+// formatNetworkPolicyPeer renders a single `from:` entry compactly for
+// diagnostic output. Covers the three peer kinds in NetworkPolicyPeer:
+// podSelector (namespace-scoped to the policy), namespaceSelector (any
+// namespace whose labels match), and ipBlock (CIDR). Empty selectors
+// render as "<all>" because that is what `- podSelector: {}` and
+// `- namespaceSelector: {}` actually mean in policy semantics.
+func formatNetworkPolicyPeer(peer networkingv1.NetworkPolicyPeer) string {
+	parts := []string{}
+	if peer.PodSelector != nil {
+		parts = append(parts, "podSelector="+formatPodSelector(*peer.PodSelector))
+	}
+	if peer.NamespaceSelector != nil {
+		parts = append(parts, "namespaceSelector="+formatPodSelector(*peer.NamespaceSelector))
+	}
+	if peer.IPBlock != nil {
+		parts = append(parts, fmt.Sprintf("ipBlock=%s except=%v", peer.IPBlock.CIDR, peer.IPBlock.Except))
+	}
+	if len(parts) == 0 {
+		return "<empty peer>"
+	}
+	return strings.Join(parts, " ")
 }
 
 // formatPodSelector renders a LabelSelector compactly for diagnostic
