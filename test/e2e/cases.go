@@ -18,33 +18,12 @@ package e2e
 
 import (
 	"context"
-	"os"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
-
-// kedaScalerNamespace returns the namespace where keda + keda-kaito-scaler
-// are installed for the active E2E provider:
-//   - upstream (default) → "keda"          (helm-installed)
-//   - azure              → "kube-system"   (AKS managed KEDA add-on)
-//
-// Mirrors the KEDA_NAMESPACE derivation in hack/e2e/scripts/run-e2e-local.sh
-// and is consulted by test fixtures that need to allow ingress from KEDA
-// (e.g. the scaling case's NetworkPolicy allow-list).
-func kedaScalerNamespace() string {
-	if ns := os.Getenv("KEDA_NAMESPACE"); ns != "" {
-		return ns
-	}
-	switch os.Getenv("E2E_PROVIDER") {
-	case "azure":
-		return "kube-system"
-	default:
-		return "keda"
-	}
-}
 
 // Inference preset names. These are the underlying KAITO presets and become
 // the InferenceSet's spec.template.inference.preset.name. They do NOT appear
@@ -189,22 +168,20 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	},
 	CaseNetworkPolicyA: {
 		{
-			Name:                 "netpol-a",
-			Namespace:            "e2e-netpol-a",
-			Model:                presetPhi,
-			Replicas:             1,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "netpol-a",
+			Namespace:    "e2e-netpol-a",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseNetworkPolicyB: {
 		{
-			Name:                 "netpol-b",
-			Namespace:            "e2e-netpol-b",
-			Model:                presetPhi,
-			Replicas:             1,
-			InstanceType:         "Standard_NV36ads_A10_v5",
-			NetworkPolicyEnabled: true,
+			Name:         "netpol-b",
+			Namespace:    "e2e-netpol-b",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseFilterOrder: {
@@ -239,43 +216,8 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			EnableScaling:    true,
 			MaxReplicas:      2,
 			ScalingThreshold: 10, // low threshold to trigger scaling during tests
-			// Lock down East-West ingress while still letting
-			// keda-kaito-scaler (in the `keda` namespace) reach vLLM
-			// metric endpoints on shadow pods — without that allowance,
-			// KEDA can't observe vllm:num_requests_waiting and scale-up
-			// never fires. kaito-system is whitelisted as well so the
-			// gpu-node-mocker / kaito-workspace controllers retain
-			// optional direct-pod access for shadow-pod patching paths
-			// that don't go through the apiserver.
-			NetworkPolicyEnabled:           true,
-			NetworkPolicyAllowedNamespaces: []string{"keda", "kaito-system"},
 		},
 	},
-}
-
-// init wires provider-dependent fields into CaseDeployments. The KEDA
-// installation namespace switches between "keda" (upstream provider) and
-// "kube-system" (azure provider, AKS managed KEDA add-on), and the
-// scaling-case NetworkPolicy allow-list must follow.
-func init() {
-	kedaNS := kedaScalerNamespace()
-	if kedaNS == "keda" {
-		return // default already covers this
-	}
-	for i, dep := range CaseDeployments[CaseScaling] {
-		allowed := dep.NetworkPolicyAllowedNamespaces
-		// Replace the placeholder "keda" entry with the actual KEDA
-		// namespace; preserve the rest of the list verbatim.
-		updated := make([]string, 0, len(allowed))
-		for _, ns := range allowed {
-			if ns == "keda" {
-				updated = append(updated, kedaNS)
-			} else {
-				updated = append(updated, ns)
-			}
-		}
-		CaseDeployments[CaseScaling][i].NetworkPolicyAllowedNamespaces = updated
-	}
 }
 
 // CaseNamespace returns the namespace declared on the first deployment of
@@ -317,7 +259,7 @@ func InstallCase(caseName string) string {
 
 	ctx := context.Background()
 	first := CaseDeployments[caseName][0]
-	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled, first.NetworkPolicyEnabled, first.NetworkPolicyAllowedNamespaces)).To(Succeed(),
+	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled)).To(Succeed(),
 		"failed to ensure namespace %s for case %s", ns, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).

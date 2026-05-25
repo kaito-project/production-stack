@@ -38,6 +38,28 @@ import (
 
 const (
 	probeTimeout = 10 * time.Second
+
+	// probeImage is the agnhost image used by the upstream Kubernetes
+	// NetworkPolicy conformance suite. We use it instead of busybox
+	// because its `connect` subcommand returns documented, stable exit
+	// codes that distinguish "blocked" (silent drop / timeout, exit 1)
+	// from "refused" (TCP RST, exit 2) — letting the deny tests assert
+	// the *right* failure mode rather than treating any non-zero exit
+	// as success and silently passing if the EPP Service is misrouted.
+	//
+	// Pinned to the registry.k8s.io path (the k8s.gcr.io alias has been
+	// frozen since 2023) and a specific tag for reproducibility — the
+	// `latest` tag does not exist for this image.
+	probeImage = "registry.k8s.io/e2e-test-images/agnhost:2.47"
+
+	// probeConnectTimeout is the per-probe TCP connect timeout passed
+	// to `agnhost connect`. Bumped from busybox `nc -w 3` to absorb
+	// Cilium identity-propagation lag on 3-node AKS clusters where the
+	// source pod and destination pod land on different nodes — the
+	// destination node may not have the source identity programmed
+	// into its policy map for several seconds after the source pod
+	// reports Ready.
+	probeConnectTimeout = "5s"
 )
 
 var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func() {
@@ -127,9 +149,10 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		// Wait for NetworkPolicy enforcement to actually take effect on this
 		// cluster. On freshly created Cilium clusters the policy maps may take
 		// a few seconds to load even after pods report Ready. Use a single
-		// long-lived canary pod in an external namespace and probe with wget,
-		// which (unlike `nc -w` on busybox 1.36) sets a meaningful non-zero
-		// exit code when the connection is refused/blocked.
+		// long-lived canary pod in an external namespace and probe with
+		// `agnhost connect`, whose documented exit codes (1=blocked,
+		// 2=refused) let us distinguish enforced-deny from a misrouted
+		// destination — something busybox `nc -z` cannot do.
 		canaryNS := fmt.Sprintf("e2e-netpol-canary-%d", rand.Intn(900000)+100000)
 		probeNamespaces = append(probeNamespaces, canaryNS)
 		_, _ = clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
@@ -152,9 +175,13 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			ObjectMeta: metav1.ObjectMeta{Name: canaryPodName, Namespace: canaryNS},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
-					Name:    "probe",
-					Image:   "busybox:1.36",
-					Command: []string{"sh", "-c", "sleep 3600"},
+					Name:  "probe",
+					Image: probeImage,
+					// `agnhost pause` keeps the container alive
+					// indefinitely (equivalent to `sleep infinity`)
+					// without a shell wrapper, so the probe binary is
+					// PID 1 and ready to be exec'd against immediately.
+					Args: []string{"pause"},
 				}},
 			},
 		}, metav1.CreateOptions{})
@@ -173,14 +200,17 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		)
 		Eventually(func() bool {
 			pollAttempts++
-			// `nc -z -w 3` does a pure TCP probe and returns 0 on success,
-			// non-zero on refused/blocked/timeout. Echo the exit code to
-			// stdout because client-go's StreamWithContext returns nil even
-			// when the remote command exits non-zero, so we cannot rely on
-			// `err != nil` to mean "blocked".
+			// `agnhost connect` is a pure TCP probe with documented exit
+			// codes: 0 = connected, 1 = TIMEOUT (silent drop — what
+			// NetworkPolicy default-deny produces), 2 = REFUSED (TCP RST
+			// — destination unreachable but NOT blocked), 3 = DNS_ERROR,
+			// 4 = OTHER. Echo the exit code to stdout because client-go's
+			// StreamWithContext returns nil even when the remote command
+			// exits non-zero, so we cannot rely on `err != nil` to mean
+			// "blocked".
 			cmd := []string{"sh", "-c", fmt.Sprintf(
-				"nc -z -w 3 %s %d 2>&1; echo EXIT=$?",
-				eppIP, eppPort,
+				"/agnhost connect %s:%d --timeout=%s --protocol=tcp 2>&1; echo EXIT=$?",
+				eppIP, eppPort, probeConnectTimeout,
 			)}
 			req := clientset.CoreV1().RESTClient().Post().
 				Resource("pods").Name(canaryPodName).Namespace(canaryNS).
@@ -251,7 +281,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 						"Cilium may not be enforcing policies on this cluster, or the "+
 						"allow-inference-traffic rule is too permissive\n"+
 						"polled %d times; %d probes saw EXIT=0 (canary reached the EPP pod)\n"+
-						"last nc output: %q\nlast exec error: %q\n"+
+						"last agnhost connect output: %q\nlast exec error: %q\n"+
 						"eppIP=%s eppPort=%d canaryNS=%s\n"+
 						"--- diagnostics ---\n%s",
 					pollAttempts, connectedCount,
@@ -271,10 +301,11 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		UninstallCase(CaseNetworkPolicyB)
 	})
 
-	// probeTarget launches a busybox pod in probeNS and execs the given command.
-	// It returns the stdout output and any exec error. The caller decides how to
-	// interpret the result (e.g. err==nil means connectivity, stdout content for
-	// HTTP response validation). Optional labels can be applied to the probe pod.
+	// probeTarget launches an agnhost pod in probeNS and execs the given
+	// command. It returns the stdout output and any exec error. The caller
+	// decides how to interpret the result (e.g. EXIT=0 in stdout means
+	// connectivity, EXIT=2 means the destination refused the connection).
+	// Optional labels can be applied to the probe pod.
 	probeTarget := func(probeNS string, cmd []string, timeout time.Duration, labels map[string]string) (string, error) {
 		// Track probe namespaces for cleanup (skip pre-existing ones).
 		if probeNS != namespace && probeNS != "istio-system" && probeNS != "kube-system" && probeNS != "default" {
@@ -311,7 +342,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				// in mTLS and the EPP pod sees the source as 127.0.0.1
 				// (the local proxy), trivially matching
 				// `allow-inference-traffic`'s intra-pod selector and
-				// bypassing NetworkPolicy entirely. A bare busybox probe
+				// bypassing NetworkPolicy entirely. A bare agnhost probe
 				// is the only way to assert L3/L4 policy honestly.
 				Annotations: map[string]string{
 					"sidecar.istio.io/inject": "false",
@@ -319,9 +350,13 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{{
-					Name:    "probe",
-					Image:   "busybox:1.36",
-					Command: []string{"sh", "-c", "sleep 3600"},
+					Name:  "probe",
+					Image: probeImage,
+					// `agnhost pause` keeps the container alive
+					// indefinitely without a shell wrapper, so the probe
+					// binary is PID 1 and ready to be exec'd against
+					// immediately.
+					Args: []string{"pause"},
 				}},
 			},
 		}
@@ -365,35 +400,108 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		return stdout.String(), err
 	}
 
-	// ncCmd builds a TCP connectivity check using `nc -z` (zero I/O mode),
-	// which is the canonical probe form busybox 1.36's `nc` actually
-	// accepts (the bare `nc -w 3 HOST PORT` form is rejected with a usage
-	// banner). Exit code 0 ⇒ TCP handshake completed, non-zero ⇒ blocked,
-	// refused, or timed out — exactly what NetworkPolicy controls at L3/L4.
+	// connectCmd builds a TCP connectivity check using `agnhost connect`,
+	// the same probe binary the upstream Kubernetes NetworkPolicy
+	// conformance suite uses. Unlike busybox `nc -z`, agnhost has
+	// documented, stable exit codes that distinguish *why* a probe
+	// failed:
+	//   0 = connected
+	//   1 = TIMEOUT  (silent drop — what NetworkPolicy default-deny does)
+	//   2 = REFUSED  (TCP RST — destination is reachable but nothing is
+	//                 listening; means policy let the probe through and
+	//                 the test passing on this would be a silent bug)
+	//   3 = DNS_ERROR
+	//   4 = OTHER
 	//
-	// We MUST echo `EXIT=$?` because client-go's StreamWithContext returns
-	// nil even when the remote command exits non-zero, so the caller cannot
-	// rely on `streamErr != nil` to mean "blocked" (this is the same
-	// quirk the canary loop in BeforeAll already handles). Callers should
-	// inspect stdout via `connected()` instead of trusting the returned err.
-	ncCmd := func(targetIP string, targetPort int32) []string {
-		return []string{"sh", "-c", fmt.Sprintf("nc -z -w 3 %s %d 2>&1; echo EXIT=$?", targetIP, targetPort)}
+	// We MUST echo `EXIT=$?` because client-go's StreamWithContext
+	// returns nil even when the remote command exits non-zero, so the
+	// caller cannot rely on `streamErr != nil` to mean "blocked".
+	// Callers should inspect stdout via `classify()` instead of trusting
+	// the returned err.
+	connectCmd := func(targetIP string, targetPort int32) []string {
+		return []string{"sh", "-c", fmt.Sprintf(
+			"/agnhost connect %s:%d --timeout=%s --protocol=tcp 2>&1; echo EXIT=$?",
+			targetIP, targetPort, probeConnectTimeout,
+		)}
 	}
 
-	// connected interprets the stdout/stderr of an ncCmd run via probeTarget.
-	// Returns true iff the embedded EXIT=0 marker is present, meaning the
-	// TCP handshake completed.
+	// classifyResult interprets the stdout/stderr of a connectCmd run via
+	// probeTarget into one of four states. "blocked" is what the deny
+	// tests expect — a NetworkPolicy default-deny silently drops the SYN
+	// and agnhost reports TIMEOUT (exit 1). "refused" means the SYN
+	// reached the destination's host but no listener answered, which is
+	// NOT a NetworkPolicy success and should fail the deny tests loud.
+	// "indeterminate" covers cases where the SPDY stream got torn down
+	// before agnhost printed an exit marker (rare; treated as
+	// not-connected by `connected()` but exposed separately so callers
+	// can distinguish "couldn't tell" from "definitely blocked").
+	classifyResult := func(out string) string {
+		switch {
+		case strings.Contains(out, "EXIT=0"):
+			return "connected"
+		case strings.Contains(out, "EXIT=1"):
+			return "blocked"
+		case strings.Contains(out, "EXIT=2"):
+			return "refused"
+		case strings.Contains(out, "EXIT="):
+			return "other"
+		default:
+			return "indeterminate"
+		}
+	}
+
+	// connected returns true iff the probe completed a TCP handshake.
+	// Backwards-compatible shim for assertions that only care about the
+	// connected/not-connected boolean — prefer classifyResult() in new
+	// code so the deny tests can distinguish "blocked by policy"
+	// (the wanted outcome) from "refused by an empty endpoint"
+	// (a bug that policy did NOT block).
 	connected := func(out string) bool {
-		return strings.Contains(out, "EXIT=0")
+		return classifyResult(out) == "connected"
 	}
 
-	// probe is a convenience wrapper that checks TCP connectivity to the
-	// namespace-A EPP pod (see the `eppIP` declaration for why EPP, not
-	// the model pod, is the policy-enforcement sentinel under
-	// gpu-node-mocker).
-	probe := func(probeNS string) bool {
-		out, _ := probeTarget(probeNS, ncCmd(eppIP, eppPort), probeTimeout, nil)
-		return connected(out)
+	// probeClassified is a convenience wrapper that checks TCP connectivity
+	// to the namespace-A EPP pod (see the `eppIP` declaration for why EPP,
+	// not the model pod, is the policy-enforcement sentinel under
+	// gpu-node-mocker). Returns the classified result directly so callers
+	// can distinguish "blocked" (the wanted deny outcome) from "refused"
+	// (a bug where the destination is reachable but unlistening — policy
+	// did NOT block the probe).
+	probeClassified := func(probeNS string) (string, string) {
+		out, _ := probeTarget(probeNS, connectCmd(eppIP, eppPort), probeTimeout, nil)
+		return classifyResult(out), out
+	}
+
+	// expectDenied probes from probeNS to the namespace-A EPP pod and
+	// asserts the probe is silently dropped. On any non-"blocked" outcome,
+	// it attaches a full enforcement-diagnostic snapshot (rendered policy
+	// `from:` peers, EPP pod identity, probe namespace labels, probe pod
+	// container list + Istio injection markers) to the spec report
+	// BEFORE failing — otherwise the AfterAll teardown wipes the
+	// probe-side state and the failing CI log shows only the one-line
+	// "expected connected to equal blocked" with no way to root-cause.
+	expectDenied := func(probeNS, msg string) {
+		state, out := probeClassified(probeNS)
+		if state != "blocked" {
+			AddReportEntry("netpol-deny-diag",
+				networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP, probeNS))
+		}
+		Expect(state).To(Equal("blocked"),
+			"%s. state=%q output=%q", msg, state, out)
+	}
+
+	// expectDeniedLabeled is the labeled-probe variant of expectDenied,
+	// used by tests that need to assert that label-only spoofing across
+	// namespaces does NOT grant access (the X1 regression guard).
+	expectDeniedLabeled := func(probeNS string, labels map[string]string, targetIP string, targetPort int32, msg string) {
+		out, _ := probeTarget(probeNS, connectCmd(targetIP, targetPort), probeTimeout, labels)
+		state := classifyResult(out)
+		if state != "blocked" {
+			AddReportEntry("netpol-deny-diag",
+				networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, targetIP, probeNS))
+		}
+		Expect(state).To(Equal("blocked"),
+			"%s. state=%q output=%q", msg, state, out)
 	}
 
 	// ── Enforcement baseline ──────────────────────────────────────────────
@@ -408,38 +516,48 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		// pipeline (which only the Gateway pod can reach), not the policy.
 		// We probe the EPP pod (not the model pod) for the same reason the
 		// deny tests do — see `eppIP` declaration.
-		out, _ := probeTarget(namespace, ncCmd(eppIP, eppPort), probeTimeout, nil)
+		out, _ := probeTarget(namespace, connectCmd(eppIP, eppPort), probeTimeout, nil)
 		Expect(connected(out)).To(BeTrue(),
-			"intra-namespace TCP reach to EPP pod should succeed — if this fails, NetworkPolicy is over-blocking. nc output: %q", out)
+			"intra-namespace TCP reach to EPP pod should succeed — if this fails, NetworkPolicy is over-blocking. agnhost output: %q", out)
 	})
 
 	It("baseline: should DENY ingress from an external namespace (proves enforcement is active)", func() {
-		allowed := probe("external-ns")
-		Expect(allowed).To(BeFalse(),
-			"external namespace reached model pod — NetworkPolicy enforcement is NOT active; "+
-				"remaining deny tests are unreliable. Check that the CNI plugin supports "+
-				"NetworkPolicy and that policies were applied correctly.")
+		state, out := probeClassified("external-ns")
+		Expect(state).To(Equal("blocked"),
+			"external namespace should be silently dropped by default-deny-ingress (TIMEOUT/EXIT=1). "+
+				"Got state=%q output=%q. If state=='connected', NetworkPolicy enforcement is NOT active and "+
+				"remaining deny tests are unreliable. If state=='refused', the EPP Service is misconfigured — "+
+				"policy let the probe through but no listener answered.", state, out)
 	})
 
 	// ── Deny tests ────────────────────────────────────────────────────────
 	It("should DENY ingress from a non-gateway pod in default namespace", func() {
-		Expect(probe("default")).To(BeFalse(),
-			"traffic from a non-gateway pod in default should be blocked")
+		expectDenied("default", "non-gateway pod in default should be silently dropped")
 	})
 
 	It("should DENY ingress from istio-system namespace", func() {
-		Expect(probe("istio-system")).To(BeFalse(),
-			"traffic from istio-system should be blocked — only the gateway pod in default is allowed")
+		expectDenied("istio-system",
+			"istio-system should be silently dropped — only the gateway pod in default is allowed")
 	})
 
 	It("should DENY ingress from a random namespace", func() {
-		Expect(probe("random-ns")).To(BeFalse(),
-			"traffic from random-ns should be blocked by default-deny-ingress")
+		expectDenied("random-ns",
+			"random-ns should be silently dropped by default-deny-ingress")
 	})
 
-	It("should DENY ingress from kube-system namespace", func() {
-		Expect(probe("kube-system")).To(BeFalse(),
-			"traffic from kube-system should be blocked by default-deny-ingress")
+	It("should ALLOW ingress from kube-system namespace (chart allowlist)", func() {
+		// kube-system is included in modelharness's
+		// `allowedIngressNamespaces` defaults so cluster-control-plane
+		// components (kube-proxy health probes, konnectivity agent,
+		// kubelet exec proxy, etc.) can reach EPP / vLLM. If this
+		// assertion fails, the chart's `allow-inference-traffic` rule
+		// has regressed — verify charts/modelharness/values.yaml still
+		// lists "kube-system" under networkPolicy.allowedIngressNamespaces.
+		state, out := probeClassified("kube-system")
+		Expect(state).To(Equal("connected"),
+			"kube-system should be allowed by allow-inference-traffic — "+
+				"see networkPolicy.allowedIngressNamespaces in modelharness values.yaml. "+
+				"state=%q output=%q", state, out)
 	})
 
 	// ── Allow tests ───────────────────────────────────────────────────────
@@ -453,23 +571,20 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
-		out, _ := probeTarget("default", ncCmd(eppIP, eppPort), probeTimeout, gatewayLabels)
-		Expect(connected(out)).To(BeFalse(),
-			"gateway-labeled pod in default should NOT be allowed to TCP-connect to the EPP pod — "+
-				"only the in-namespace gateway pod is a trusted ingress source. nc output: %q", out)
+		expectDeniedLabeled("default", gatewayLabels, eppIP, eppPort,
+			"gateway-labeled pod in default should be silently dropped — only the in-namespace "+
+				"gateway pod is a trusted ingress source")
 	})
 
 	// ── Cross-namespace isolation ─────────────────────────────────────────
 	It("should DENY ingress from workload namespace A to workload namespace B", func() {
-		out, _ := probeTarget(namespace, ncCmd(eppIPB, eppPortB), probeTimeout, nil)
-		Expect(connected(out)).To(BeFalse(),
-			"workload namespace A should not be able to reach EPP pods in workload namespace B. nc output: %q", out)
+		expectDeniedLabeled(namespace, nil, eppIPB, eppPortB,
+			"workload namespace A should be silently dropped by namespace B's default-deny")
 	})
 
 	It("should DENY ingress from workload namespace B to workload namespace A", func() {
-		out, _ := probeTarget(namespaceB, ncCmd(eppIP, eppPort), probeTimeout, nil)
-		Expect(connected(out)).To(BeFalse(),
-			"workload namespace B should not be able to reach EPP pods in workload namespace A. nc output: %q", out)
+		expectDeniedLabeled(namespaceB, nil, eppIP, eppPort,
+			"workload namespace B should be silently dropped by namespace A's default-deny")
 	})
 
 	// Regression guard: a pod in namespace A that *spoofs* namespace B's
@@ -483,10 +598,9 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		spoofedLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": fmt.Sprintf("%s-gateway", netpolModelB),
 		}
-		out, _ := probeTarget(namespace, ncCmd(eppIPB, eppPortB), probeTimeout, spoofedLabels)
-		Expect(connected(out)).To(BeFalse(),
-			"a pod in namespace A carrying namespace B's gateway label must NOT reach EPP pods in B — "+
-				"labels do not grant cross-namespace trust under the post-X1 policy. nc output: %q", out)
+		expectDeniedLabeled(namespace, spoofedLabels, eppIPB, eppPortB,
+			"a pod in namespace A carrying namespace B's gateway label must be silently dropped — "+
+				"labels do not grant cross-namespace trust under the post-X1 policy")
 	})
 
 	// ── North-South positive path ─────────────────────────────────────────
@@ -516,11 +630,11 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		Expect(gwPort).To(BeNumerically(">", 0), "gateway Service does not expose port 80")
 
 		out, _ := probeTarget("e2e-netpol-external-client",
-			ncCmd(svc.Spec.ClusterIP, gwPort), probeTimeout, nil)
+			connectCmd(svc.Spec.ClusterIP, gwPort), probeTimeout, nil)
 		Expect(connected(out)).To(BeTrue(),
 			"external-namespace pod should be allowed to TCP-connect to the gateway pod via Service ClusterIP — "+
 				"if this fails, the workload-namespace NetworkPolicy is over-restrictive and is silently relying on "+
-				"apiserver-mediated paths (port-forward / kubelet) for reachability. nc output: %q", out)
+				"apiserver-mediated paths (port-forward / kubelet) for reachability. agnhost output: %q", out)
 	})
 })
 
@@ -655,16 +769,26 @@ func readyEPPPodEndpoint(ctx context.Context, clientset *kubernetes.Clientset, n
 // looks like. Helps distinguish "policies missing" from "policies present
 // but unenforced by Cilium".
 //
+// `probeNS` is optional — pass "" to skip the probe-side dump. When
+// supplied, the helper also reports the probe namespace's labels and any
+// Istio-injection markers on probe pods in it, since either can cause a
+// probe to short-circuit NetworkPolicy enforcement (mesh mTLS makes the
+// destination see 127.0.0.1; namespace labels can match an unintended
+// `allowedIngressNamespaces` selector).
+//
 // It is intentionally lenient: every clientset call swallows errors and
 // degrades to a marker string, because the failure message is best-effort
 // and must never panic from inside Gomega's lazy formatter.
-func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kubernetes.Clientset, ns, targetIP string) string {
+func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kubernetes.Clientset, ns, targetIP string, probeNS ...string) string {
 	var b strings.Builder
 
 	// 1. List the NetworkPolicies in the workload namespace. If empty,
 	//    the modelharness Helm chart never rendered them (or they were
 	//    already torn down by the time we got here) — that alone fully
-	//    explains the canary reaching the EPP pod.
+	//    explains the canary reaching the EPP pod. Dump each ingress
+	//    rule's `from:` peers so a chart regression that accidentally
+	//    widens `allowedIngressNamespaces` (e.g. to include `default`)
+	//    is visible in the failure log without re-running with kubectl.
 	fmt.Fprintf(&b, "NetworkPolicies in %s:\n", ns)
 	nps, err := clientset.NetworkingV1().NetworkPolicies(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -673,9 +797,19 @@ func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kuberne
 		fmt.Fprintf(&b, "  <none found — modelharness chart did not render NetworkPolicies, or they were uninstalled>\n")
 	} else {
 		for _, np := range nps.Items {
-			fmt.Fprintf(&b, "  - %s (policyTypes=%v, ingressRules=%d, podSelector=%s)\n",
-				np.Name, np.Spec.PolicyTypes, len(np.Spec.Ingress),
+			fmt.Fprintf(&b, "  - %s (policyTypes=%v, podSelector=%s)\n",
+				np.Name, np.Spec.PolicyTypes,
 				formatPodSelector(np.Spec.PodSelector))
+			for i, rule := range np.Spec.Ingress {
+				if len(rule.From) == 0 {
+					fmt.Fprintf(&b, "      ingress[%d]: from=<all> (allow-all)\n", i)
+					continue
+				}
+				for j, peer := range rule.From {
+					fmt.Fprintf(&b, "      ingress[%d].from[%d]: %s\n",
+						i, j, formatNetworkPolicyPeer(peer))
+				}
+			}
 		}
 	}
 
@@ -712,7 +846,78 @@ func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kuberne
 	} else {
 		fmt.Fprintf(&b, "  %v\n", nsObj.Labels)
 	}
+
+	// 4. Probe-side dump. The probe namespace's labels expose any
+	//    accidental match against `allowedIngressNamespaces`. The probe
+	//    pod's container list + Istio annotations expose a smuggled-in
+	//    `istio-proxy` sidecar (which would wrap traffic in mTLS and
+	//    make the destination see `127.0.0.1`, trivially matching the
+	//    `podSelector: {}` intra-namespace clause and short-circuiting
+	//    the namespace deny rule). The probe creator sets
+	//    `sidecar.istio.io/inject: "false"` to avoid this, but a
+	//    cluster-wide mutating webhook can override the annotation.
+	for _, pns := range probeNS {
+		if pns == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "Probe namespace %s labels:\n", pns)
+		if nsObj, err := clientset.CoreV1().Namespaces().Get(ctx, pns, metav1.GetOptions{}); err != nil {
+			fmt.Fprintf(&b, "  <get error: %v>\n", err)
+		} else {
+			fmt.Fprintf(&b, "  %v\n", nsObj.Labels)
+		}
+		fmt.Fprintf(&b, "Probe pods in %s (istio sidecar check):\n", pns)
+		probePods, err := clientset.CoreV1().Pods(pns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			fmt.Fprintf(&b, "  <list error: %v>\n", err)
+			continue
+		}
+		any := false
+		for _, p := range probePods.Items {
+			if !strings.HasPrefix(p.Name, "netpol-probe-") && !strings.HasPrefix(p.Name, "netpol-canary-") {
+				continue
+			}
+			any = true
+			hasSidecar := false
+			for _, c := range p.Spec.Containers {
+				if c.Name == "istio-proxy" {
+					hasSidecar = true
+					break
+				}
+			}
+			_, sidecarStatus := p.Annotations["sidecar.istio.io/status"]
+			injectAnn := p.Annotations["sidecar.istio.io/inject"]
+			fmt.Fprintf(&b, "  - %s node=%s containers=%d hasIstioProxy=%v sidecarStatusAnnotation=%v inject=%q\n",
+				p.Name, p.Spec.NodeName, len(p.Spec.Containers), hasSidecar, sidecarStatus, injectAnn)
+		}
+		if !any {
+			fmt.Fprintf(&b, "  <no netpol-* probe pods found — probe was already torn down>\n")
+		}
+	}
 	return b.String()
+}
+
+// formatNetworkPolicyPeer renders a single `from:` entry compactly for
+// diagnostic output. Covers the three peer kinds in NetworkPolicyPeer:
+// podSelector (namespace-scoped to the policy), namespaceSelector (any
+// namespace whose labels match), and ipBlock (CIDR). Empty selectors
+// render as "<all>" because that is what `- podSelector: {}` and
+// `- namespaceSelector: {}` actually mean in policy semantics.
+func formatNetworkPolicyPeer(peer networkingv1.NetworkPolicyPeer) string {
+	parts := []string{}
+	if peer.PodSelector != nil {
+		parts = append(parts, "podSelector="+formatPodSelector(*peer.PodSelector))
+	}
+	if peer.NamespaceSelector != nil {
+		parts = append(parts, "namespaceSelector="+formatPodSelector(*peer.NamespaceSelector))
+	}
+	if peer.IPBlock != nil {
+		parts = append(parts, fmt.Sprintf("ipBlock=%s except=%v", peer.IPBlock.CIDR, peer.IPBlock.Except))
+	}
+	if len(parts) == 0 {
+		return "<empty peer>"
+	}
+	return strings.Join(parts, " ")
 }
 
 // formatPodSelector renders a LabelSelector compactly for diagnostic
