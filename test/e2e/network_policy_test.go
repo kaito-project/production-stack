@@ -100,16 +100,21 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		clientset, err = utils.GetK8sClientset()
 		Expect(err).NotTo(HaveOccurred(), "failed to create k8s clientset")
 
-		// Install both workload namespaces. We use the shared InstallCase
-		// here (modelharness → modeldeployment) and rely on
-		// ensureCiliumEndpointEnforcing below to recover from the AKS
-		// Cilium overlay race: an earlier attempt to pre-warm Cilium's
-		// per-namespace policy compile before creating the EPP did not
-		// help, because cilium compiles policy per-identity and the
-		// warmup pod's labels produce a different identity than the EPP.
-		// The only reliable fix is to detect stuck CiliumEndpoints after
-		// the EPP exists and force a fresh allocation by deleting the
-		// pod — see ensureCiliumEndpointEnforcing.
+		// Install both workload namespaces. The canary loop below is
+		// the source of truth for "is enforcement on?" — it probes the
+		// dataplane directly via `agnhost connect`. Earlier branches
+		// of this file tried to gate on the CiliumEndpoint
+		// `status.policy.ingress.enforcing` field as a faster signal,
+		// but three rounds of CI evidence (runs 26430654933 /
+		// 26431394132 / 26432081380) showed that field stays false
+		// indefinitely on AKS Cilium overlay even after pod
+		// recreation, NetworkPolicy delete+create, AND cilium-agent
+		// restart on the EPP's node. The wedge survived every recovery
+		// we threw at the supposed root cause, which means either the
+		// field is lying (enforcement actually IS on, the metadata just
+		// never settles) or the canary will still hang for 5 minutes.
+		// Either way, the canary loop is the only honest test — delete
+		// the gate and let it run.
 		InstallCase(CaseNetworkPolicyA)
 		InstallCase(CaseNetworkPolicyB)
 
@@ -152,18 +157,6 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		eppIPB, eppPortB = readyEPPPodEndpoint(ctx, clientset, namespaceB, netpolModelB)
 		Expect(eppIPB).NotTo(BeEmpty(), "could not find a ready EPP pod IP in %s", namespaceB)
 		Expect(eppPortB).To(BeNumerically(">", 0), "could not determine EPP pod port in %s", namespaceB)
-
-		// AKS Cilium overlay race recovery: ensure the EPP pod's
-		// CiliumEndpoint advertises ingress.enforcing=true. If it does
-		// not within 60s, delete the EPP pod so its Deployment recreates
-		// it with a fresh CiliumEndpoint allocation (up to maxRetries
-		// cycles). Returns the (possibly new) EPP pod IP, which the deny
-		// / cross-namespace probes below target. Without this gate, an
-		// EPP that landed in the racy window between NetworkPolicy apply
-		// and cilium compile keeps enforcing=false indefinitely, and the
-		// canary loop below would spin for 5 minutes before failing.
-		eppIP = ensureCiliumEndpointEnforcing(ctx, clientset, namespace, netpolModelA, eppIP)
-		eppIPB = ensureCiliumEndpointEnforcing(ctx, clientset, namespaceB, netpolModelB, eppIPB)
 
 		// Wait for NetworkPolicy enforcement to actually take effect on this
 		// cluster. On freshly created Cilium clusters the policy maps may take
@@ -1048,298 +1041,6 @@ func collectCiliumDiagnostics(ctx context.Context, clientset *kubernetes.Clients
 	}
 }
 
-// waitForCiliumEndpointEnforcing polls the CiliumEndpoint backing the pod
-// at `targetIP` in `ns` and fails the current Ginkgo spec if its
-// status.policy.ingress.enforcing does not flip to true within the
-// timeout.
-//
-// Background: AKS clusters running with `--network-dataplane cilium
-// --network-policy cilium` exhibit a race where a pod created in the
-// narrow window between a NetworkPolicy apply and cilium-agent's policy
-// compile lands with enforcing=false on its CiliumEndpoint and stays
-// that way indefinitely. The K8s NetworkPolicies look correct, cilium-
-// agent is healthy, but traffic to the affected endpoint is silently
-// admitted because the eBPF map for that identity has no rules
-// programmed. Symptom: the canary probe loop sees EXIT=0 forever.
-//
-// The fix is to wait for the CiliumEndpoint to advertise enforcing=true
-// before starting probes. If it never flips (the race triggered and is
-// stuck), this helper fails the BeforeAll with a Cilium-specific
-// message — turning a 5-minute generic timeout into a 60-second
-// actionable one.
-//
-// Best-effort: on non-Cilium clusters or when the CRD is missing, the
-// helper logs the situation and returns without failing, so the suite
-// remains portable to kind / OSS Kubernetes clusters.
-// ensureCiliumEndpointEnforcing makes sure the EPP pod currently
-// resolving to `targetIP` in `ns` has a CiliumEndpoint that advertises
-// status.policy.ingress.enforcing == true. On failure, it deletes the
-// EPP pod so the parent Deployment recreates it, waits for the
-// replacement to be ready, and re-checks — up to maxRetries cycles.
-// Returns the (possibly new) EPP pod IP that callers should use for
-// probing.
-//
-// Why delete-and-retry rather than just polling: the AKS Cilium overlay
-// race produces *stuck* CiliumEndpoints. The endpoint is in state=ready
-// with a valid identity, but its policy.ingress.enforcing flag never
-// flips because cilium-agent's reconcile happened before the policy was
-// known and was never re-triggered for that identity. Polling does not
-// unstick it; only a new endpoint allocation does. The pre-warm
-// (installNetpolCase Phase 2) reduces but does not eliminate this race
-// because Cilium compiles policy per-identity and the EPP gets a
-// different identity than the warmup pod.
-//
-// Best-effort: on non-Cilium clusters or when the CRD is missing, the
-// helper logs and returns targetIP unchanged so the suite remains
-// portable to kind / OSS K8s.
-// ensureCiliumEndpointEnforcing makes sure the EPP pod resolving to
-// `targetIP` in `ns` has a CiliumEndpoint that advertises
-// status.policy.ingress.enforcing == true. On failure, it restarts the
-// cilium-agent pod on the EPP's node so the dataplane rebuilds its
-// policy maps from scratch for every local endpoint (including the
-// stuck EPP identity), then re-checks. Up to maxRetries cycles.
-// Returns targetIP unchanged — the EPP pod is never disturbed.
-//
-// Why restart-cilium-agent rather than recreate-policy or delete-the-pod:
-// the AKS Cilium overlay race produces *stuck* CiliumEndpoints whose
-// status.policy.ingress.enforcing flag never flips. Empirically:
-//   - Run 26430654933 (pod-delete recovery): all 3 EPP recreations got
-//     the same Cilium identity 26694; Cilium hashes identity from the
-//     pod's full label set so EPP replicas always collide and inherit
-//     the same wedged policy program.
-//   - Run 26431394132 (NetworkPolicy recreate): identity 10406
-//     remained stuck across 2 full delete+create cycles of the
-//     namespace's NetworkPolicies, so cilium-agent's reconciliation
-//     does not unwedge the local policy map either.
-//
-// The stuck state is held inside cilium-agent's per-identity policy
-// table on the node, and only restarting the agent reliably rebuilds
-// it. This touches kube-system, so it's gated behind two failed
-// attempts and a tight CRD probe — non-Cilium clusters skip the
-// recovery entirely.
-//
-// Best-effort: on non-Cilium clusters or when the CRD is missing, the
-// helper logs and returns targetIP unchanged so the suite remains
-// portable to kind / OSS K8s.
-func ensureCiliumEndpointEnforcing(ctx context.Context, clientset *kubernetes.Clientset, ns, deploymentName, targetIP string) string {
-	const (
-		perAttemptTimeout = 60 * time.Second
-		pollInterval      = 2 * time.Second
-		maxRetries        = 2 // initial attempt + 2 cilium-agent restarts
-	)
-	_ = deploymentName // kept in the signature so callers can re-supply
-
-	dyn, derr := utils.GetDynamicClient()
-	if derr != nil {
-		GinkgoWriter.Printf("ensureCiliumEndpointEnforcing: dynamic client unavailable (%v) — skipping Cilium enforcement gate for %s/%s\n", derr, ns, targetIP)
-		return targetIP
-	}
-	cepGVR := schema.GroupVersionResource{
-		Group: "cilium.io", Version: "v2", Resource: "ciliumendpoints",
-	}
-
-	// Probe once to see if the CRD is registered at all. If not, this is
-	// not a Cilium cluster — silently skip so kind / OSS K8s users can
-	// still run the suite.
-	if _, err := dyn.Resource(cepGVR).Namespace(ns).List(ctx, metav1.ListOptions{Limit: 1}); err != nil {
-		GinkgoWriter.Printf("ensureCiliumEndpointEnforcing: CiliumEndpoint CRD not available (%v) — skipping enforcement gate for %s/%s\n", err, ns, targetIP)
-		return targetIP
-	}
-
-	var (
-		lastState      string
-		lastIngressEnf bool
-		lastIdentity   int64
-		lastName       string
-		foundEndpoint  bool
-	)
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// Reset capture state for this attempt so the failure message
-		// reflects the current attempt's CEP, not a stale one.
-		foundEndpoint = false
-		lastName, lastState = "", ""
-		lastIdentity = 0
-		lastIngressEnf = false
-
-		deadline := time.Now().Add(perAttemptTimeout)
-		enforced := false
-		for time.Now().Before(deadline) {
-			ceps, err := dyn.Resource(cepGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
-			if err == nil {
-				for _, cep := range ceps.Items {
-					addrs, _, _ := unstructuredNestedSlice(cep.Object, "status", "networking", "addressing")
-					match := false
-					for _, a := range addrs {
-						if m, ok := a.(map[string]any); ok {
-							if v, _ := m["ipv4"].(string); v == targetIP {
-								match = true
-								break
-							}
-						}
-					}
-					if !match {
-						continue
-					}
-					foundEndpoint = true
-					lastName = cep.GetName()
-					lastState, _, _ = unstructuredNestedString(cep.Object, "status", "state")
-					lastIdentity, _, _ = unstructuredNestedInt64(cep.Object, "status", "identity", "id")
-					lastIngressEnf, _, _ = unstructuredNestedBool(cep.Object, "status", "policy", "ingress", "enforcing")
-					if lastIngressEnf {
-						enforced = true
-					}
-					break
-				}
-			}
-			if enforced {
-				break
-			}
-			time.Sleep(pollInterval)
-		}
-		if enforced {
-			return targetIP
-		}
-
-		if attempt == maxRetries {
-			break
-		}
-
-		// Stuck. Recover by restarting cilium-agent on the EPP's node.
-		// Neither pod-recreation nor NetworkPolicy delete+create
-		// unwedges this state empirically (see func doc), because the
-		// stuck program lives inside the agent's per-identity policy
-		// table on the node. Locate the EPP's node from the matching
-		// pod's IP, then delete the kube-system cilium pod scheduled
-		// there. The DaemonSet will reschedule it within seconds and
-		// the replacement reloads its policy maps from scratch.
-		eppNode := findNodeForPodIP(ctx, clientset, ns, targetIP)
-		if eppNode == "" {
-			GinkgoWriter.Printf(
-				"ensureCiliumEndpointEnforcing: attempt %d/%d — CEP %s/%s "+
-					"(identity=%d state=%s) stuck with ingress.enforcing=%v; "+
-					"could not resolve EPP node from IP %s — skipping cilium-agent restart\n",
-				attempt+1, maxRetries+1, ns, lastName, lastIdentity, lastState, lastIngressEnf, targetIP)
-			continue
-		}
-		GinkgoWriter.Printf(
-			"ensureCiliumEndpointEnforcing: attempt %d/%d — CEP %s/%s "+
-				"(identity=%d state=%s) stuck with ingress.enforcing=%v; "+
-				"restarting cilium-agent on node %s to force dataplane policy rebuild\n",
-			attempt+1, maxRetries+1, ns, lastName, lastIdentity, lastState, lastIngressEnf, eppNode)
-		restartCiliumAgentOnNode(ctx, clientset, eppNode)
-	}
-
-	// All retries exhausted.
-	Expect(false).To(BeTrue(),
-		func() string {
-			if !foundEndpoint {
-				return fmt.Sprintf(
-					"no CiliumEndpoint with IP %s appeared in %s after %d retries — "+
-						"cilium-agent never programmed the EPP endpoint. Check cilium-agent "+
-						"pod health on the EPP's node.",
-					targetIP, ns, maxRetries)
-			}
-			return fmt.Sprintf(
-				"EPP CiliumEndpoint %s/%s (identity=%d state=%s) stuck with "+
-					"ingress.enforcing=%v even after %d cilium-agent restarts on the EPP's "+
-					"node — the AKS Cilium overlay race is not recoverable on this cluster "+
-					"via in-test means. The agent's per-identity policy table refuses to "+
-					"program rules for this identity even after a fresh agent process. "+
-					"Likely a CRD reconciliation bug or a cluster-wide cilium-operator issue.",
-				ns, lastName, lastIdentity, lastState, lastIngressEnf, maxRetries)
-		}())
-	return targetIP
-}
-
-// findNodeForPodIP returns the spec.nodeName of the pod in `ns` whose
-// status.podIP equals `targetIP`, or "" if no such pod exists / on
-// list error. Best-effort lookup used by the cilium-agent restart
-// recovery path.
-func findNodeForPodIP(ctx context.Context, clientset *kubernetes.Clientset, ns, targetIP string) string {
-	pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		GinkgoWriter.Printf("findNodeForPodIP: list pods in %s failed: %v\n", ns, err)
-		return ""
-	}
-	for _, p := range pods.Items {
-		if p.Status.PodIP == targetIP {
-			return p.Spec.NodeName
-		}
-	}
-	return ""
-}
-
-// restartCiliumAgentOnNode deletes the kube-system cilium-agent pod
-// scheduled on `nodeName` and waits up to 90 seconds for the
-// DaemonSet's replacement to become Ready. cilium-agent rebuilds its
-// per-identity policy maps from scratch on startup, which is the
-// only mechanism that reliably unwedges a CiliumEndpoint whose
-// status.policy.ingress.enforcing flag is stuck false (see
-// ensureCiliumEndpointEnforcing for the empirical evidence).
-//
-// Best-effort: failures are logged and swallowed so the surrounding
-// ensureCiliumEndpointEnforcing retry loop gets to make the final
-// pass/fail determination based on whether enforcement actually came
-// back up — not on transient delete / list errors.
-func restartCiliumAgentOnNode(ctx context.Context, clientset *kubernetes.Clientset, nodeName string) {
-	const (
-		readyTimeout = 90 * time.Second
-		pollInterval = 2 * time.Second
-	)
-	pods, err := clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
-		LabelSelector: "k8s-app=cilium",
-		FieldSelector: "spec.nodeName=" + nodeName,
-	})
-	if err != nil {
-		GinkgoWriter.Printf("restartCiliumAgentOnNode: list cilium pods on %s failed: %v\n", nodeName, err)
-		return
-	}
-	if len(pods.Items) == 0 {
-		GinkgoWriter.Printf("restartCiliumAgentOnNode: no cilium-agent pod found on node %s (cluster may not be Cilium-backed)\n", nodeName)
-		return
-	}
-	victim := pods.Items[0]
-	oldUID := victim.UID
-	GinkgoWriter.Printf("restartCiliumAgentOnNode: deleting kube-system/%s (uid=%s) on node %s\n", victim.Name, oldUID, nodeName)
-	if err := clientset.CoreV1().Pods("kube-system").Delete(ctx, victim.Name, metav1.DeleteOptions{}); err != nil {
-		GinkgoWriter.Printf("restartCiliumAgentOnNode: delete kube-system/%s failed: %v\n", victim.Name, err)
-		return
-	}
-
-	deadline := time.Now().Add(readyTimeout)
-	for time.Now().Before(deadline) {
-		pods, err := clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
-			LabelSelector: "k8s-app=cilium",
-			FieldSelector: "spec.nodeName=" + nodeName,
-		})
-		if err == nil {
-			for _, p := range pods.Items {
-				// Skip the terminating victim.
-				if p.UID == oldUID {
-					continue
-				}
-				if p.Status.Phase != corev1.PodRunning {
-					continue
-				}
-				for _, cs := range p.Status.ContainerStatuses {
-					if cs.Name == "cilium-agent" && cs.Ready {
-						GinkgoWriter.Printf("restartCiliumAgentOnNode: replacement kube-system/%s on %s is Ready\n", p.Name, nodeName)
-						// Give the freshly-started agent a few seconds
-						// to finish its initial endpoint regeneration
-						// pass before the caller re-checks CiliumEndpoint
-						// status. The Ready gate only proves the gRPC
-						// API is up.
-						time.Sleep(5 * time.Second)
-						return
-					}
-				}
-			}
-		}
-		time.Sleep(pollInterval)
-	}
-	GinkgoWriter.Printf("restartCiliumAgentOnNode: replacement cilium-agent on %s did not become Ready within %s\n", nodeName, readyTimeout)
-}
 
 // unstructuredNestedString / Int64 / Bool / Slice are tiny wrappers around
 // the apimachinery helpers. We re-export here to keep the diag function
