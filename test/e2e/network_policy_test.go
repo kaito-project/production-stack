@@ -100,18 +100,18 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		clientset, err = utils.GetK8sClientset()
 		Expect(err).NotTo(HaveOccurred(), "failed to create k8s clientset")
 
-		// Install both workload namespaces in two phases per namespace:
-		//   1. modelharness (Gateway + NetworkPolicies) and a Cilium policy
-		//      pre-warm that proves the local cilium-agent has compiled the
-		//      namespace's default-deny rule into its eBPF maps.
-		//   2. modeldeployment (EPP + InferenceSet + shadow pods).
-		// The pre-warm closes the AKS Cilium overlay race where an EPP pod
-		// created in the gap between policy apply and cilium compile lands
-		// with status.policy.ingress.enforcing=false and never recovers.
-		// We do not use the shared InstallCase here because it bundles both
-		// phases and gives us no place to slot the pre-warm in between.
-		installNetpolCase(ctx, clientset, CaseNetworkPolicyA)
-		installNetpolCase(ctx, clientset, CaseNetworkPolicyB)
+		// Install both workload namespaces. We use the shared InstallCase
+		// here (modelharness → modeldeployment) and rely on
+		// ensureCiliumEndpointEnforcing below to recover from the AKS
+		// Cilium overlay race: an earlier attempt to pre-warm Cilium's
+		// per-namespace policy compile before creating the EPP did not
+		// help, because cilium compiles policy per-identity and the
+		// warmup pod's labels produce a different identity than the EPP.
+		// The only reliable fix is to detect stuck CiliumEndpoints after
+		// the EPP exists and force a fresh allocation by deleting the
+		// pod — see ensureCiliumEndpointEnforcing.
+		InstallCase(CaseNetworkPolicyA)
+		InstallCase(CaseNetworkPolicyB)
 
 		namespace = CaseNamespace(CaseNetworkPolicyA)
 		namespaceB = CaseNamespace(CaseNetworkPolicyB)
@@ -153,17 +153,17 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		Expect(eppIPB).NotTo(BeEmpty(), "could not find a ready EPP pod IP in %s", namespaceB)
 		Expect(eppPortB).To(BeNumerically(">", 0), "could not determine EPP pod port in %s", namespaceB)
 
-		// AKS Cilium overlay race guard: poll the EPP pod's CiliumEndpoint
-		// until status.policy.ingress.enforcing flips to true. Without this
-		// gate, an EPP pod that was created in the narrow window between
-		// the NetworkPolicy apply and cilium-agent's policy compile lands
-		// with enforcing=false and never recovers — the canary probe loop
-		// below then spins for 5 minutes and fails with a generic
-		// "enforcement not active" message that hides the actual cause.
-		// Failing here surfaces a specific, actionable Cilium message
-		// instead, and short-circuits 4+ minutes of useless polling.
-		waitForCiliumEndpointEnforcing(ctx, clientset, namespace, eppIP)
-		waitForCiliumEndpointEnforcing(ctx, clientset, namespaceB, eppIPB)
+		// AKS Cilium overlay race recovery: ensure the EPP pod's
+		// CiliumEndpoint advertises ingress.enforcing=true. If it does
+		// not within 60s, delete the EPP pod so its Deployment recreates
+		// it with a fresh CiliumEndpoint allocation (up to maxRetries
+		// cycles). Returns the (possibly new) EPP pod IP, which the deny
+		// / cross-namespace probes below target. Without this gate, an
+		// EPP that landed in the racy window between NetworkPolicy apply
+		// and cilium compile keeps enforcing=false indefinitely, and the
+		// canary loop below would spin for 5 minutes before failing.
+		eppIP = ensureCiliumEndpointEnforcing(ctx, clientset, namespace, netpolModelA, eppIP)
+		eppIPB = ensureCiliumEndpointEnforcing(ctx, clientset, namespaceB, netpolModelB, eppIPB)
 
 		// Wait for NetworkPolicy enforcement to actually take effect on this
 		// cluster. On freshly created Cilium clusters the policy maps may take
@@ -1071,16 +1071,38 @@ func collectCiliumDiagnostics(ctx context.Context, clientset *kubernetes.Clients
 // Best-effort: on non-Cilium clusters or when the CRD is missing, the
 // helper logs the situation and returns without failing, so the suite
 // remains portable to kind / OSS Kubernetes clusters.
-func waitForCiliumEndpointEnforcing(ctx context.Context, _ *kubernetes.Clientset, ns, targetIP string) {
+// ensureCiliumEndpointEnforcing makes sure the EPP pod currently
+// resolving to `targetIP` in `ns` has a CiliumEndpoint that advertises
+// status.policy.ingress.enforcing == true. On failure, it deletes the
+// EPP pod so the parent Deployment recreates it, waits for the
+// replacement to be ready, and re-checks — up to maxRetries cycles.
+// Returns the (possibly new) EPP pod IP that callers should use for
+// probing.
+//
+// Why delete-and-retry rather than just polling: the AKS Cilium overlay
+// race produces *stuck* CiliumEndpoints. The endpoint is in state=ready
+// with a valid identity, but its policy.ingress.enforcing flag never
+// flips because cilium-agent's reconcile happened before the policy was
+// known and was never re-triggered for that identity. Polling does not
+// unstick it; only a new endpoint allocation does. The pre-warm
+// (installNetpolCase Phase 2) reduces but does not eliminate this race
+// because Cilium compiles policy per-identity and the EPP gets a
+// different identity than the warmup pod.
+//
+// Best-effort: on non-Cilium clusters or when the CRD is missing, the
+// helper logs and returns targetIP unchanged so the suite remains
+// portable to kind / OSS K8s.
+func ensureCiliumEndpointEnforcing(ctx context.Context, clientset *kubernetes.Clientset, ns, deploymentName, targetIP string) string {
 	const (
-		timeout      = 60 * time.Second
-		pollInterval = 2 * time.Second
+		perAttemptTimeout = 60 * time.Second
+		pollInterval      = 2 * time.Second
+		maxRetries        = 2 // initial attempt + 2 EPP-pod recreations
 	)
 
 	dyn, derr := utils.GetDynamicClient()
 	if derr != nil {
-		GinkgoWriter.Printf("waitForCiliumEndpointEnforcing: dynamic client unavailable (%v) — skipping Cilium enforcement gate for %s/%s\n", derr, ns, targetIP)
-		return
+		GinkgoWriter.Printf("ensureCiliumEndpointEnforcing: dynamic client unavailable (%v) — skipping Cilium enforcement gate for %s/%s\n", derr, ns, targetIP)
+		return targetIP
 	}
 	cepGVR := schema.GroupVersionResource{
 		Group: "cilium.io", Version: "v2", Resource: "ciliumendpoints",
@@ -1090,10 +1112,11 @@ func waitForCiliumEndpointEnforcing(ctx context.Context, _ *kubernetes.Clientset
 	// not a Cilium cluster — silently skip so kind / OSS K8s users can
 	// still run the suite.
 	if _, err := dyn.Resource(cepGVR).Namespace(ns).List(ctx, metav1.ListOptions{Limit: 1}); err != nil {
-		GinkgoWriter.Printf("waitForCiliumEndpointEnforcing: CiliumEndpoint CRD not available (%v) — skipping enforcement gate for %s/%s\n", err, ns, targetIP)
-		return
+		GinkgoWriter.Printf("ensureCiliumEndpointEnforcing: CiliumEndpoint CRD not available (%v) — skipping enforcement gate for %s/%s\n", err, ns, targetIP)
+		return targetIP
 	}
 
+	currentIP := targetIP
 	var (
 		lastState      string
 		lastIngressEnf bool
@@ -1102,270 +1125,121 @@ func waitForCiliumEndpointEnforcing(ctx context.Context, _ *kubernetes.Clientset
 		foundEndpoint  bool
 	)
 
-	Eventually(func() bool {
-		ceps, err := dyn.Resource(cepGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			return false
-		}
-		for _, cep := range ceps.Items {
-			addrs, _, _ := unstructuredNestedSlice(cep.Object, "status", "networking", "addressing")
-			match := false
-			for _, a := range addrs {
-				if m, ok := a.(map[string]any); ok {
-					if v, _ := m["ipv4"].(string); v == targetIP {
-						match = true
-						break
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Reset capture state for this attempt so the failure message
+		// reflects the current attempt's CEP, not a stale one.
+		foundEndpoint = false
+		lastName, lastState = "", ""
+		lastIdentity = 0
+		lastIngressEnf = false
+
+		deadline := time.Now().Add(perAttemptTimeout)
+		enforced := false
+		for time.Now().Before(deadline) {
+			ceps, err := dyn.Resource(cepGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+			if err == nil {
+				for _, cep := range ceps.Items {
+					addrs, _, _ := unstructuredNestedSlice(cep.Object, "status", "networking", "addressing")
+					match := false
+					for _, a := range addrs {
+						if m, ok := a.(map[string]any); ok {
+							if v, _ := m["ipv4"].(string); v == currentIP {
+								match = true
+								break
+							}
+						}
 					}
+					if !match {
+						continue
+					}
+					foundEndpoint = true
+					lastName = cep.GetName()
+					lastState, _, _ = unstructuredNestedString(cep.Object, "status", "state")
+					lastIdentity, _, _ = unstructuredNestedInt64(cep.Object, "status", "identity", "id")
+					lastIngressEnf, _, _ = unstructuredNestedBool(cep.Object, "status", "policy", "ingress", "enforcing")
+					if lastIngressEnf {
+						enforced = true
+					}
+					break
 				}
 			}
-			if !match {
-				continue
+			if enforced {
+				break
 			}
-			foundEndpoint = true
-			lastName = cep.GetName()
-			lastState, _, _ = unstructuredNestedString(cep.Object, "status", "state")
-			lastIdentity, _, _ = unstructuredNestedInt64(cep.Object, "status", "identity", "id")
-			lastIngressEnf, _, _ = unstructuredNestedBool(cep.Object, "status", "policy", "ingress", "enforcing")
-			return lastIngressEnf
+			time.Sleep(pollInterval)
 		}
-		return false
-	}, timeout, pollInterval).Should(BeTrue(),
+		if enforced {
+			return currentIP
+		}
+
+		if attempt == maxRetries {
+			break
+		}
+
+		// Stuck. Recover by deleting the EPP pod so its Deployment
+		// recreates it. The fresh pod gets a new CiliumEndpoint
+		// allocation, and by now the namespace's policy has been
+		// observed by cilium-agent (Phase 2 pre-warm + first attempt's
+		// poll window), so the new endpoint should be programmed with
+		// the policy at allocation time.
+		oldPodName := findPodNameByIP(ctx, clientset, ns, currentIP)
+		GinkgoWriter.Printf(
+			"ensureCiliumEndpointEnforcing: attempt %d/%d — CEP %s/%s "+
+				"(identity=%d state=%s) stuck with ingress.enforcing=%v; "+
+				"deleting EPP pod %s/%s to force a fresh CiliumEndpoint allocation\n",
+			attempt+1, maxRetries+1, ns, lastName, lastIdentity, lastState, lastIngressEnf, ns, oldPodName)
+		if oldPodName != "" {
+			_ = clientset.CoreV1().Pods(ns).Delete(ctx, oldPodName, metav1.DeleteOptions{})
+		}
+		// Wait for a new Ready EPP pod with a different IP (the old IP
+		// may briefly persist on a Terminating pod). Reuse the
+		// readyEPPPodEndpoint helper, then make sure we actually got a
+		// new IP — otherwise we'd just re-check the same stuck endpoint.
+		Eventually(func() bool {
+			ip, _ := readyEPPPodEndpoint(ctx, clientset, ns, deploymentName)
+			return ip != "" && ip != currentIP
+		}, 3*time.Minute, 5*time.Second).Should(BeTrue(),
+			"new EPP pod did not get a different IP after delete in %s", ns)
+		newIP, _ := readyEPPPodEndpoint(ctx, clientset, ns, deploymentName)
+		currentIP = newIP
+	}
+
+	// All retries exhausted.
+	Expect(false).To(BeTrue(),
 		func() string {
 			if !foundEndpoint {
 				return fmt.Sprintf(
-					"no CiliumEndpoint with IP %s appeared in %s within %s — "+
-						"cilium-agent has not programmed the EPP endpoint. "+
-						"Check cilium-agent pod health on the EPP's node.",
-					targetIP, ns, timeout)
+					"no CiliumEndpoint with IP %s appeared in %s after %d retries — "+
+						"cilium-agent never programmed the EPP endpoint. Check cilium-agent "+
+						"pod health on the EPP's node.",
+					currentIP, ns, maxRetries)
 			}
 			return fmt.Sprintf(
 				"EPP CiliumEndpoint %s/%s (identity=%d state=%s) stuck with "+
-					"ingress.enforcing=%v after %s — known AKS Cilium overlay "+
-					"race when a pod comes up before its NetworkPolicy is "+
-					"compiled into the local eBPF map. Cilium-agent on the "+
-					"EPP node may need a restart, or the policy must be "+
-					"re-applied after the pod is ready. Skipping the canary "+
-					"probe loop because it would otherwise spin for 5 minutes "+
-					"on this race.",
-				ns, lastName, lastIdentity, lastState, lastIngressEnf, timeout)
-		})
+					"ingress.enforcing=%v even after %d EPP pod recreations — the AKS "+
+					"Cilium overlay race is not recoverable on this cluster. "+
+					"cilium-agent is failing to program the policy for newly-allocated "+
+					"identities in this namespace. Likely needs a cilium-agent restart "+
+					"on the EPP's node.",
+				ns, lastName, lastIdentity, lastState, lastIngressEnf, maxRetries)
+		}())
+	return currentIP
 }
 
-// installNetpolCase is a netpol-test-specific replacement for the shared
-// InstallCase. It splits the install into two phases so we can pre-warm
-// Cilium's namespace policy in between:
-//
-//  1. modelharness chart → renders the Gateway, NetworkPolicies, and (when
-//     enabled) AuthorizationPolicy/APIKey CR. After this returns, the K8s
-//     NetworkPolicy objects exist in the API server but cilium-agent on
-//     each node may not have compiled them into the local eBPF map yet.
-//  2. Cilium pre-warm → create a throwaway non-gateway pod in the workload
-//     namespace and probe it from a throwaway external namespace until the
-//     probe is silently dropped. This proves cilium-agent has compiled the
-//     namespace's default-deny rule AND is actively applying it to fresh
-//     endpoints, closing the race that otherwise strands the EPP's
-//     CiliumEndpoint with status.policy.ingress.enforcing=false.
-//  3. modeldeployment chart → renders the EPP / InferenceSet / shadow
-//     pods. Because step (2) confirmed Cilium is enforcing, the EPP pod's
-//     CiliumEndpoint will be programmed with the policy at allocation
-//     time rather than racing the cilium reconcile.
-//
-// This is intentionally an inlined copy of InstallCase's flow rather than
-// a refactor of InstallCase itself — the pre-warm is only meaningful for
-// the netpol suite (other suites don't enable NetworkPolicies), so
-// keeping the override here avoids polluting the shared case framework
-// with cilium-specific timing assumptions.
-func installNetpolCase(ctx context.Context, clientset *kubernetes.Clientset, caseName string) {
-	ns := CaseNamespace(caseName)
-	gatewayName := CaseGatewayName(caseName)
-	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", caseName)
-
-	first := CaseDeployments[caseName][0]
-
-	By(fmt.Sprintf("Phase 1: installing modelharness (Gateway + NetworkPolicies) in %s", ns))
-	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled)).To(Succeed(),
-		"failed to ensure namespace %s for case %s", ns, caseName)
-	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
-		To(Succeed(), "gateway service for %s did not appear", caseName)
-
-	By(fmt.Sprintf("Phase 2: pre-warming Cilium policy enforcement in %s", ns))
-	prewarmCiliumPolicyInNamespace(ctx, clientset, ns)
-
-	By(fmt.Sprintf("Phase 3: installing modeldeployment(s) in %s", ns))
-	gatewayURL, err := utils.GetGatewayURLFor(ns, gatewayName)
-	Expect(err).NotTo(HaveOccurred(), "failed to resolve gateway URL for case %s", caseName)
-	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gatewayURL)
-}
-
-// prewarmCiliumPolicyInNamespace forces cilium-agent on the workload
-// namespace's nodes to compile the modelharness-rendered
-// `default-deny-ingress` rule before any real inference pod (EPP, vLLM,
-// shadow) lands on those nodes. Without this pre-warm, a real pod
-// created in the window between policy apply and cilium compile lands
-// with status.policy.ingress.enforcing=false on its CiliumEndpoint and
-// never recovers — the symptom that gates the BeforeAll's canary loop
-// against the AKS overlay race.
-//
-// Strategy: stand up a throwaway "warmup" pod in the workload namespace
-// (selected by default-deny-ingress because it lacks the gateway-name
-// label) and a throwaway probe pod in an external namespace. Repeatedly
-// `agnhost connect` from probe to warmup until the connect is silently
-// dropped (EXIT=1) — that proves the cilium dataplane is enforcing the
-// policy for fresh endpoints in this namespace. Then tear both pods down.
-//
-// Best-effort with a tight timeout: on non-Cilium clusters or unusually
-// slow cilium reconciles, we fail loud with a Cilium-specific message
-// rather than wedging the whole suite.
-func prewarmCiliumPolicyInNamespace(ctx context.Context, clientset *kubernetes.Clientset, ns string) {
-	const (
-		prewarmTimeout      = 90 * time.Second
-		prewarmPollInterval = 3 * time.Second
-	)
-
-	warmupNS := ns // target pod lives in the workload namespace so the
-	// namespace-scoped default-deny-ingress selects it.
-	warmupPodName := fmt.Sprintf("netpol-warmup-%d", rand.Intn(900000)+100000)
-	warmupPod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      warmupPodName,
-			Namespace: warmupNS,
-			// Explicitly NOT carrying the gateway-name label, so the
-			// default-deny-ingress policy applies. The synthetic
-			// label below distinguishes this pod from real workloads
-			// in logs without changing policy semantics.
-			Labels: map[string]string{"netpol-warmup": "true"},
-			// Disable Istio sidecar injection on the warmup pod —
-			// mesh mTLS would make the probe see 127.0.0.1 and
-			// short-circuit NetworkPolicy entirely.
-			Annotations: map[string]string{"sidecar.istio.io/inject": "false"},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:  "warmup",
-				Image: probeImage,
-				// `pause` keeps the container alive with NO TCP
-				// listener bound. That's deliberate: with no listener,
-				// the probe's SYN to port 8080 has only two possible
-				// outcomes:
-				//   - policy NOT enforcing → SYN reaches the pod's
-				//     node → kernel rejects with RST → EXIT=2 (REFUSED)
-				//   - policy IS enforcing → SYN silently dropped by
-				//     cilium-agent's eBPF map → EXIT=1 (TIMEOUT)
-				// EXIT=1 is therefore unambiguous evidence the
-				// namespace's default-deny rule has been compiled and
-				// is being applied to fresh endpoints.
-				Args: []string{"pause"},
-			}},
-		},
+// findPodNameByIP returns the name of the pod in `ns` whose PodIP
+// matches `ip`, or "" if no such pod is found. Best-effort: list errors
+// are swallowed.
+func findPodNameByIP(ctx context.Context, clientset *kubernetes.Clientset, ns, ip string) string {
+	pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return ""
 	}
-	_, err := clientset.CoreV1().Pods(warmupNS).Create(ctx, warmupPod, metav1.CreateOptions{})
-	Expect(err).NotTo(HaveOccurred(), "failed to create cilium pre-warm target pod in %s", warmupNS)
-	defer func() {
-		_ = clientset.CoreV1().Pods(warmupNS).Delete(ctx, warmupPodName, metav1.DeleteOptions{})
-	}()
-	Expect(utils.WaitForPodReady(ctx, clientset, warmupNS, warmupPodName, utils.PollTimeout)).
-		To(Succeed(), "cilium pre-warm target pod %s/%s did not become ready", warmupNS, warmupPodName)
-
-	// Re-read the pod for its PodIP.
-	warmupPod, err = clientset.CoreV1().Pods(warmupNS).Get(ctx, warmupPodName, metav1.GetOptions{})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(warmupPod.Status.PodIP).NotTo(BeEmpty(), "cilium pre-warm target pod has no PodIP")
-
-	// Probe namespace: must NOT be the workload namespace itself
-	// (intra-namespace traffic is allowed by allow-inference-traffic's
-	// `podSelector: {}` clause and so cannot prove enforcement).
-	probeNS := fmt.Sprintf("e2e-netpol-prewarm-%d", rand.Intn(900000)+100000)
-	_, _ = clientset.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: probeNS},
-	}, metav1.CreateOptions{})
-	defer func() {
-		_ = clientset.CoreV1().Namespaces().Delete(ctx, probeNS, metav1.DeleteOptions{})
-	}()
-	Eventually(func() error {
-		_, err := clientset.CoreV1().ServiceAccounts(probeNS).Get(ctx, "default", metav1.GetOptions{})
-		return err
-	}, 30*time.Second, time.Second).Should(Succeed(),
-		"default ServiceAccount in %s did not appear", probeNS)
-
-	probePodName := fmt.Sprintf("netpol-prewarm-probe-%d", rand.Intn(900000)+100000)
-	probePod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        probePodName,
-			Namespace:   probeNS,
-			Annotations: map[string]string{"sidecar.istio.io/inject": "false"},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:  "probe",
-				Image: probeImage,
-				Args:  []string{"pause"},
-			}},
-		},
+	for _, p := range pods.Items {
+		if p.Status.PodIP == ip {
+			return p.Name
+		}
 	}
-	_, err = clientset.CoreV1().Pods(probeNS).Create(ctx, probePod, metav1.CreateOptions{})
-	Expect(err).NotTo(HaveOccurred(), "failed to create cilium pre-warm probe pod in %s", probeNS)
-	Expect(utils.WaitForPodReady(ctx, clientset, probeNS, probePodName, utils.PollTimeout)).
-		To(Succeed(), "cilium pre-warm probe pod %s/%s did not become ready", probeNS, probePodName)
-
-	restCfg, err := utils.GetK8sConfig()
-	Expect(err).NotTo(HaveOccurred())
-
-	var lastOut, lastErr string
-	Eventually(func() bool {
-		cmd := []string{"sh", "-c", fmt.Sprintf(
-			"/agnhost connect %s:8080 --timeout=%s --protocol=tcp 2>&1; echo EXIT=$?",
-			warmupPod.Status.PodIP, probeConnectTimeout,
-		)}
-		req := clientset.CoreV1().RESTClient().Post().
-			Resource("pods").Name(probePodName).Namespace(probeNS).
-			SubResource("exec").
-			VersionedParams(&corev1.PodExecOptions{
-				Command: cmd, Stdout: true, Stderr: true,
-			}, scheme.ParameterCodec)
-		exec, err := remotecommand.NewSPDYExecutor(restCfg, "POST", req.URL())
-		if err != nil {
-			lastErr = "newSPDYExecutor: " + err.Error()
-			return false
-		}
-		var stdout, stderr bytes.Buffer
-		execCtx, cancel := context.WithTimeout(ctx, probeTimeout)
-		defer cancel()
-		streamErr := exec.StreamWithContext(execCtx, remotecommand.StreamOptions{
-			Stdout: &stdout, Stderr: &stderr,
-		})
-		out := stdout.String() + stderr.String()
-		lastOut = out
-		if streamErr != nil {
-			lastErr = "stream: " + streamErr.Error()
-		} else {
-			lastErr = ""
-		}
-		// We want the probe to be silently dropped (EXIT=1 = TIMEOUT).
-		// The warmup pod has no TCP listener, so:
-		//   EXIT=2 (REFUSED) = SYN reached the pod and got RST — cilium
-		//   has NOT compiled the deny rule for this endpoint yet, keep
-		//   polling.
-		//   EXIT=1 (TIMEOUT) = SYN silently dropped — cilium IS
-		//   enforcing the policy on a fresh endpoint in this namespace.
-		//   EXIT=0 should not happen (no listener) but would also mean
-		//   not-enforced; keep polling.
-		return bytes.Contains([]byte(out), []byte("EXIT=1"))
-	}, prewarmTimeout, prewarmPollInterval).Should(BeTrue(),
-		func() string {
-			return fmt.Sprintf(
-				"Cilium policy pre-warm in %s did not converge within %s — "+
-					"cilium-agent never compiled the default-deny-ingress rule "+
-					"into a state that drops cross-namespace traffic to a fresh "+
-					"non-gateway pod. This is the AKS Cilium overlay race "+
-					"manifesting at the namespace level. The EPP pod created "+
-					"after this would land with ingress.enforcing=false, so "+
-					"failing here surfaces the root cause instead of letting "+
-					"the BeforeAll canary loop spin for 5 minutes.\n"+
-					"last agnhost output: %q\nlast exec error: %q\n"+
-					"warmupPodIP=%s warmupNS=%s probeNS=%s",
-				ns, prewarmTimeout, lastOut, lastErr,
-				warmupPod.Status.PodIP, warmupNS, probeNS)
-		})
+	return ""
 }
 
 // unstructuredNestedString / Int64 / Bool / Slice are tiny wrappers around
