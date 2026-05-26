@@ -861,3 +861,307 @@ func TestEnsureSimConfigMap(t *testing.T) {
 		t.Fatalf("second call should be idempotent: %v", err)
 	}
 }
+
+func TestIsTerminatingOnFakeNode(t *testing.T) {
+	now := metav1.Now()
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		want bool
+	}{
+		{"terminating on fake node", &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels:            map[string]string{InferenceSetCreatedByLabelKey: "falcon"},
+				DeletionTimestamp: &now,
+			},
+			Spec: corev1.PodSpec{NodeName: "fake-ws1"},
+		}, true},
+		{"no deletion timestamp", &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{InferenceSetCreatedByLabelKey: "falcon"}},
+			Spec:       corev1.PodSpec{NodeName: "fake-ws1"},
+		}, false},
+		{"real node", &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels:            map[string]string{InferenceSetCreatedByLabelKey: "falcon"},
+				DeletionTimestamp: &now,
+			},
+			Spec: corev1.PodSpec{NodeName: "aks-real-node"},
+		}, false},
+		{"no kaito label", &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels:            map[string]string{"app": "other"},
+				DeletionTimestamp: &now,
+			},
+			Spec: corev1.PodSpec{NodeName: "fake-ws1"},
+		}, false},
+		{"no node assigned", &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels:            map[string]string{InferenceSetCreatedByLabelKey: "falcon"},
+				DeletionTimestamp: &now,
+			},
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTerminatingOnFakeNode(tt.pod); got != tt.want {
+				t.Errorf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestShadowPodReconcile_TerminatingOriginalDeletesShadow verifies that when
+// the original pod on a fake node is being deleted (deletionTimestamp set), the
+// reconciler explicitly deletes the shadow pod rather than waiting for
+// Kubernetes GC — which would be blocked until the original pod is fully
+// removed from etcd (never, without a real kubelet).
+func TestShadowPodReconcile_TerminatingOriginalDeletesShadow(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	now := metav1.Now()
+
+	original := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "falcon-0",
+			Namespace:         "default",
+			DeletionTimestamp: &now,
+			// fake client requires non-zero Finalizers for DeletionTimestamp to persist
+			Finalizers: []string{"test.io/block"},
+			Labels:     map[string]string{InferenceSetCreatedByLabelKey: "falcon-7b-instruct"},
+		},
+		Spec:   corev1.PodSpec{NodeName: "fake-ws1"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	shadowPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      shadowPodName(original),
+			Namespace: "default",
+			Labels:    map[string]string{ShadowPodLabelKey: "default.falcon-0"},
+		},
+		Spec:   corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "i"}}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(original, shadowPod).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "falcon-0", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Error("should not requeue after cleanup")
+	}
+
+	// Shadow pod must have been deleted.
+	got := &corev1.Pod{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: shadowPod.Name, Namespace: "default"}, got); err == nil {
+		t.Error("shadow pod should have been deleted")
+	}
+}
+
+// TestShadowPodReconcile_TerminatingOriginalShadowAlreadyGone verifies that
+// the reconciler handles the case where the shadow pod was already deleted
+// before the reconcile fires.
+func TestShadowPodReconcile_TerminatingOriginalShadowAlreadyGone(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	now := metav1.Now()
+
+	original := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "falcon-1",
+			Namespace:         "default",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{"test.io/block"},
+			Labels:            map[string]string{InferenceSetCreatedByLabelKey: "falcon-7b-instruct"},
+		},
+		Spec:   corev1.PodSpec{NodeName: "fake-ws1"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	// Shadow pod does NOT exist — already cleaned up by a previous reconcile.
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(original).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "falcon-1", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("should not error when shadow already gone: %v", err)
+	}
+}
+
+// TestIsFakeNode verifies the isFakeNode helper.
+func TestIsFakeNode(t *testing.T) {
+	tests := []struct {
+		name string
+		node *corev1.Node
+		want bool
+	}{
+		{"fake node", &corev1.Node{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{LabelFakeNode: "true"}}}, true},
+		{"non-fake node", &corev1.Node{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"node.k8s.io/worker": "true"}}}, false},
+		{"no labels", &corev1.Node{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isFakeNode(tt.node); got != tt.want {
+				t.Errorf("isFakeNode() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFakeNodeToOriginalPods verifies that the mapper enqueues reconcile
+// requests for KAITO InferenceSet pods that were scheduled on the deleted node.
+func TestFakeNodeToOriginalPods(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+
+	fakeNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "fake-ws1",
+			Labels: map[string]string{LabelFakeNode: "true"},
+		},
+	}
+
+	// Pod on the fake node with KAITO label → should be enqueued.
+	kaitoPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kaito-pod-0",
+			Namespace: "default",
+			Labels:    map[string]string{InferenceSetCreatedByLabelKey: "phi"},
+		},
+		Spec: corev1.PodSpec{NodeName: "fake-ws1"},
+	}
+	// Pod on the fake node WITHOUT KAITO label → should NOT be enqueued.
+	otherPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "other-pod",
+			Namespace: "default",
+			Labels:    map[string]string{"app": "nginx"},
+		},
+		Spec: corev1.PodSpec{NodeName: "fake-ws1"},
+	}
+	// Pod on a DIFFERENT node with KAITO label → should NOT be enqueued.
+	diffNodePod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "diff-pod-0",
+			Namespace: "default",
+			Labels:    map[string]string{InferenceSetCreatedByLabelKey: "phi"},
+		},
+		Spec: corev1.PodSpec{NodeName: "fake-ws2"},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(kaitoPod, otherPod, diffNodePod).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	requests := r.fakeNodeToOriginalPods(ctx, fakeNode)
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 request, got %d: %v", len(requests), requests)
+	}
+	if requests[0].Name != "kaito-pod-0" || requests[0].Namespace != "default" {
+		t.Errorf("unexpected request: %v", requests[0])
+	}
+}
+
+// TestFakeNodeToOriginalPods_NonNode verifies the mapper returns nil for
+// non-Node objects.
+func TestFakeNodeToOriginalPods_NonNode(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	// Pass a Pod instead of a Node.
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"}}
+	if got := r.fakeNodeToOriginalPods(ctx, pod); got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+}
+
+// TestShadowPodReconcile_FakeNodeGone verifies that when the fake node has
+// been deleted (scale-down cleanup) the reconciler deletes the shadow pod for
+// the original pod, which is still alive in Running phase.
+func TestShadowPodReconcile_FakeNodeGone(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+
+	original := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "phi-0",
+			Namespace: "default",
+			Labels:    map[string]string{InferenceSetCreatedByLabelKey: "phi"},
+		},
+		Spec:   corev1.PodSpec{NodeName: "fake-ws1"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	shadowPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      shadowPodName(original),
+			Namespace: "default",
+			Labels:    map[string]string{ShadowPodLabelKey: "default.phi-0"},
+		},
+		Spec:   corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "i"}}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	// Note: no Node object in the fake client → Get("fake-ws1") returns NotFound.
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(original, shadowPod).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "phi-0", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if result.Requeue || result.RequeueAfter != 0 {
+		t.Error("should not requeue after cleanup")
+	}
+
+	// Shadow pod must have been deleted.
+	got := &corev1.Pod{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: shadowPod.Name, Namespace: "default"}, got); err == nil {
+		t.Error("shadow pod should have been deleted when fake node is gone")
+	}
+}
+
+// TestShadowPodReconcile_OriginalAlreadyGoneButShadowPresent verifies that
+// when the original pod has already been removed from the API (force-deleted by
+// pod-GC or KAITO) but the shadow pod is still present, the reconciler cleans
+// up the orphaned shadow pod. This covers the case where the fake-node
+// deletion watch fires after the original pod is already gone.
+func TestShadowPodReconcile_OriginalAlreadyGoneButShadowPresent(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+
+	// Compute shadow name from the original pod name WITHOUT adding the
+	// original pod to the fake client — it has already been deleted.
+	original := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "phi-1",
+			Namespace: "default",
+		},
+	}
+	shadowName := shadowPodName(original)
+	shadowPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      shadowName,
+			Namespace: "default",
+			Labels:    map[string]string{ShadowPodLabelKey: "default.phi-1"},
+		},
+		Spec:   corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "i"}}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(shadowPod).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: testConfig()}
+
+	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "phi-1", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// Orphaned shadow pod must have been deleted.
+	got := &corev1.Pod{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: shadowName, Namespace: "default"}, got); err == nil {
+		t.Error("orphaned shadow pod should have been deleted")
+	}
+}

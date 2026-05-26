@@ -35,6 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/go-logr/logr"
 )
 
 // ShadowPodReconciler implements Phase 2 of the Shadow Pod lifecycle.
@@ -61,17 +63,27 @@ type ShadowPodReconciler struct {
 	Config Config
 }
 
-// SetupWithManager registers the controller with two watches:
+// SetupWithManager registers the controller with three watches:
 //
-//  1. Primary watch on Pods (all namespaces) filtered to Pending pods on fake
-//     nodes — these are the "original" pods we need to mirror.
+//  1. Primary watch on Pods (all namespaces) filtered to Pending or Terminating
+//     pods on fake nodes — these are the "original" pods we need to mirror or
+//     clean up after.
 //  2. Secondary watch on shadow pods — when a shadow pod transitions to Running
 //     we re-queue the original pod so we can apply the status patch immediately.
+//  3. Tertiary watch on fake Node DELETE events — when a fake node is deleted
+//     (NodeClaim scale-down cleanup) we re-queue every original pod that was
+//     scheduled on that node so their shadow pods are cleaned up immediately,
+//     without waiting for Kubernetes GC (which would be blocked until the
+//     original pod is fully removed from etcd, which never happens without a
+//     real kubelet).
 func (r *ShadowPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Predicate: only enqueue pods that are Pending AND assigned to a fake node.
+	// Predicate: enqueue pods that are Pending on a fake node (create/update
+	// path) OR that are terminating on a fake node (cleanup path).
 	pendingOnFakeNode := predicate.Funcs{
-		CreateFunc:  func(e event.CreateEvent) bool { return isPendingOnFakeNode(e.Object) },
-		UpdateFunc:  func(e event.UpdateEvent) bool { return isPendingOnFakeNode(e.ObjectNew) },
+		CreateFunc: func(e event.CreateEvent) bool { return isPendingOnFakeNode(e.Object) },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return isPendingOnFakeNode(e.ObjectNew) || isTerminatingOnFakeNode(e.ObjectNew)
+		},
 		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
@@ -87,12 +99,25 @@ func (r *ShadowPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
 
+	// Predicate: fake Node DELETE events only.
+	fakeNodeDeleted := predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return false },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return false },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return isFakeNode(e.Object) },
+		GenericFunc: func(e event.GenericEvent) bool { return false },
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Pod{}, builder.WithPredicates(pendingOnFakeNode)).
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.shadowPodToOriginalPod),
 			builder.WithPredicates(shadowPodRunning),
+		).
+		Watches(
+			&corev1.Node{},
+			handler.EnqueueRequestsFromMapFunc(r.fakeNodeToOriginalPods),
+			builder.WithPredicates(fakeNodeDeleted),
 		).
 		Complete(r)
 }
@@ -101,15 +126,61 @@ func (r *ShadowPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // +kubebuilder:rbac:groups="",resources=pods/status,verbs=get;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create
 
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+
 func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx).WithValues("pod", req.NamespacedName)
 
 	original := &corev1.Pod{}
 	if err := r.Get(ctx, req.NamespacedName, original); err != nil {
 		if errors.IsNotFound(err) {
+			// Original pod is gone (force-deleted by pod-GC or KAITO). This reconcile
+			// may have been triggered by the fakeNodeToOriginalPods watch after the
+			// fake node was deleted. Attempt shadow-pod cleanup by name so we don't
+			// leave orphaned shadow pods if GC hasn't cascaded yet.
+			shadowName := shadowPodName(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Name: req.Name, Namespace: req.Namespace,
+			}})
+			shadow := &corev1.Pod{}
+			if sErr := r.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: shadowName}, shadow); sErr == nil {
+				if shadow.DeletionTimestamp == nil {
+					if delErr := r.Delete(ctx, shadow); delErr != nil && !errors.IsNotFound(delErr) {
+						return ctrl.Result{}, fmt.Errorf("delete orphaned shadow pod: %w", delErr)
+					}
+					log.Info("deleted orphaned shadow pod after original pod was removed", "shadowPod", shadowName)
+				}
+			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("get pod: %w", err)
+	}
+
+	// Cleanup path A: the original pod has a deletionTimestamp but is stuck in
+	// Terminating because there is no real kubelet on the fake node to
+	// acknowledge graceful termination. Kubernetes GC will not cascade the
+	// OwnerReference to the shadow pod until the original pod is fully removed
+	// from etcd. Explicitly delete the shadow pod here.
+	if original.DeletionTimestamp != nil && isTerminatingOnFakeNode(original) {
+		return r.deleteShadowPod(ctx, log, original, "terminating original pod")
+	}
+
+	// Cleanup path B: the original pod has been patched to Running on a fake
+	// node that no longer exists. This is triggered by the fakeNodeToOriginalPods
+	// watch when the NodeClaimReconciler deletes the fake node during scale-down.
+	// A Pending pod is excluded because it hasn't been assigned a shadow pod
+	// yet; we let the normal pending-pod path handle it (or it will be GC'd).
+	if original.Status.Phase == corev1.PodRunning {
+		if _, hasLabel := original.Labels[InferenceSetCreatedByLabelKey]; hasLabel {
+			if original.Spec.NodeName != "" && strings.HasPrefix(original.Spec.NodeName, "fake-") {
+				node := &corev1.Node{}
+				if nodeErr := r.Get(ctx, types.NamespacedName{Name: original.Spec.NodeName}, node); nodeErr != nil {
+					if errors.IsNotFound(nodeErr) {
+						return r.deleteShadowPod(ctx, log, original, "fake node deleted")
+					}
+					return ctrl.Result{}, fmt.Errorf("get fake node: %w", nodeErr)
+				}
+			}
+		}
 	}
 
 	if !isPendingOnFakeNode(original) {
@@ -406,6 +477,65 @@ func (r *ShadowPodReconciler) patchOriginalPodStatus(ctx context.Context, origin
 	return nil
 }
 
+// deleteShadowPod is a shared helper for both cleanup paths (Terminating pod
+// and fake-node-gone). It finds the shadow pod by name and issues a Delete.
+func (r *ShadowPodReconciler) deleteShadowPod(ctx context.Context, log logr.Logger, original *corev1.Pod, reason string) (ctrl.Result, error) {
+	shadowName := shadowPodName(original)
+	shadow := &corev1.Pod{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: original.Namespace, Name: shadowName}, shadow); err != nil {
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("get shadow pod for cleanup (%s): %w", reason, err)
+	}
+	if shadow.DeletionTimestamp == nil {
+		if err := r.Delete(ctx, shadow); err != nil && !errors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete shadow pod (%s): %w", reason, err)
+		}
+		log.Info("deleted shadow pod", "shadowPod", shadowName, "reason", reason)
+	}
+	return ctrl.Result{}, nil
+}
+
+// fakeNodeToOriginalPods maps a deleted fake Node to reconcile requests for
+// every original pod that was scheduled on it. This fires when
+// NodeClaimReconciler.reconcileDelete removes the fake node during scale-down,
+// ensuring shadow pods are cleaned up without waiting for Kubernetes GC (which
+// would be blocked until the original pod — still Running on the now-deleted
+// node — is fully removed from etcd).
+func (r *ShadowPodReconciler) fakeNodeToOriginalPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	node, ok := obj.(*corev1.Node)
+	if !ok {
+		return nil
+	}
+	nodeName := node.Name
+
+	// List all pods and filter by NodeName. The cache still contains the pods
+	// at this point because only the Node has been deleted; the pods remain in
+	// Running phase on the (now-gone) node.
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList); err != nil {
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, pod := range podList.Items {
+		if pod.Spec.NodeName != nodeName {
+			continue
+		}
+		if _, hasLabel := pod.Labels[InferenceSetCreatedByLabelKey]; !hasLabel {
+			continue
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: pod.Namespace,
+				Name:      pod.Name,
+			},
+		})
+	}
+	return requests
+}
+
 // shadowPodToOriginalPod maps a shadow pod back to a reconcile.
 func (r *ShadowPodReconciler) shadowPodToOriginalPod(_ context.Context, obj client.Object) []reconcile.Request {
 	pod, ok := obj.(*corev1.Pod)
@@ -438,6 +568,32 @@ func isPendingOnFakeNode(obj client.Object) bool {
 	return pod.Spec.NodeName != "" &&
 		strings.HasPrefix(pod.Spec.NodeName, "fake-") &&
 		pod.Status.Phase == corev1.PodPending
+}
+
+// isTerminatingOnFakeNode returns true when the pod is assigned to a fake node
+// and has a deletion timestamp. Fake-node pods have no real kubelet to
+// acknowledge graceful termination, so they can remain stuck in Terminating
+// indefinitely. This predicate triggers the explicit shadow-pod cleanup path.
+func isTerminatingOnFakeNode(obj client.Object) bool {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return false
+	}
+	if _, hasLabel := pod.Labels[InferenceSetCreatedByLabelKey]; !hasLabel {
+		return false
+	}
+	return pod.DeletionTimestamp != nil &&
+		pod.Spec.NodeName != "" &&
+		strings.HasPrefix(pod.Spec.NodeName, "fake-")
+}
+
+// isFakeNode returns true when the object is a Node with the fake-node label.
+func isFakeNode(obj client.Object) bool {
+	node, ok := obj.(*corev1.Node)
+	if !ok {
+		return false
+	}
+	return node.Labels[LabelFakeNode] == "true"
 }
 
 func isShadowPod(pod *corev1.Pod) bool {
