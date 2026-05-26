@@ -505,12 +505,20 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	// expectDeniedLabeled is the labeled-probe variant of expectDenied,
 	// used by tests that need to assert that label-only spoofing across
 	// namespaces does NOT grant access (the X1 regression guard).
-	expectDeniedLabeled := func(probeNS string, labels map[string]string, targetIP string, targetPort int32, msg string) {
+	//
+	// `targetNS` is the namespace where `targetIP` lives — required so the
+	// failure-time diag dump inspects the target pod's actual namespace
+	// (policies, labels, CiliumEndpoint) rather than the probe-side
+	// workload namespace. Cross-namespace callers (A→B, B→A, spoof A→B)
+	// pass the target's namespace, not the workload-A default — otherwise
+	// the diag reports `<no pod with IP X in workload-A>` and an empty
+	// node, hiding the actual enforcement state on the target side.
+	expectDeniedLabeled := func(probeNS string, labels map[string]string, targetNS, targetIP string, targetPort int32, msg string) {
 		out, _ := probeTarget(probeNS, connectCmd(targetIP, targetPort), probeTimeout, labels)
 		state := classifyResult(out)
 		if state != "blocked" {
 			AddReportEntry("netpol-deny-diag",
-				networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, targetIP, probeNS))
+				networkPolicyEnforcementDiagnostics(ctx, clientset, targetNS, targetIP, probeNS))
 		}
 		Expect(state).To(Equal("blocked"),
 			"%s. state=%q output=%q", msg, state, out)
@@ -583,19 +591,19 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
-		expectDeniedLabeled("default", gatewayLabels, eppIP, eppPort,
+		expectDeniedLabeled("default", gatewayLabels, namespace, eppIP, eppPort,
 			"gateway-labeled pod in default should be silently dropped — only the in-namespace "+
 				"gateway pod is a trusted ingress source")
 	})
 
 	// ── Cross-namespace isolation ─────────────────────────────────────────
 	It("should DENY ingress from workload namespace A to workload namespace B", func() {
-		expectDeniedLabeled(namespace, nil, eppIPB, eppPortB,
+		expectDeniedLabeled(namespace, nil, namespaceB, eppIPB, eppPortB,
 			"workload namespace A should be silently dropped by namespace B's default-deny")
 	})
 
 	It("should DENY ingress from workload namespace B to workload namespace A", func() {
-		expectDeniedLabeled(namespaceB, nil, eppIP, eppPort,
+		expectDeniedLabeled(namespaceB, nil, namespace, eppIP, eppPort,
 			"workload namespace B should be silently dropped by namespace A's default-deny")
 	})
 
@@ -610,7 +618,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		spoofedLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": fmt.Sprintf("%s-gateway", netpolModelB),
 		}
-		expectDeniedLabeled(namespace, spoofedLabels, eppIPB, eppPortB,
+		expectDeniedLabeled(namespace, spoofedLabels, namespaceB, eppIPB, eppPortB,
 			"a pod in namespace A carrying namespace B's gateway label must be silently dropped — "+
 				"labels do not grant cross-namespace trust under the post-X1 policy")
 	})
