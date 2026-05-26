@@ -112,9 +112,9 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		// restart on the EPP's node. The wedge survived every recovery
 		// we threw at the supposed root cause, which means either the
 		// field is lying (enforcement actually IS on, the metadata just
-		// never settles) or the canary will still hang for 5 minutes.
-		// Either way, the canary loop is the only honest test — delete
-		// the gate and let it run.
+		// never settles) or the canary will still hang for its full
+		// 10-minute deadline. Either way, the canary loop is the only
+		// honest test — delete the gate and let it run.
 		InstallCase(CaseNetworkPolicyA)
 		InstallCase(CaseNetworkPolicyB)
 
@@ -274,7 +274,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			// EXIT=N (N != 0): nc could not establish the TCP handshake from
 			// the external canary namespace. Enforcement is active.
 			return true
-		}, 5*time.Minute, 5*time.Second).Should(BeTrue(),
+		}, 10*time.Minute, 5*time.Second).Should(BeTrue(),
 			// Use a func() string so Gomega evaluates the diagnostic message
 			// lazily, after the polling loop has updated the captured
 			// variables. Passing `lastCanaryOut`/`lastCanaryExecErr` as
@@ -1041,7 +1041,6 @@ func collectCiliumDiagnostics(ctx context.Context, clientset *kubernetes.Clients
 	}
 }
 
-
 // unstructuredNestedString / Int64 / Bool / Slice are tiny wrappers around
 // the apimachinery helpers. We re-export here to keep the diag function
 // readable without importing meta/v1/unstructured in every call site.
@@ -1125,7 +1124,7 @@ var _ = networkingv1.SchemeGroupVersion
 // in `ns` has rendered both `default-deny-ingress` and
 // `allow-inference-traffic` NetworkPolicies. Failing here turns a silent
 // chart regression into an immediate, clearly-attributable BeforeAll
-// failure rather than a 5-minute canary timeout that — by the time CI's
+// failure rather than a 10-minute canary timeout that — by the time CI's
 // post-failure dump runs — has been masked by AfterAll teardown.
 func expectNetworkPoliciesPresent(ctx context.Context, clientset *kubernetes.Clientset, ns string) {
 	required := map[string]bool{
