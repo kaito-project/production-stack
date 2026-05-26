@@ -1092,12 +1092,35 @@ func collectCiliumDiagnostics(ctx context.Context, clientset *kubernetes.Clients
 // Best-effort: on non-Cilium clusters or when the CRD is missing, the
 // helper logs and returns targetIP unchanged so the suite remains
 // portable to kind / OSS K8s.
+// ensureCiliumEndpointEnforcing makes sure the EPP pod resolving to
+// `targetIP` in `ns` has a CiliumEndpoint that advertises
+// status.policy.ingress.enforcing == true. On failure, it deletes and
+// re-creates the namespace's NetworkPolicies to force cilium-agent to
+// recompile policy for every identity in the namespace (including the
+// stuck EPP identity), then re-checks. Up to maxRetries cycles.
+// Returns targetIP unchanged — the EPP pod is never disturbed.
+//
+// Why recreate-the-policies rather than delete-the-pod: the AKS Cilium
+// overlay race produces *stuck* CiliumEndpoints whose
+// status.policy.ingress.enforcing flag never flips. Empirically (see
+// run 26430654933) all 3 EPP recreations got the same Cilium identity
+// — Cilium hashes identity from the pod's full label set, so EPP
+// replicas always collide. The stuck state is held against the
+// *identity*, not the endpoint, so spinning up a new endpoint with the
+// same identity inherits the same wedged policy program. The fix is to
+// nudge cilium-agent to re-evaluate the identity's policy, which a
+// NetworkPolicy delete+create reliably does.
+//
+// Best-effort: on non-Cilium clusters or when the CRD is missing, the
+// helper logs and returns targetIP unchanged so the suite remains
+// portable to kind / OSS K8s.
 func ensureCiliumEndpointEnforcing(ctx context.Context, clientset *kubernetes.Clientset, ns, deploymentName, targetIP string) string {
 	const (
 		perAttemptTimeout = 60 * time.Second
 		pollInterval      = 2 * time.Second
-		maxRetries        = 2 // initial attempt + 2 EPP-pod recreations
+		maxRetries        = 2 // initial attempt + 2 NetworkPolicy recreations
 	)
+	_ = deploymentName // kept in the signature so callers can re-supply
 
 	dyn, derr := utils.GetDynamicClient()
 	if derr != nil {
@@ -1116,7 +1139,6 @@ func ensureCiliumEndpointEnforcing(ctx context.Context, clientset *kubernetes.Cl
 		return targetIP
 	}
 
-	currentIP := targetIP
 	var (
 		lastState      string
 		lastIngressEnf bool
@@ -1143,7 +1165,7 @@ func ensureCiliumEndpointEnforcing(ctx context.Context, clientset *kubernetes.Cl
 					match := false
 					for _, a := range addrs {
 						if m, ok := a.(map[string]any); ok {
-							if v, _ := m["ipv4"].(string); v == currentIP {
+							if v, _ := m["ipv4"].(string); v == targetIP {
 								match = true
 								break
 							}
@@ -1169,39 +1191,25 @@ func ensureCiliumEndpointEnforcing(ctx context.Context, clientset *kubernetes.Cl
 			time.Sleep(pollInterval)
 		}
 		if enforced {
-			return currentIP
+			return targetIP
 		}
 
 		if attempt == maxRetries {
 			break
 		}
 
-		// Stuck. Recover by deleting the EPP pod so its Deployment
-		// recreates it. The fresh pod gets a new CiliumEndpoint
-		// allocation, and by now the namespace's policy has been
-		// observed by cilium-agent (Phase 2 pre-warm + first attempt's
-		// poll window), so the new endpoint should be programmed with
-		// the policy at allocation time.
-		oldPodName := findPodNameByIP(ctx, clientset, ns, currentIP)
+		// Stuck. Recover by deleting+re-creating the namespace's
+		// NetworkPolicies so cilium-agent re-evaluates policy for every
+		// identity in this namespace — including the wedged EPP
+		// identity. Pod-level recreation does not help because EPP
+		// replicas hash to the same Cilium identity and inherit the same
+		// stuck policy program.
 		GinkgoWriter.Printf(
 			"ensureCiliumEndpointEnforcing: attempt %d/%d — CEP %s/%s "+
 				"(identity=%d state=%s) stuck with ingress.enforcing=%v; "+
-				"deleting EPP pod %s/%s to force a fresh CiliumEndpoint allocation\n",
-			attempt+1, maxRetries+1, ns, lastName, lastIdentity, lastState, lastIngressEnf, ns, oldPodName)
-		if oldPodName != "" {
-			_ = clientset.CoreV1().Pods(ns).Delete(ctx, oldPodName, metav1.DeleteOptions{})
-		}
-		// Wait for a new Ready EPP pod with a different IP (the old IP
-		// may briefly persist on a Terminating pod). Reuse the
-		// readyEPPPodEndpoint helper, then make sure we actually got a
-		// new IP — otherwise we'd just re-check the same stuck endpoint.
-		Eventually(func() bool {
-			ip, _ := readyEPPPodEndpoint(ctx, clientset, ns, deploymentName)
-			return ip != "" && ip != currentIP
-		}, 3*time.Minute, 5*time.Second).Should(BeTrue(),
-			"new EPP pod did not get a different IP after delete in %s", ns)
-		newIP, _ := readyEPPPodEndpoint(ctx, clientset, ns, deploymentName)
-		currentIP = newIP
+				"recreating NetworkPolicies in %s to force cilium policy recompile\n",
+			attempt+1, maxRetries+1, ns, lastName, lastIdentity, lastState, lastIngressEnf, ns)
+		recreateNetworkPolicies(ctx, clientset, ns)
 	}
 
 	// All retries exhausted.
@@ -1212,34 +1220,60 @@ func ensureCiliumEndpointEnforcing(ctx context.Context, clientset *kubernetes.Cl
 					"no CiliumEndpoint with IP %s appeared in %s after %d retries — "+
 						"cilium-agent never programmed the EPP endpoint. Check cilium-agent "+
 						"pod health on the EPP's node.",
-					currentIP, ns, maxRetries)
+					targetIP, ns, maxRetries)
 			}
 			return fmt.Sprintf(
 				"EPP CiliumEndpoint %s/%s (identity=%d state=%s) stuck with "+
-					"ingress.enforcing=%v even after %d EPP pod recreations — the AKS "+
-					"Cilium overlay race is not recoverable on this cluster. "+
-					"cilium-agent is failing to program the policy for newly-allocated "+
-					"identities in this namespace. Likely needs a cilium-agent restart "+
-					"on the EPP's node.",
+					"ingress.enforcing=%v even after %d NetworkPolicy recreations — the AKS "+
+					"Cilium overlay race is not recoverable on this cluster via "+
+					"in-test means. cilium-agent is failing to re-evaluate policy for "+
+					"this identity even after the policies are re-created. Likely needs "+
+					"a cilium-agent restart on the EPP's node.",
 				ns, lastName, lastIdentity, lastState, lastIngressEnf, maxRetries)
 		}())
-	return currentIP
+	return targetIP
 }
 
-// findPodNameByIP returns the name of the pod in `ns` whose PodIP
-// matches `ip`, or "" if no such pod is found. Best-effort: list errors
-// are swallowed.
-func findPodNameByIP(ctx context.Context, clientset *kubernetes.Clientset, ns, ip string) string {
-	pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+// recreateNetworkPolicies deletes and immediately re-creates every
+// NetworkPolicy in `ns`. Cilium-agent reconciles the delete (drops the
+// policy program for every identity selected by the policy) and then
+// the create (re-derives and re-installs the program from scratch),
+// which is empirically the cheapest way to nudge cilium out of a state
+// where a specific identity is stuck with ingress.enforcing=false.
+//
+// Best-effort: failures are logged and swallowed so the surrounding
+// ensureCiliumEndpointEnforcing retry loop gets to make the final
+// pass/fail determination based on whether enforcement actually came
+// back up — not on transient list/delete errors.
+func recreateNetworkPolicies(ctx context.Context, clientset *kubernetes.Clientset, ns string) {
+	nps, err := clientset.NetworkingV1().NetworkPolicies(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return ""
+		GinkgoWriter.Printf("recreateNetworkPolicies: list in %s failed: %v\n", ns, err)
+		return
 	}
-	for _, p := range pods.Items {
-		if p.Status.PodIP == ip {
-			return p.Name
+	for _, np := range nps.Items {
+		// Strip ResourceVersion and other server-managed fields so
+		// the Create below is accepted as a fresh object.
+		fresh := np.DeepCopy()
+		fresh.ObjectMeta = metav1.ObjectMeta{
+			Name:        np.Name,
+			Namespace:   np.Namespace,
+			Labels:      np.Labels,
+			Annotations: np.Annotations,
+		}
+		if err := clientset.NetworkingV1().NetworkPolicies(ns).Delete(ctx, np.Name, metav1.DeleteOptions{}); err != nil {
+			GinkgoWriter.Printf("recreateNetworkPolicies: delete %s/%s failed: %v\n", ns, np.Name, err)
+			continue
+		}
+		// Give the apiserver a tick to finalize the delete; cilium
+		// reconciles on the watch stream so we don't strictly need
+		// to wait, but immediate create-after-delete can occasionally
+		// race the finalizer queue.
+		time.Sleep(500 * time.Millisecond)
+		if _, err := clientset.NetworkingV1().NetworkPolicies(ns).Create(ctx, fresh, metav1.CreateOptions{}); err != nil {
+			GinkgoWriter.Printf("recreateNetworkPolicies: recreate %s/%s failed: %v\n", ns, np.Name, err)
 		}
 	}
-	return ""
 }
 
 // unstructuredNestedString / Int64 / Bool / Slice are tiny wrappers around
