@@ -147,6 +147,18 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		Expect(eppIPB).NotTo(BeEmpty(), "could not find a ready EPP pod IP in %s", namespaceB)
 		Expect(eppPortB).To(BeNumerically(">", 0), "could not determine EPP pod port in %s", namespaceB)
 
+		// AKS Cilium overlay race guard: poll the EPP pod's CiliumEndpoint
+		// until status.policy.ingress.enforcing flips to true. Without this
+		// gate, an EPP pod that was created in the narrow window between
+		// the NetworkPolicy apply and cilium-agent's policy compile lands
+		// with enforcing=false and never recovers — the canary probe loop
+		// below then spins for 5 minutes and fails with a generic
+		// "enforcement not active" message that hides the actual cause.
+		// Failing here surfaces a specific, actionable Cilium message
+		// instead, and short-circuits 4+ minutes of useless polling.
+		waitForCiliumEndpointEnforcing(ctx, clientset, namespace, eppIP)
+		waitForCiliumEndpointEnforcing(ctx, clientset, namespaceB, eppIPB)
+
 		// Wait for NetworkPolicy enforcement to actually take effect on this
 		// cluster. On freshly created Cilium clusters the policy maps may take
 		// a few seconds to load even after pods report Ready. Use a single
@@ -1028,6 +1040,109 @@ func collectCiliumDiagnostics(ctx context.Context, clientset *kubernetes.Clients
 	} else {
 		fmt.Fprintf(b, "  CiliumNetworkPolicy resources cluster-wide: %d (K8s NetworkPolicies do not round-trip into CNPs; this is informational)\n", len(cnps.Items))
 	}
+}
+
+// waitForCiliumEndpointEnforcing polls the CiliumEndpoint backing the pod
+// at `targetIP` in `ns` and fails the current Ginkgo spec if its
+// status.policy.ingress.enforcing does not flip to true within the
+// timeout.
+//
+// Background: AKS clusters running with `--network-dataplane cilium
+// --network-policy cilium` exhibit a race where a pod created in the
+// narrow window between a NetworkPolicy apply and cilium-agent's policy
+// compile lands with enforcing=false on its CiliumEndpoint and stays
+// that way indefinitely. The K8s NetworkPolicies look correct, cilium-
+// agent is healthy, but traffic to the affected endpoint is silently
+// admitted because the eBPF map for that identity has no rules
+// programmed. Symptom: the canary probe loop sees EXIT=0 forever.
+//
+// The fix is to wait for the CiliumEndpoint to advertise enforcing=true
+// before starting probes. If it never flips (the race triggered and is
+// stuck), this helper fails the BeforeAll with a Cilium-specific
+// message — turning a 5-minute generic timeout into a 60-second
+// actionable one.
+//
+// Best-effort: on non-Cilium clusters or when the CRD is missing, the
+// helper logs the situation and returns without failing, so the suite
+// remains portable to kind / OSS Kubernetes clusters.
+func waitForCiliumEndpointEnforcing(ctx context.Context, _ *kubernetes.Clientset, ns, targetIP string) {
+	const (
+		timeout      = 60 * time.Second
+		pollInterval = 2 * time.Second
+	)
+
+	dyn, derr := utils.GetDynamicClient()
+	if derr != nil {
+		GinkgoWriter.Printf("waitForCiliumEndpointEnforcing: dynamic client unavailable (%v) — skipping Cilium enforcement gate for %s/%s\n", derr, ns, targetIP)
+		return
+	}
+	cepGVR := schema.GroupVersionResource{
+		Group: "cilium.io", Version: "v2", Resource: "ciliumendpoints",
+	}
+
+	// Probe once to see if the CRD is registered at all. If not, this is
+	// not a Cilium cluster — silently skip so kind / OSS K8s users can
+	// still run the suite.
+	if _, err := dyn.Resource(cepGVR).Namespace(ns).List(ctx, metav1.ListOptions{Limit: 1}); err != nil {
+		GinkgoWriter.Printf("waitForCiliumEndpointEnforcing: CiliumEndpoint CRD not available (%v) — skipping enforcement gate for %s/%s\n", err, ns, targetIP)
+		return
+	}
+
+	var (
+		lastState      string
+		lastIngressEnf bool
+		lastIdentity   int64
+		lastName       string
+		foundEndpoint  bool
+	)
+
+	Eventually(func() bool {
+		ceps, err := dyn.Resource(cepGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return false
+		}
+		for _, cep := range ceps.Items {
+			addrs, _, _ := unstructuredNestedSlice(cep.Object, "status", "networking", "addressing")
+			match := false
+			for _, a := range addrs {
+				if m, ok := a.(map[string]any); ok {
+					if v, _ := m["ipv4"].(string); v == targetIP {
+						match = true
+						break
+					}
+				}
+			}
+			if !match {
+				continue
+			}
+			foundEndpoint = true
+			lastName = cep.GetName()
+			lastState, _, _ = unstructuredNestedString(cep.Object, "status", "state")
+			lastIdentity, _, _ = unstructuredNestedInt64(cep.Object, "status", "identity", "id")
+			lastIngressEnf, _, _ = unstructuredNestedBool(cep.Object, "status", "policy", "ingress", "enforcing")
+			return lastIngressEnf
+		}
+		return false
+	}, timeout, pollInterval).Should(BeTrue(),
+		func() string {
+			if !foundEndpoint {
+				return fmt.Sprintf(
+					"no CiliumEndpoint with IP %s appeared in %s within %s — "+
+						"cilium-agent has not programmed the EPP endpoint. "+
+						"Check cilium-agent pod health on the EPP's node.",
+					targetIP, ns, timeout)
+			}
+			return fmt.Sprintf(
+				"EPP CiliumEndpoint %s/%s (identity=%d state=%s) stuck with "+
+					"ingress.enforcing=%v after %s — known AKS Cilium overlay "+
+					"race when a pod comes up before its NetworkPolicy is "+
+					"compiled into the local eBPF map. Cilium-agent on the "+
+					"EPP node may need a restart, or the policy must be "+
+					"re-applied after the pod is ready. Skipping the canary "+
+					"probe loop because it would otherwise spin for 5 minutes "+
+					"on this race.",
+				ns, lastName, lastIdentity, lastState, lastIngressEnf, timeout)
+		})
 }
 
 // unstructuredNestedString / Int64 / Bool / Slice are tiny wrappers around
