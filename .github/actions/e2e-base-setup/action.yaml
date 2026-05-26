@@ -1,9 +1,9 @@
 name: 'E2E Base Setup'
 description: >-
   Reusable composite action that prepares the full E2E base environment:
-  loads component versions, sets up Go, logs in to Azure, builds the
-  gpu-node-mocker image, creates the AKS cluster, pushes the image to ACR,
-  installs all components, and validates them.
+  loads component versions, sets up Go, logs in to Azure, optionally builds
+  the gpu-node-mocker image (skipped when node-provisioner=karpenter), creates
+  the AKS cluster, installs all components, and validates them.
 
 inputs:
   resource-group:
@@ -16,12 +16,13 @@ inputs:
     description: 'ACR name (no FQDN).'
     required: true
   gpu-mocker-image:
-    description: 'Local docker tag for the gpu-node-mocker image (e.g. gpu-node-mocker:latest-<runid>).'
-    required: true
+    description: 'Local docker tag for the gpu-node-mocker image (e.g. gpu-node-mocker:latest-<runid>). Ignored when node-provisioner=karpenter.'
+    required: false
+    default: ''
   location:
     description: 'Azure region for the cluster.'
     required: false
-    default: 'australiaeast'
+    default: 'swedencentral'
   node-count:
     description: 'Number of AKS nodes.'
     required: false
@@ -29,7 +30,7 @@ inputs:
   node-vm-size:
     description: 'AKS node VM size.'
     required: false
-    default: 'Standard_D8s_v5'
+    default: 'Standard_D4d_v4'
   provider:
     description: 'E2E provider (upstream|azure) — master switch for component install mix. Empty defaults to upstream.'
     required: false
@@ -45,6 +46,18 @@ inputs:
     default: ''
   keda-version:
     description: 'KEDA Helm chart version override.'
+    required: false
+    default: ''
+  llm-gateway-auth-version:
+    description: 'LLM Gateway Auth Helm chart version override.'
+    required: false
+    default: ''
+  node-provisioner:
+    description: >
+      KAITO node provisioner. Set to "karpenter" to use real Karpenter (AKS Node
+      Auto Provisioning). When "karpenter": gpu-node-mocker is not built or
+      deployed, and KAITO is launched with --node-provisioner=karpenter.
+      Default: empty (gpu-node-mocker path).
     required: false
     default: ''
 
@@ -66,10 +79,14 @@ runs:
         INPUT_ISTIO="${{ inputs.istio-version }}"
         INPUT_GWAPI="${{ inputs.gateway-api-version }}"
         INPUT_KEDA="${{ inputs.keda-version }}"
+        INPUT_LGA="${{ inputs.llm-gateway-auth-version }}"
+        INPUT_NODE_PROVISIONER="${{ inputs.node-provisioner }}"
         [ -n "${INPUT_PROVIDER}" ] && E2E_PROVIDER="${INPUT_PROVIDER}"
         [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
         [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
         [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
+        [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
+        KAITO_NODE_PROVISIONER="${INPUT_NODE_PROVISIONER}"
 
         # Validate provider value.
         case "${E2E_PROVIDER}" in
@@ -94,7 +111,10 @@ runs:
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
           echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
           echo "KEDA_VERSION=${KEDA_VERSION}"
+          echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
+          echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
           echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
+          echo "KAITO_NODE_PROVISIONER=${KAITO_NODE_PROVISIONER}"
         } >> "$GITHUB_ENV"
 
     - name: Print versions
@@ -106,7 +126,10 @@ runs:
         echo "ISTIO_VERSION=${ISTIO_VERSION}"
         echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
         echo "KEDA_VERSION=${KEDA_VERSION}"
+        echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
+        echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
         echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
+        echo "KAITO_NODE_PROVISIONER=${KAITO_NODE_PROVISIONER}"
 
     - name: Setup Go
       uses: actions/setup-go@v6
@@ -119,6 +142,7 @@ runs:
 
     - name: Prepare gpu-node-mocker image
       id: image
+      if: ${{ inputs.node-provisioner != 'karpenter' }}
       shell: bash
       env:
         RESOURCE_GROUP: ${{ inputs.resource-group }}
@@ -130,6 +154,16 @@ runs:
         OUTPUT=$(make e2e-prepare-image)
         echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
 
+    - name: Create resource group and ACR (Karpenter path)
+      if: ${{ inputs.node-provisioner == 'karpenter' }}
+      shell: bash
+      env:
+        RESOURCE_GROUP: ${{ inputs.resource-group }}
+        CLUSTER_NAME: ${{ inputs.cluster-name }}
+        ACR_NAME: ${{ inputs.acr-name }}
+        LOCATION: ${{ inputs.location }}
+      run: make e2e-prepare-image
+
     - name: Setup cluster
       shell: bash
       env:
@@ -140,6 +174,19 @@ runs:
         NODE_COUNT: ${{ inputs.node-count }}
         NODE_VM_SIZE: ${{ inputs.node-vm-size }}
       run: make e2e-setup
+
+    - name: Install karpenter helm chart
+      if: ${{ inputs.node-provisioner == 'karpenter' }}
+      shell: bash
+      run: |
+        # Ensure yq v4.30+ is available for envsubst(nu) support required by configure-values.sh
+        sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+        sudo chmod +x /usr/local/bin/yq
+        make karpenter-azure-identity
+        make azure-karpenter-helm
+      env:
+        AZURE_RESOURCE_GROUP: ${{ inputs.resource-group }}
+        AZURE_CLUSTER_NAME: ${{ inputs.cluster-name }}
 
     - name: Install components
       shell: bash

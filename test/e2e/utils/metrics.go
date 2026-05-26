@@ -171,9 +171,9 @@ func splitLabels(s string) []string {
 // PodMetricSnapshot holds per-pod metric values for a specific metric.
 type PodMetricSnapshot map[string]float64
 
-// ScrapeRequestSuccessTotal scrapes vllm:request_success_total from all shadow
-// pods for the given model in the given namespace and returns a map of
-// podName → counter value.
+// ScrapeRequestSuccessTotal scrapes vllm:request_success_total from all pods
+// (shadow pods in GPU-mocker mode, real inference pods in Karpenter mode) for
+// the given model in the given namespace and returns a map of podName → value.
 func ScrapeRequestSuccessTotal(ctx context.Context, clientset *kubernetes.Clientset, namespace, model string) (PodMetricSnapshot, error) {
 	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
 	if err != nil {
@@ -188,7 +188,7 @@ func ScrapeRequestSuccessTotal(ctx context.Context, clientset *kubernetes.Client
 			return nil, fmt.Errorf("scraping %s: %w", pod.Name, err)
 		}
 		val, found := ParseMetricValue(raw, "vllm:request_success_total", map[string]string{
-			"model_name": model,
+			"model_name": servedModelName(pod, model),
 		})
 		if !found {
 			// Counter may not exist yet if no requests have been served.
@@ -199,10 +199,18 @@ func ScrapeRequestSuccessTotal(ctx context.Context, clientset *kubernetes.Client
 	return snapshot, nil
 }
 
-// GetShadowPodsForModel returns the Running shadow pods in the given
-// namespace that serve the given model. Shadow pods are identified by label
-// kaito.sh/managed-by=gpu-mocker and annotation or label containing the
-// model name.
+// KAITOInferenceServerPort is the port that KAITO vLLM inference pods
+// expose for both the API and /metrics (matches epp.modelServerPort in
+// charts/modeldeployment/values.yaml).
+const KAITOInferenceServerPort = 5000
+
+// GetShadowPodsForModel returns the Running pods in the given namespace that
+// serve the given model, for use in per-pod metrics scraping.
+//
+// In GPU-mocker mode the pods are shadow pods with label
+// kaito.sh/managed-by=gpu-mocker. In Karpenter mode (no GPU mocker) there
+// are no shadow pods; the function falls back to real KAITO inference pods
+// identified by label inferenceset.kaito.sh/created-by=<model>.
 func GetShadowPodsForModel(ctx context.Context, clientset *kubernetes.Clientset, namespace, model string) ([]corev1.Pod, error) {
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "kaito.sh/managed-by=gpu-mocker",
@@ -214,16 +222,41 @@ func GetShadowPodsForModel(ctx context.Context, clientset *kubernetes.Clientset,
 
 	var matched []corev1.Pod
 	for _, pod := range pods.Items {
+		// Skip pods that are being deleted (deletionTimestamp set but phase
+		// not yet updated to Terminated).
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
 		// Match by checking the shadow-pod-for label or by scraping the
 		// model name from the pod's served-model-name argument.
 		if belongsToModel(pod, model) {
 			matched = append(matched, pod)
 		}
 	}
-	if len(matched) == 0 {
+	if len(matched) > 0 {
+		return matched, nil
+	}
+
+	// Fallback: Karpenter mode — no GPU mocker. Use real KAITO inference pods
+	// labelled inferenceset.kaito.sh/created-by=<model>. These pods run vLLM
+	// and expose /metrics on KAITOInferenceServerPort.
+	inferencePods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", model),
+		FieldSelector: "status.phase=Running",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing inference pods: %w", err)
+	}
+	var inferenceMatched []corev1.Pod
+	for _, pod := range inferencePods.Items {
+		if pod.DeletionTimestamp == nil {
+			inferenceMatched = append(inferenceMatched, pod)
+		}
+	}
+	if len(inferenceMatched) == 0 {
 		return nil, fmt.Errorf("no running shadow pods found for model %q in %s", model, namespace)
 	}
-	return matched, nil
+	return inferenceMatched, nil
 }
 
 // belongsToModel checks whether a shadow pod serves the given model by
@@ -271,6 +304,26 @@ func TotalDelta(diff PodMetricSnapshot) float64 {
 	return total
 }
 
+// ScrapeRawMetrics returns the raw Prometheus text from every inference pod
+// for the given model. Used for diagnostic logging when a metric assertion fails.
+func ScrapeRawMetrics(ctx context.Context, clientset *kubernetes.Clientset, namespace, model string) (map[string]string, error) {
+	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(pods))
+	for _, pod := range pods {
+		port := inferenceSimPort(pod)
+		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, port)
+		if err != nil {
+			out[pod.Name] = fmt.Sprintf("<scrape error: %v>", err)
+			continue
+		}
+		out[pod.Name] = raw
+	}
+	return out, nil
+}
+
 // ScrapeModelMetric scrapes a named metric with a model_name label from all
 // shadow pods in the given namespace for the given model and returns a
 // per-pod snapshot. This is used for metrics like vllm:prefix_cache_hits,
@@ -288,17 +341,58 @@ func ScrapeModelMetric(ctx context.Context, clientset *kubernetes.Clientset, nam
 		if err != nil {
 			return nil, fmt.Errorf("scraping %s: %w", pod.Name, err)
 		}
+		// Use the actual served model name reported by the inference container
+		// (--served-model-name arg, e.g. "phi-4-mini-instruct") for label
+		// matching. This differs from the deployment name (e.g. "scaling-phi")
+		// used for pod selection above.
+		servedModel := servedModelName(pod, model)
 		val, _ := ParseMetricValue(raw, metricName, map[string]string{
-			"model_name": model,
+			"model_name": servedModel,
 		})
 		snapshot[pod.Name] = val
 	}
 	return snapshot, nil
 }
 
-// inferenceSimPort returns the llm-d-inference-sim container's port from the
-// pod spec. The simulator serves both the API and /metrics on the same port.
-// Falls back to 8000 if no port is declared.
+// servedModelName returns the user-facing model alias that the inference
+// container reports as its model_name Prometheus label.
+//
+// Resolution order:
+//  1. kaito.sh/served-model-name pod label — stamped by the gpu-node-mocker
+//     controller on shadow pods (GPU-mocker mode). The shadow pod uses a
+//     ConfigMap for its config, not a --served-model-name flag, so arg
+//     inspection alone is insufficient.
+//  2. --served-model-name / --model args on any container — covers real vLLM
+//     pods in Karpenter mode.
+//  3. fallback — the deployment name passed by the caller.
+func servedModelName(pod corev1.Pod, fallback string) string {
+	if v, ok := pod.Labels["kaito.sh/served-model-name"]; ok && v != "" {
+		return v
+	}
+	for _, c := range pod.Spec.Containers {
+		for i, arg := range c.Args {
+			if arg == "--served-model-name" && i+1 < len(c.Args) {
+				return c.Args[i+1]
+			}
+			if strings.HasPrefix(arg, "--served-model-name=") {
+				return strings.TrimPrefix(arg, "--served-model-name=")
+			}
+			if arg == "--model" && i+1 < len(c.Args) {
+				return c.Args[i+1]
+			}
+			if strings.HasPrefix(arg, "--model=") {
+				return strings.TrimPrefix(arg, "--model=")
+			}
+		}
+	}
+	return fallback
+}
+
+// inferenceSimPort returns the metrics port for a pod.
+// For GPU-mocker shadow pods (llm-d-inference-sim), uses the container's
+// declared port, falling back to 8000.
+// For real KAITO inference pods (karpenter mode), vLLM serves both the API
+// and /metrics on KAITOInferenceServerPort.
 func inferenceSimPort(pod corev1.Pod) int {
 	for _, c := range pod.Spec.Containers {
 		if c.Name == "llm-d-inference-sim" {
@@ -307,9 +401,11 @@ func inferenceSimPort(pod corev1.Pod) int {
 					return int(p.ContainerPort)
 				}
 			}
+			return 8000
 		}
 	}
-	return 8000
+	// Real KAITO vLLM inference pod — metrics on the inference server port.
+	return KAITOInferenceServerPort
 }
 
 // GetEPPPods returns the EPP pods for the given deployment.

@@ -54,8 +54,26 @@ func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	if err := cl.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create namespace %s: %w", name, err)
+	if err := cl.Create(ctx, ns); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create namespace %s: %w", name, err)
+		}
+		// Namespace exists — check whether it is still terminating from a
+		// prior test run. If so, wait for it to disappear completely before
+		// recreating it; Helm cannot create resources in a terminating
+		// namespace (API server rejects all writes with "forbidden").
+		existing := &corev1.Namespace{}
+		if getErr := cl.Get(ctx, types.NamespacedName{Name: name}, existing); getErr == nil &&
+			existing.Status.Phase == corev1.NamespaceTerminating {
+			GinkgoWriter.Printf("Namespace %s is Terminating; waiting for full deletion before recreating…\n", name)
+			if waitErr := waitForNamespaceDeletion(ctx, name); waitErr != nil {
+				return fmt.Errorf("namespace %s stuck terminating: %w", name, waitErr)
+			}
+			fresh := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+			if createErr := cl.Create(ctx, fresh); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+				return fmt.Errorf("create namespace %s after termination: %w", name, createErr)
+			}
+		}
 	}
 
 	if err := InstallModelHarness(name, authEnabled); err != nil {
@@ -63,6 +81,26 @@ func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
 	}
 
 	return nil
+}
+
+// waitForNamespaceDeletion polls until the namespace no longer exists (up to
+// 3 minutes). Used by EnsureNamespace to handle the Terminating → Gone
+// transition that Kubernetes finalizers can delay.
+func waitForNamespaceDeletion(ctx context.Context, name string) error {
+	cl := TestingCluster.KubeClient
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		ns := &corev1.Namespace{}
+		err := cl.Get(ctx, types.NamespacedName{Name: name}, ns)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return fmt.Errorf("namespace %s did not finish terminating within 3 minutes", name)
 }
 
 // DeleteNamespace uninstalls the modelharness Helm release in the namespace
@@ -206,7 +244,80 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 	}
 
 	for _, d := range resolved {
-		By(fmt.Sprintf("Waiting for inference pods for %s to be Running", d.Name))
+		podTimeout := InferencePodReadyTimeout
+		if d.PodReadyTimeout > 0 {
+			podTimeout = d.PodReadyTimeout
+		}
+
+		// Fast-fail sanity check: within 3 minutes KAITO must have either
+		//   (a) created at least one inference pod directly (GPU-mocker mode —
+		//       pods appear immediately because fake nodes already exist), OR
+		//   (b) created at least one Karpenter NodeClaim (karpenter mode —
+		//       KAITO requests a GPU node, Karpenter provisions it, THEN KAITO
+		//       creates the pod; the NodeClaim appears within ~1 min of KAITO
+		//       processing the InferenceSet).
+		//
+		// If neither appears in 3 minutes the InferenceSet controller is not
+		// reconciling: preset unsupported, KAITO not running, HF token missing,
+		// or NodePool lacks the requested instanceType.
+		By(fmt.Sprintf("Waiting for KAITO to start provisioning for %s", d.Name))
+		dynClient, dynErr := GetDynamicClient()
+		Expect(dynErr).NotTo(HaveOccurred())
+		// Snapshot NodeClaim *names* before install so concurrent deletions of
+		// unrelated NodeClaims (from previous test cleanup) don't confuse the
+		// "did a new one appear?" check. Comparing names is immune to the total
+		// count going down while new ones are added.
+		ncListBefore, _ := dynClient.Resource(NodeClaimGVR).List(ctx, metav1.ListOptions{})
+		beforeNCNames := map[string]struct{}{}
+		if ncListBefore != nil {
+			for _, nc := range ncListBefore.Items {
+				beforeNCNames[nc.GetName()] = struct{}{}
+			}
+		}
+		Eventually(func() error {
+			// Path (a): pod already exists (GPU-mocker, fake node was ready).
+			pods, _ := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", d.Name),
+			})
+			if pods != nil && len(pods.Items) > 0 {
+				return nil
+			}
+			// Path (b): a NodeClaim with a name not seen before appeared
+			// (Karpenter mode — KAITO requested a GPU node before creating the
+			// pod; the NodeClaim name will be new regardless of deletions of old
+			// unrelated claims happening concurrently).
+			ncList, _ := dynClient.Resource(NodeClaimGVR).List(ctx, metav1.ListOptions{})
+			if ncList != nil {
+				for _, nc := range ncList.Items {
+					if _, existed := beforeNCNames[nc.GetName()]; !existed {
+						GinkgoWriter.Printf("[%s] new Karpenter NodeClaim %q appeared; "+
+							"waiting for node provision + pod creation (podTimeout=%s)\n",
+							d.Name, nc.GetName(), podTimeout)
+						return nil
+					}
+				}
+			}
+			// Diagnostics on every poll so the log trail is visible in CI.
+			allPods, _ := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{})
+			if allPods != nil && len(allPods.Items) > 0 {
+				GinkgoWriter.Printf("[diag] pods in %s (any label): ", d.Namespace)
+				for _, p := range allPods.Items {
+					GinkgoWriter.Printf("%s(%s) ", p.Name, p.Status.Phase)
+				}
+				GinkgoWriter.Printf("\n")
+			}
+			return fmt.Errorf("no new NodeClaim or pods yet (kaito not reconciling InferenceSet)")
+		}, 3*time.Minute, 15*time.Second).Should(Succeed(),
+			"KAITO must start provisioning for %s within 3 minutes.\n"+
+				"Likely causes:\n"+
+				"  • KAITO InferenceSet controller not running (check kaito-system pods)\n"+
+				"  • Feature gate enableInferenceSetController=false\n"+
+				"  • Model preset %q not recognised by this KAITO version\n"+
+				"  • HuggingFace token secret missing in namespace %s (Llama presets)\n"+
+				"  • NodePool does not include instance type %q",
+			d.Name, d.Model, d.Namespace, d.InstanceType)
+
+		By(fmt.Sprintf("Waiting for inference pods for %s to be Running (timeout=%s)", d.Name, podTimeout))
 		Eventually(func() error {
 			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
 				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", d.Name),
@@ -226,7 +337,7 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 				}
 			}
 			return nil
-		}, 5*time.Minute, 10*time.Second).Should(Succeed(),
+		}, podTimeout, 10*time.Second).Should(Succeed(),
 			"inference pods for %s should be Running with PodIPs", d.Name)
 	}
 
@@ -240,6 +351,10 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 	if gatewayURL != "" {
 		for _, d := range resolved {
 			d := d
+			gatewayTimeout := GatewayReadyTimeout
+			if d.GatewayWarmupTimeout > 0 {
+				gatewayTimeout = d.GatewayWarmupTimeout
+			}
 			// When the deployment opts in to API key auth, the chart
 			// renders an APIKey CR; the apikey-operator generates a
 			// Secret named APIKeySecretName in the same namespace. The
@@ -302,7 +417,7 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 						resp.StatusCode, d.Namespace, d.Name, hostHeader, d.AuthAPIKeyEnabled, string(body))
 				}
 				return nil
-			}, 5*time.Minute, 10*time.Second).Should(Succeed(),
+			}, gatewayTimeout, 10*time.Second).Should(Succeed(),
 				"gateway should route to deployment %s successfully", d.Name)
 		}
 	}

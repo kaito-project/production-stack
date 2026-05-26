@@ -8,6 +8,7 @@ name: E2E tests (nightly, full suite)
 # Nightly specs.
 
 on:
+  pull_request: {} # remove
   schedule:
     # 00:00 Sydney time. GitHub cron is UTC; Sydney is UTC+10 (AEST) for
     # most of the year, so 14:00 UTC == 00:00 AEST next day. During AEDT
@@ -46,10 +47,9 @@ env:
   RESOURCE_GROUP: "kaito-nightly-rg-${{ github.run_id }}"
   CLUSTER_NAME: "kaito-nightly-aks-${{ github.run_id }}"
   ACR_NAME: "kaitonightly${{ github.run_id }}acr"
-  GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
-  LOCATION: australiaeast
+  LOCATION: swedencentral
   NODE_COUNT: '3'
-  NODE_VM_SIZE: Standard_D8s_v5
+  NODE_VM_SIZE: Standard_D4d_v4
 
 permissions:
   contents: read
@@ -73,10 +73,10 @@ jobs:
           resource-group: ${{ env.RESOURCE_GROUP }}
           cluster-name: ${{ env.CLUSTER_NAME }}
           acr-name: ${{ env.ACR_NAME }}
-          gpu-mocker-image: ${{ env.GPU_MOCKER_IMAGE }}
           location: ${{ env.LOCATION }}
           node-count: ${{ env.NODE_COUNT }}
           node-vm-size: ${{ env.NODE_VM_SIZE }}
+          node-provisioner: karpenter
           provider: ${{ github.event.inputs.provider }}
           istio-version: ${{ github.event.inputs.istio_version }}
           gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
@@ -85,9 +85,17 @@ jobs:
       - name: Run E2E tests (Nightly specs only)
         # Restrict ginkgo to specs tagged with the Nightly label.
         # NetworkPolicy specs are temporarily disabled.
+        # GPUMocker specs (scaling, prefix-cache) require the gpu-node-mocker
+        # controller; they are excluded from the karpenter nightly pipeline.
+        # E2E_PARALLEL=3 runs the three Karpenter scenarios concurrently so
+        # the critical path is the single longest scenario (~90 min) rather
+        # than the sum of all three (~3 h sequential).
+        # E2E_TIMEOUT=180m covers node-provision + image-pull + model-load.
         run: make test-e2e
         env:
-          E2E_LABEL: "Nightly && !NetworkPolicy"
+          E2E_LABEL: "Nightly && !NetworkPolicy && !GPUMocker"
+          E2E_PARALLEL: "3"
+          E2E_TIMEOUT: "180m"
 
       - name: Generate E2E coverage report
         if: always()

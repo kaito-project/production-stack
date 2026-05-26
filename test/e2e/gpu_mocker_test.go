@@ -32,7 +32,7 @@ import (
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
-var _ = Describe("GPU Mocker E2E", Ordered, func() {
+var _ = Describe("GPU Mocker E2E", Ordered, utils.GinkgoLabelGPUMocker, func() {
 	// Per-case deployments owned by gpu_mocker_test.go (see cases.go).
 	// Installed in a dedicated namespace by BeforeAll so this case can
 	// run in parallel with other Ordered Describes.

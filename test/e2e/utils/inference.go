@@ -34,6 +34,24 @@ const (
 	// rendered by the modeldeployment Helm chart and is observable on the
 	// cluster).
 	InferenceSetReadyTimeout = 5 * time.Minute
+
+	// InferencePodReadyTimeout is the timeout for waiting for inference
+	// (shadow) pods to be Running with PodIPs assigned. With Karpenter
+	// provisioning real GPU nodes (Azure GPU VMs), the full path from
+	// pod creation to Running is:
+	//   Pending → Karpenter NodeClaim → Azure VM provision (~8-15 min)
+	//   → node joins cluster → pod scheduled → Running
+	// 20 minutes provides a safe margin over the typical 10-18 min end-to-end
+	// provisioning time while staying within the overall suite timeout.
+	InferencePodReadyTimeout = 20 * time.Minute
+
+	// GatewayReadyTimeout is the timeout for waiting for the gateway to
+	// successfully route requests to a deployment after inference pods are
+	// Running. With real GPU nodes the vLLM process must download model
+	// weights (~8 GB for phi-4-mini) and load them into GPU memory before
+	// its readiness probe passes and the EPP registers it as a candidate.
+	// 15 minutes provides headroom for a cold-start download + GPU load.
+	GatewayReadyTimeout = 15 * time.Minute
 )
 
 // InferencePoolName returns the InferencePool name derived from the

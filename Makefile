@@ -118,13 +118,14 @@ docker-buildx: ## Multi-arch build (and optionally push) the gpu-node-mocker ima
 
 E2E_LABEL ?=
 E2E_PARALLEL ?= 2
+E2E_TIMEOUT  ?= 60m
 
 .PHONY: test-e2e
 test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
-	@echo "Running e2e tests (parallel=$(E2E_PARALLEL))..."
+	@echo "Running e2e tests (parallel=$(E2E_PARALLEL), timeout=$(E2E_TIMEOUT))..."
 	go run github.com/onsi/ginkgo/v2/ginkgo \
 		--procs=$(E2E_PARALLEL) \
-		--timeout=30m \
+		--timeout=$(E2E_TIMEOUT) \
 		-v \
 		$(if $(E2E_LABEL),--label-filter="$(E2E_LABEL)",) \
 		./test/e2e/...
@@ -211,8 +212,69 @@ e2e-up: ## One command to set up full local E2E env (cluster, build, push, insta
 	echo "Run tests with: make test-e2e"; \
 	echo "Tear down with: CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) make e2e-teardown"
 
-## --------------------------------------
-## Helm
+KARPENTER_VERSION ?= $(shell grep '^KARPENTER_VERSION=' versions.env | cut -d'"' -f2)
+KARPENTER_NAMESPACE ?= karpenter
+KARPENTER_SA_NAME ?= karpenter-sa
+AZURE_KARPENTER_MSI_NAME ?= karpentermsi
+
+.PHONY: karpenter-azure-identity
+karpenter-azure-identity: ## Create Azure MSI, federated credential, and role assignments for Karpenter.
+	az identity create --name $(AZURE_KARPENTER_MSI_NAME) --resource-group $(AZURE_RESOURCE_GROUP) >/dev/null
+	OIDC_ISSUER=$$(az aks show --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_CLUSTER_NAME) \
+	  --query "oidcIssuerProfile.issuerUrl" -o tsv); \
+	az identity federated-credential create \
+	  --name karpenter-federated-credential \
+	  --identity-name $(AZURE_KARPENTER_MSI_NAME) \
+	  --resource-group $(AZURE_RESOURCE_GROUP) \
+	  --issuer "$${OIDC_ISSUER}" \
+	  --subject "system:serviceaccount:$(KARPENTER_NAMESPACE):$(KARPENTER_SA_NAME)" \
+	  --audiences api://AzureADTokenExchange >/dev/null
+	SUBSCRIPTION_ID=$$(az account show --query 'id' -o tsv); \
+	PRINCIPAL_ID=$$(az identity show --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_KARPENTER_MSI_NAME) --query 'principalId' -o tsv); \
+	NODE_RG=$$(az aks show --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_CLUSTER_NAME) --query nodeResourceGroup -o tsv); \
+	az role assignment create \
+	  --assignee-object-id "$${PRINCIPAL_ID}" \
+	  --assignee-principal-type ServicePrincipal \
+	  --scope "/subscriptions/$${SUBSCRIPTION_ID}/resourceGroups/$${NODE_RG}" \
+	  --role "Contributor" --output none; \
+	az role assignment create \
+	  --assignee-object-id "$${PRINCIPAL_ID}" \
+	  --assignee-principal-type ServicePrincipal \
+	  --scope "/subscriptions/$${SUBSCRIPTION_ID}" \
+	  --role "Reader" --output none
+
+.PHONY: azure-karpenter-helm
+azure-karpenter-helm: ## Install Azure Karpenter Helm chart (run karpenter-azure-identity first).
+	curl -sO https://raw.githubusercontent.com/Azure/karpenter-provider-azure/main/hack/deploy/configure-values.sh
+	chmod +x ./configure-values.sh && ./configure-values.sh $(AZURE_CLUSTER_NAME) \
+	$(AZURE_RESOURCE_GROUP) $(KARPENTER_SA_NAME) $(AZURE_KARPENTER_MSI_NAME) false
+	helm upgrade --install karpenter oci://mcr.microsoft.com/aks/karpenter/karpenter \
+	--version "$(KARPENTER_VERSION)" \
+	--namespace "$(KARPENTER_NAMESPACE)" --create-namespace \
+	--values karpenter-values.yaml \
+	--set controller.resources.requests.cpu=1 \
+	--set controller.resources.requests.memory=1Gi \
+	--set controller.resources.limits.cpu=1 \
+	--set controller.resources.limits.memory=1Gi
+	kubectl wait --for=condition=available deploy "karpenter" -n karpenter --timeout=300s
+
+.PHONY: e2e-up-karpenter
+e2e-up-karpenter: ## One command to set up full local E2E env using real Karpenter (AKS NAP, no gpu-node-mocker).
+	@set -e; \
+	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) KAITO_NODE_PROVISIONER=karpenter; \
+	hack/e2e/scripts/prepare-image.sh; \
+	hack/e2e/scripts/run-e2e-local.sh setup; \
+	$(MAKE) karpenter-azure-identity AZURE_CLUSTER_NAME=$(E2E_CLUSTER_NAME) AZURE_RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \
+	$(MAKE) azure-karpenter-helm AZURE_CLUSTER_NAME=$(E2E_CLUSTER_NAME) AZURE_RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \
+	hack/e2e/scripts/run-e2e-local.sh install; \
+	hack/e2e/scripts/run-e2e-local.sh validate; \
+	echo ""; \
+	echo "=== E2E environment is ready (Karpenter / AKS NAP) ==="; \
+	echo "  Cluster: $(E2E_CLUSTER_NAME)"; \
+	echo "  Resource Group: $(E2E_RESOURCE_GROUP)"; \
+	echo "Run nightly tests with: E2E_LABEL='Nightly && !NetworkPolicy' make test-e2e"; \
+	echo "Tear down with: CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) make e2e-teardown"
+
 ## --------------------------------------
 
 ##@ Helm

@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
@@ -37,6 +38,14 @@ import (
 const (
 	presetPhi       = "phi-4-mini-instruct"
 	presetMinistral = "ministral-3-3b-instruct"
+
+	// Karpenter nightly-only presets — larger models that exercise real GPU
+	// node provisioning on Azure.  Cross-check against
+	// kaito-project/kaito presets/workspace/models/supported_models.yaml when
+	// updating these names.
+	presetLlama8B  = "llama-3.1-8b-instruct"      // ~8B  — single A100 40 GB
+	presetQwen32B  = "qwen2.5-coder-32b-instruct" // ~32B — multi-GPU single node
+	presetLlama70B = "llama-3.3-70b-instruct"     // ~70B — KAITO native 2-node (requires HF token)
 )
 
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
@@ -91,6 +100,21 @@ const (
 	// ext_authz, BBR, EPP and the catch-all route are all exercised by
 	// the same dataplane.
 	CaseFilterOrder = "filter-order"
+
+	// CaseKarpenterSmall covers a ~7-8B model on a single GPU node.
+	// Validates basic Karpenter provisioning for standard single-GPU inference.
+	CaseKarpenterSmall = "karpenter-small"
+
+	// CaseKarpenterMedium covers a ~32B model on a multi-GPU single node.
+	// Validates that the Karpenter NodePool selects an instance type with
+	// ≥2 GPUs and that tensor-parallel scheduling works on one node.
+	CaseKarpenterMedium = "karpenter-medium"
+
+	// CaseKarpenterLarge covers a ~70B model using KAITO's native 2-node
+	// distributed inference support (no LWS, no Ray). Validates that
+	// Karpenter provisions two GPU nodes and that the production-stack
+	// routes requests across the distributed workload.
+	CaseKarpenterLarge = "karpenter-large"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -216,6 +240,55 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			EnableScaling:    true,
 			MaxReplicas:      2,
 			ScalingThreshold: 10, // low threshold to trigger scaling during tests
+		},
+	},
+
+	// ── Karpenter nightly cases ──────────────────────────────────────────────
+	// These deploy real KAITO model presets and wait for Karpenter to
+	// provision Azure GPU VMs. Timeouts are significantly longer than GPU
+	// mocker cases to accommodate Azure VM provisioning + model download +
+	// GPU load. Adjust InstanceType to match the NodePool(s) configured for
+	// the target AKS cluster.
+	CaseKarpenterSmall: {
+		{
+			// phi-4-mini-instruct on a real A10 node: model weights are baked
+			// into the KAITO container image (no downloadAtRuntime), so startup
+			// is fast. Same preset as GPU-mocker tests — proven to work.
+			Name:                 "karpenter-small",
+			Namespace:            "e2e-karpenter-small",
+			Model:                presetPhi, // phi-4-mini-instruct, baked, no auth
+			Replicas:             1,
+			InstanceType:         "Standard_NV36ads_A10_v5", // 1× A10 24 GB
+			PodReadyTimeout:      25 * time.Minute,
+			GatewayWarmupTimeout: 20 * time.Minute,
+		},
+	},
+	CaseKarpenterMedium: {
+		{
+			// ~32B model on a 2-GPU node.  Model baked into the KAITO image
+			// (no downloadAtRuntime, no auth token required).
+			Name:                 "karpenter-medium",
+			Namespace:            "e2e-karpenter-medium",
+			Model:                presetQwen32B,
+			Replicas:             1,
+			InstanceType:         "Standard_NC48ads_A100_v4", // 2× A100 80 GB
+			PodReadyTimeout:      40 * time.Minute,
+			GatewayWarmupTimeout: 30 * time.Minute,
+		},
+	},
+	CaseKarpenterLarge: {
+		{
+			// 2-node deployment: two independent replicas of the 32B model,
+			// each on a separate NC48ads node. Karpenter provisions both
+			// Azure VMs in parallel, so total time is not significantly
+			// longer than the single-node medium case.
+			Name:                 "karpenter-large",
+			Namespace:            "e2e-karpenter-large",
+			Model:                presetQwen32B,
+			Replicas:             2,
+			InstanceType:         "Standard_NC48ads_A100_v4", // 2× A100 80 GB per node
+			PodReadyTimeout:      40 * time.Minute,
+			GatewayWarmupTimeout: 35 * time.Minute,
 		},
 	},
 }

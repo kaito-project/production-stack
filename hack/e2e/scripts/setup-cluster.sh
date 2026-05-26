@@ -20,6 +20,9 @@
 #   ISTIO_VERSION         — Istio control-plane version (sourced from versions.env)
 #   KEDA_NAMESPACE        — Override the namespace KEDA is installed into
 #                           (derived from E2E_PROVIDER when unset)
+#   KAITO_NODE_PROVISIONER — When set to "karpenter", enables AKS Node Auto
+#                            Provisioning (NAP / Karpenter). Default: empty
+#                            (gpu-node-mocker path).
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -33,6 +36,9 @@ LOCATION="${LOCATION:-australiaeast}"
 NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v5}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+# When set to "karpenter", AKS Node Auto Provisioning (NAP, powered by Karpenter)
+# is enabled at cluster-create time via --node-provisioning-mode Auto.
+KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-}"
 
 # Optional AKS-managed add-ons toggled by provider.
 #   azure    -> enable the managed KEDA add-on so the cluster ships with
@@ -95,7 +101,13 @@ case "${E2E_PROVIDER}" in
     ;;
 esac
 
-echo "=== Creating AKS cluster ${CLUSTER_NAME} (provider=${E2E_PROVIDER}) ==="
+# Enable AKS Node Auto Provisioning (NAP, powered by Karpenter) when
+# KAITO_NODE_PROVISIONER=karpenter so the cluster can provision real GPU nodes.
+if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
+  EXTRA_AKS_ARGS+=(--node-provisioning-mode Auto)
+fi
+
+echo "=== Creating AKS cluster ${CLUSTER_NAME} (provider=${E2E_PROVIDER}, node-provisioner=${KAITO_NODE_PROVISIONER:-gpu-node-mocker}) ==="
 az aks create \
   --resource-group "${RESOURCE_GROUP}" \
   --name "${CLUSTER_NAME}" \

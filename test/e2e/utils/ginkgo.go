@@ -63,4 +63,20 @@ var (
 	//   ext_authz → ext_proc.bbr → ext_proc (InferencePool/EPP) → router
 	// See test/e2e/filter_order_test.go for the test matrix.
 	GinkgoLabelFilterOrder = g.Label("FilterOrder")
+
+	// GinkgoLabelKarpenter marks tests that exercise Karpenter-driven GPU
+	// node provisioning on Azure (AKS NAP). These tests deploy real model
+	// presets, wait for Karpenter to provision GPU VMs, and verify that the
+	// full production-stack pipeline (InferenceSet → EPP → Gateway) serves
+	// live inference requests. They are nightly-only because each scenario
+	// can take 30–90 minutes from pod creation to model-ready.
+	GinkgoLabelKarpenter = g.Label("Karpenter")
+
+	// GinkgoLabelGPUMocker marks tests that require the gpu-node-mocker
+	// controller (fake nodes, shadow pods running llm-d-inference-sim,
+	// Karpenter-NodeClaim stubs, and kaito.sh/original-pod annotations).
+	// Apply this label to any test that inspects GPU-mocker-specific
+	// resources so that Karpenter-mode pipelines can exclude them with
+	// the label filter "!GPUMocker".
+	GinkgoLabelGPUMocker = g.Label("GPUMocker")
 )

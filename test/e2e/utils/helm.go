@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 // ModelDeploymentChartPath is the relative path (from the repo root, where
@@ -59,6 +60,16 @@ type ModelDeploymentValues struct {
 	// EnsureNamespace; the warmup loop in SetupInferenceSetsWithRouting
 	// reads the resulting Secret and sends Bearer + Host headers.
 	AuthAPIKeyEnabled bool
+
+	// PodReadyTimeout overrides InferencePodReadyTimeout for this
+	// deployment. Leave zero to use the package-level constant.
+	// Useful for large Karpenter-provisioned models whose download
+	// and GPU-load time exceeds the default 20-minute window.
+	PodReadyTimeout time.Duration
+
+	// GatewayWarmupTimeout overrides GatewayReadyTimeout for this
+	// deployment. Leave zero to use the package-level constant.
+	GatewayWarmupTimeout time.Duration
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a

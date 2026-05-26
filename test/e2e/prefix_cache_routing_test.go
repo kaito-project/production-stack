@@ -60,7 +60,7 @@ import (
 //   - KAITO InferenceSet with 2+ replicas (shadow pods running llm-d-inference-sim)
 //   - llm-d-inference-sim configured with enable-kvcache: true
 
-var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixCache, func() {
+var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixCache, utils.GinkgoLabelGPUMocker, func() {
 	// Per-case deployment owned by prefix_cache_routing_test.go (see cases.go).
 	// A single deployment with replicas≥2 is sufficient for prefix-cache tests.
 	// Installed in a dedicated namespace by BeforeAll so this case can run in
