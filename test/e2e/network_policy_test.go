@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
@@ -99,10 +100,21 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		clientset, err = utils.GetK8sClientset()
 		Expect(err).NotTo(HaveOccurred(), "failed to create k8s clientset")
 
-		// Install both workload namespaces (each with default-deny + allow-inference
-		// NetworkPolicy pair) via the shared case framework. InstallCase handles
-		// the per-namespace Gateway, modeldeployment Helm release, EPP / shadow
-		// pod readiness, and gateway routing warmup.
+		// Install both workload namespaces. The canary loop below is
+		// the source of truth for "is enforcement on?" — it probes the
+		// dataplane directly via `agnhost connect`. Earlier branches
+		// of this file tried to gate on the CiliumEndpoint
+		// `status.policy.ingress.enforcing` field as a faster signal,
+		// but three rounds of CI evidence (runs 26430654933 /
+		// 26431394132 / 26432081380) showed that field stays false
+		// indefinitely on AKS Cilium overlay even after pod
+		// recreation, NetworkPolicy delete+create, AND cilium-agent
+		// restart on the EPP's node. The wedge survived every recovery
+		// we threw at the supposed root cause, which means either the
+		// field is lying (enforcement actually IS on, the metadata just
+		// never settles) or the canary will still hang for its full
+		// 2-minute deadline. Either way, the canary loop is the only
+		// honest test — delete the gate and let it run.
 		InstallCase(CaseNetworkPolicyA)
 		InstallCase(CaseNetworkPolicyB)
 
@@ -248,7 +260,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				// printed exactly once, not on every iteration.
 				if connectedCount == 12 {
 					AddReportEntry("netpol-enforcement-diag",
-						networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP))
+						networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP, canaryNS))
 				}
 				return false
 			}
@@ -262,7 +274,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			// EXIT=N (N != 0): nc could not establish the TCP handshake from
 			// the external canary namespace. Enforcement is active.
 			return true
-		}, 5*time.Minute, 5*time.Second).Should(BeTrue(),
+		}, 2*time.Minute, 5*time.Second).Should(BeTrue(),
 			// Use a func() string so Gomega evaluates the diagnostic message
 			// lazily, after the polling loop has updated the captured
 			// variables. Passing `lastCanaryOut`/`lastCanaryExecErr` as
@@ -275,7 +287,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				// state at the moment the timeout fires, not at Should() call
 				// time. Helps distinguish "policies missing" from "policies
 				// present but unenforced by Cilium".
-				diag := networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP)
+				diag := networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP, canaryNS)
 				return fmt.Sprintf(
 					"timed out waiting for NetworkPolicy enforcement to become active — "+
 						"Cilium may not be enforcing policies on this cluster, or the "+
@@ -493,12 +505,20 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	// expectDeniedLabeled is the labeled-probe variant of expectDenied,
 	// used by tests that need to assert that label-only spoofing across
 	// namespaces does NOT grant access (the X1 regression guard).
-	expectDeniedLabeled := func(probeNS string, labels map[string]string, targetIP string, targetPort int32, msg string) {
+	//
+	// `targetNS` is the namespace where `targetIP` lives — required so the
+	// failure-time diag dump inspects the target pod's actual namespace
+	// (policies, labels, CiliumEndpoint) rather than the probe-side
+	// workload namespace. Cross-namespace callers (A→B, B→A, spoof A→B)
+	// pass the target's namespace, not the workload-A default — otherwise
+	// the diag reports `<no pod with IP X in workload-A>` and an empty
+	// node, hiding the actual enforcement state on the target side.
+	expectDeniedLabeled := func(probeNS string, labels map[string]string, targetNS, targetIP string, targetPort int32, msg string) {
 		out, _ := probeTarget(probeNS, connectCmd(targetIP, targetPort), probeTimeout, labels)
 		state := classifyResult(out)
 		if state != "blocked" {
 			AddReportEntry("netpol-deny-diag",
-				networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, targetIP, probeNS))
+				networkPolicyEnforcementDiagnostics(ctx, clientset, targetNS, targetIP, probeNS))
 		}
 		Expect(state).To(Equal("blocked"),
 			"%s. state=%q output=%q", msg, state, out)
@@ -571,19 +591,19 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		gatewayLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": "inference-gateway",
 		}
-		expectDeniedLabeled("default", gatewayLabels, eppIP, eppPort,
+		expectDeniedLabeled("default", gatewayLabels, namespace, eppIP, eppPort,
 			"gateway-labeled pod in default should be silently dropped — only the in-namespace "+
 				"gateway pod is a trusted ingress source")
 	})
 
 	// ── Cross-namespace isolation ─────────────────────────────────────────
 	It("should DENY ingress from workload namespace A to workload namespace B", func() {
-		expectDeniedLabeled(namespace, nil, eppIPB, eppPortB,
+		expectDeniedLabeled(namespace, nil, namespaceB, eppIPB, eppPortB,
 			"workload namespace A should be silently dropped by namespace B's default-deny")
 	})
 
 	It("should DENY ingress from workload namespace B to workload namespace A", func() {
-		expectDeniedLabeled(namespaceB, nil, eppIP, eppPort,
+		expectDeniedLabeled(namespaceB, nil, namespace, eppIP, eppPort,
 			"workload namespace B should be silently dropped by namespace A's default-deny")
 	})
 
@@ -598,7 +618,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		spoofedLabels := map[string]string{
 			"gateway.networking.k8s.io/gateway-name": fmt.Sprintf("%s-gateway", netpolModelB),
 		}
-		expectDeniedLabeled(namespace, spoofedLabels, eppIPB, eppPortB,
+		expectDeniedLabeled(namespace, spoofedLabels, namespaceB, eppIPB, eppPortB,
 			"a pod in namespace A carrying namespace B's gateway label must be silently dropped — "+
 				"labels do not grant cross-namespace trust under the post-X1 policy")
 	})
@@ -874,7 +894,7 @@ func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kuberne
 		}
 		any := false
 		for _, p := range probePods.Items {
-			if !strings.HasPrefix(p.Name, "netpol-probe-") && !strings.HasPrefix(p.Name, "netpol-canary-") {
+			if !strings.HasPrefix(p.Name, "netpol-probe-") && !strings.HasPrefix(p.Name, "canary-probe-") {
 				continue
 			}
 			any = true
@@ -894,7 +914,171 @@ func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kuberne
 			fmt.Fprintf(&b, "  <no netpol-* probe pods found — probe was already torn down>\n")
 		}
 	}
+
+	// 5. Cilium dataplane state. The AKS e2e cluster runs Azure CNI
+	//    overlay with `--network-dataplane cilium --network-policy cilium`,
+	//    so K8s NetworkPolicies are enforced by cilium-agent on each
+	//    node. When the K8s policies are present on the API server but
+	//    canary traffic is still admitted, the candidates are:
+	//      a) cilium-agent on the EPP's node isn't Ready (or missing),
+	//         so the policy never got compiled into the local eBPF map;
+	//      b) the EPP pod's CiliumEndpoint exists but its
+	//         status.policy.ingress.enforcing is false — common when an
+	//         endpoint was created before its identity was allocated;
+	//      c) the K8s NetworkPolicies were never translated into Cilium's
+	//         internal representation (would show as 0 CiliumNetworkPolicy
+	//         resources AND no inline status on CiliumEndpoint).
+	//    Dump the minimum that distinguishes (a)/(b)/(c). All calls are
+	//    best-effort — on non-Cilium clusters the CRDs / pods are absent
+	//    and we just skip the section.
+	collectCiliumDiagnostics(ctx, clientset, ns, targetIP, &b)
+
 	return b.String()
+}
+
+// collectCiliumDiagnostics is a best-effort dump of Cilium dataplane state
+// relevant to NetworkPolicy enforcement. It writes into `b` and never
+// errors out — missing resources are reported as a single line so the
+// helper is safe to call on non-Cilium clusters.
+func collectCiliumDiagnostics(ctx context.Context, clientset *kubernetes.Clientset, ns, targetIP string, b *strings.Builder) {
+	fmt.Fprintf(b, "Cilium dataplane state:\n")
+
+	// (a) cilium-agent pods. AKS installs them in `kube-system` as a
+	// DaemonSet; on Cilium-the-OSS distributions they live in
+	// `cilium`. Try kube-system first (AKS), then fall back to a
+	// label-selector across all namespaces.
+	agentPods, err := clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+		LabelSelector: "k8s-app=cilium",
+	})
+	if err != nil || len(agentPods.Items) == 0 {
+		agentPods, err = clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+			LabelSelector: "k8s-app=cilium",
+		})
+	}
+	if err != nil {
+		fmt.Fprintf(b, "  cilium-agent pods: <list error: %v>\n", err)
+	} else if len(agentPods.Items) == 0 {
+		fmt.Fprintf(b, "  cilium-agent pods: <none found — cluster may not be Cilium-backed>\n")
+	} else {
+		// Find the EPP pod's node so we can flag the relevant agent.
+		var eppNode string
+		if pods, perr := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{}); perr == nil {
+			for _, p := range pods.Items {
+				if p.Status.PodIP == targetIP {
+					eppNode = p.Spec.NodeName
+					break
+				}
+			}
+		}
+		fmt.Fprintf(b, "  cilium-agent pods (EPP is on node %q):\n", eppNode)
+		for _, p := range agentPods.Items {
+			ready := "false"
+			for _, cs := range p.Status.ContainerStatuses {
+				if cs.Name == "cilium-agent" && cs.Ready {
+					ready = "true"
+					break
+				}
+			}
+			marker := ""
+			if eppNode != "" && p.Spec.NodeName == eppNode {
+				marker = "  <-- EPP node"
+			}
+			fmt.Fprintf(b, "    - %s/%s node=%s phase=%s ready=%s%s\n",
+				p.Namespace, p.Name, p.Spec.NodeName, p.Status.Phase, ready, marker)
+		}
+	}
+
+	// (b) CiliumEndpoint for the EPP pod. The CRD is namespaced and
+	// named after the pod. We use the dynamic client so we don't
+	// have to import Cilium's API types.
+	dyn, derr := utils.GetDynamicClient()
+	if derr != nil {
+		fmt.Fprintf(b, "  CiliumEndpoint: <dynamic client error: %v>\n", derr)
+		return
+	}
+	cepGVR := schema.GroupVersionResource{
+		Group: "cilium.io", Version: "v2", Resource: "ciliumendpoints",
+	}
+	ceps, err := dyn.Resource(cepGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		fmt.Fprintf(b, "  CiliumEndpoints in %s: <list error: %v>\n", ns, err)
+	} else {
+		fmt.Fprintf(b, "  CiliumEndpoints in %s (looking for IP %s):\n", ns, targetIP)
+		matched := false
+		for _, cep := range ceps.Items {
+			// status.networking.addressing[*].ipv4 == targetIP
+			addrs, _, _ := unstructuredNestedSlice(cep.Object, "status", "networking", "addressing")
+			ipMatch := false
+			for _, a := range addrs {
+				if m, ok := a.(map[string]any); ok {
+					if v, _ := m["ipv4"].(string); v == targetIP {
+						ipMatch = true
+						break
+					}
+				}
+			}
+			if !ipMatch {
+				continue
+			}
+			matched = true
+			identity, _, _ := unstructuredNestedInt64(cep.Object, "status", "identity", "id")
+			ingressEnf, _, _ := unstructuredNestedBool(cep.Object, "status", "policy", "ingress", "enforcing")
+			egressEnf, _, _ := unstructuredNestedBool(cep.Object, "status", "policy", "egress", "enforcing")
+			state, _, _ := unstructuredNestedString(cep.Object, "status", "state")
+			fmt.Fprintf(b, "    - name=%s identity=%d state=%s ingress.enforcing=%v egress.enforcing=%v\n",
+				cep.GetName(), identity, state, ingressEnf, egressEnf)
+		}
+		if !matched {
+			fmt.Fprintf(b, "    <no CiliumEndpoint with IP %s — endpoint not yet programmed by cilium-agent>\n", targetIP)
+		}
+	}
+
+	// (c) CiliumNetworkPolicy / CiliumClusterwideNetworkPolicy count.
+	// K8s NetworkPolicies do NOT round-trip into CNPs; instead Cilium
+	// represents them internally and exposes them via `cilium policy
+	// get`. So an empty CNP list is NORMAL — what we actually care
+	// about is whether the CRDs are installed at all (proves cilium
+	// CRD registration ran), which is informational.
+	cnpGVR := schema.GroupVersionResource{
+		Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies",
+	}
+	if cnps, err := dyn.Resource(cnpGVR).Namespace("").List(ctx, metav1.ListOptions{}); err != nil {
+		fmt.Fprintf(b, "  CiliumNetworkPolicy CRD: <list error: %v — CRD may not be installed>\n", err)
+	} else {
+		fmt.Fprintf(b, "  CiliumNetworkPolicy resources cluster-wide: %d (K8s NetworkPolicies do not round-trip into CNPs; this is informational)\n", len(cnps.Items))
+	}
+}
+
+// unstructuredNestedString / Int64 / Bool / Slice are tiny wrappers around
+// the apimachinery helpers. We re-export here to keep the diag function
+// readable without importing meta/v1/unstructured in every call site.
+func unstructuredNestedString(obj map[string]any, fields ...string) (string, bool, error) {
+	return unstructuredGet[string](obj, fields...)
+}
+func unstructuredNestedInt64(obj map[string]any, fields ...string) (int64, bool, error) {
+	return unstructuredGet[int64](obj, fields...)
+}
+func unstructuredNestedBool(obj map[string]any, fields ...string) (bool, bool, error) {
+	return unstructuredGet[bool](obj, fields...)
+}
+func unstructuredNestedSlice(obj map[string]any, fields ...string) ([]any, bool, error) {
+	return unstructuredGet[[]any](obj, fields...)
+}
+func unstructuredGet[T any](obj map[string]any, fields ...string) (T, bool, error) {
+	var zero T
+	cur := any(obj)
+	for _, f := range fields {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return zero, false, nil
+		}
+		cur, ok = m[f]
+		if !ok {
+			return zero, false, nil
+		}
+	}
+	v, ok := cur.(T)
+	return v, ok, nil
 }
 
 // formatNetworkPolicyPeer renders a single `from:` entry compactly for
@@ -948,7 +1132,7 @@ var _ = networkingv1.SchemeGroupVersion
 // in `ns` has rendered both `default-deny-ingress` and
 // `allow-inference-traffic` NetworkPolicies. Failing here turns a silent
 // chart regression into an immediate, clearly-attributable BeforeAll
-// failure rather than a 5-minute canary timeout that — by the time CI's
+// failure rather than a 2-minute canary timeout that — by the time CI's
 // post-failure dump runs — has been masked by AfterAll teardown.
 func expectNetworkPoliciesPresent(ctx context.Context, clientset *kubernetes.Clientset, ns string) {
 	required := map[string]bool{

@@ -111,6 +111,30 @@ az aks create \
   ${AKS_K8S_VERSION:+--kubernetes-version "${AKS_K8S_VERSION}"} \
   ${EXTRA_AKS_ARGS[@]+"${EXTRA_AKS_ARGS[@]}"}
 
+echo "=== Waiting for AKS provisioningState=Succeeded ==="
+# `az aks create` blocks on the ARM operation, but on retried/throttled CLI
+# requests it has been observed to return while the resource is still in
+# Creating/Updating. Gate explicitly on provisioningState=Succeeded before
+# trusting the cluster so install-components.sh never runs against a
+# half-provisioned control plane.
+PROVISIONING_STATE=""
+for i in $(seq 1 60); do
+  PROVISIONING_STATE=$(az aks show \
+    --resource-group "${RESOURCE_GROUP}" \
+    --name "${CLUSTER_NAME}" \
+    --query provisioningState -o tsv 2>/dev/null || echo "")
+  if [[ "${PROVISIONING_STATE}" == "Succeeded" ]]; then
+    echo "  ✅ provisioningState=Succeeded (after ${i} polls)"
+    break
+  fi
+  echo "  provisioningState=${PROVISIONING_STATE:-<unknown>} (attempt ${i}/60)"
+  sleep 10
+done
+if [[ "${PROVISIONING_STATE}" != "Succeeded" ]]; then
+  echo "ERROR: AKS cluster ${CLUSTER_NAME} never reached provisioningState=Succeeded (last=${PROVISIONING_STATE:-<unknown>})" >&2
+  exit 1
+fi
+
 echo "=== Fetching kubeconfig ==="
 az aks get-credentials \
   --resource-group "${RESOURCE_GROUP}" \
@@ -119,6 +143,29 @@ az aks get-credentials \
 
 echo "=== Waiting for all nodes to be Ready ==="
 kubectl wait --for=condition=ready nodes --all --timeout=300s
+
+# ─────────────────────────────────────────────────────────────────────────
+# Cilium dataplane readiness gate.
+#
+# Nodes can report Ready while cilium-agent on them is still mid-bootstrap
+# (CRD registration, identity allocator init, eBPF map load). Subsequent
+# install-components.sh + the netpol e2e suite both assume policy
+# compilation is functional from the moment they start, so block until
+# every cilium-agent pod is Ready and the cilium-operator rollout has
+# converged. This is cluster-bring-up readiness only — it does NOT
+# guarantee per-pod policy compilation latency once workloads are
+# scheduled (that's still up to the AKS managed Cilium engine and is
+# what the netpol suite's canary loop tolerates with a 10m budget).
+# ─────────────────────────────────────────────────────────────────────────
+echo "=== Waiting for cilium-agent DaemonSet rollout ==="
+kubectl -n kube-system rollout status daemonset/cilium --timeout=300s
+
+echo "=== Waiting for cilium-operator Deployment rollout ==="
+kubectl -n kube-system rollout status deployment/cilium-operator --timeout=180s
+
+echo "=== Waiting for every cilium-agent pod to report Ready ==="
+kubectl -n kube-system wait --for=condition=ready pod \
+  -l k8s-app=cilium --timeout=300s
 
 # ─────────────────────────────────────────────────────────────────────────
 # Cluster-prep components (KEDA + Gateway API base CRDs + Istio)
