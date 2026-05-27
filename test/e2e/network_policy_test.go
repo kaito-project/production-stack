@@ -113,7 +113,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		// we threw at the supposed root cause, which means either the
 		// field is lying (enforcement actually IS on, the metadata just
 		// never settles) or the canary will still hang for its full
-		// 10-minute deadline. Either way, the canary loop is the only
+		// 2-minute deadline. Either way, the canary loop is the only
 		// honest test — delete the gate and let it run.
 		InstallCase(CaseNetworkPolicyA)
 		InstallCase(CaseNetworkPolicyB)
@@ -274,7 +274,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			// EXIT=N (N != 0): nc could not establish the TCP handshake from
 			// the external canary namespace. Enforcement is active.
 			return true
-		}, 10*time.Minute, 5*time.Second).Should(BeTrue(),
+		}, 2*time.Minute, 5*time.Second).Should(BeTrue(),
 			// Use a func() string so Gomega evaluates the diagnostic message
 			// lazily, after the polling loop has updated the captured
 			// variables. Passing `lastCanaryOut`/`lastCanaryExecErr` as
@@ -1132,7 +1132,7 @@ var _ = networkingv1.SchemeGroupVersion
 // in `ns` has rendered both `default-deny-ingress` and
 // `allow-inference-traffic` NetworkPolicies. Failing here turns a silent
 // chart regression into an immediate, clearly-attributable BeforeAll
-// failure rather than a 10-minute canary timeout that — by the time CI's
+// failure rather than a 2-minute canary timeout that — by the time CI's
 // post-failure dump runs — has been masked by AfterAll teardown.
 func expectNetworkPoliciesPresent(ctx context.Context, clientset *kubernetes.Clientset, ns string) {
 	required := map[string]bool{
