@@ -47,3 +47,14 @@ dependencies:
     condition: keda-kaito-scaler.enabled
     tags:
       - autoscaling
+  # Upstream API-key ext_authz chart, pulled from the kaito-project OCI
+  # registry at `helm dependency update` time (no in-tree fork). Values
+  # are passed through under the upstream chart name `llm-gateway-apikey`
+  # in values.yaml.
+  - name: llm-gateway-apikey
+    version: 0.0.7-alpha
+    repository: oci://mcr.microsoft.com/aks/kaito/helm
+    condition: llm-gateway-apikey.enabled
+    tags:
+      - gateway
+      - auth

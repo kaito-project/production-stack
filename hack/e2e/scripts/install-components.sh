@@ -3,9 +3,8 @@
 # install-components.sh — Install all E2E components onto the AKS cluster.
 #
 # Phase 1 (parallel): KAITO, GAIE CRDs, gpu-node-mocker, productionstack
-#                     (umbrella chart bundling body-based-routing and
-#                     keda-kaito-scaler).
-# Phase 2: LLM Gateway Auth (depends on Istio from setup-cluster.sh).
+#                     (umbrella chart bundling body-based-routing,
+#                     keda-kaito-scaler, and llm-gateway-auth).
 #
 # Per-namespace shared resources (Gateway, HTTPRoute, AuthorizationPolicy,
 # APIKey CR, etc.) are provisioned per-test via charts/modelharness.
@@ -115,32 +114,61 @@ install_gpu_mocker() {
 
 install_productionstack() {
   # Umbrella chart at charts/productionstack vendors body-based-routing and
-  # keda-kaito-scaler as in-tree subcharts. Per-subchart install namespaces
-  # are pinned via each subchart's `namespaceOverride` value (Helm itself
-  # only accepts a single `--namespace` per release):
-  #   * body-based-routing → istio-system    (Istio rootNamespace, so the
-  #     chart-rendered EnvoyFilter applies cluster-wide; anchored on
-  #     envoy.filters.http.ext_authz with INSERT_AFTER, giving the runtime
-  #     order: ext_authz → bbr → router → epp/not-found).
-  #   * keda-kaito-scaler  → ${KEDA_NAMESPACE}  (co-located with KEDA).
-  # The release Secret lives in `kaito-system`; `helm uninstall productionstack
-  # -n kaito-system` correctly cleans up across all override namespaces.
+  # keda-kaito-scaler as in-tree subcharts and pulls llm-gateway-apikey
+  # from oci://mcr.microsoft.com/aks/kaito/helm as a Helm dependency
+  # (no in-tree fork — `helm dependency update` vendors the tarball into
+  # charts/productionstack/charts/ at install time).
+  #
+  # Per-subchart install namespaces:
+  #   * body-based-routing → istio-system    (in-tree fork; namespaceOverride.
+  #     Istio rootNamespace so the chart-rendered EnvoyFilter applies
+  #     cluster-wide; anchored on envoy.filters.http.ext_authz with
+  #     INSERT_AFTER, giving the runtime order:
+  #     ext_authz → bbr → router → epp/not-found.)
+  #   * keda-kaito-scaler  → ${KEDA_NAMESPACE}  (in-tree fork; namespaceOverride.
+  #     Co-located with KEDA.)
+  #   * llm-gateway-apikey → release namespace (upstream chart has no
+  #     namespaceOverride knob; every namespaced resource it ships lands in
+  #     the umbrella's release namespace). To keep the LGA operator + authz
+  #     control plane in `llm-gateway-auth` — where validate-components.sh
+  #     and the e2e suite expect them — the umbrella release itself is
+  #     installed into `llm-gateway-auth` rather than `kaito-system`.
+  #
+  # The release Secret therefore lives in `llm-gateway-auth`;
+  # `helm uninstall productionstack -n llm-gateway-auth` correctly cleans
+  # up across all override namespaces because Helm tracks the rendered
+  # manifest, not the namespace.
+  #
+  # Note: the BBR EnvoyFilter's anchorSubFilter (`envoy.filters.http.ext_authz`)
+  # is only present in the runtime filter chain once the LGA MeshConfig
+  # patch Job has completed AND a workload AuthorizationPolicy has been
+  # rendered (per-namespace, by charts/modelharness). The EnvoyFilter CR
+  # is created up-front; it slots in lazily, which is fine.
 
   echo "⏳ Ensuring per-subchart target namespaces exist..."
-  kubectl create namespace istio-system --dry-run=client -o yaml | kubectl apply -f -
+  kubectl create namespace istio-system     --dry-run=client -o yaml | kubectl apply -f -
   kubectl create namespace "${KEDA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+
+  echo "⏳ Vendoring upstream llm-gateway-apikey OCI dependency..."
+  helm dependency update "${PRODUCTIONSTACK_CHART_DIR}"
 
   echo "=== Installing productionstack umbrella chart ==="
   echo "    body-based-routing → istio-system"
   echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE}"
+  echo "    llm-gateway-apikey → llm-gateway-auth (release ns; chart appVersion ${LLM_GATEWAY_AUTH_VERSION}, image tag ${LLM_GATEWAY_AUTH_IMAGE_TAG})"
+  # Pass image tag overrides under the upstream chart key
+  # `llm-gateway-apikey` (must match the dependency `name:` in Chart.yaml).
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
-    --namespace kaito-system \
+    --namespace llm-gateway-auth \
     --create-namespace \
     --set body-based-routing.enabled=true \
     --set body-based-routing.namespaceOverride=istio-system \
     --set keda-kaito-scaler.enabled=true \
     --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}" \
-    --wait --timeout=300s
+    --set llm-gateway-apikey.enabled=true \
+    --set llm-gateway-apikey.operator.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
+    --set llm-gateway-apikey.authz.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
+    --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."
   kubectl -n istio-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
@@ -149,31 +177,6 @@ install_productionstack() {
 
   echo "⏳ Waiting for keda-kaito-scaler..."
   kubectl -n "${KEDA_NAMESPACE}" rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
-}
-
-install_llm_gateway_auth() {
-  echo "=== Installing LLM Gateway Auth ${LLM_GATEWAY_AUTH_VERSION} ==="
-
-  # apikey-authz Pod template hard-codes `sidecar.istio.io/inject: "true"`,
-  # so its ReplicaSet must reach istiod's sidecar-injector webhook to
-  # create Pods. Don't block helm on Pod readiness — push manifests and
-  # let `kubectl wait` below tolerate the ReplicaSet's retry window
-  # while istiod becomes reachable (parallel-install friendly).
-  helm upgrade --install llm-gateway-apikey \
-    oci://mcr.microsoft.com/aks/kaito/helm/llm-gateway-apikey \
-    --version "${LLM_GATEWAY_AUTH_VERSION}" \
-    --namespace llm-gateway-auth \
-    --create-namespace \
-    --set operator.image.repository=mcr.microsoft.com/aks/kaito/apikey-operator \
-    --set operator.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
-    --set authz.image.repository=mcr.microsoft.com/aks/kaito/apikey-authz \
-    --set authz.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
-    --set istio.enabled=true \
-    --set istio.meshConfigConfigMap.patch=true \
-    --set istio.gatewayNamespace=default \
-    --set istio.gatewaySelector."gateway\.networking\.k8s\.io/gateway-name"=inference-gateway \
-    --set crds.install=true \
-    --timeout=120s
 
   echo "⏳ Waiting for apikey-operator..."
   kubectl -n llm-gateway-auth wait --for=condition=Available \
@@ -190,9 +193,6 @@ run_phase phase1-base \
   install_gwie_crds \
   install_gpu_mocker \
   install_productionstack
-
-run_phase phase2-istio-filters \
-  install_llm_gateway_auth
 
 echo ""
 echo "✅ All components installed."

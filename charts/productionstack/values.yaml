@@ -55,3 +55,53 @@ keda-kaito-scaler:
   # Co-locate with the KEDA control plane by default. Set to "" to
   # inherit the umbrella release namespace instead.
   namespaceOverride: keda
+
+# LLM Gateway Auth — API-key ext_authz for the inference Gateway.
+# Pulled from the upstream `oci://mcr.microsoft.com/aks/kaito/helm`
+# registry as a Helm dependency (no in-tree fork); run
+# `helm dependency update charts/productionstack` once before installing
+# so the tarball is vendored into `charts/productionstack/charts/`.
+#
+# Installs the APIKey CRD, the apikey-operator (reconciles APIKey →
+# per-namespace Secret), the apikey-authz ext_authz dataplane, and a
+# post-install hook Job that patches Istio's MeshConfig to register
+# `apikey-ext-authz` as a CUSTOM extensionProvider.
+#
+# Unlike the other subcharts in this umbrella, the upstream
+# `llm-gateway-apikey` chart has no `namespaceOverride` knob — every
+# namespaced resource it ships lands in the umbrella's release
+# namespace (e.g. `kaito-system`). The cluster-scoped APIKey CRD,
+# ValidatingWebhookConfiguration, ClusterRole, and ClusterRoleBinding
+# are unaffected. The AuthorizationPolicy is rendered into
+# `istio.gatewayNamespace` instead.
+#
+# The key below MUST match the dependency `name:` in Chart.yaml
+# (`llm-gateway-apikey`), not the directory name.
+llm-gateway-apikey:
+  enabled: true
+  # Mirror the umbrella's default LGA wiring so a single
+  # `helm install productionstack` provisions a working data plane
+  # without extra --set flags. Override at install time as needed.
+  operator:
+    image:
+      repository: mcr.microsoft.com/aks/kaito/apikey-operator
+  authz:
+    image:
+      repository: mcr.microsoft.com/aks/kaito/apikey-authz
+  istio:
+    enabled: true
+    # Apply the MeshConfig extensionProvider patch automatically.
+    # Without this, the apikey-ext-authz CUSTOM provider must be
+    # merged into Istio's MeshConfig by hand before the per-namespace
+    # AuthorizationPolicy rendered by charts/modelharness can take
+    # effect.
+    meshConfigConfigMap:
+      patch: true
+    # Namespace where the cluster-wide `inference-gateway` Gateway pods
+    # run. The AuthorizationPolicy targeting the gateway pods is
+    # rendered into this namespace.
+    gatewayNamespace: default
+    gatewaySelector:
+      gateway.networking.k8s.io/gateway-name: inference-gateway
+  crds:
+    install: true

@@ -1,0 +1,12 @@
+dependencies:
+- name: body-based-routing
+  repository: ""
+  version: 0.1.0
+- name: keda-kaito-scaler
+  repository: ""
+  version: 0.5.1
+- name: llm-gateway-apikey
+  repository: oci://mcr.microsoft.com/aks/kaito/helm
+  version: 0.0.7-alpha
+digest: sha256:b3759b6674bf4650b9187fb5a2aadb0e166e274c1e1b77f48aff349e709c64c5
+generated: "2026-05-28T14:43:13.230123+10:00"
