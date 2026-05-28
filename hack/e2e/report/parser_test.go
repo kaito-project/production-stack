@@ -169,12 +169,6 @@ var _ = Describe("Suite A", utils.GinkgoLabelSmoke, func() {
 	if f.Name != "alpha_test.go" {
 		t.Errorf("expected alpha_test.go, got %s", f.Name)
 	}
-	if f.SuiteCount != 1 {
-		t.Errorf("expected 1 suite, got %d", f.SuiteCount)
-	}
-	if f.ContextCount != 1 {
-		t.Errorf("expected 1 context, got %d", f.ContextCount)
-	}
 	if f.TestCount != 2 {
 		t.Errorf("expected 2 tests, got %d", f.TestCount)
 	}
@@ -212,8 +206,8 @@ var _ = Describe("Multi-line Suite",
 		t.Fatalf("expected 1 file, got %d", len(files))
 	}
 	f := files[0]
-	if f.SuiteCount != 1 || f.TestCount != 1 {
-		t.Fatalf("expected 1 suite + 1 test, got %d suites + %d tests", f.SuiteCount, f.TestCount)
+	if f.TestCount != 1 {
+		t.Fatalf("expected 1 test, got %d", f.TestCount)
 	}
 	// The Describe block should have both labels from the continuation line.
 	desc := f.Blocks[0]

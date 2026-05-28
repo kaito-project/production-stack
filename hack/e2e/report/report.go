@@ -34,13 +34,11 @@ var htmlTemplateStr string
 
 // ReportData holds all data needed to render both Markdown and HTML reports.
 type ReportData struct {
-	Workflow       string
-	LabelFilter    string
-	Timestamp      string
-	TotalFiles     int
-	TotalDescribes int
-	TotalContexts  int
-	TotalIts       int
+	Workflow    string
+	LabelFilter string
+	Timestamp   string
+	TotalFiles  int
+	TotalIts    int
 
 	Files         []TestFile
 	BarChart      []BarEntry
@@ -239,12 +237,6 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 		}
 	}
 
-	// TotalDescribes and TotalContexts are derived from the filtered set so
-	// they match the files and tests the report actually covers.
-	for _, fc := range filteredFiles {
-		data.TotalDescribes += fc.file.SuiteCount
-		data.TotalContexts += fc.file.ContextCount
-	}
 	// Populate data.Files with filtered copies of each file: non-matching It
 	// blocks are omitted so that the detail sections in Markdown/HTML only
 	// show tests that actually run under this label filter.  TestCount on the
@@ -252,10 +244,8 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 	for _, fc := range filteredFiles {
 		f := fc.file
 		filtered := TestFile{
-			Name:         f.Name,
-			SuiteCount:   f.SuiteCount,
-			ContextCount: f.ContextCount,
-			TestCount:    fc.count, // filtered count, not f.TestCount
+			Name:      f.Name,
+			TestCount: fc.count, // filtered count, not f.TestCount
 		}
 		for _, b := range f.Blocks {
 			if b.Type == "It" && !matchesLabelFilter(labelFilter, b.EffectiveLabels) {
@@ -313,9 +303,6 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 
 	// Label card counts.
 	labelCounts := make(map[string]int)
-	for _, lbl := range orderedLabels {
-		labelCounts[lbl] = 0
-	}
 	for _, f := range files {
 		for _, b := range f.Blocks {
 			for _, lbl := range b.Labels {

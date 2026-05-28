@@ -144,7 +144,7 @@ func parseTestFiles(e2eDir string, labelMap map[string]string) []TestFile {
 		}
 
 		var blocks []Block
-		tests, suites, contexts := 0, 0, 0
+		tests := 0
 		// labelStack tracks label inheritance: each Describe/Context pushes its
 		// own labels; a frame is popped when we see a block at the same or
 		// shallower indentation level.
@@ -188,23 +188,16 @@ func parseTestFiles(e2eDir string, labelMap map[string]string) []TestFile {
 				labelStack = append(labelStack, labelFrame{indent: indent, labels: ownLabels})
 			}
 			blocks = append(blocks, b)
-			switch b.Type {
-			case "It":
+			if b.Type == "It" {
 				tests++
-			case "Describe":
-				suites++
-			case "Context":
-				contexts++
 			}
 		}
 		f.Close()
 
 		files = append(files, TestFile{
-			Name:         name,
-			Blocks:       blocks,
-			TestCount:    tests,
-			SuiteCount:   suites,
-			ContextCount: contexts,
+			Name:      name,
+			Blocks:    blocks,
+			TestCount: tests,
 		})
 	}
 	return files

@@ -33,9 +33,7 @@ func sampleFiles() []TestFile {
 				{Type: "It", Title: "test 1", Labels: []string{"Smoke"}, EffectiveLabels: []string{"Smoke", "Infra"}},
 				{Type: "It", Title: "test 2", Labels: nil, EffectiveLabels: []string{"Smoke", "Infra"}},
 			},
-			TestCount:    2,
-			SuiteCount:   1,
-			ContextCount: 1,
+			TestCount: 2,
 		},
 		{
 			Name: "beta_test.go",
@@ -43,9 +41,7 @@ func sampleFiles() []TestFile {
 				{Type: "Describe", Title: "Beta Suite", Labels: []string{"Auth"}, EffectiveLabels: []string{"Auth"}},
 				{Type: "It", Title: "test A", Labels: []string{"Auth"}, EffectiveLabels: []string{"Auth"}},
 			},
-			TestCount:    1,
-			SuiteCount:   1,
-			ContextCount: 0,
+			TestCount: 1,
 		},
 	}
 }
@@ -61,12 +57,6 @@ func TestBuildReportData_Totals(t *testing.T) {
 	}
 	if data.TotalFiles != 2 {
 		t.Errorf("expected 2 files, got %d", data.TotalFiles)
-	}
-	if data.TotalDescribes != 2 {
-		t.Errorf("expected 2 describes, got %d", data.TotalDescribes)
-	}
-	if data.TotalContexts != 1 {
-		t.Errorf("expected 1 context, got %d", data.TotalContexts)
 	}
 	if data.TotalIts != 3 {
 		t.Errorf("expected 3 Its, got %d", data.TotalIts)
@@ -316,8 +306,7 @@ func nightlyFiles() []TestFile {
 				{Type: "It", Title: "scale up", Labels: nil, EffectiveLabels: []string{"Scaling", "Nightly"}},
 				{Type: "It", Title: "scale down", Labels: nil, EffectiveLabels: []string{"Scaling", "Nightly"}},
 			},
-			TestCount:  2,
-			SuiteCount: 1,
+			TestCount: 2,
 		},
 		{
 			Name: "model_routing_test.go",
@@ -325,8 +314,7 @@ func nightlyFiles() []TestFile {
 				{Type: "Describe", Title: "Routing", Labels: []string{"Routing"}, EffectiveLabels: []string{"Routing"}},
 				{Type: "It", Title: "routes correctly", Labels: nil, EffectiveLabels: []string{"Routing"}},
 			},
-			TestCount:  1,
-			SuiteCount: 1,
+			TestCount: 1,
 		},
 	}
 }

@@ -39,11 +39,9 @@ type Block struct {
 
 // TestFile collects all parsed blocks from a single *_test.go file.
 type TestFile struct {
-	Name         string
-	Blocks       []Block
-	TestCount    int // number of It blocks
-	SuiteCount   int // number of Describe blocks
-	ContextCount int // number of Context blocks
+	Name      string
+	Blocks    []Block
+	TestCount int // number of It blocks
 }
 
 func main() {
