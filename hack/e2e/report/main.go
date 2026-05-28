@@ -31,9 +31,10 @@ import (
 
 // Block represents a single Ginkgo Describe, Context, or It block.
 type Block struct {
-	Type   string // "Describe", "Context", or "It"
-	Title  string
-	Labels []string
+	Type            string // "Describe", "Context", or "It"
+	Title           string
+	Labels          []string // labels declared directly on this block
+	EffectiveLabels []string // Labels plus labels inherited from ancestor Describe/Context blocks
 }
 
 // TestFile collects all parsed blocks from a single *_test.go file.

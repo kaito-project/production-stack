@@ -28,10 +28,10 @@ func sampleFiles() []TestFile {
 		{
 			Name: "alpha_test.go",
 			Blocks: []Block{
-				{Type: "Describe", Title: "Alpha Suite", Labels: []string{"Smoke", "Infra"}},
-				{Type: "Context", Title: "when running", Labels: nil},
-				{Type: "It", Title: "test 1", Labels: []string{"Smoke"}},
-				{Type: "It", Title: "test 2", Labels: nil},
+				{Type: "Describe", Title: "Alpha Suite", Labels: []string{"Smoke", "Infra"}, EffectiveLabels: []string{"Smoke", "Infra"}},
+				{Type: "Context", Title: "when running", Labels: nil, EffectiveLabels: []string{"Smoke", "Infra"}},
+				{Type: "It", Title: "test 1", Labels: []string{"Smoke"}, EffectiveLabels: []string{"Smoke", "Infra"}},
+				{Type: "It", Title: "test 2", Labels: nil, EffectiveLabels: []string{"Smoke", "Infra"}},
 			},
 			TestCount:    2,
 			SuiteCount:   1,
@@ -40,8 +40,8 @@ func sampleFiles() []TestFile {
 		{
 			Name: "beta_test.go",
 			Blocks: []Block{
-				{Type: "Describe", Title: "Beta Suite", Labels: []string{"Auth"}},
-				{Type: "It", Title: "test A", Labels: []string{"Auth"}},
+				{Type: "Describe", Title: "Beta Suite", Labels: []string{"Auth"}, EffectiveLabels: []string{"Auth"}},
+				{Type: "It", Title: "test A", Labels: []string{"Auth"}, EffectiveLabels: []string{"Auth"}},
 			},
 			TestCount:    1,
 			SuiteCount:   1,
@@ -221,7 +221,7 @@ func TestWriteMarkdown_NoWorkflow(t *testing.T) {
 }
 
 func TestWriteHTML(t *testing.T) {
-	data := buildReportData(sampleFiles(), "Nightly", "Nightly")
+	data := buildReportData(sampleFiles(), "Nightly", "(all)")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "report.html")
 
@@ -256,5 +256,167 @@ func TestWriteHTML_EmptyFiles(t *testing.T) {
 
 	if err := writeHTML(data, path); err != nil {
 		t.Fatalf("writeHTML should not error with empty files: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Label filter evaluation
+// ---------------------------------------------------------------------------
+
+func TestMatchesLabelFilter_AllCases(t *testing.T) {
+	tests := []struct {
+		filter string
+		labels []string
+		want   bool
+	}{
+		// Empty / (all) always matches.
+		{"", []string{"Smoke"}, true},
+		{"(all)", nil, true},
+		// Simple label presence.
+		{"Smoke", []string{"Smoke"}, true},
+		{"Smoke", []string{"Auth"}, false},
+		{"Smoke", nil, false},
+		// NOT operator.
+		{"!Nightly", nil, true},
+		{"!Nightly", []string{"Smoke"}, true},
+		{"!Nightly", []string{"Nightly"}, false},
+		// AND operator.
+		{"Nightly && !NetworkPolicy", []string{"Nightly"}, true},
+		{"Nightly && !NetworkPolicy", []string{"Nightly", "NetworkPolicy"}, false},
+		{"Nightly && !NetworkPolicy", []string{"Smoke"}, false},
+		// OR operator.
+		{"Smoke || Auth", []string{"Smoke"}, true},
+		{"Smoke || Auth", []string{"Auth"}, true},
+		{"Smoke || Auth", []string{"Nightly"}, false},
+		// Parentheses.
+		{"(Smoke || Auth) && !Nightly", []string{"Smoke"}, true},
+		{"(Smoke || Auth) && !Nightly", []string{"Smoke", "Nightly"}, false},
+	}
+	for _, tc := range tests {
+		got := matchesLabelFilter(tc.filter, tc.labels)
+		if got != tc.want {
+			t.Errorf("matchesLabelFilter(%q, %v) = %v, want %v", tc.filter, tc.labels, got, tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// buildReportData with label filter
+// ---------------------------------------------------------------------------
+
+// nightlyFiles returns two synthetic files: one with Nightly tests and one
+// with only non-Nightly tests, to verify that the label filter is actually
+// applied when computing TotalFiles and TotalIts.
+func nightlyFiles() []TestFile {
+	return []TestFile{
+		{
+			Name: "scaling_test.go",
+			Blocks: []Block{
+				{Type: "Describe", Title: "Scaling", Labels: []string{"Scaling", "Nightly"}, EffectiveLabels: []string{"Scaling", "Nightly"}},
+				{Type: "It", Title: "scale up", Labels: nil, EffectiveLabels: []string{"Scaling", "Nightly"}},
+				{Type: "It", Title: "scale down", Labels: nil, EffectiveLabels: []string{"Scaling", "Nightly"}},
+			},
+			TestCount:  2,
+			SuiteCount: 1,
+		},
+		{
+			Name: "model_routing_test.go",
+			Blocks: []Block{
+				{Type: "Describe", Title: "Routing", Labels: []string{"Routing"}, EffectiveLabels: []string{"Routing"}},
+				{Type: "It", Title: "routes correctly", Labels: nil, EffectiveLabels: []string{"Routing"}},
+			},
+			TestCount:  1,
+			SuiteCount: 1,
+		},
+	}
+}
+
+func TestBuildReportData_NightlyFilter(t *testing.T) {
+	data := buildReportData(nightlyFiles(), "E2E (nightly)", "Nightly && !NetworkPolicy")
+
+	// Only scaling_test.go has Nightly tests.
+	if data.TotalFiles != 1 {
+		t.Errorf("expected 1 file for Nightly filter, got %d", data.TotalFiles)
+	}
+	if data.TotalIts != 2 {
+		t.Errorf("expected 2 Its for Nightly filter, got %d", data.TotalIts)
+	}
+	if len(data.Files) != 1 || data.Files[0].Name != "scaling_test.go" {
+		t.Errorf("expected data.Files=[scaling_test.go], got %v", data.Files)
+	}
+}
+
+func TestBuildReportData_NonNightlyFilter(t *testing.T) {
+	data := buildReportData(nightlyFiles(), "E2E", "!Nightly")
+
+	// Only model_routing_test.go passes !Nightly.
+	if data.TotalFiles != 1 {
+		t.Errorf("expected 1 file for !Nightly filter, got %d", data.TotalFiles)
+	}
+	if data.TotalIts != 1 {
+		t.Errorf("expected 1 It for !Nightly filter, got %d", data.TotalIts)
+	}
+	if len(data.Files) != 1 || data.Files[0].Name != "model_routing_test.go" {
+		t.Errorf("expected data.Files=[model_routing_test.go], got %v", data.Files)
+	}
+}
+
+func TestBuildReportData_AllFilter(t *testing.T) {
+	data := buildReportData(nightlyFiles(), "", "(all)")
+
+	if data.TotalFiles != 2 {
+		t.Errorf("expected 2 files for (all) filter, got %d", data.TotalFiles)
+	}
+	if data.TotalIts != 3 {
+		t.Errorf("expected 3 Its for (all) filter, got %d", data.TotalIts)
+	}
+}
+
+// TestBuildReportData_DetailFiltering verifies that data.Files contains only
+// the blocks that match the active label filter, and that TestCount reflects
+// the filtered count (not the raw file total).
+func TestBuildReportData_DetailFiltering(t *testing.T) {
+	// scaling_test.go: 2 Its tagged Nightly
+	// model_routing_test.go: 1 It tagged Routing (not Nightly)
+	data := buildReportData(nightlyFiles(), "W", "!Nightly")
+
+	if len(data.Files) != 1 {
+		t.Fatalf("expected 1 file in data.Files, got %d", len(data.Files))
+	}
+	tf := data.Files[0]
+	if tf.Name != "model_routing_test.go" {
+		t.Errorf("expected model_routing_test.go, got %q", tf.Name)
+	}
+	// TestCount should be the filtered count (1), not the raw file count.
+	if tf.TestCount != 1 {
+		t.Errorf("expected filtered TestCount=1, got %d", tf.TestCount)
+	}
+	// Only the matching It block should remain.
+	var itBlocks []Block
+	for _, b := range tf.Blocks {
+		if b.Type == "It" {
+			itBlocks = append(itBlocks, b)
+		}
+	}
+	if len(itBlocks) != 1 {
+		t.Errorf("expected 1 It block in filtered file, got %d", len(itBlocks))
+	}
+
+	// Verify the opposite: Nightly filter should have scaling_test.go with 2 Its.
+	data2 := buildReportData(nightlyFiles(), "W", "Nightly")
+	if len(data2.Files) != 1 || data2.Files[0].Name != "scaling_test.go" {
+		t.Fatalf("expected scaling_test.go for Nightly filter, got %v", data2.Files)
+	}
+	if data2.Files[0].TestCount != 2 {
+		t.Errorf("expected filtered TestCount=2 for scaling, got %d", data2.Files[0].TestCount)
+	}
+	var itBlocks2 []Block
+	for _, b := range data2.Files[0].Blocks {
+		if b.Type == "It" {
+			itBlocks2 = append(itBlocks2, b)
+		}
+	}
+	if len(itBlocks2) != 2 {
+		t.Errorf("expected 2 It blocks for Nightly scaling file, got %d", len(itBlocks2))
 	}
 }

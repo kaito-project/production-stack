@@ -121,6 +121,91 @@ var chartColors = []string{
 }
 
 // ---------------------------------------------------------------------------
+// Label filter evaluation
+// ---------------------------------------------------------------------------
+
+// matchesLabelFilter evaluates a Ginkgo-style label filter expression against
+// a set of labels. Supported operators: !, &&, ||, and parentheses.
+// An empty filter or "(all)" matches every spec.
+func matchesLabelFilter(filter string, labels []string) bool {
+	filter = strings.TrimSpace(filter)
+	if filter == "" || filter == "(all)" {
+		return true
+	}
+	set := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		set[l] = true
+	}
+	result, _ := evalOrExpr(filter, set)
+	return result
+}
+
+func evalOrExpr(s string, labels map[string]bool) (bool, string) {
+	left, rest := evalAndExpr(s, labels)
+	for {
+		rest = strings.TrimSpace(rest)
+		if !strings.HasPrefix(rest, "||") {
+			break
+		}
+		rest = strings.TrimSpace(rest[2:])
+		var right bool
+		right, rest = evalAndExpr(rest, labels)
+		left = left || right
+	}
+	return left, rest
+}
+
+func evalAndExpr(s string, labels map[string]bool) (bool, string) {
+	left, rest := evalUnary(s, labels)
+	for {
+		rest = strings.TrimSpace(rest)
+		if !strings.HasPrefix(rest, "&&") {
+			break
+		}
+		rest = strings.TrimSpace(rest[2:])
+		var right bool
+		right, rest = evalUnary(rest, labels)
+		left = left && right
+	}
+	return left, rest
+}
+
+func evalUnary(s string, labels map[string]bool) (bool, string) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "!") {
+		val, rest := evalPrimary(strings.TrimSpace(s[1:]), labels)
+		return !val, rest
+	}
+	return evalPrimary(s, labels)
+}
+
+func evalPrimary(s string, labels map[string]bool) (bool, string) {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "(") {
+		val, rest := evalOrExpr(strings.TrimSpace(s[1:]), labels)
+		rest = strings.TrimSpace(rest)
+		if strings.HasPrefix(rest, ")") {
+			rest = rest[1:]
+		}
+		return val, rest
+	}
+	// Parse an identifier (label name).
+	end := 0
+	for end < len(s) {
+		c := rune(s[end])
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+			end++
+		} else {
+			break
+		}
+	}
+	if end == 0 {
+		return false, s
+	}
+	return labels[s[:end]], s[end:]
+}
+
+// ---------------------------------------------------------------------------
 // Report data construction
 // ---------------------------------------------------------------------------
 
@@ -129,38 +214,80 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 		Workflow:    workflow,
 		LabelFilter: labelFilter,
 		Timestamp:   time.Now().UTC().Format("2006-01-02 15:04:05 UTC"),
-		Files:       files,
-		TotalFiles:  len(files),
 		AllLabels:   orderedLabels,
 	}
 
+	// Compute per-file filtered test counts for the bar / donut charts.
+	// Files with zero matching tests are excluded from the visual charts and
+	// from TotalFiles / TotalIts.
+	type fileCount struct {
+		file  TestFile
+		count int
+	}
+	var filteredFiles []fileCount
 	for _, f := range files {
-		data.TotalIts += f.TestCount
-		data.TotalDescribes += f.SuiteCount
-		data.TotalContexts += f.ContextCount
+		n := 0
+		for _, b := range f.Blocks {
+			if b.Type == "It" && matchesLabelFilter(labelFilter, b.EffectiveLabels) {
+				n++
+			}
+		}
+		if n > 0 {
+			filteredFiles = append(filteredFiles, fileCount{f, n})
+			data.TotalFiles++
+			data.TotalIts += n
+		}
+	}
+
+	// TotalDescribes and TotalContexts are derived from the filtered set so
+	// they match the files and tests the report actually covers.
+	for _, fc := range filteredFiles {
+		data.TotalDescribes += fc.file.SuiteCount
+		data.TotalContexts += fc.file.ContextCount
+	}
+	// Populate data.Files with filtered copies of each file: non-matching It
+	// blocks are omitted so that the detail sections in Markdown/HTML only
+	// show tests that actually run under this label filter.  TestCount on the
+	// copy reflects the filtered count so that "N tests" headers are correct.
+	for _, fc := range filteredFiles {
+		f := fc.file
+		filtered := TestFile{
+			Name:         f.Name,
+			SuiteCount:   f.SuiteCount,
+			ContextCount: f.ContextCount,
+			TestCount:    fc.count, // filtered count, not f.TestCount
+		}
+		for _, b := range f.Blocks {
+			if b.Type == "It" && !matchesLabelFilter(labelFilter, b.EffectiveLabels) {
+				continue // omit non-matching test cases
+			}
+			filtered.Blocks = append(filtered.Blocks, b)
+		}
+		data.Files = append(data.Files, filtered)
 	}
 
 	// Bar chart data.
 	maxTests := 0
-	for _, f := range files {
-		if f.TestCount > maxTests {
-			maxTests = f.TestCount
+	for _, fc := range filteredFiles {
+		if fc.count > maxTests {
+			maxTests = fc.count
 		}
 	}
 
 	cumulative := 0
 	var gradientParts []string
-	for i, f := range files {
+	for i, fc := range filteredFiles {
+		f := fc.file
 		color := chartColors[i%len(chartColors)]
 		pct := 0
 		if maxTests > 0 {
-			pct = f.TestCount * 100 / maxTests
+			pct = fc.count * 100 / maxTests
 		}
 		shortName := strings.TrimSuffix(f.Name, "_test.go")
 
 		data.BarChart = append(data.BarChart, BarEntry{
 			Label:   shortName,
-			Value:   f.TestCount,
+			Value:   fc.count,
 			Percent: pct,
 			Color:   color,
 		})
@@ -170,7 +297,7 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 		if data.TotalIts > 0 {
 			startDeg = cumulative * 360 / data.TotalIts
 		}
-		cumulative += f.TestCount
+		cumulative += fc.count
 		endDeg := 0
 		if data.TotalIts > 0 {
 			endDeg = cumulative * 360 / data.TotalIts
