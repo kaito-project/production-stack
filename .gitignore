@@ -55,3 +55,7 @@ e2e-summary-preview.md
 # Temporary files
 *.tmp
 *.temp
+
+# Helm dependency tarballs (vendored on demand via `helm dependency update`).
+# Chart.lock IS committed so the resolved versions stay reproducible.
+charts/**/charts/*.tgz

@@ -47,10 +47,6 @@ inputs:
     description: 'KEDA Helm chart version override.'
     required: false
     default: ''
-  llm-gateway-auth-version:
-    description: 'LLM Gateway Auth Helm chart version override.'
-    required: false
-    default: ''
 
 outputs:
   image:
@@ -70,12 +66,10 @@ runs:
         INPUT_ISTIO="${{ inputs.istio-version }}"
         INPUT_GWAPI="${{ inputs.gateway-api-version }}"
         INPUT_KEDA="${{ inputs.keda-version }}"
-        INPUT_LGA="${{ inputs.llm-gateway-auth-version }}"
         [ -n "${INPUT_PROVIDER}" ] && E2E_PROVIDER="${INPUT_PROVIDER}"
         [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
         [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
         [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
-        [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
 
         # Validate provider value.
         case "${E2E_PROVIDER}" in
@@ -100,8 +94,6 @@ runs:
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
           echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
           echo "KEDA_VERSION=${KEDA_VERSION}"
-          echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
-          echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
           echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
         } >> "$GITHUB_ENV"
 
@@ -114,8 +106,6 @@ runs:
         echo "ISTIO_VERSION=${ISTIO_VERSION}"
         echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
         echo "KEDA_VERSION=${KEDA_VERSION}"
-        echo "LLM_GATEWAY_AUTH_VERSION=${LLM_GATEWAY_AUTH_VERSION}"
-        echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
         echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
 
     - name: Setup Go
