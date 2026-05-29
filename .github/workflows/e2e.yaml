@@ -31,10 +31,6 @@ on:
         description: 'KEDA Helm chart version (e.g. v2.19.0). Leave empty to use default from versions.env'
         required: false
         default: ''
-      llm_gateway_auth_version:
-        description: 'LLM Gateway Auth Helm chart version (e.g. v0.1.0). Leave empty to use default from versions.env'
-        required: false
-        default: ''
 
 env:
   RESOURCE_GROUP: "kaito-gw-e2e-rg-${{ github.run_id }}"
@@ -75,7 +71,6 @@ jobs:
           istio-version: ${{ github.event.inputs.istio_version }}
           gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
           keda-version: ${{ github.event.inputs.keda_version }}
-          llm-gateway-auth-version: ${{ github.event.inputs.llm_gateway_auth_version }}
 
       - name: Run E2E tests
         # Skip Nightly-labeled specs (slow/destructive scaling cases, etc.).

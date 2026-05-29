@@ -147,7 +147,6 @@ jobs:
           istio-version: ''
           gateway-api-version: ''
           keda-version: ''
-          llm-gateway-auth-version: ''
 
       - name: Provision workload namespace via modelharness
         run: |

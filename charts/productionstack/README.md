@@ -13,16 +13,15 @@ the inference data plane relies on.
 |----------------------|----------------------------------------------------------------------------------------------------------|-------------------------------------|---------------------------|
 | `body-based-routing` | Cluster-wide singleton Body-Based Router (BBR) ext_proc service + Istio `EnvoyFilter` wiring it into every inference Gateway. | `body-based-routing.enabled` (default `true`) | `istio-system` |
 | `keda-kaito-scaler`  | KEDA external scaler that aggregates vLLM / `InferenceSet` metrics for workload-aware autoscaling.       | `keda-kaito-scaler.enabled` (default `true`)  | `keda` |
-| `llm-gateway-apikey` (upstream OCI dep) | API-key ext_authz for the inference Gateway: installs the `APIKey` CRD, `apikey-operator`, `apikey-authz` dataplane, and a hook Job that registers `apikey-ext-authz` as a CUSTOM extensionProvider in Istio's MeshConfig. | `llm-gateway-apikey.enabled` (default `true`) | release namespace (no `namespaceOverride`) |
+| `llm-gateway-apikey` (upstream OCI dep) | API-key ext_authz for the inference Gateway: installs the `APIKey` CRD, `apikey-operator`, `apikey-authz` dataplane, and a hook Job that registers `apikey-ext-authz` as a CUSTOM extensionProvider in Istio's MeshConfig. | `llm-gateway-apikey.enabled` (default `true`) | `llm-gateway-auth` |
 
-The first two subcharts are in-tree forks that expose a
-`namespaceOverride` value pinning **all of their namespaced
-resources** to a specific namespace, independent of the Helm release
-namespace passed via `--namespace`. The third, `llm-gateway-apikey`,
-is pulled as a Helm dependency directly from
-`oci://mcr.microsoft.com/aks/kaito/helm` and has no
-`namespaceOverride` knob, so its namespaced resources land in the
-umbrella's release namespace. See
+The three subcharts each expose a `namespaceOverride` value pinning
+**all of their namespaced resources** to a specific namespace,
+independent of the Helm release namespace passed via `--namespace`.
+The first two are in-tree forks; the third (`llm-gateway-apikey`) is
+pulled as a Helm dependency directly from
+`oci://mcr.microsoft.com/aks/kaito/helm` and has supported
+`namespaceOverride` since upstream chart version 0.0.8-alpha. See
 [Per-subchart install namespace](#per-subchart-install-namespace) for
 details.
 
@@ -68,25 +67,25 @@ helm upgrade --install productionstack charts/productionstack \
 ```
 
 With the default values BBR lands in `istio-system`, the KEDA scaler
-in `keda`, and the upstream llm-gateway-apikey control plane in the
-release namespace (`kaito-system` in the example above) because the
-upstream chart has no `namespaceOverride` knob.
+in `keda`, and the upstream llm-gateway-apikey control plane in
+`llm-gateway-auth` (the `namespaceOverride` defaults). The umbrella
+release itself can live in any namespace.
 
 ## Per-subchart install namespace
 
 Helm itself only accepts a single `--namespace` per release. To
 install each subchart into its **own** namespace inside a single
-`helm install`, the in-tree subcharts (`body-based-routing`,
-`keda-kaito-scaler`) expose a `namespaceOverride` value. When set,
-all of that subchart's **namespaced** resources are rendered into the
-override namespace instead of the release namespace; cluster-scoped
-resources (`ClusterRole`, `ClusterRoleBinding`) are unaffected.
+`helm install`, every subchart in this umbrella exposes a
+`namespaceOverride` value. When set, all of that subchart's
+**namespaced** resources are rendered into the override namespace
+instead of the release namespace; cluster-scoped resources
+(`ClusterRole`, `ClusterRoleBinding`, `CustomResourceDefinition`,
+`ValidatingWebhookConfiguration`) are unaffected.
 
-The upstream `llm-gateway-apikey` dependency does **not** expose
-`namespaceOverride` — its namespaced resources always render into the
-umbrella's release namespace. Override the release namespace
-(`helm install --namespace ...`) or install the upstream chart
-out-of-band if you need a different home for it.
+The upstream `llm-gateway-apikey` dependency added the same
+`namespaceOverride` knob in chart version 0.0.8-alpha; below that
+version every namespaced resource it ships always rendered into the
+umbrella's release namespace.
 
 ```yaml
 # my-values.yaml
@@ -94,6 +93,8 @@ body-based-routing:
   namespaceOverride: istio-system     # required: BBR EnvoyFilter must live here
 keda-kaito-scaler:
   namespaceOverride: keda
+llm-gateway-apikey:
+  namespaceOverride: llm-gateway-auth
 ```
 
 Caveats:

@@ -10,17 +10,18 @@
 # APIKey CR, etc.) are provisioned per-test via charts/modelharness.
 #
 # Required env vars (set by caller, e.g. run-e2e-local.sh or CI):
-#   LLM_GATEWAY_AUTH_VERSION   — LLM Gateway Auth Helm chart version
-#   LLM_GATEWAY_AUTH_IMAGE_TAG — LLM Gateway Auth container image tag
 #   SHADOW_CONTROLLER_IMAGE    — gpu-node-mocker image (default: ghcr.io/kaito-project/gpu-node-mocker:latest)
 #   INSTALL_PARALLEL           — set to "0" to disable parallelism (default: 1)
+#
+# llm-gateway-apikey chart version + image tag are pinned by
+# charts/productionstack/Chart.yaml (chart dep) and the upstream chart's
+# appVersion respectively — bump by editing Chart.yaml and re-running
+# `helm dependency update charts/productionstack`.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-: "${LLM_GATEWAY_AUTH_VERSION:?LLM_GATEWAY_AUTH_VERSION is not set. Source versions.env or export it before calling this script.}"
-: "${LLM_GATEWAY_AUTH_IMAGE_TAG:?LLM_GATEWAY_AUTH_IMAGE_TAG is not set. Source versions.env or export it before calling this script.}"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
@@ -48,8 +49,6 @@ export KEDA_NAMESPACE
 echo "=== Component versions ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
-echo "  LLM_GATEWAY_AUTH_VERSION:  ${LLM_GATEWAY_AUTH_VERSION}"
-echo "  LLM_GATEWAY_AUTH_IMAGE_TAG:${LLM_GATEWAY_AUTH_IMAGE_TAG}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
 echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
 echo ""
@@ -119,25 +118,25 @@ install_productionstack() {
   # (no in-tree fork — `helm dependency update` vendors the tarball into
   # charts/productionstack/charts/ at install time).
   #
-  # Per-subchart install namespaces:
-  #   * body-based-routing → istio-system    (in-tree fork; namespaceOverride.
-  #     Istio rootNamespace so the chart-rendered EnvoyFilter applies
-  #     cluster-wide; anchored on envoy.filters.http.ext_authz with
-  #     INSERT_AFTER, giving the runtime order:
-  #     ext_authz → bbr → router → epp/not-found.)
-  #   * keda-kaito-scaler  → ${KEDA_NAMESPACE}  (in-tree fork; namespaceOverride.
-  #     Co-located with KEDA.)
-  #   * llm-gateway-apikey → release namespace (upstream chart has no
-  #     namespaceOverride knob; every namespaced resource it ships lands in
-  #     the umbrella's release namespace). To keep the LGA operator + authz
-  #     control plane in `llm-gateway-auth` — where validate-components.sh
-  #     and the e2e suite expect them — the umbrella release itself is
-  #     installed into `llm-gateway-auth` rather than `kaito-system`.
+  # Per-subchart install namespaces (each via the subchart's own
+  # `namespaceOverride` value):
+  #   * body-based-routing → istio-system    (Istio rootNamespace so the
+  #     chart-rendered EnvoyFilter applies cluster-wide; anchored on
+  #     envoy.filters.http.ext_authz with INSERT_AFTER, giving the
+  #     runtime order: ext_authz → bbr → router → epp/not-found.)
+  #   * keda-kaito-scaler  → ${KEDA_NAMESPACE}  (co-located with KEDA so
+  #     KEDA can resolve the ClusterTriggerAuthentication Secrets it
+  #     ships.)
+  #   * llm-gateway-apikey → llm-gateway-auth  (upstream chart 0.0.8-alpha+
+  #     supports namespaceOverride; the LGA operator + authz control
+  #     plane live here, matching where validate-components.sh and the
+  #     e2e suite expect them.)
   #
-  # The release Secret therefore lives in `llm-gateway-auth`;
-  # `helm uninstall productionstack -n llm-gateway-auth` correctly cleans
-  # up across all override namespaces because Helm tracks the rendered
-  # manifest, not the namespace.
+  # The umbrella release itself is installed into `kaito-system`; the
+  # release Secret therefore lives in `kaito-system`. `helm uninstall
+  # productionstack -n kaito-system` correctly cleans up across all
+  # override namespaces because Helm tracks the rendered manifest, not
+  # the namespace.
   #
   # Note: the BBR EnvoyFilter's anchorSubFilter (`envoy.filters.http.ext_authz`)
   # is only present in the runtime filter chain once the LGA MeshConfig
@@ -148,6 +147,7 @@ install_productionstack() {
   echo "⏳ Ensuring per-subchart target namespaces exist..."
   kubectl create namespace istio-system     --dry-run=client -o yaml | kubectl apply -f -
   kubectl create namespace "${KEDA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+  kubectl create namespace llm-gateway-auth  --dry-run=client -o yaml | kubectl apply -f -
 
   echo "⏳ Vendoring upstream llm-gateway-apikey OCI dependency..."
   helm dependency update "${PRODUCTIONSTACK_CHART_DIR}"
@@ -155,19 +155,16 @@ install_productionstack() {
   echo "=== Installing productionstack umbrella chart ==="
   echo "    body-based-routing → istio-system"
   echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE}"
-  echo "    llm-gateway-apikey → llm-gateway-auth (release ns; chart appVersion ${LLM_GATEWAY_AUTH_VERSION}, image tag ${LLM_GATEWAY_AUTH_IMAGE_TAG})"
-  # Pass image tag overrides under the upstream chart key
-  # `llm-gateway-apikey` (must match the dependency `name:` in Chart.yaml).
+  echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
-    --namespace llm-gateway-auth \
+    --namespace kaito-system \
     --create-namespace \
     --set body-based-routing.enabled=true \
     --set body-based-routing.namespaceOverride=istio-system \
     --set keda-kaito-scaler.enabled=true \
     --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}" \
     --set llm-gateway-apikey.enabled=true \
-    --set llm-gateway-apikey.operator.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
-    --set llm-gateway-apikey.authz.image.tag="${LLM_GATEWAY_AUTH_IMAGE_TAG}" \
+    --set llm-gateway-apikey.namespaceOverride=llm-gateway-auth \
     --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."

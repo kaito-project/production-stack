@@ -30,8 +30,6 @@ _PROVIDER="${E2E_PROVIDER:-}"
 _ISTIO="${ISTIO_VERSION:-}"
 _GWAPI="${GATEWAY_API_VERSION:-}"
 _KEDA="${KEDA_VERSION:-}"
-_LGA="${LLM_GATEWAY_AUTH_VERSION:-}"
-_LGAI="${LLM_GATEWAY_AUTH_IMAGE_TAG:-}"
 
 # shellcheck source=../../../versions.env
 source "${REPO_ROOT}/versions.env"
@@ -41,8 +39,6 @@ source "${REPO_ROOT}/versions.env"
 [ -n "${_ISTIO}" ] && ISTIO_VERSION="${_ISTIO}"
 [ -n "${_GWAPI}" ] && GATEWAY_API_VERSION="${_GWAPI}"
 [ -n "${_KEDA}" ]  && KEDA_VERSION="${_KEDA}"
-[ -n "${_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${_LGA}"
-[ -n "${_LGAI}" ]  && LLM_GATEWAY_AUTH_IMAGE_TAG="${_LGAI}"
 
 # Validate provider value.
 case "${E2E_PROVIDER}" in
@@ -66,7 +62,7 @@ if [ -z "${KEDA_NAMESPACE:-}" ]; then
   esac
 fi
 
-export E2E_PROVIDER KEDA_NAMESPACE ISTIO_VERSION GATEWAY_API_VERSION KEDA_VERSION LLM_GATEWAY_AUTH_VERSION LLM_GATEWAY_AUTH_IMAGE_TAG AKS_K8S_VERSION
+export E2E_PROVIDER KEDA_NAMESPACE ISTIO_VERSION GATEWAY_API_VERSION KEDA_VERSION AKS_K8S_VERSION
 
 echo "=== Component versions (from versions.env) ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
@@ -74,8 +70,6 @@ echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  ISTIO_VERSION:             ${ISTIO_VERSION}"
 echo "  GATEWAY_API_VERSION:       ${GATEWAY_API_VERSION}"
 echo "  KEDA_VERSION:              ${KEDA_VERSION}"
-echo "  LLM_GATEWAY_AUTH_VERSION:  ${LLM_GATEWAY_AUTH_VERSION}"
-echo "  LLM_GATEWAY_AUTH_IMAGE_TAG:${LLM_GATEWAY_AUTH_IMAGE_TAG}"
 echo ""
 
 export RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-e2e-local}"

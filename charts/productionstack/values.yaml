@@ -67,18 +67,25 @@ keda-kaito-scaler:
 # post-install hook Job that patches Istio's MeshConfig to register
 # `apikey-ext-authz` as a CUSTOM extensionProvider.
 #
-# Unlike the other subcharts in this umbrella, the upstream
-# `llm-gateway-apikey` chart has no `namespaceOverride` knob — every
-# namespaced resource it ships lands in the umbrella's release
-# namespace (e.g. `kaito-system`). The cluster-scoped APIKey CRD,
-# ValidatingWebhookConfiguration, ClusterRole, and ClusterRoleBinding
-# are unaffected. The AuthorizationPolicy is rendered into
+# Since chart version 0.0.8-alpha the upstream chart exposes a
+# `namespaceOverride` knob, so its namespaced resources can be pinned
+# to a dedicated namespace independent of the umbrella's release
+# namespace — matching the pattern used by the other in-tree
+# subcharts. Cluster-scoped resources (APIKey CRD,
+# ValidatingWebhookConfiguration, ClusterRole, ClusterRoleBinding) are
+# unaffected. The AuthorizationPolicy is rendered into
 # `istio.gatewayNamespace` instead.
 #
 # The key below MUST match the dependency `name:` in Chart.yaml
 # (`llm-gateway-apikey`), not the directory name.
 llm-gateway-apikey:
   enabled: true
+  # Co-locate the LGA control plane (apikey-operator, apikey-authz,
+  # webhook cert Issuer/Certificate, meshconfig-patch Job) in a
+  # dedicated namespace so the umbrella release itself can live
+  # elsewhere (e.g. kaito-system). Set to "" to inherit the umbrella
+  # release namespace instead.
+  namespaceOverride: llm-gateway-auth
   # Mirror the umbrella's default LGA wiring so a single
   # `helm install productionstack` provisions a working data plane
   # without extra --set flags. Override at install time as needed.
