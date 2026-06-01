@@ -86,3 +86,41 @@ epp:
   modelServerSelector:
     inferenceset.kaito.sh/created-by: ""   # auto-filled with .Values.name when empty
     apps.kubernetes.io/pod-index: "0"
+
+# ----------------------------------------------------------------------------
+# Policy resync hook.
+#
+# Renders a post-install/post-upgrade Helm Job that works around an AKS
+# Cilium reconcile race: cilium-agent does not re-walk EXISTING endpoints
+# when a new CiliumNetworkPolicy lands, so a pod created before the
+# modelharness CNP is compiled may stay non-enforcing. The hook briefly
+# stamps + strips a throwaway label on every policy-selected pod in this
+# release's namespace, which fires the endpoint-update event that gets
+# the agent to re-evaluate the endpoint against the already-installed
+# policy.
+#
+# See charts/modeldeployment/templates/policy-resync-job.yaml for the
+# full rationale and the upstream-bug retirement plan.
+# ----------------------------------------------------------------------------
+policyResync:
+  # enabled toggles the post-install/post-upgrade Job. Leave on for any
+  # cluster running the AKS Cilium fork; safe to disable on clusters
+  # whose cilium-agent honours status.nodes acks (the Job is a no-op
+  # there but still consumes a few CPU-seconds at install time).
+  enabled: true
+
+  # waitTimeoutSeconds bounds how long the Job will poll for the
+  # expected pods to reach Ready before giving up. Set generously: a
+  # fresh KAITO inference pod can take several minutes on a cold node
+  # because of the model download + GPU init. 600s matches the e2e
+  # readiness budget elsewhere in this repo.
+  waitTimeoutSeconds: 600
+
+  image:
+    # Lightweight kubectl-only image. bitnami/kubectl is multiarch and
+    # tracks upstream kubectl tags closely; pin a specific tag rather
+    # than `latest` so a Bitnami publish doesn't silently retarget the
+    # hook (Helm post-install hooks have no good rollback story).
+    repository: "bitnami/kubectl"
+    tag: "1.31"
+    pullPolicy: "IfNotPresent"
