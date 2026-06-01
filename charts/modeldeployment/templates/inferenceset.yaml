@@ -18,6 +18,19 @@ spec:
     matchLabels:
       apps: {{ include "modeldeployment.name" . }}
   template:
+    metadata:
+      labels:
+        {{/*
+        Stamp the production-stack ownership label into the InferenceSet
+        template metadata. The upstream KAITO InferenceSet controller
+        clones template.metadata.labels onto every child Workspace it
+        renders, which in turn propagates the label onto the inference
+        workload pods. The modelharness NetworkPolicies positively select
+        on this label — without it, KAITO-rendered inference pods would
+        not match `default-deny-ingress` / `allow-inference-traffic` and
+        cross-namespace ingress to them would silently succeed.
+        */}}
+        {{- include "modeldeployment.ownerLabel" . | nindent 8 }}
     resource:
       instanceType: {{ .Values.instanceType | quote }}
     inference:

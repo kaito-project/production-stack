@@ -1,60 +1,86 @@
 {{- if .Values.networkPolicy.enabled }}
 {{/*
-Per-namespace NetworkPolicies that lock down East-West ingress to
-inference workloads (EPP / vLLM) while keeping the per-namespace Istio
-Gateway pod (matched via `gateway.networking.k8s.io/gateway-name`,
-which Istio stamps onto every gateway pod) reachable from outside the
-namespace.
+Per-namespace CiliumNetworkPolicy that locks down East-West ingress to
+inference workloads (EPP / vLLM / shadow pods) while leaving the
+per-namespace Istio Gateway pod and user-deployed pods (debug, eval
+jobs, batch runners) unaffected.
 
-Two policies are rendered:
-  1. `default-deny-ingress` — denies all ingress to non-gateway pods.
-  2. `allow-inference-traffic` — re-permits intra-namespace ingress to
-     non-gateway pods, so EPP can reach vLLM and shadow pods, etc.
+Why CiliumNetworkPolicy instead of networking.k8s.io/v1 NetworkPolicy:
 
-The gateway pod is excluded from both selectors so:
-  - North-South traffic into the gateway (Istio ingress, external
-    clients) is unaffected — it is the namespace's entry point.
-  - The gateway can still send East-West traffic to EPP / vLLM in the
-    same namespace via the standard intra-namespace allow rule.
+  On the AKS Overlay + Cilium dataplane there is a long-standing
+  reconciliation race where a K8s `NetworkPolicy` that selects a pod
+  CREATED BEFORE the policy is installed is silently never compiled
+  into that endpoint's BPF policy map. The CiliumEndpoint reports
+  `status.policy.ingress.enforcing=false` and traffic flows
+  unrestricted — exactly the symptom that has been flaking the
+  network_policy e2e suite since the AKS-Cilium upgrade. Cilium does
+  not round-trip K8s NetworkPolicy objects into CiliumNetworkPolicy
+  CRs; it compiles them through a separate, slower code path.
 
-The gateway pod is owned by this chart's Gateway resource; the
-exclusion label is stamped automatically by Istio.
+  Writing a native CiliumNetworkPolicy bypasses the translation step
+  entirely. The agent reconciles CNPs through the same path that
+  handles its own identity cache, so a newly-installed CNP that
+  selects an already-running endpoint becomes enforcing within a
+  single reconcile tick rather than potentially never.
+
+Semantics:
+
+  A CiliumNetworkPolicy that selects an endpoint puts that endpoint
+  into default-deny for the directions the policy declares rules for
+  (here: ingress only). Any ingress not matched by an explicit
+  `fromEndpoints` clause is silently dropped. This collapses what used
+  to be two K8s NetworkPolicies (`default-deny-ingress` +
+  `allow-inference-traffic`) into one rule, since Cilium's default-deny
+  is implicit rather than expressed as a separate empty-rule policy.
+
+  Egress is untouched — production-stack pods can still reach the
+  cluster API, the model cache, and other namespaces, exactly as
+  before.
+
+Selector scope (issue #83):
+
+  `endpointSelector` is a POSITIVE match on the stable
+  `kaito.sh/owned-by: modeldeployment` label that modeldeployment
+  stamps on the pods it owns (EPP, KAITO-rendered inference, shadow
+  pods). User-deployed pods that happen to share the namespace are
+  not matched, so they are not put into default-deny and their
+  ingress is unaffected. This replaces the pre-#83 negative selector
+  (`gateway.networking.k8s.io/gateway-name DoesNotExist`) which swept
+  in every non-gateway pod in the namespace.
+
+  Gateway pods are also unmatched (they carry the gateway-name label,
+  not the owned-by label) → North-South traffic into the gateway is
+  unaffected.
+
+Allowed peers:
+
+  - `fromEndpoints: [{}]` — within a CiliumNetworkPolicy this matches
+    every endpoint IN THE SAME NAMESPACE (Cilium namespace-scopes a
+    CNP's empty endpointSelector implicitly). Lets the gateway pod
+    and the EPP pod reach vLLM, lets EPP reach shadow pods, etc.
+  - `fromEndpoints` with `k8s:io.kubernetes.pod.namespace=<ns>` —
+    explicit cross-namespace allow for control-plane / metric-scraper
+    components (KEDA scaler, kaito-controller, monitoring). The
+    `k8s:` source prefix pins the match to the Kubernetes labels
+    source so a pod cannot spoof the value via a different label
+    source.
 */}}
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
 metadata:
-  name: default-deny-ingress
+  name: inference-pods-ingress
   namespace: {{ include "modelharness.namespace" . }}
   labels:
     {{- include "modelharness.labels" . | nindent 4 }}
 spec:
-  podSelector:
-    matchExpressions:
-      - key: gateway.networking.k8s.io/gateway-name
-        operator: DoesNotExist
-  policyTypes:
-    - Ingress
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-inference-traffic
-  namespace: {{ include "modelharness.namespace" . }}
-  labels:
-    {{- include "modelharness.labels" . | nindent 4 }}
-spec:
-  podSelector:
-    matchExpressions:
-      - key: gateway.networking.k8s.io/gateway-name
-        operator: DoesNotExist
-  policyTypes:
-    - Ingress
+  endpointSelector:
+    matchLabels:
+      kaito.sh/owned-by: modeldeployment
   ingress:
-    - from:
-        - podSelector: {}
+    - fromEndpoints:
+        - {}
 {{- range .Values.networkPolicy.allowedIngressNamespaces }}
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ . | quote }}
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: {{ . | quote }}
 {{- end }}
 {{- end }}

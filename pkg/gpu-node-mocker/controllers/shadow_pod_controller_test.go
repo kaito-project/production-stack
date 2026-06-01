@@ -209,6 +209,15 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if shadow.Labels[ShadowPodInferenceSetLabelKey] != "falcon-7b-instruct" {
 		t.Errorf("shadow inferenceset label = %q", shadow.Labels[ShadowPodInferenceSetLabelKey])
 	}
+	// Regression guard for issue #83: the modelharness NetworkPolicies
+	// positively select on `kaito.sh/owned-by: modeldeployment`. Without
+	// this label, EPP traffic forwarded to the (patched) inference-pod
+	// IP — actually the shadow pod's IP — would be dropped by
+	// `default-deny-ingress`.
+	if shadow.Labels[OwnedByLabelKey] != OwnedByLabelValue {
+		t.Errorf("shadow owned-by label = %q, want %q",
+			shadow.Labels[OwnedByLabelKey], OwnedByLabelValue)
+	}
 	// Should have anti-affinity to exclude fake nodes
 	affinity := shadow.Spec.Affinity
 	if affinity == nil || affinity.NodeAffinity == nil ||
