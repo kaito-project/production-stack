@@ -879,34 +879,68 @@ func readyEPPPodEndpoint(ctx context.Context, clientset *kubernetes.Clientset, n
 func networkPolicyEnforcementDiagnostics(ctx context.Context, clientset *kubernetes.Clientset, ns, targetIP string, probeNS ...string) string {
 	var b strings.Builder
 
-	// 1. List the NetworkPolicies in the workload namespace. If empty,
-	//    the modelharness Helm chart never rendered them (or they were
-	//    already torn down by the time we got here) — that alone fully
-	//    explains the canary reaching the EPP pod. Dump each ingress
-	//    rule's `from:` peers so a chart regression that accidentally
-	//    widens `allowedIngressNamespaces` (e.g. to include `default`)
-	//    is visible in the failure log without re-running with kubectl.
-	fmt.Fprintf(&b, "NetworkPolicies in %s:\n", ns)
+	// 1. List the CiliumNetworkPolicies in the workload namespace. If
+	//    empty, the modelharness Helm chart never rendered them (or they
+	//    were already torn down by the time we got here) — that alone
+	//    fully explains the canary reaching the EPP pod. Dump each
+	//    ingress rule's endpointSelector + fromEndpoints so a chart
+	//    regression that accidentally widens `allowedIngressNamespaces`
+	//    (e.g. to include `default`) is visible in the failure log
+	//    without re-running with kubectl.
+	//
+	//    We also list any leftover networking.k8s.io/v1 NetworkPolicies,
+	//    purely diagnostic — they should be empty after the CNP
+	//    migration; a non-empty list would point at a stale install or
+	//    a hand-rolled NP that's racing with the CNP.
+	fmt.Fprintf(&b, "CiliumNetworkPolicies in %s:\n", ns)
+	dyn, derr := utils.GetDynamicClient()
+	if derr != nil {
+		fmt.Fprintf(&b, "  <dynamic client error: %v>\n", derr)
+	} else {
+		cnpGVR := schema.GroupVersionResource{
+			Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies",
+		}
+		cnps, err := dyn.Resource(cnpGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			fmt.Fprintf(&b, "  <list error: %v>\n", err)
+		} else if len(cnps.Items) == 0 {
+			fmt.Fprintf(&b, "  <none found — modelharness chart did not render the CiliumNetworkPolicy, or it was uninstalled>\n")
+		} else {
+			for _, cnp := range cnps.Items {
+				epSel, _, _ := unstructuredNestedMap(cnp.Object, "spec", "endpointSelector", "matchLabels")
+				fmt.Fprintf(&b, "  - %s (endpointSelector.matchLabels=%v)\n", cnp.GetName(), epSel)
+				ingress, _, _ := unstructuredNestedSlice(cnp.Object, "spec", "ingress")
+				for i, rule := range ingress {
+					ruleMap, _ := rule.(map[string]any)
+					from, _ := ruleMap["fromEndpoints"].([]any)
+					if len(from) == 0 {
+						fmt.Fprintf(&b, "      ingress[%d]: fromEndpoints=<empty> (matches nothing)\n", i)
+						continue
+					}
+					for j, peer := range from {
+						peerMap, _ := peer.(map[string]any)
+						ml, _ := peerMap["matchLabels"].(map[string]any)
+						if len(ml) == 0 {
+							fmt.Fprintf(&b, "      ingress[%d].fromEndpoints[%d]: <empty selector> (same namespace, all endpoints)\n", i, j)
+						} else {
+							fmt.Fprintf(&b, "      ingress[%d].fromEndpoints[%d]: matchLabels=%v\n", i, j, ml)
+						}
+					}
+				}
+			}
+		}
+	}
+	fmt.Fprintf(&b, "Stale networking.k8s.io/v1 NetworkPolicies in %s (should be empty after CNP migration):\n", ns)
 	nps, err := clientset.NetworkingV1().NetworkPolicies(ns).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		fmt.Fprintf(&b, "  <list error: %v>\n", err)
 	} else if len(nps.Items) == 0 {
-		fmt.Fprintf(&b, "  <none found — modelharness chart did not render NetworkPolicies, or they were uninstalled>\n")
+		fmt.Fprintf(&b, "  <none — expected>\n")
 	} else {
 		for _, np := range nps.Items {
 			fmt.Fprintf(&b, "  - %s (policyTypes=%v, podSelector=%s)\n",
 				np.Name, np.Spec.PolicyTypes,
 				formatPodSelector(np.Spec.PodSelector))
-			for i, rule := range np.Spec.Ingress {
-				if len(rule.From) == 0 {
-					fmt.Fprintf(&b, "      ingress[%d]: from=<all> (allow-all)\n", i)
-					continue
-				}
-				for j, peer := range rule.From {
-					fmt.Fprintf(&b, "      ingress[%d].from[%d]: %s\n",
-						i, j, formatNetworkPolicyPeer(peer))
-				}
-			}
 		}
 	}
 
@@ -1141,6 +1175,9 @@ func unstructuredNestedBool(obj map[string]any, fields ...string) (bool, bool, e
 func unstructuredNestedSlice(obj map[string]any, fields ...string) ([]any, bool, error) {
 	return unstructuredGet[[]any](obj, fields...)
 }
+func unstructuredNestedMap(obj map[string]any, fields ...string) (map[string]any, bool, error) {
+	return unstructuredGet[map[string]any](obj, fields...)
+}
 func unstructuredGet[T any](obj map[string]any, fields ...string) (T, bool, error) {
 	var zero T
 	cur := any(obj)
@@ -1156,29 +1193,6 @@ func unstructuredGet[T any](obj map[string]any, fields ...string) (T, bool, erro
 	}
 	v, ok := cur.(T)
 	return v, ok, nil
-}
-
-// formatNetworkPolicyPeer renders a single `from:` entry compactly for
-// diagnostic output. Covers the three peer kinds in NetworkPolicyPeer:
-// podSelector (namespace-scoped to the policy), namespaceSelector (any
-// namespace whose labels match), and ipBlock (CIDR). Empty selectors
-// render as "<all>" because that is what `- podSelector: {}` and
-// `- namespaceSelector: {}` actually mean in policy semantics.
-func formatNetworkPolicyPeer(peer networkingv1.NetworkPolicyPeer) string {
-	parts := []string{}
-	if peer.PodSelector != nil {
-		parts = append(parts, "podSelector="+formatPodSelector(*peer.PodSelector))
-	}
-	if peer.NamespaceSelector != nil {
-		parts = append(parts, "namespaceSelector="+formatPodSelector(*peer.NamespaceSelector))
-	}
-	if peer.IPBlock != nil {
-		parts = append(parts, fmt.Sprintf("ipBlock=%s except=%v", peer.IPBlock.CIDR, peer.IPBlock.Except))
-	}
-	if len(parts) == 0 {
-		return "<empty peer>"
-	}
-	return strings.Join(parts, " ")
 }
 
 // formatPodSelector renders a LabelSelector compactly for diagnostic
@@ -1206,27 +1220,29 @@ func formatPodSelector(sel metav1.LabelSelector) string {
 var _ = networkingv1.SchemeGroupVersion
 
 // expectNetworkPoliciesPresent asserts that the modelharness Helm release
-// in `ns` has rendered both `default-deny-ingress` and
-// `allow-inference-traffic` NetworkPolicies. Failing here turns a silent
-// chart regression into an immediate, clearly-attributable BeforeAll
-// failure rather than a 2-minute canary timeout that — by the time CI's
-// post-failure dump runs — has been masked by AfterAll teardown.
+// in `ns` has rendered the `inference-pods-ingress` CiliumNetworkPolicy.
+// Failing here turns a silent chart regression into an immediate, clearly-
+// attributable BeforeAll failure rather than a 2-minute canary timeout
+// that — by the time CI's post-failure dump runs — has been masked by
+// AfterAll teardown.
+//
+// The chart used to render two networking.k8s.io/v1 NetworkPolicies
+// (`default-deny-ingress` + `allow-inference-traffic`); those were
+// collapsed into a single CiliumNetworkPolicy when we migrated off K8s
+// NetworkPolicy to dodge the AKS Cilium reconciliation race where K8s
+// NPs were silently never compiled into per-endpoint BPF maps for
+// already-running pods (see charts/modelharness/templates/networkpolicies.yaml).
 func expectNetworkPoliciesPresent(ctx context.Context, clientset *kubernetes.Clientset, ns string) {
-	required := map[string]bool{
-		"default-deny-ingress":    false,
-		"allow-inference-traffic": false,
+	_ = clientset // retained for symmetry / future K8s-side assertions
+	dyn, err := utils.GetDynamicClient()
+	Expect(err).NotTo(HaveOccurred(), "get dynamic client")
+	cnpGVR := schema.GroupVersionResource{
+		Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies",
 	}
-	nps, err := clientset.NetworkingV1().NetworkPolicies(ns).List(ctx, metav1.ListOptions{})
-	Expect(err).NotTo(HaveOccurred(), "list NetworkPolicies in %s", ns)
-	for _, np := range nps.Items {
-		if _, ok := required[np.Name]; ok {
-			required[np.Name] = true
-		}
-	}
-	for name, found := range required {
-		Expect(found).To(BeTrue(),
-			"expected NetworkPolicy %q in %s but the modelharness chart did not render it; "+
-				"see chart values .networkPolicy.enabled wiring in test/e2e/cases.go and "+
-				"charts/modelharness/templates/networkpolicies.yaml", name, ns)
-	}
+	cnp, err := dyn.Resource(cnpGVR).Namespace(ns).Get(ctx, "inference-pods-ingress", metav1.GetOptions{})
+	Expect(err).NotTo(HaveOccurred(),
+		"expected CiliumNetworkPolicy %q in %s but the modelharness chart did not render it (or the Cilium CRDs are not installed); "+
+			"see chart values .networkPolicy.enabled wiring in test/e2e/cases.go and "+
+			"charts/modelharness/templates/networkpolicies.yaml", "inference-pods-ingress", ns)
+	Expect(cnp.GetName()).To(Equal("inference-pods-ingress"))
 }

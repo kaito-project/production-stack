@@ -42,35 +42,40 @@ auth:
   # apiKeyName is the name of the APIKey CR rendered when auth.enabled.
   apiKeyName: "default"
 
-# networkPolicy toggles the per-namespace NetworkPolicies that lock
-# down East-West ingress to inference workloads while keeping the
-# per-namespace Istio Gateway pod reachable from outside the namespace.
+# networkPolicy toggles the per-namespace CiliumNetworkPolicy that
+# locks down East-West ingress to production-stack inference workloads
+# (EPP, KAITO-rendered inference, shadow pods) while leaving the
+# per-namespace Istio Gateway pod and user-deployed pods unaffected.
 # When enabled, the chart renders:
-#   - NetworkPolicy `default-deny-ingress`: denies all ingress to
-#     non-gateway pods in the namespace.
-#   - NetworkPolicy `allow-inference-traffic`: re-permits
-#     intra-namespace ingress to non-gateway pods so EPP can reach
-#     vLLM and shadow pods.
-# Both selectors exclude the gateway pod (matched via the standard
-# `gateway.networking.k8s.io/gateway-name` label) so North-South
-# traffic into the gateway is unaffected.
+#   - CiliumNetworkPolicy `inference-pods-ingress`: selects pods with
+#     the stable `kaito.sh/owned-by: modeldeployment` label and allows
+#     ingress from the same namespace plus the
+#     `allowedIngressNamespaces` allowlist. Any other ingress to those
+#     pods is dropped by Cilium's implicit default-deny.
+# The chart uses CiliumNetworkPolicy rather than networking.k8s.io/v1
+# NetworkPolicy because the AKS Cilium dataplane intermittently fails
+# to compile K8s NetworkPolicies into the per-endpoint BPF maps for
+# pods that already exist when the policy is installed; CNPs reconcile
+# through Cilium's native path and avoid that race. See
+# charts/modelharness/templates/networkpolicies.yaml for the full
+# rationale.
 networkPolicy:
   enabled: true
 
-  # allowedIngressNamespaces grants cross-namespace ingress to
-  # non-gateway pods in this workload namespace, matched by the
-  # standard `kubernetes.io/metadata.name` label that Kubernetes
-  # stamps on every namespace (v1.22+). Use this to permit
+  # allowedIngressNamespaces grants cross-namespace ingress to the
+  # production-stack inference pods in this workload namespace. Each
+  # entry renders an additional `fromEndpoints` clause keyed off the
+  # standard `k8s:io.kubernetes.pod.namespace` label that Cilium
+  # derives from every pod's namespace metadata. Use this to permit
   # control-plane / metric-scraper components living outside the
   # workload namespace — for example, `keda-kaito-scaler` in the
   # `keda` namespace must reach vLLM / InferencePool metric endpoints
   # on shadow pods to drive autoscaling decisions.
   #
-  # Each entry renders an additional `from.namespaceSelector` clause
-  # on `allow-inference-traffic`. Leaving the list empty preserves the
-  # strict per-namespace isolation used by the network-policy e2e
-  # cases (which assert that label-only spoofing across namespaces is
-  # always denied).
+  # Leaving the list empty preserves strict per-namespace isolation:
+  # only same-namespace endpoints (the gateway pod, EPP, etc.) can
+  # reach the inference pods. The network-policy e2e suite asserts
+  # that label-only spoofing across namespaces is always denied.
   allowedIngressNamespaces:
     - keda
     - kaito-system
