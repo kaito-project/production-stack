@@ -120,10 +120,12 @@ policyResync:
   waitTimeoutSeconds: 180
 
   image:
-    # Lightweight kubectl-only image. bitnami/kubectl is multiarch and
-    # tracks upstream kubectl tags closely; pin a specific tag rather
-    # than `latest` so a Bitnami publish doesn't silently retarget the
-    # hook (Helm post-install hooks have no good rollback story).
-    repository: "bitnami/kubectl"
-    tag: "1.31"
+    # Official upstream kubectl image, published by sig-release alongside
+    # the kubectl binary itself. Avoids the Bitnami Legacy deprecation
+    # (docker.io/bitnami/kubectl tags started returning manifest-not-found
+    # after the August 2025 catalog migration). The `vX.Y.Z` tag matches
+    # the kubectl release; we pin a recent stable rather than `latest`
+    # so a kubectl release doesn't silently change Job behaviour.
+    repository: "registry.k8s.io/kubectl"
+    tag: "v1.31.0"
     pullPolicy: "IfNotPresent"
