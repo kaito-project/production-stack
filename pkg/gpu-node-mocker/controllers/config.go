@@ -76,6 +76,17 @@ const (
 	// re-stamp) this value to populate ShadowPodInferenceSetLabelKey.
 	InferenceSetCreatedByLabelKey = "inferenceset.kaito.sh/created-by"
 
+	// OwnedByLabelKey / OwnedByLabelValue is the stable, value-free label
+	// production-stack stamps on every pod it owns — EPP, KAITO-controller-
+	// rendered inference pods, and shadow pods. The modelharness chart's
+	// NetworkPolicies positively select on this label so they isolate
+	// inference workloads without sweeping in user-deployed pods that happen
+	// to share the workload namespace (issue #83). Without it, shadow pods
+	// would not match `allow-inference-traffic` and EPP would be unable to
+	// reach them via the patched inference-pod IP.
+	OwnedByLabelKey   = "kaito.sh/owned-by"
+	OwnedByLabelValue = "modeldeployment"
+
 	// DefaultInferenceSimImage is the default llm-d inference simulator image.
 	DefaultInferenceSimImage = "ghcr.io/llm-d/llm-d-inference-sim:v0.8.1"
 

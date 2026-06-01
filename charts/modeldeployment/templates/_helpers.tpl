@@ -54,6 +54,23 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
+Ownership label stamped on every pod that production-stack owns —
+EPP pods rendered by this chart, inference workload pods that the
+KAITO InferenceSet / Workspace controller renders on our behalf,
+and keda-kaito-scaler shadow pods. The modelharness NetworkPolicies
+positively select on this label so they isolate inference workloads
+without sweeping in unrelated user pods that happen to share the
+workload namespace.
+
+The value is intentionally stable and value-free ("modeldeployment")
+so all production-stack-owned pods carry the same label regardless
+of which release rendered them.
+*/}}
+{{- define "modeldeployment.ownerLabel" -}}
+kaito.sh/owned-by: modeldeployment
+{{- end }}
+
+{{/*
 Selector labels for the EPP Deployment/Service.
 Matches the upstream GAIE chart convention:
   inferencepool: <epp-service-name>

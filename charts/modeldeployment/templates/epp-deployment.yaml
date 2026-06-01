@@ -17,6 +17,13 @@ spec:
     metadata:
       labels:
         {{- include "modeldeployment.eppSelectorLabels" . | nindent 8 }}
+        {{/*
+        Stamp the ownership label additively (NOT into the Deployment's
+        immutable .spec.selector.matchLabels above) so the modelharness
+        NetworkPolicies can positively select this pod without forcing a
+        Deployment recreate on existing installs.
+        */}}
+        {{- include "modeldeployment.ownerLabel" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "modeldeployment.eppServiceName" . }}
       terminationGracePeriodSeconds: 130

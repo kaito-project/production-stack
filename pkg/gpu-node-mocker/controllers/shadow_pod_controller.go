@@ -212,6 +212,12 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 	labels := map[string]string{
 		LabelManagedBy:    ControllerName,
 		ShadowPodLabelKey: shadowPodLabel,
+		// Stamp the production-stack ownership label so the modelharness
+		// `allow-inference-traffic` NetworkPolicy positively selects this
+		// shadow pod. Without it, EPP traffic forwarded to the (patched)
+		// inference-pod IP — which is actually the shadow pod's IP —
+		// would be dropped by `default-deny-ingress`.
+		OwnedByLabelKey: OwnedByLabelValue,
 	}
 	if v, ok := original.Labels[InferenceSetCreatedByLabelKey]; ok && v != "" {
 		labels[ShadowPodInferenceSetLabelKey] = v

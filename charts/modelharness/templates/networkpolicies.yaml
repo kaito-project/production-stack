@@ -2,23 +2,33 @@
 {{/*
 Per-namespace NetworkPolicies that lock down East-West ingress to
 inference workloads (EPP / vLLM) while keeping the per-namespace Istio
-Gateway pod (matched via `gateway.networking.k8s.io/gateway-name`,
-which Istio stamps onto every gateway pod) reachable from outside the
-namespace.
+Gateway pod and user-deployed pods (debug, eval jobs, sidecars, batch
+runners) unaffected.
 
 Two policies are rendered:
-  1. `default-deny-ingress` — denies all ingress to non-gateway pods.
+  1. `default-deny-ingress` — denies all ingress to production-stack-owned
+     inference pods (EPP, vLLM, shadow pods).
   2. `allow-inference-traffic` — re-permits intra-namespace ingress to
-     non-gateway pods, so EPP can reach vLLM and shadow pods, etc.
+     those same pods, so EPP can reach vLLM and shadow pods, etc.
 
-The gateway pod is excluded from both selectors so:
-  - North-South traffic into the gateway (Istio ingress, external
-    clients) is unaffected — it is the namespace's entry point.
+Both policies use a POSITIVE `podSelector` keyed off the stable
+`kaito.sh/owned-by: modeldeployment` label that modeldeployment stamps
+on the pods it owns (and that the upstream KAITO InferenceSet /
+Workspace controller propagates onto the inference pods it renders on
+modeldeployment's behalf via InferenceSet.spec.labelSelector.matchLabels).
+The negative `gateway.networking.k8s.io/gateway-name DoesNotExist`
+selector was abandoned (issue #83) because it swept in EVERY non-gateway
+pod in the namespace — including user-deployed pods that have nothing
+to do with production-stack — leaving users no scoped opt-out short of
+disabling NetworkPolicy for the whole namespace.
+
+Consequence of the positive selector:
+  - Gateway pods are unmatched (no label) → North-South traffic into the
+    gateway (Istio ingress, external clients) is unaffected.
+  - User-deployed pods are unmatched (no label) → out-of-namespace
+    ingress to them is unaffected.
   - The gateway can still send East-West traffic to EPP / vLLM in the
-    same namespace via the standard intra-namespace allow rule.
-
-The gateway pod is owned by this chart's Gateway resource; the
-exclusion label is stamped automatically by Istio.
+    same namespace via the standard intra-namespace allow rule below.
 */}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -29,9 +39,8 @@ metadata:
     {{- include "modelharness.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchExpressions:
-      - key: gateway.networking.k8s.io/gateway-name
-        operator: DoesNotExist
+    matchLabels:
+      kaito.sh/owned-by: modeldeployment
   policyTypes:
     - Ingress
 ---
@@ -44,9 +53,8 @@ metadata:
     {{- include "modelharness.labels" . | nindent 4 }}
 spec:
   podSelector:
-    matchExpressions:
-      - key: gateway.networking.k8s.io/gateway-name
-        operator: DoesNotExist
+    matchLabels:
+      kaito.sh/owned-by: modeldeployment
   policyTypes:
     - Ingress
   ingress:

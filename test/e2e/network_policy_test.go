@@ -656,6 +656,83 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 				"if this fails, the workload-namespace NetworkPolicy is over-restrictive and is silently relying on "+
 				"apiserver-mediated paths (port-forward / kubelet) for reachability. agnhost output: %q", out)
 	})
+
+	// ── User-pod isolation (issue #83 regression guard) ──────────────────
+	// The modelharness NetworkPolicies must positively select on
+	// `kaito.sh/owned-by: modeldeployment` so they only isolate pods
+	// production-stack owns. A user-deployed pod sharing the workload
+	// namespace (debug pod, eval job, custom sidecar, batch runner) must
+	// remain reachable from outside the namespace — otherwise the chart
+	// silently locks down workloads it has no business touching, and the
+	// user's only escape is to disable NetworkPolicy for the whole
+	// namespace (which also drops protection from the real inference
+	// pods). If anyone reverts the policy selector to the pre-#83 negative
+	// `gateway-name DoesNotExist` form, this test fails.
+	It("should NOT match a user-deployed pod that lacks production-stack labels (issue #83)", func() {
+		// Stand up an unlabeled "user" pod in the workload namespace —
+		// no `kaito.sh/owned-by` label, no gateway label, nothing
+		// production-stack stamps. Then probe it from an external
+		// namespace. The probe must succeed: the chart's policies
+		// must not match this pod.
+		userPodName := fmt.Sprintf("user-app-%d", rand.Intn(900000)+100000)
+		userPodPort := int32(8080)
+		_, err := clientset.CoreV1().Pods(namespace).Create(ctx, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      userPodName,
+				Namespace: namespace,
+				// Intentionally NO production-stack labels. Annotate
+				// out the Istio sidecar so the destination identity
+				// the policy evaluates is the bare user pod, not the
+				// mesh proxy (see the comment in probeTarget for why
+				// a smuggled sidecar would short-circuit the test).
+				Annotations: map[string]string{
+					"sidecar.istio.io/inject": "false",
+				},
+				Labels: map[string]string{
+					"app": "user-app",
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{
+					Name:  "app",
+					Image: probeImage,
+					// agnhost `porter` serves HTTP on the requested port and
+					// answers any TCP connect — perfect to assert "policy
+					// let the probe through" with no Service plumbing.
+					Args: []string{"porter"},
+					Env: []corev1.EnvVar{{
+						Name: "SERVE_PORT_8080", Value: "user-app-reachable",
+					}},
+					Ports: []corev1.ContainerPort{{ContainerPort: userPodPort}},
+				}},
+			},
+		}, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred(), "failed to create user pod in %s", namespace)
+		defer func() {
+			_ = clientset.CoreV1().Pods(namespace).Delete(ctx, userPodName, metav1.DeleteOptions{})
+		}()
+		Expect(utils.WaitForPodReady(ctx, clientset, namespace, userPodName, utils.PollTimeout)).
+			To(Succeed(), "user pod did not become ready")
+
+		// Re-fetch to learn the assigned PodIP.
+		userPod, err := clientset.CoreV1().Pods(namespace).Get(ctx, userPodName, metav1.GetOptions{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(userPod.Status.PodIP).NotTo(BeEmpty(), "user pod has no PodIP")
+
+		out, _ := probeTarget("e2e-netpol-user-isolation",
+			connectCmd(userPod.Status.PodIP, userPodPort), probeTimeout, nil)
+		state := classifyResult(out)
+		if state != "connected" {
+			AddReportEntry("netpol-user-pod-diag",
+				networkPolicyEnforcementDiagnostics(ctx, clientset, namespace,
+					userPod.Status.PodIP, "e2e-netpol-user-isolation"))
+		}
+		Expect(state).To(Equal("connected"),
+			"a user-deployed pod with no production-stack labels MUST NOT be matched by "+
+				"`default-deny-ingress` — see issue #83. If state==\"blocked\", the chart "+
+				"NetworkPolicy selector has regressed to the pre-#83 negative-selector form "+
+				"and is sweeping in unrelated user workloads. state=%q output=%q", state, out)
+	})
 })
 
 // readyModelPodEndpoint returns the PodIP and first containerPort of a Ready
