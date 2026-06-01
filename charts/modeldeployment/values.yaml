@@ -109,15 +109,12 @@ policyResync:
   # there but still consumes a few CPU-seconds at install time).
   enabled: true
 
-  # waitTimeoutSeconds bounds how long the Job will poll for the EPP
-  # pods to reach Ready before giving up. The Job runs inside Helm's
-  # post-install window (default 5m), so this must be well under 300s
-  # to leave headroom for image pull + pod scheduling on a cold node.
-  # We deliberately do NOT wait for KAITO-provisioned inference pods —
-  # those come up minutes later after node provisioning and will see
-  # the modelharness CNP at endpoint registration time, so they're not
-  # subject to the install-time AKS Cilium race.
-  waitTimeoutSeconds: 180
+  # waitTimeoutSeconds bounds how long the Job will poll for the
+  # expected pods to reach Ready before giving up. Set generously: a
+  # fresh KAITO inference pod can take several minutes on a cold node
+  # because of the model download + GPU init. 600s matches the e2e
+  # readiness budget elsewhere in this repo.
+  waitTimeoutSeconds: 600
 
   image:
     # Lightweight kubectl-only image. bitnami/kubectl is multiarch and
