@@ -169,12 +169,6 @@ var _ = Describe("Suite A", utils.GinkgoLabelSmoke, func() {
 	if f.Name != "alpha_test.go" {
 		t.Errorf("expected alpha_test.go, got %s", f.Name)
 	}
-	if f.SuiteCount != 1 {
-		t.Errorf("expected 1 suite, got %d", f.SuiteCount)
-	}
-	if f.ContextCount != 1 {
-		t.Errorf("expected 1 context, got %d", f.ContextCount)
-	}
 	if f.TestCount != 2 {
 		t.Errorf("expected 2 tests, got %d", f.TestCount)
 	}
@@ -212,8 +206,8 @@ var _ = Describe("Multi-line Suite",
 		t.Fatalf("expected 1 file, got %d", len(files))
 	}
 	f := files[0]
-	if f.SuiteCount != 1 || f.TestCount != 1 {
-		t.Fatalf("expected 1 suite + 1 test, got %d suites + %d tests", f.SuiteCount, f.TestCount)
+	if f.TestCount != 1 {
+		t.Fatalf("expected 1 test, got %d", f.TestCount)
 	}
 	// The Describe block should have both labels from the continuation line.
 	desc := f.Blocks[0]
@@ -257,5 +251,124 @@ func TestParseTestFiles_EmptyDir(t *testing.T) {
 	files := parseTestFiles(dir, nil)
 	if len(files) != 0 {
 		t.Fatalf("expected 0 files, got %d", len(files))
+	}
+}
+
+func TestParseTestFiles_LabelInheritance(t *testing.T) {
+	// Verify that It blocks inside a Describe inherit the Describe's labels
+	// via EffectiveLabels, even when the It itself has no labels.
+	dir := t.TempDir()
+	content := `package e2e
+
+import (
+	. "github.com/onsi/ginkgo/v2"
+	"github.com/kaito-project/production-stack/test/e2e/utils"
+)
+
+var _ = Describe("Scaling Suite",
+	Ordered, utils.GinkgoLabelScaling, utils.GinkgoLabelNightly, func() {
+	It("scale up", func() {})
+	It("scale down", func() {})
+})
+`
+	if err := os.WriteFile(filepath.Join(dir, "scaling_test.go"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	labelMap := map[string]string{
+		"GinkgoLabelScaling": "Scaling",
+		"GinkgoLabelNightly": "Nightly",
+	}
+	files := parseTestFiles(dir, labelMap)
+
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	f := files[0]
+	if f.TestCount != 2 {
+		t.Fatalf("expected 2 tests, got %d", f.TestCount)
+	}
+
+	// Find the It blocks and check EffectiveLabels.
+	var itBlocks []Block
+	for _, b := range f.Blocks {
+		if b.Type == "It" {
+			itBlocks = append(itBlocks, b)
+		}
+	}
+	if len(itBlocks) != 2 {
+		t.Fatalf("expected 2 It blocks, got %d", len(itBlocks))
+	}
+
+	for _, it := range itBlocks {
+		// Own labels should be empty (no Label() on the It line).
+		if len(it.Labels) != 0 {
+			t.Errorf("It %q: expected no own labels, got %v", it.Title, it.Labels)
+		}
+		// Effective labels should include the parent Describe's labels.
+		effective := make(map[string]bool)
+		for _, l := range it.EffectiveLabels {
+			effective[l] = true
+		}
+		if !effective["Scaling"] {
+			t.Errorf("It %q: expected EffectiveLabels to contain Scaling, got %v", it.Title, it.EffectiveLabels)
+		}
+		if !effective["Nightly"] {
+			t.Errorf("It %q: expected EffectiveLabels to contain Nightly, got %v", it.Title, it.EffectiveLabels)
+		}
+	}
+}
+
+func TestParseTestFiles_TwoDescribesSeparateLabels(t *testing.T) {
+	// Verify that two sibling Describe blocks don't leak labels into each other.
+	dir := t.TempDir()
+	content := `package e2e
+
+import . "github.com/onsi/ginkgo/v2"
+
+var _ = Describe("Nightly Suite", Label("Nightly"), func() {
+	It("nightly test", func() {})
+})
+
+var _ = Describe("Smoke Suite", Label("Smoke"), func() {
+	It("smoke test", func() {})
+})
+`
+	if err := os.WriteFile(filepath.Join(dir, "two_test.go"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files := parseTestFiles(dir, nil)
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+	f := files[0]
+
+	var itBlocks []Block
+	for _, b := range f.Blocks {
+		if b.Type == "It" {
+			itBlocks = append(itBlocks, b)
+		}
+	}
+	if len(itBlocks) != 2 {
+		t.Fatalf("expected 2 It blocks, got %d", len(itBlocks))
+	}
+
+	// "nightly test" should only have Nightly in EffectiveLabels.
+	eff0 := make(map[string]bool)
+	for _, l := range itBlocks[0].EffectiveLabels {
+		eff0[l] = true
+	}
+	if !eff0["Nightly"] || eff0["Smoke"] {
+		t.Errorf("nightly test EffectiveLabels: want [Nightly], got %v", itBlocks[0].EffectiveLabels)
+	}
+
+	// "smoke test" should only have Smoke in EffectiveLabels.
+	eff1 := make(map[string]bool)
+	for _, l := range itBlocks[1].EffectiveLabels {
+		eff1[l] = true
+	}
+	if eff1["Nightly"] || !eff1["Smoke"] {
+		t.Errorf("smoke test EffectiveLabels: want [Smoke], got %v", itBlocks[1].EffectiveLabels)
 	}
 }

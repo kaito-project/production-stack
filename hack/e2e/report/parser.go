@@ -83,6 +83,48 @@ func extractLabels(line string, labelMap map[string]string) []string {
 	return labels
 }
 
+// labelFrame is one entry in the label-inheritance stack maintained while
+// parsing a single file. Each Describe or Context block pushes a frame;
+// the frame is popped when we encounter a new block at an equal or shallower
+// indentation level.
+type labelFrame struct {
+	indent int
+	labels []string
+}
+
+// stackLabels returns the flattened, deduplicated union of all labels
+// currently on the inheritance stack.
+func stackLabels(stack []labelFrame) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, frame := range stack {
+		for _, lbl := range frame.labels {
+			if !seen[lbl] {
+				seen[lbl] = true
+				result = append(result, lbl)
+			}
+		}
+	}
+	return result
+}
+
+// mergeLabels returns a deduplicated union of base and extra.
+func mergeLabels(base, extra []string) []string {
+	seen := make(map[string]bool, len(base))
+	result := make([]string, len(base))
+	copy(result, base)
+	for _, l := range base {
+		seen[l] = true
+	}
+	for _, l := range extra {
+		if !seen[l] {
+			seen[l] = true
+			result = append(result, l)
+		}
+	}
+	return result
+}
+
 // parseTestFiles scans every *_test.go file in e2eDir (skipping e2e_test.go)
 // and returns the parsed blocks grouped by file.
 func parseTestFiles(e2eDir string, labelMap map[string]string) []TestFile {
@@ -102,12 +144,22 @@ func parseTestFiles(e2eDir string, labelMap map[string]string) []TestFile {
 		}
 
 		var blocks []Block
-		tests, suites, contexts := 0, 0, 0
+		tests := 0
+		// labelStack tracks label inheritance: each Describe/Context pushes its
+		// own labels; a frame is popped when we see a block at the same or
+		// shallower indentation level.
+		var labelStack []labelFrame
 		sc := bufio.NewScanner(f)
 		for sc.Scan() {
 			line := sc.Text()
 			if strings.TrimSpace(line) == "" {
 				continue
+			}
+			// Measure leading whitespace to determine nesting depth.
+			indent := len(line) - len(strings.TrimLeft(line, "\t "))
+			// Pop any frames whose block has ended (current indent ≤ frame indent).
+			for len(labelStack) > 0 && indent <= labelStack[len(labelStack)-1].indent {
+				labelStack = labelStack[:len(labelStack)-1]
 			}
 			m := blockRe.FindStringSubmatch(line)
 			if m == nil {
@@ -123,29 +175,29 @@ func parseTestFiles(e2eDir string, labelMap map[string]string) []TestFile {
 				}
 				full += " " + strings.TrimSpace(sc.Text())
 			}
+			ownLabels := extractLabels(full, labelMap)
 			b := Block{
-				Type:   m[1],
-				Title:  m[2],
-				Labels: extractLabels(full, labelMap),
+				Type:            m[1],
+				Title:           m[2],
+				Labels:          ownLabels,
+				EffectiveLabels: mergeLabels(stackLabels(labelStack), ownLabels),
+			}
+			// Describe/Context blocks push their own labels onto the stack so
+			// descendant It blocks can inherit them.
+			if b.Type == "Describe" || b.Type == "Context" {
+				labelStack = append(labelStack, labelFrame{indent: indent, labels: ownLabels})
 			}
 			blocks = append(blocks, b)
-			switch b.Type {
-			case "It":
+			if b.Type == "It" {
 				tests++
-			case "Describe":
-				suites++
-			case "Context":
-				contexts++
 			}
 		}
 		f.Close()
 
 		files = append(files, TestFile{
-			Name:         name,
-			Blocks:       blocks,
-			TestCount:    tests,
-			SuiteCount:   suites,
-			ContextCount: contexts,
+			Name:      name,
+			Blocks:    blocks,
+			TestCount: tests,
 		})
 	}
 	return files
