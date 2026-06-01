@@ -140,13 +140,16 @@ spec:
               value: {{ .Values.policyResync.waitTimeoutSeconds | quote }}
             - name: MIN_PODS
               {{/*
-              At minimum we expect the EPP pod + .Values.replicas
-              inference pods. Wait for that many to be Running before
-              perturbing, otherwise we could perturb only the EPP and
-              return success while a slower inference pod is still
-              unenforced.
+              Only wait for the EPP replicas. The AKS Cilium race bites
+              endpoints that exist BEFORE the CNP is installed; KAITO-
+              provisioned inference / shadow pods come up minutes later
+              (after node provisioning) and will see the modelharness
+              CNP at endpoint registration time, so they don't need
+              perturbation. Waiting for inference pods here would also
+              blow past Helm's default 5m install timeout and fail the
+              whole release.
               */}}
-              value: {{ add (int .Values.epp.replicas) (int .Values.replicas) | quote }}
+              value: {{ .Values.epp.replicas | quote }}
           command: ["/bin/sh", "-c"]
           args:
             - |
