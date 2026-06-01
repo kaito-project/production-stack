@@ -19,6 +19,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -1220,18 +1221,29 @@ func formatPodSelector(sel metav1.LabelSelector) string {
 var _ = networkingv1.SchemeGroupVersion
 
 // expectNetworkPoliciesPresent asserts that the modelharness Helm release
-// in `ns` has rendered the `inference-pods-ingress` CiliumNetworkPolicy.
-// Failing here turns a silent chart regression into an immediate, clearly-
-// attributable BeforeAll failure rather than a 2-minute canary timeout
-// that — by the time CI's post-failure dump runs — has been masked by
+// in `ns` has rendered the `inference-pods-ingress` CiliumNetworkPolicy
+// AND blocks until every cilium-agent in the cluster reports that it has
+// compiled the CNP into its BPF policy maps. The wait closes the
+// canonical AKS-Cilium race where the agent processes a new endpoint
+// event a few ticks before the new policy event lands in its local
+// selector cache — the agent then computes "no policy matches this
+// endpoint", marks the endpoint non-enforcing, and never re-evaluates
+// because its reconcile loop only re-matches an endpoint when the
+// endpoint's labels change, not when a new policy is added. By waiting
+// here, every cilium-agent already has the CNP compiled before
+// InstallCase creates the EPP / inference pods, so the match happens at
+// endpoint-creation time and enforcement is on from t=0.
+//
+// Failing this assertion turns a silent chart regression OR a stuck
+// cilium-agent into an immediate, clearly-attributable BeforeAll
+// failure rather than the 2-minute canary timeout below — which, by
+// the time CI's post-failure dump runs, would have been masked by
 // AfterAll teardown.
 //
 // The chart used to render two networking.k8s.io/v1 NetworkPolicies
 // (`default-deny-ingress` + `allow-inference-traffic`); those were
 // collapsed into a single CiliumNetworkPolicy when we migrated off K8s
-// NetworkPolicy to dodge the AKS Cilium reconciliation race where K8s
-// NPs were silently never compiled into per-endpoint BPF maps for
-// already-running pods (see charts/modelharness/templates/networkpolicies.yaml).
+// NetworkPolicy (see charts/modelharness/templates/networkpolicies.yaml).
 func expectNetworkPoliciesPresent(ctx context.Context, clientset *kubernetes.Clientset, ns string) {
 	_ = clientset // retained for symmetry / future K8s-side assertions
 	dyn, err := utils.GetDynamicClient()
@@ -1245,4 +1257,105 @@ func expectNetworkPoliciesPresent(ctx context.Context, clientset *kubernetes.Cli
 			"see chart values .networkPolicy.enabled wiring in test/e2e/cases.go and "+
 			"charts/modelharness/templates/networkpolicies.yaml", "inference-pods-ingress", ns)
 	Expect(cnp.GetName()).To(Equal("inference-pods-ingress"))
+
+	// Discover the set of cilium-agent nodes the policy must reach.
+	// Reading the DaemonSet's replicaset/observed state is fragile across
+	// Cilium versions; the source of truth is "every node that runs a
+	// cilium-agent pod", which we look up directly.
+	ciliumPods, err := clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{
+		LabelSelector: "k8s-app=cilium",
+	})
+	Expect(err).NotTo(HaveOccurred(), "list cilium-agent pods")
+	expectedNodes := map[string]struct{}{}
+	for _, p := range ciliumPods.Items {
+		if p.Spec.NodeName != "" {
+			expectedNodes[p.Spec.NodeName] = struct{}{}
+		}
+	}
+	Expect(expectedNodes).NotTo(BeEmpty(),
+		"could not discover any cilium-agent pods (label k8s-app=cilium); cluster is not running Cilium or the agent label changed")
+
+	// Poll CNP.status.nodes until every cilium-agent has acknowledged
+	// the policy. Cilium populates status.nodes[<node>] (and the
+	// embedded enforcing flag) once the agent has compiled the CNP
+	// into the per-endpoint BPF maps that will run when matching
+	// endpoints appear. Older Cilium forks may instead use
+	// status.derivativePolicies / status.nodes[<node>].annotations —
+	// the diagnostic below dumps the full status payload on timeout so
+	// a fork-specific regression is immediately attributable.
+	const enforceWait = 90 * time.Second
+	const enforcePoll = 2 * time.Second
+	deadline := time.Now().Add(enforceWait)
+	var lastStatus map[string]any
+	for {
+		cnp, err := dyn.Resource(cnpGVR).Namespace(ns).Get(ctx, "inference-pods-ingress", metav1.GetOptions{})
+		if err == nil {
+			status, _, _ := unstructuredNestedMap(cnp.Object, "status")
+			lastStatus = status
+			if cnpAcknowledgedByAllNodes(status, expectedNodes) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			statusJSON, _ := json.MarshalIndent(lastStatus, "", "  ")
+			Fail(fmt.Sprintf(
+				"CiliumNetworkPolicy %q in %s was not acknowledged by all cilium-agent nodes within %s.\n"+
+					"  expected nodes (running cilium-agent): %v\n"+
+					"  full CNP status payload:\n%s\n\n"+
+					"This is the AKS Cilium reconcile race: the agent processed the new "+
+					"endpoint event before the policy compile finished, marked the endpoint "+
+					"non-enforcing, and never re-evaluated. If status.nodes is empty here, "+
+					"the Cilium fork on this cluster does not populate per-node ack — fall "+
+					"back to the label-perturbation workaround.",
+				"inference-pods-ingress", ns, enforceWait, sortedKeys(expectedNodes), string(statusJSON)))
+		}
+		time.Sleep(enforcePoll)
+	}
+}
+
+// cnpAcknowledgedByAllNodes returns true when every cilium-agent node we
+// expect has an entry under status.nodes AND its enforcing flag (if
+// present) is true. Cilium versions vary in whether they expose an
+// explicit per-node enforcing flag — when absent, the mere presence of
+// the node entry is sufficient evidence that the agent compiled the
+// policy.
+func cnpAcknowledgedByAllNodes(status map[string]any, expected map[string]struct{}) bool {
+	if len(status) == 0 {
+		return false
+	}
+	nodes, _, _ := unstructuredGet[map[string]any](status, "nodes")
+	if len(nodes) == 0 {
+		return false
+	}
+	for node := range expected {
+		entry, ok := nodes[node].(map[string]any)
+		if !ok {
+			return false
+		}
+		// If the agent reports an explicit enforcing flag, honour it.
+		// Otherwise treat presence-of-entry as ack.
+		if v, present := entry["enforcing"]; present {
+			b, _ := v.(bool)
+			if !b {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// sortedKeys returns the keys of a set in deterministic order for
+// human-readable failure messages.
+func sortedKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	// tiny insertion sort to avoid pulling in sort just for this helper
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j-1] > out[j]; j-- {
+			out[j-1], out[j] = out[j], out[j-1]
+		}
+	}
+	return out
 }
