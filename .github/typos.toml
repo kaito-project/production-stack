@@ -8,4 +8,4 @@ stopp = "stopp"
 ObjectCreater = "ObjectCreater"
 
 [files]
-extend-exclude = ["vendor/", "go.mod"]
+extend-exclude = ["vendor/", "go.mod", "charts/modelharness/crds/"]
