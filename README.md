@@ -74,9 +74,24 @@ catch-all `EnvoyFilter` (`model-not-found-direct`) that returns an
 OpenAI-compatible 404 for unknown models directly from Envoy, and —
 when enabled — the per-namespace `AuthorizationPolicy` + `APIKey` CR
 that wire that Gateway into the cluster-wide `apikey-ext-authz` CUSTOM
-provider, plus optional `NetworkPolicy` resources that lock down
+provider, plus optional `CiliumNetworkPolicy` resources that lock down
 East-West ingress to inference workloads. A namespace may host one or
-more model deployments, all of which share its Gateway:
+more model deployments, all of which share its Gateway.
+
+> **Cilium is required for the network-policy path.** The chart renders
+> `cilium.io/v2` `CiliumNetworkPolicy` (CNP) rather than
+> `networking.k8s.io/v1` `NetworkPolicy`, because on the AKS Azure-CNI
+> overlay dataplane a vanilla K8s `NetworkPolicy` that selects a pod
+> created **before** the policy is installed is intermittently never
+> compiled into the per-endpoint BPF map (the `CiliumEndpoint` reports
+> `status.policy.ingress.enforcing=false` and traffic flows
+> unrestricted). Native CNPs bypass that translation step and reconcile
+> through Cilium's own path, becoming enforcing within a single tick.
+> Production deployments should therefore run on a cluster with the
+> Cilium dataplane enabled — for AKS this means `--network-dataplane
+> cilium --network-policy cilium` (see [`hack/e2e/scripts/setup-cluster.sh`](hack/e2e/scripts/setup-cluster.sh)).
+> If you cannot run Cilium, set `networkPolicy.enabled=false` and apply
+> equivalent ingress isolation out-of-band.
 
 | Resource                                                       | Where                     | Version                | Source                                | Role                                                                                                                                       |
 | -------------------------------------------------------------- | ------------------------- | ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -84,7 +99,7 @@ more model deployments, all of which share its Gateway:
 | Catch-all `EnvoyFilter` `model-not-found-direct`               | Per namespace             | `networking.istio.io/v1alpha3` | `charts/modelharness`         | Patches a `direct_response` onto the namespace Gateway's HCM, returning an OpenAI 404 for any path not matched by a deployment-specific `HTTPRoute`. Required to keep API-key ext_authz running on unknown-model requests. |
 | `AuthorizationPolicy` `apikey-gateway-ext-authz` (auth-enabled) | Per namespace             | `security.istio.io/v1` | `charts/modelharness` (`auth.enabled`) | Wires the per-namespace Gateway pod into the cluster-wide `apikey-ext-authz` CUSTOM provider (registered in `MeshConfig` by `llm-gateway-auth`). |
 | `APIKey` `default` (auth-enabled)                              | Per namespace             | `apikeys.kaito.sh/v1alpha1` | `charts/modelharness` (`auth.enabled`) | Triggers the `apikey-operator` to reconcile a Secret (`llm-api-key`) holding the bearer token clients send.                                 |
-| `NetworkPolicy` `default-deny-ingress` + `allow-inference-traffic` (network-policy enabled) | Per namespace | `networking.k8s.io/v1` | `charts/modelharness` (`networkPolicy.enabled`) | Denies all ingress to non-gateway pods, then re-permits intra-namespace ingress so EPP can reach vLLM/shadow pods. Cross-namespace ingress can be opened via `networkPolicy.allowedIngressNamespaces` (e.g. `keda` for the keda-kaito-scaler). |
+| `CiliumNetworkPolicy` `inference-pods-ingress` (network-policy enabled, **requires Cilium dataplane**) | Per namespace | `cilium.io/v2` | `charts/modelharness` (`networkPolicy.enabled`) | Selects pods labelled `kaito.sh/owned-by: modeldeployment` (EPP, KAITO-rendered inference, shadow pods) and admits ingress from the same namespace plus the `networkPolicy.allowedIngressNamespaces` allowlist (e.g. `keda` for the keda-kaito-scaler); all other ingress is dropped by Cilium's implicit default-deny. |
 
 In the E2E suite the chart is installed and uninstalled by
 [`EnsureNamespace` / `DeleteNamespace`](test/e2e/utils/setup.go) (called
@@ -129,6 +144,7 @@ implementation details of the charts above and are not listed here.
 | `HTTPRoute` | `gateway.networking.k8s.io/v1` | Kubernetes Gateway API | Per-deployment routes match `X-Gateway-Model-Name == <name>` and forward to the deployment's `InferencePool`. |
 | `EnvoyFilter` | `networking.istio.io/v1alpha3` | Istio | BBR injects ext_proc into every Istio Gateway via rootNamespace. `charts/modelharness` also renders the per-namespace `model-not-found-direct` filter, which patches an OpenAI 404 `direct_response` onto the namespace Gateway's HCM as the catch-all for unknown models. |
 | `AuthorizationPolicy` | `security.istio.io/v1` | Istio (rendered by `llm-gateway-auth` + `charts/modelharness`) | `llm-gateway-auth` targets the cluster-wide `inference-gateway`; `charts/modelharness` renders a per-namespace `apikey-gateway-ext-authz` policy that wires each workload namespace's Gateway pod into the `apikey-ext-authz` CUSTOM provider. |
+| `CiliumNetworkPolicy` | `cilium.io/v2` | Cilium (rendered by `charts/modelharness`) | Per-namespace `inference-pods-ingress` CNP that locks down East-West ingress to pods labelled `kaito.sh/owned-by: modeldeployment`. Requires the cluster to run the Cilium dataplane (AKS: `--network-dataplane cilium --network-policy cilium`). Native `cilium.io/v2` resources are used instead of `networking.k8s.io/v1` `NetworkPolicy` to avoid an AKS-Cilium translation race that leaves policies un-enforcing on pre-existing endpoints. |
 
 ## Testing
 
