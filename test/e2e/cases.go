@@ -96,10 +96,25 @@ const (
 	// high-availability and single-replica-loss failover (issue #89).
 	// A lightweight gpu-mocker-style deployment provides a working
 	// BBR → EPP request path; the test then perturbs the cluster-wide
-	// BBR Deployment in istio-system (delete one replica / scale to
+	// BBR Deployment in kaito-system (delete one replica / scale to
 	// zero) and asserts the request path stays healthy while ≥1 replica
 	// survives and only fails closed when ALL replicas are down.
 	CaseClusterFilterHA = "cluster-filter-ha"
+
+	// CaseBBROutage covers bbr_outage_test.go — verifies that when the
+	// cluster-wide BBR ext_proc filter is unavailable (fail-closed), a
+	// request is mapped to a 502 `bbr_unavailable` outage reply by the
+	// per-namespace local_reply, and NOT to a misleading 404 model_not_found.
+	// Non-auth so only the BBR + EPP filters are in path.
+	CaseBBROutage = "bbr-outage"
+
+	// CaseExtAuthzOutage covers ext_authz_outage_test.go — verifies that
+	// when the cluster-wide llm-gateway-auth ext_authz filter is
+	// unavailable (fail-closed), an authenticated request is NOT mapped to
+	// a misleading 404 model_not_found, and (best-effort) surfaces a 502
+	// `ext_authz_unavailable` outage reply. Auth-enabled so ext_authz is
+	// in path.
+	CaseExtAuthzOutage = "ext-authz-outage"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -205,6 +220,25 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Namespace:         "e2e-filter-order",
 			Model:             presetPhi,
 			Replicas:          2,
+			InstanceType:      "Standard_NV36ads_A10_v5",
+			AuthAPIKeyEnabled: true,
+		},
+	},
+	CaseBBROutage: {
+		{
+			Name:         "bbr-outage-phi",
+			Namespace:    "e2e-bbr-outage",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
+		},
+	},
+	CaseExtAuthzOutage: {
+		{
+			Name:              "ext-authz-outage-phi",
+			Namespace:         "e2e-ext-authz-outage",
+			Model:             presetPhi,
+			Replicas:          1,
 			InstanceType:      "Standard_NV36ads_A10_v5",
 			AuthAPIKeyEnabled: true,
 		},

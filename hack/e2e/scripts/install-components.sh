@@ -120,10 +120,15 @@ install_productionstack() {
   #
   # Per-subchart install namespaces (each via the subchart's own
   # `namespaceOverride` value):
-  #   * body-based-routing → istio-system    (Istio rootNamespace so the
-  #     chart-rendered EnvoyFilter applies cluster-wide; anchored on
-  #     envoy.filters.http.ext_authz with INSERT_AFTER, giving the
-  #     runtime order: ext_authz → bbr → router → epp/not-found.)
+  #   * body-based-routing → kaito-system    (inherits the umbrella
+  #     release namespace). BBR is a workload-only singleton now: this
+  #     subchart renders just the Deployment + Service + RBAC and NO
+  #     EnvoyFilter, so it no longer has to live in Istio's root
+  #     namespace. The ext_proc EnvoyFilter that injects BBR into each
+  #     Gateway's HCM (anchored INSERT_BEFORE the InferencePool
+  #     ext_proc, giving ext_authz → bbr → ext_proc/epp → router) is
+  #     rendered per-namespace by charts/modelharness and scoped to that
+  #     namespace's Gateway pod.
   #   * keda-kaito-scaler  → ${KEDA_NAMESPACE}  (co-located with KEDA so
   #     KEDA can resolve the ClusterTriggerAuthentication Secrets it
   #     ships.)
@@ -138,14 +143,12 @@ install_productionstack() {
   # override namespaces because Helm tracks the rendered manifest, not
   # the namespace.
   #
-  # Note: the BBR EnvoyFilter's anchorSubFilter (`envoy.filters.http.ext_authz`)
-  # is only present in the runtime filter chain once the LGA MeshConfig
-  # patch Job has completed AND a workload AuthorizationPolicy has been
-  # rendered (per-namespace, by charts/modelharness). The EnvoyFilter CR
-  # is created up-front; it slots in lazily, which is fine.
+  # Note: the BBR EnvoyFilter rendered per-namespace by
+  # charts/modelharness only slots into the runtime filter chain once
+  # Istio has injected the InferencePool ext_proc anchor; it is created
+  # up-front and attaches lazily, which is fine.
 
   echo "⏳ Ensuring per-subchart target namespaces exist..."
-  kubectl create namespace istio-system     --dry-run=client -o yaml | kubectl apply -f -
   kubectl create namespace "${KEDA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
   kubectl create namespace llm-gateway-auth  --dry-run=client -o yaml | kubectl apply -f -
 
@@ -153,23 +156,20 @@ install_productionstack() {
   helm dependency update "${PRODUCTIONSTACK_CHART_DIR}"
 
   echo "=== Installing productionstack umbrella chart ==="
-  echo "    body-based-routing → istio-system"
+  echo "    body-based-routing → kaito-system (umbrella release namespace)"
   echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE}"
   echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
     --namespace kaito-system \
     --create-namespace \
-    --set body-based-routing.enabled=true \
-    --set body-based-routing.namespaceOverride=istio-system \
-    --set keda-kaito-scaler.enabled=true \
     --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}" \
     --set llm-gateway-apikey.enabled=true \
     --set llm-gateway-apikey.namespaceOverride=llm-gateway-auth \
     --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."
-  kubectl -n istio-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
-    kubectl -n istio-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
+  kubectl -n kaito-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
+    kubectl -n kaito-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
     echo "⚠️  BBR not ready yet — continuing."
 
   echo "⏳ Waiting for keda-kaito-scaler..."

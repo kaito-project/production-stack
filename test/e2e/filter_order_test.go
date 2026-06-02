@@ -159,7 +159,7 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				bbrNS := "istio-system"
+				bbrNS := "kaito-system"
 				bbrPod, err := firstRunningPod(ctx, bbrNS,
 					"app.kubernetes.io/name=body-based-routing")
 				Expect(err).NotTo(HaveOccurred(),
@@ -197,7 +197,7 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				bbrNS := "istio-system"
+				bbrNS := "kaito-system"
 				bbrPod, err := firstRunningPod(ctx, bbrNS,
 					"app.kubernetes.io/name=body-based-routing")
 				Expect(err).NotTo(HaveOccurred())
@@ -457,7 +457,7 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				bbrNS := "istio-system"
+				bbrNS := "kaito-system"
 				bbrPod, err := firstRunningPod(ctx, bbrNS,
 					"app.kubernetes.io/name=body-based-routing")
 				Expect(err).NotTo(HaveOccurred())

@@ -11,8 +11,8 @@ the inference data plane relies on.
 
 | Subchart             | Purpose                                                                                                  | Toggle                              | Default install namespace |
 |----------------------|----------------------------------------------------------------------------------------------------------|-------------------------------------|---------------------------|
-| `body-based-routing` | Cluster-wide singleton Body-Based Router (BBR) ext_proc service + Istio `EnvoyFilter` wiring it into every inference Gateway. | `body-based-routing.enabled` (default `true`) | `istio-system` |
-| `keda-kaito-scaler`  | KEDA external scaler that aggregates vLLM / `InferenceSet` metrics for workload-aware autoscaling.       | `keda-kaito-scaler.enabled` (default `true`)  | `keda` |
+| `body-based-routing` | Cluster-wide singleton Body-Based Router (BBR) ext_proc **workload** (Deployment + Service + cluster RBAC). The Istio `EnvoyFilter` that injects BBR into each Gateway is rendered per-namespace by `charts/modelharness`, not here. | always installed (mandatory) | `kaito-system` (umbrella release namespace) |
+| `keda-kaito-scaler`  | KEDA external scaler that aggregates vLLM / `InferenceSet` metrics for workload-aware autoscaling.       | always installed (mandatory)  | `keda` |
 | `llm-gateway-apikey` (upstream OCI dep, 0.0.11-alpha) | API-key auth control plane for the inference Gateway: installs the `APIKey` CRD, the `apikey-operator` (reconciles `APIKey` CRs into per-namespace `llm-api-key` Secrets), and the `apikey-authz` ext_authz gRPC dataplane (single cluster-wide Service). **ext_authz wiring on inference Gateway pods is rendered per-namespace by [`charts/modelharness`](../modelharness/) — not by this subchart.** The upstream chart's own cluster-wide `EnvoyFilter` is neutralised via a sentinel `gatewaySelector` so per-namespace EnvoyFilters in `modelharness` are the sole source of ext_authz wiring. The upstream chart's STRICT `PeerAuthentication` is disabled by default (`llm-gateway-apikey.istio.strictMTLS: false`) to avoid blocking control-plane probes during rollout on mixed-mTLS clusters; flip it back on once the cluster is fully meshed. | `llm-gateway-apikey.enabled` (default `true`) | `llm-gateway-auth` |
 
 The three subcharts each expose a `namespaceOverride` value pinning
@@ -37,7 +37,7 @@ charts/productionstack/
 ├── templates/
 │   └── NOTES.txt              # post-install summary (no resources of its own)
 └── charts/
-    ├── body-based-routing/    # BBR ext_proc + Istio EnvoyFilter (in-tree fork)
+    ├── body-based-routing/    # BBR ext_proc workload only (in-tree fork)
     ├── keda-kaito-scaler/     # KEDA external scaler (in-tree fork)
     └── llm-gateway-apikey-*.tgz  # vendored at `helm dependency update` time
                                    # from oci://mcr.microsoft.com/aks/kaito/helm
@@ -50,9 +50,8 @@ avoids accidental coupling between components.
 ## Install standalone
 
 ```sh
-# istio-system and keda must already exist (Helm only auto-creates the
-# release namespace).
-kubectl create namespace istio-system --dry-run=client -o yaml | kubectl apply -f -
+# keda must already exist (Helm only auto-creates the release
+# namespace).
 kubectl create namespace keda         --dry-run=client -o yaml | kubectl apply -f -
 
 # Vendor the upstream llm-gateway-apikey tarball into ./charts/ from
@@ -66,10 +65,11 @@ helm upgrade --install productionstack charts/productionstack \
   --wait
 ```
 
-With the default values BBR lands in `istio-system`, the KEDA scaler
-in `keda`, and the upstream llm-gateway-apikey control plane in
-`llm-gateway-auth` (the `namespaceOverride` defaults). The umbrella
-release itself can live in any namespace.
+With the default values BBR lands in `kaito-system` (the release
+namespace), the KEDA scaler in `keda`, and the upstream
+llm-gateway-apikey control plane in `llm-gateway-auth` (the
+`namespaceOverride` defaults). The umbrella release itself can live in
+any namespace.
 
 ### API-key ext_authz is per-namespace
 
@@ -118,7 +118,7 @@ umbrella's release namespace.
 ```yaml
 # my-values.yaml
 body-based-routing:
-  namespaceOverride: istio-system     # required: BBR EnvoyFilter must live here
+  namespaceOverride: ""                # inherit release namespace (kaito-system)
 keda-kaito-scaler:
   namespaceOverride: keda
 llm-gateway-apikey:
@@ -138,13 +138,15 @@ Caveats:
 
 ## Install only a subset of components
 
-Disable any subchart by setting its `enabled` toggle to `false`:
+`body-based-routing` and `keda-kaito-scaler` are mandatory cluster
+infrastructure and are always installed. Optional components can be
+disabled via their `enabled` toggle, e.g. to skip the API-key auth
+stack:
 
 ```sh
 helm upgrade --install productionstack charts/productionstack \
-  --namespace istio-system \
-  --set body-based-routing.enabled=true \
-  --set keda-kaito-scaler.enabled=false
+  --namespace kaito-system \
+  --set llm-gateway-apikey.enabled=false
 ```
 
 ## Override subchart values
@@ -175,7 +177,7 @@ llm-gateway-apikey:
 
 ```sh
 helm upgrade --install productionstack charts/productionstack \
-  --namespace istio-system \
+  --namespace kaito-system \
   -f my-values.yaml
 ```
 
