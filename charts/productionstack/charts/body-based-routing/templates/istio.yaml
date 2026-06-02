@@ -70,6 +70,50 @@ spec:
             grpc_service:
               envoy_grpc:
                 cluster_name: outbound|{{ .Values.bbr.port }}||{{ .Values.bbr.name }}.{{ include "bbr.namespace" . }}.svc.cluster.local
+{{- if .Values.provider.istio.upstream.outlierDetection.enabled }}
+    # ─────────────────────────────────────────────────────────────────
+    # Passive outlier detection for the BBR ext_proc upstream cluster.
+    #
+    # Istio auto-generates the
+    # `outbound|{{ .Values.bbr.port }}||{{ .Values.bbr.name }}.{{ include "bbr.namespace" . }}.svc.cluster.local`
+    # EDS cluster that the ext_proc filter above dials. This CLUSTER
+    # patch MERGEs `outlier_detection` onto it so a BBR replica that
+    # starts erroring (gateway / connect failures, or 5xx-mapped
+    # responses) is ejected from the load-balancing set and in-flight
+    # prompt requests fail over to the healthy replicas — without
+    # tripping the fail-closed `502 bbr_unavailable` path. The Kubernetes
+    # gRPC readiness probe (templates/bbr.yaml) provides the
+    # complementary ACTIVE health check via the EDS endpoint set; only
+    # Ready replicas are programmed into this cluster.
+    #
+    # `max_ejection_percent` is kept < 100 so outlier detection can never
+    # eject every replica at once: `502 bbr_unavailable` therefore only
+    # fires when ALL replicas are genuinely unhealthy (issue #89).
+    # ─────────────────────────────────────────────────────────────────
+    - applyTo: CLUSTER
+      match:
+        context: GATEWAY
+        cluster:
+          service: {{ .Values.bbr.name }}.{{ include "bbr.namespace" . }}.svc.cluster.local
+          portNumber: {{ .Values.bbr.port }}
+      patch:
+        operation: MERGE
+        value:
+          outlier_detection:
+            consecutive_gateway_failure: {{ .Values.provider.istio.upstream.outlierDetection.consecutiveGatewayFailure }}
+            enforcing_consecutive_gateway_failure: 100
+            consecutive_5xx: {{ .Values.provider.istio.upstream.outlierDetection.consecutive5xx }}
+            enforcing_consecutive_5xx: 100
+            # Treat ext_proc connect/stream failures (local-origin
+            # errors) as eject-worthy in their own right, not just
+            # upstream 5xx.
+            split_external_local_origin_errors: true
+            consecutive_local_origin_failure: {{ .Values.provider.istio.upstream.outlierDetection.consecutiveGatewayFailure }}
+            enforcing_consecutive_local_origin_failure: 100
+            interval: {{ .Values.provider.istio.upstream.outlierDetection.interval | quote }}
+            base_ejection_time: {{ .Values.provider.istio.upstream.outlierDetection.baseEjectionTime | quote }}
+            max_ejection_percent: {{ .Values.provider.istio.upstream.outlierDetection.maxEjectionPercent }}
+{{- end }}
 {{- if .Values.bbr.secureServing }}
 ---
 apiVersion: networking.istio.io/v1

@@ -46,10 +46,61 @@ bbr:
   # upstream chart's default) continues to work.
   name: body-based-router
 
-  # One replica is sufficient. BBR is stateless and per-request work is
-  # cheap (regex/JSON field extraction); the bottleneck is the gateway
-  # data plane, not BBR. Bump this if you need HA.
-  replicas: 1
+  # BBR ext_proc sits on the hot path of EVERY inference request and is
+  # a cluster-scope singleton, so a single replica is a single point of
+  # failure. Run at least two replicas for HA so the loss of one
+  # replica (or its node) is a transparent failover rather than a
+  # cluster-wide `502 bbr_unavailable` outage. `values.schema.json`
+  # pins the minimum to 2; do NOT lower this below 2.
+  replicas: 2
+
+  # Spread the BBR replicas across distinct nodes so a single node
+  # failure cannot take down every replica at once.
+  podAntiAffinity:
+    # When true, render a pod-anti-affinity rule keyed on
+    # `topologyKey` so no two BBR replicas are co-scheduled.
+    enabled: true
+    # `soft` => preferredDuringSchedulingIgnoredDuringExecution: a
+    #           best-effort spread that still lets every replica
+    #           schedule on a single-node (e.g. kind / dev) cluster.
+    # `hard` => requiredDuringSchedulingIgnoredDuringExecution: a
+    #           replica stays Pending until a distinct node is free.
+    #           Use only on clusters guaranteed to have >= replicas
+    #           schedulable nodes.
+    type: soft
+    # Topology domain across which replicas are spread. `hostname`
+    # spreads per node; switch to `topology.kubernetes.io/zone` to
+    # spread per availability zone instead.
+    topologyKey: kubernetes.io/hostname
+
+  # Active gRPC health checking for the ext_proc upstream cluster.
+  #
+  # BBR serves the gRPC health protocol (grpc.health.v1.Health) ONLY on
+  # `healthCheckPort` (9005) — the ext_proc port (9004) registers just
+  # the ExternalProcessor service and would answer a health probe with
+  # UNIMPLEMENTED. So the active health check is wired at the platform
+  # layer: Kubernetes actively probes BBR's gRPC health service on
+  # `healthCheckPort`, and the resulting pod Ready condition drives the
+  # Istio EDS endpoint set for the
+  # `outbound|<port>||body-based-router...` ext_proc cluster. Only
+  # Ready replicas are programmed into the cluster, so an unhealthy
+  # replica is pulled out of the ext_proc load-balancing set instead of
+  # failing requests closed. Combined with the passive outlier
+  # detection below (see `provider.istio.upstream.outlierDetection`),
+  # the fail-closed `502 bbr_unavailable` path only fires when EVERY
+  # replica is unhealthy.
+  healthCheck:
+    enabled: true
+    liveness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
 
   image:
     registry: us-central1-docker.pkg.dev/k8s-staging-images
@@ -151,3 +202,38 @@ provider:
       # matches on the BBR-injected header.
       operation: INSERT_BEFORE
       anchorSubFilter: envoy.filters.http.ext_proc
+
+    # Passive outlier detection for the BBR ext_proc upstream cluster.
+    #
+    # When rendered, an additional CLUSTER `EnvoyFilter` patch attaches
+    # `outlier_detection` to the auto-generated
+    # `outbound|<bbr.port>||body-based-router...` cluster on every
+    # Istio-managed Gateway. A BBR replica that starts returning
+    # ext_proc gRPC errors (gateway failures) is ejected from the
+    # load-balancing set faster than the Kubernetes readiness probe can
+    # flip it NotReady, so in-flight prompt requests immediately fail
+    # over to the healthy replicas.
+    #
+    # `maxEjectionPercent` MUST stay below 100 so outlier detection can
+    # never eject EVERY replica simultaneously — that guarantees the
+    # fail-closed `502 bbr_unavailable` path only fires when all
+    # replicas are genuinely unhealthy (e.g. a config/image rollout
+    # gone wrong), not on a single-replica blip.
+    upstream:
+      outlierDetection:
+        # Toggle the CLUSTER EnvoyFilter patch on/off.
+        enabled: true
+        # Eject after this many consecutive gateway (connect / stream)
+        # failures — the dominant failure mode for an ext_proc upstream
+        # that is down or hung.
+        consecutiveGatewayFailure: 3
+        # Eject after this many consecutive 5xx-mapped responses.
+        consecutive5xx: 3
+        # How often Envoy sweeps for outliers / considers un-ejecting.
+        interval: 5s
+        # How long an ejected host stays out before it is tried again
+        # (grows with the ejection count).
+        baseEjectionTime: 30s
+        # Hard cap on the share of the cluster that may be ejected at
+        # once. Keep < 100 (see note above).
+        maxEjectionPercent: 50

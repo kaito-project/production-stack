@@ -91,6 +91,15 @@ const (
 	// ext_authz, BBR, EPP and the catch-all route are all exercised by
 	// the same dataplane.
 	CaseFilterOrder = "filter-order"
+
+	// CaseClusterFilterHA covers cluster_filter_ha_test.go — BBR
+	// high-availability and single-replica-loss failover (issue #89).
+	// A lightweight gpu-mocker-style deployment provides a working
+	// BBR → EPP request path; the test then perturbs the cluster-wide
+	// BBR Deployment in istio-system (delete one replica / scale to
+	// zero) and asserts the request path stays healthy while ≥1 replica
+	// survives and only fails closed when ALL replicas are down.
+	CaseClusterFilterHA = "cluster-filter-ha"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -216,6 +225,20 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			EnableScaling:    true,
 			MaxReplicas:      2,
 			ScalingThreshold: 10, // low threshold to trigger scaling during tests
+		},
+	},
+	CaseClusterFilterHA: {
+		{
+			// Lightweight, GPU-mocked deployment (mirrors CaseGPUMocker):
+			// the gpu-node-mocker patches the inference pod to Running so
+			// the BBR → EPP request path returns 200 without a real GPU.
+			// One replica is enough — this case exercises the cluster-wide
+			// BBR Deployment's HA, not the model pool's.
+			Name:         "cluster-filter-ha-phi",
+			Namespace:    "e2e-cluster-filter-ha",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 }
