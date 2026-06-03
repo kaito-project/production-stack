@@ -52,7 +52,7 @@ dependencies:
   # are passed through under the upstream chart name `llm-gateway-apikey`
   # in values.yaml.
   - name: llm-gateway-apikey
-    version: 0.0.9-alpha
+    version: 0.0.10-alpha
     repository: oci://mcr.microsoft.com/aks/kaito/helm
     condition: llm-gateway-apikey.enabled
     tags:
