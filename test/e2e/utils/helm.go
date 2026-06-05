@@ -22,6 +22,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // ModelDeploymentChartPath is the relative path (from the repo root, where
@@ -41,6 +43,9 @@ type ModelDeploymentValues struct {
 	// Model is the inference preset name (spec.template.inference.preset.name).
 	// Defaults to Name when empty.
 	Model string
+	// PresetImage optionally overrides the runtime image resolved from the
+	// preset catalog (spec.template.inference.preset.presetOptions.image).
+	PresetImage string
 	// Replicas is the desired number of InferenceSet replicas.
 	Replicas int64
 	// InstanceType is the VM instance type. Defaults to chart default when empty.
@@ -59,6 +64,16 @@ type ModelDeploymentValues struct {
 	// EnsureNamespace; the warmup loop in SetupInferenceSetsWithRouting
 	// reads the resulting Secret and sends Bearer + Host headers.
 	AuthAPIKeyEnabled bool
+
+	// PodReadyTimeout overrides InferencePodReadyTimeout for this
+	// deployment. Leave zero to use the package-level constant.
+	// Useful for Karpenter cases where node provision + image pull
+	// can exceed the default 20-minute window.
+	PodReadyTimeout time.Duration
+
+	// GatewayWarmupTimeout overrides GatewayReadyTimeout for this
+	// deployment. Leave zero to use the package-level constant.
+	GatewayWarmupTimeout time.Duration
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a
@@ -86,6 +101,9 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 		"--set", "name=" + v.Name,
 		"--set", "namespace=" + v.Namespace,
 		"--set", "model=" + v.Model,
+	}
+	if v.PresetImage != "" {
+		args = append(args, "--set-string", "presetImage="+v.PresetImage)
 	}
 	if v.Replicas > 0 {
 		args = append(args, "--set", "replicas="+strconv.FormatInt(v.Replicas, 10))
@@ -140,7 +158,15 @@ func InstallModelDeployment(values ModelDeploymentValues) error {
 	cmd := exec.Command("helm", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("helm upgrade --install %s failed: %w\n%s", values.Name, err, string(out))
+		if strings.Contains(string(out), "has no deployed releases") {
+			_ = exec.Command("helm", "uninstall", values.Name,
+				"--namespace", values.Namespace, "--ignore-not-found").Run()
+			cmd = exec.Command("helm", args...)
+			out, err = cmd.CombinedOutput()
+		}
+		if err != nil {
+			return fmt.Errorf("helm upgrade --install %s failed: %w\n%s", values.Name, err, string(out))
+		}
 	}
 	return nil
 }
@@ -213,8 +239,19 @@ func InstallModelHarness(namespace string, authEnabled bool) error {
 	cmd := exec.Command("helm", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("helm upgrade --install %s in %s failed: %w\n%s",
-			ModelHarnessReleaseName, namespace, err, string(out))
+		// "has no deployed releases" means the release history exists but
+		// every revision failed (e.g. a previous test run crashed mid-install).
+		// Helm refuses to upgrade such a release; clean it up and retry fresh.
+		if strings.Contains(string(out), "has no deployed releases") {
+			_ = exec.Command("helm", "uninstall", ModelHarnessReleaseName,
+				"--namespace", namespace, "--ignore-not-found").Run()
+			cmd = exec.Command("helm", args...)
+			out, err = cmd.CombinedOutput()
+		}
+		if err != nil {
+			return fmt.Errorf("helm upgrade --install %s in %s failed: %w\n%s",
+				ModelHarnessReleaseName, namespace, err, string(out))
+		}
 	}
 	return nil
 }

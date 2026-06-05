@@ -25,6 +25,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+# When set to "karpenter", KAITO uses real Karpenter (AKS NAP) for node
+# provisioning instead of gpu-node-mocker. gpu-node-mocker is skipped and
+# KAITO is launched with --node-provisioner=karpenter.
+KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-}"
 
 # shellcheck source=lib-parallel.sh
 source "${SCRIPT_DIR}/lib-parallel.sh"
@@ -48,6 +52,7 @@ export KEDA_NAMESPACE
 
 echo "=== Component versions ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
+echo "  KAITO_NODE_PROVISIONER:    ${KAITO_NODE_PROVISIONER:-<unset, using gpu-node-mocker>}"
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
 echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
@@ -63,14 +68,37 @@ if ! command -v helm &>/dev/null; then
 fi
 
 install_kaito() {
-  echo "=== Installing KAITO workspace operator (latest chart, image: nightly-latest) ==="
-  helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
-  helm repo update kaito
+  echo "=== Installing KAITO workspace operator (image: nightly-latest) ==="
 
-  # featureGates.gatewayAPIInferenceExtension is intentionally DISABLED.
+  local chart_ref extra_set_args=()
+
+  if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
+    # The published Helm chart (kaito-project.github.io/kaito/charts/kaito)
+    # does not yet expose the `nodeProvisioner` value — it was added in
+    # kaito-project/kaito PR #2041 and has not been published to the chart
+    # repo.  The nightly-latest *image* already contains the corresponding
+    # --node-provisioner binary flag, so we install from the in-tree chart
+    # on main where values.yaml has `nodeProvisioner: "azure-gpu-provisioner"`
+    # as the documented default and accepts our override.
+    echo "  Karpenter mode: installing from kaito main branch chart (published chart lacks nodeProvisioner)"
+    local kaito_tmp
+    kaito_tmp=$(mktemp -d)
+    trap 'rm -rf "${kaito_tmp}"' RETURN
+    git clone --depth 1 --quiet \
+      https://github.com/kaito-project/kaito.git "${kaito_tmp}"
+    chart_ref="${kaito_tmp}/charts/kaito/workspace"
+    extra_set_args=(
+      --set nodeProvisioner=karpenter
+    )
+  else
+    helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
+    helm repo update kaito
+    chart_ref="kaito/workspace"
+  fi
+
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
-  helm install kaito kaito/workspace \
+  helm upgrade --install kaito "${chart_ref}" \
     --namespace kaito-system \
     --create-namespace \
     --set featureGates.enableInferenceSetController=true \
@@ -78,6 +106,7 @@ install_kaito() {
     --set image.repository=ghcr.io/kaito-project/kaito/workspace \
     --set image.tag=nightly-latest \
     --set image.pullPolicy=Always \
+    "${extra_set_args[@]}" \
     --wait --timeout=300s
 
   echo "⏳ Waiting for KAITO controller..."
@@ -185,11 +214,20 @@ install_productionstack() {
 }
 
 # ── Phased execution ──────────────────────────────────────────────────────
-run_phase phase1-base \
-  install_kaito \
-  install_gwie_crds \
-  install_gpu_mocker \
-  install_productionstack
+# When KAITO_NODE_PROVISIONER=karpenter the cluster uses real Karpenter (AKS NAP)
+# for node provisioning, so gpu-node-mocker is not needed.
+if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
+  run_phase phase1-base \
+    install_kaito \
+    install_gwie_crds \
+    install_productionstack
+else
+  run_phase phase1-base \
+    install_kaito \
+    install_gwie_crds \
+    install_gpu_mocker \
+    install_productionstack
+fi
 
 echo ""
 echo "✅ All components installed."

@@ -83,6 +83,13 @@ var (
 		Resource: "nodeclaims",
 	}
 
+	// WorkspaceGVR is the GroupVersionResource for KAITO Workspace objects.
+	WorkspaceGVR = schema.GroupVersionResource{
+		Group:    "kaito.sh",
+		Version:  "v1beta1",
+		Resource: "workspaces",
+	}
+
 	// ScaledObjectGVR is the GroupVersionResource for KEDA ScaledObject objects.
 	ScaledObjectGVR = schema.GroupVersionResource{
 		Group:    "keda.sh",

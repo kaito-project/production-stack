@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
@@ -27,6 +28,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -219,9 +221,160 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 			"EPP pods for %s should be Running", d.Name)
 	}
 
+	// Single dynamic client shared across all deployments in this batch.
+	// Created once here rather than inside the per-deployment loop so that
+	// cases with multiple deployments (e.g. CaseModelRouting) don't pay the
+	// connection overhead on every iteration.
+	dynClient, dynErr := GetDynamicClient()
+	Expect(dynErr).NotTo(HaveOccurred())
+
 	for _, d := range resolved {
-		By(fmt.Sprintf("Waiting for inference pods for %s to be Running", d.Name))
+		podTimeout := InferencePodReadyTimeout
+		if d.PodReadyTimeout > 0 {
+			podTimeout = d.PodReadyTimeout
+		}
+
+		// Fast-fail helper for known cloud-side provisioning failures so
+		// we don't burn the full pod timeout on unrecoverable conditions.
+		checkNodeClaimFailure := func() error {
+			ncList, err := dynClient.Resource(NodeClaimGVR).List(ctx, metav1.ListOptions{})
+			if err != nil || ncList == nil {
+				return nil
+			}
+			for _, nc := range ncList.Items {
+				name := nc.GetName()
+				if !strings.HasPrefix(name, d.Namespace+"-") {
+					continue
+				}
+				if !strings.Contains(name, "-"+d.Name+"-") {
+					continue
+				}
+
+				conds, found, _ := unstructured.NestedSlice(nc.Object, "status", "conditions")
+				if !found {
+					continue
+				}
+				for _, c := range conds {
+					m, ok := c.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					typ := fmt.Sprint(m["type"])
+					status := fmt.Sprint(m["status"])
+					reason := fmt.Sprint(m["reason"])
+					message := fmt.Sprint(m["message"])
+
+					if status == "False" && (typ == "Launched" || typ == "Initialized" || typ == "Registered" || typ == "Ready") {
+						return fmt.Errorf("NodeClaim %s condition %s=False (reason=%s): %s", name, typ, reason, message)
+					}
+
+					lower := strings.ToLower(reason + " " + message)
+					if strings.Contains(lower, "quota") ||
+						strings.Contains(lower, "insufficient") ||
+						strings.Contains(lower, "notavailableforsubscription") ||
+						strings.Contains(lower, "overconstrained") ||
+						strings.Contains(lower, "capacity") {
+						return fmt.Errorf("NodeClaim %s provisioning blocked (reason=%s): %s", name, reason, message)
+					}
+				}
+			}
+			return nil
+		}
+
+		// Fast-fail: KAITO must either (a) create an inference pod directly
+		// (GPU-mocker mode — pods appear immediately) or (b) create a new
+		// Karpenter NodeClaim (karpenter mode — KAITO requests a GPU node
+		// before creating the pod; NodeClaim appears within ~1 min).
+		// Comparing names rather than count avoids false negatives when
+		// unrelated NodeClaims from previous tests are being concurrently
+		// garbage-collected.
+		By(fmt.Sprintf("Waiting for KAITO to start provisioning for %s", d.Name))
+		ncListBefore, _ := dynClient.Resource(NodeClaimGVR).List(ctx, metav1.ListOptions{})
+		beforeNCNames := map[string]struct{}{}
+		if ncListBefore != nil {
+			for _, nc := range ncListBefore.Items {
+				beforeNCNames[nc.GetName()] = struct{}{}
+			}
+		}
 		Eventually(func() error {
+			// Path (a): pod already exists (GPU-mocker, fake node was ready).
+			pods, _ := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", d.Name),
+			})
+			if pods != nil && len(pods.Items) > 0 {
+				return nil
+			}
+			// Path (a.1): workspace exists for this deployment. KAITO may have
+			// reconciled the InferenceSet and created the Workspace before a new
+			// NodeClaim or inference pod is visible.
+			wsList, _ := dynClient.Resource(WorkspaceGVR).Namespace(d.Namespace).List(ctx, metav1.ListOptions{})
+			if wsList != nil {
+				for _, ws := range wsList.Items {
+					labels := ws.GetLabels()
+					if labels != nil && labels["inferenceset.kaito.sh/created-by"] == d.Name {
+						return nil
+					}
+					if strings.HasPrefix(ws.GetName(), d.Name+"-") {
+						return nil
+					}
+				}
+			}
+			// Path (b): new NodeClaim appeared (Karpenter mode).
+			ncList, _ := dynClient.Resource(NodeClaimGVR).List(ctx, metav1.ListOptions{})
+			if ncList != nil {
+				for _, nc := range ncList.Items {
+					if _, existed := beforeNCNames[nc.GetName()]; !existed {
+						// Only count NodeClaims in our namespace (KAITO names
+						// them "<namespace>-...") to avoid false triggers from
+						// other parallel cases creating their own NodeClaims.
+						if !strings.HasPrefix(nc.GetName(), d.Namespace+"-") {
+							continue
+						}
+						GinkgoWriter.Printf("[%s] new Karpenter NodeClaim %q; waiting for node + pod (timeout=%s)\n",
+							d.Name, nc.GetName(), podTimeout)
+						return nil
+					}
+				}
+			}
+			allPods, _ := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{})
+			if allPods != nil && len(allPods.Items) > 0 {
+				GinkgoWriter.Printf("[diag] pods in %s (any label): ", d.Namespace)
+				for _, p := range allPods.Items {
+					GinkgoWriter.Printf("%s(%s) ", p.Name, p.Status.Phase)
+				}
+				GinkgoWriter.Printf("\n")
+			}
+			isObj, _ := dynClient.Resource(InferenceSetGVR).Namespace(d.Namespace).Get(ctx, d.Name, metav1.GetOptions{})
+			if isObj != nil {
+				if conds, found, _ := unstructured.NestedSlice(isObj.Object, "status", "conditions"); found {
+					parts := make([]string, 0, len(conds))
+					for _, c := range conds {
+						m, ok := c.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						parts = append(parts, fmt.Sprintf("%v=%v(%v)", m["type"], m["status"], m["reason"]))
+					}
+					if len(parts) > 0 {
+						return fmt.Errorf("no new NodeClaim/pod/workspace yet; InferenceSet conditions: %s", strings.Join(parts, ", "))
+					}
+				}
+			}
+			return fmt.Errorf("no new NodeClaim/pod/workspace yet (KAITO may still be reconciling InferenceSet)")
+		}, 10*time.Minute, 15*time.Second).Should(Succeed(),
+			"KAITO must start provisioning for %s within 10 minutes.\n"+
+				"On a fresh CI cluster the KAITO workspace controller may need\n"+
+				"several minutes to initialize. Causes: KAITO not installed with\n"+
+				"nodeProvisioner=karpenter, preset %q unsupported, HuggingFace\n"+
+				"token missing in %s, or NodePool lacks %q",
+			d.Name, d.Model, d.Namespace, d.InstanceType)
+
+		By(fmt.Sprintf("Waiting for inference pods for %s to be Running (timeout=%s)", d.Name, podTimeout))
+		Eventually(func() error {
+			if err := checkNodeClaimFailure(); err != nil {
+				return err
+			}
+
 			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
 				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", d.Name),
 			})
@@ -233,6 +386,15 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 			}
 			for _, pod := range pods.Items {
 				if pod.Status.Phase != "Running" {
+					// Emit pod events to help diagnose why it is stuck Pending.
+					events, _ := clientset.CoreV1().Events(d.Namespace).List(ctx, metav1.ListOptions{
+						FieldSelector: fmt.Sprintf("involvedObject.name=%s", pod.Name),
+					})
+					if events != nil && len(events.Items) > 0 {
+						latest := events.Items[len(events.Items)-1]
+						GinkgoWriter.Printf("[diag] pod %s (%s) last event: %s — %s\n",
+							pod.Name, pod.Status.Phase, latest.Reason, latest.Message)
+					}
 					return fmt.Errorf("pod %s is %s, not Running", pod.Name, pod.Status.Phase)
 				}
 				if pod.Status.PodIP == "" {
@@ -240,7 +402,7 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 				}
 			}
 			return nil
-		}, 5*time.Minute, 10*time.Second).Should(Succeed(),
+		}, podTimeout, 10*time.Second).Should(Succeed(),
 			"inference pods for %s should be Running with PodIPs", d.Name)
 	}
 
@@ -254,6 +416,10 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 	if gatewayURL != "" {
 		for _, d := range resolved {
 			d := d
+			gatewayTimeout := GatewayReadyTimeout
+			if d.GatewayWarmupTimeout > 0 {
+				gatewayTimeout = d.GatewayWarmupTimeout
+			}
 			// When the deployment opts in to API key auth, the chart
 			// renders an APIKey CR; the apikey-operator generates a
 			// Secret named APIKeySecretName in the same namespace. The
@@ -316,7 +482,7 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 						resp.StatusCode, d.Namespace, d.Name, hostHeader, d.AuthAPIKeyEnabled, string(body))
 				}
 				return nil
-			}, 5*time.Minute, 10*time.Second).Should(Succeed(),
+			}, gatewayTimeout, 10*time.Second).Should(Succeed(),
 				"gateway should route to deployment %s successfully", d.Name)
 		}
 	}

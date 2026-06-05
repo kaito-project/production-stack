@@ -34,6 +34,17 @@ const (
 	// rendered by the modeldeployment Helm chart and is observable on the
 	// cluster).
 	InferenceSetReadyTimeout = 5 * time.Minute
+
+	// InferencePodReadyTimeout is the default timeout for waiting for
+	// inference pods to be Running. Can be overridden per-deployment via
+	// ModelDeploymentValues.PodReadyTimeout for Karpenter cases that need
+	// to wait for Azure VM provisioning + container image pull.
+	InferencePodReadyTimeout = 20 * time.Minute
+
+	// GatewayReadyTimeout is the default timeout for waiting for the
+	// gateway to serve HTTP 200 after inference pods are Running. Can be
+	// overridden via ModelDeploymentValues.GatewayWarmupTimeout.
+	GatewayReadyTimeout = 15 * time.Minute
 )
 
 // InferencePoolName returns the InferencePool name derived from the

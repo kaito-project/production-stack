@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
@@ -37,6 +38,17 @@ import (
 const (
 	presetPhi       = "phi-4-mini-instruct"
 	presetMinistral = "ministral-3-3b-instruct"
+	// MCR currently does not publish kaito-base:0.4.0; pin Karpenter nightly
+	// preset deployments to a known published runtime image tag.
+	presetImageKaitoBaseMCR = "mcr.microsoft.com/aks/kaito/kaito-base:0.3.3"
+
+	// Karpenter nightly-only presets. Models with tag 0.2.0 have weights
+	// baked into the KAITO container image (no downloadAtRuntime, no HF
+	// auth token required), so startup is fast after the VM provisions.
+	// Cross-check names against kaito-project/kaito
+	// presets/workspace/models/supported_models.yaml.
+	presetQwen7B  = "qwen2.5-coder-7b-instruct"  // ~7B  — single A10 / A100, baked
+	presetQwen32B = "qwen2.5-coder-32b-instruct" // ~32B — multi-GPU single node, baked
 )
 
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
@@ -136,6 +148,26 @@ const (
 	// namespace (its InferenceSet replicas), so the suite does not need
 	// Serial. Non-auth so only BBR + EPP are in path.
 	CaseModelUnavailable = "model-unavailable"
+	// ── Karpenter nightly cases ─────────────────────────────────────────────────────
+	// Each exercises Karpenter scale-up from zero (no pre-existing GPU
+	// nodes), a live inference smoke test through the production-stack
+	// gateway, and Karpenter scale-down back to zero after the workload
+	// is removed.
+
+	// CaseKarpenterSmall covers a ~7B model on a single A10 GPU node.
+	// Validates basic Karpenter provisioning, single-GPU inference, and
+	// node deprovisioning after workload removal.
+	CaseKarpenterSmall = "karpenter-small"
+
+	// CaseKarpenterMedium covers a ~32B model on a multi-GPU single node.
+	// Validates that the Karpenter NodePool selects an instance type with
+	// ≥2 GPUs, tensor-parallel scheduling on one node, and deprovisioning.
+	CaseKarpenterMedium = "karpenter-medium"
+
+	// CaseKarpenterLarge covers two independent replicas of the 32B model,
+	// each on its own GPU node. Validates that Karpenter provisions two
+	// separate Azure VMs (multi-node) and deprovisions both after removal.
+	CaseKarpenterLarge = "karpenter-large"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -314,6 +346,71 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
+
+	// ── Karpenter nightly cases ─────────────────────────────────────────────────────
+	// Timeouts cover: Karpenter node provision (~15 min) + container
+	// image pull on fresh node (~5 min) + vLLM GPU load (~5–15 min) +
+	// EPP registration + gateway warmup. All three run concurrently
+	// (E2E_PARALLEL=3) so the wall-clock is the single longest scenario.
+	CaseKarpenterSmall: {
+		{
+			// ~7B Qwen coder model. Weights baked into the KAITO image;
+			// no runtime download, no HuggingFace token required.
+			Name:                 "k-small",
+			Namespace:            "e2e-ks",
+			Model:                presetQwen7B,
+			PresetImage:          presetImageKaitoBaseMCR,
+			Replicas:             1,
+			InstanceType:         "Standard_NC24ads_A100_v4", // 1× A100 80 GB
+			PodReadyTimeout:      45 * time.Minute,
+			GatewayWarmupTimeout: 40 * time.Minute,
+		},
+	},
+	CaseKarpenterMedium: {
+		{
+			// ~32B Qwen coder model on a 2-GPU A100 node.
+			// Weights baked into the KAITO image; no auth required.
+			// vLLM uses tensor parallelism across both A100s.
+			Name:                 "k-medium",
+			Namespace:            "e2e-km",
+			Model:                presetQwen32B,
+			PresetImage:          presetImageKaitoBaseMCR,
+			Replicas:             1,
+			InstanceType:         "Standard_NC48ads_A100_v4", // 2× A100 80 GB
+			PodReadyTimeout:      90 * time.Minute,
+			GatewayWarmupTimeout: 45 * time.Minute,
+		},
+	},
+	CaseKarpenterLarge: {
+		// Two SEPARATE single-replica deployments in the same namespace.
+		// Each triggers its own KAITO child Workspace → NodePool → NodeClaim
+		// → Azure VM, proving Karpenter provisions two distinct GPU nodes.
+		// Both use NC24ads_A100_v4 (1× A100 80GB). With the outer Describe
+		// Ordered (serial execution), both nodes are provisioned together and
+		// consume 48 vCPUs, safely within the 50-vCPU NCA100v4 quota.
+		// PodReadyTimeout is 75m to account for concurrent VM provisioning
+		// and potential ARM throttling when two NodeClaims are created at once.
+		{
+			Name:                 "k-large-a",
+			Namespace:            "e2e-kl",
+			Model:                presetQwen7B,
+			PresetImage:          presetImageKaitoBaseMCR,
+			Replicas:             1,
+			InstanceType:         "Standard_NC24ads_A100_v4", // 1× A100 80 GB
+			PodReadyTimeout:      75 * time.Minute,
+			GatewayWarmupTimeout: 40 * time.Minute,
+		},
+		{
+			Name:                 "k-large-b",
+			Namespace:            "e2e-kl",
+			Model:                presetQwen7B,
+			PresetImage:          presetImageKaitoBaseMCR,
+			Replicas:             1,
+			InstanceType:         "Standard_NC24ads_A100_v4", // 1× A100 80 GB
+			PodReadyTimeout:      75 * time.Minute,
+			GatewayWarmupTimeout: 40 * time.Minute,
+		},
+	},
 }
 
 // CaseNamespace returns the namespace declared on the first deployment of
@@ -364,7 +461,18 @@ func InstallCase(caseName string) string {
 	gatewayURL, err := utils.GetGatewayURLFor(ns, gatewayName)
 	Expect(err).NotTo(HaveOccurred(), "failed to resolve gateway URL for case %s", caseName)
 
-	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gatewayURL)
+	deployments := CaseDeployments[caseName]
+	if caseName == CaseKarpenterLarge {
+		// Install large-a then large-b sequentially. When both are created in a
+		// single batch, the scheduler/karpenter nomination path can churn on
+		// `apps`-scoped affinity for the two sibling workloads in the same
+		// namespace, causing long Pending loops. Sequencing removes that race.
+		for _, d := range deployments {
+			utils.SetupInferenceSetsWithRouting([]utils.ModelDeploymentValues{d}, ns, gatewayURL)
+		}
+	} else {
+		utils.SetupInferenceSetsWithRouting(deployments, ns, gatewayURL)
+	}
 	return gatewayURL
 }
 

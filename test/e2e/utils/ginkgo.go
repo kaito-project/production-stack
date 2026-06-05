@@ -86,4 +86,11 @@ var (
 	// InferenceSet replicas), so they do not need Serial; they are Nightly
 	// because they take an inference pool through an outage + recovery.
 	GinkgoLabelDataplaneOutage = g.Label("DataplaneOutage")
+	// GinkgoLabelKarpenter marks tests that exercise Karpenter-driven GPU
+	// node provisioning on Azure (AKS NAP). These tests deploy real model
+	// presets, wait for Karpenter to provision GPU VMs, and verify that the
+	// full production-stack pipeline (InferenceSet → EPP → Gateway) serves
+	// live inference requests. They are nightly-only because each scenario
+	// can take 30–90 minutes end-to-end.
+	GinkgoLabelKarpenter = g.Label("Karpenter")
 )
