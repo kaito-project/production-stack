@@ -63,4 +63,11 @@ var (
 	//   ext_authz → ext_proc.bbr → ext_proc (InferencePool/EPP) → router
 	// See test/e2e/filter_order_test.go for the test matrix.
 	GinkgoLabelFilterOrder = g.Label("FilterOrder")
+
+	// GinkgoLabelClusterFilterHA marks tests that verify the cluster-wide
+	// BBR ext_proc filter's high availability and single-replica-loss
+	// failover (issue #89). These tests perturb the shared istio-system
+	// BBR Deployment, so the suite MUST decorate them Serial.
+	// See test/e2e/cluster_filter_ha_test.go.
+	GinkgoLabelClusterFilterHA = g.Label("ClusterFilterHA")
 )

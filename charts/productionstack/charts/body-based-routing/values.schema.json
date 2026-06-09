@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "body-based-routing chart values",
+  "description": "Schema for the body-based-routing sub-chart. Only the values whose constraints are load-bearing for high availability (issue #89) are validated; all other keys are passed through unvalidated.",
+  "type": "object",
+  "properties": {
+    "bbr": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 2,
+          "description": "Number of BBR ext_proc replicas. BBR is a cluster-scope singleton on the request hot path, so a single replica is a single point of failure. At least 2 replicas are required for HA so the loss of one replica is a transparent failover rather than a cluster-wide 502 bbr_unavailable outage."
+        },
+        "podAntiAffinity": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["soft", "hard"] },
+            "topologyKey": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "properties": {
+        "istio": {
+          "type": "object",
+          "properties": {
+            "upstream": {
+              "type": "object",
+              "properties": {
+                "outlierDetection": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "maxEjectionPercent": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 99,
+                      "description": "Hard cap on the share of the BBR ext_proc cluster that outlier detection may eject at once. MUST be < 100 so a single-replica blip cannot eject every replica and trip the fail-closed 502 bbr_unavailable path; that path must fire only when ALL replicas are unhealthy."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -100,7 +100,10 @@ helm upgrade --install body-based-router \
 |--------------------------------------------------|-------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
 | `namespaceOverride`                              | `""`                                                                          | Pin every namespaced resource (+ EnvoyFilter upstream FQDN) to this namespace. Empty ⇒ inherit the Helm release namespace. Used by the umbrella chart to force `istio-system`. |
 | `bbr.name`                                       | `body-based-router`                                                           | Name of the Deployment / Service.                                                                                              |
-| `bbr.replicas`                                   | `1`                                                                           | Replica count. BBR is stateless; bump for HA.                                                                                  |
+| `bbr.replicas`                                   | `2`                                                                           | Replica count. BBR is a cluster-scope singleton on the request hot path, so it runs HA by default. `values.schema.json` pins the minimum to **2**; lowering it below 2 is rejected at render time. |
+| `bbr.podAntiAffinity.type`                       | `soft`                                                                        | `soft` ⇒ `preferredDuringScheduling…` (best-effort spread, still schedules on a single-node cluster); `hard` ⇒ `requiredDuringScheduling…` (a replica stays Pending until a distinct node is free). The anti-affinity rule itself is load-bearing for HA and is always rendered. |
+| `bbr.podAntiAffinity.topologyKey`                | `kubernetes.io/hostname`                                                      | Topology domain across which replicas are spread (per-node by default; set to `topology.kubernetes.io/zone` for per-zone).      |
+| `bbr.healthCheck.{liveness,readiness}.*`         | `initialDelaySeconds:5, periodSeconds:10, timeoutSeconds:5/3, failureThreshold:3` | Standard probe timing knobs. The gRPC liveness/readiness probes against BBR's `grpc.health.v1.Health` service on `healthCheckPort` are load-bearing for HA (their readiness result drives the pod Ready condition → Istio EDS endpoint set → ext_proc cluster) and are always rendered. |
 | `bbr.image.{registry,repository,tag,pullPolicy}` | upstream staging registry, tag `v1.5.0`                                       | Container image coordinates. Pinned tag (upstream defaults to `main`).                                                          |
 | `bbr.port`                                       | `9004`                                                                        | ext_proc gRPC port.                                                                                                            |
 | `bbr.healthCheckPort`                            | `9005`                                                                        | gRPC health-check port.                                                                                                        |
@@ -112,6 +115,43 @@ helm upgrade --install body-based-router \
 | `provider.supportedEvents.*`                     | all `true`                                                                    | HTTP lifecycle events Envoy forwards to BBR.                                                                                   |
 | `provider.istio.envoyFilter.operation`           | `INSERT_BEFORE`                                                               | Envoy filter-chain placement op. (Upstream defaults to `INSERT_FIRST`.)                                                         |
 | `provider.istio.envoyFilter.anchorSubFilter`     | `envoy.filters.http.router`                                                   | Anchor filter name for INSERT_BEFORE / INSERT_AFTER. The terminal `router` filter is always present on every Istio Gateway HCM chain, so this default works on both auth-enabled and auth-disabled gateways. (Upstream defaults to `""`.) |
+| `provider.istio.upstream.outlierDetection.enabled` | `true`                                                                      | Render a CLUSTER `EnvoyFilter` patch that MERGEs passive `outlier_detection` onto the auto-generated `outbound|<bbr.port>||body-based-router…` ext_proc cluster, so an erroring replica is ejected from the load-balancing set. |
+| `provider.istio.upstream.outlierDetection.consecutiveGatewayFailure` | `3`                                                       | Consecutive gateway/connect failures before a replica is ejected (also used for `consecutive_local_origin_failure`).            |
+| `provider.istio.upstream.outlierDetection.consecutive5xx` | `3`                                                                  | Consecutive 5xx-mapped responses before a replica is ejected.                                                                   |
+| `provider.istio.upstream.outlierDetection.interval` | `5s`                                                                      | How often Envoy sweeps for outliers / considers un-ejecting.                                                                    |
+| `provider.istio.upstream.outlierDetection.baseEjectionTime` | `30s`                                                            | Minimum time an ejected replica stays out (grows with ejection count).                                                          |
+| `provider.istio.upstream.outlierDetection.maxEjectionPercent` | `50`                                                          | Hard cap on the share of the cluster that may be ejected at once. **MUST be < 100** (schema-enforced) so a single-replica blip can never eject every replica and trip the fail-closed `502 bbr_unavailable` path. |
+
+## High availability & unhealthy-replica ejection
+
+BBR ext_proc is a **cluster-scope component on the hot path of every
+inference request**, so a single replica is a single point of failure
+and a single unhealthy replica must not trigger the fail-closed
+`502 bbr_unavailable` path (that path is reserved for when **all**
+replicas are down). This chart ships HA out of the box:
+
+* **≥ 2 replicas + pod anti-affinity** (`bbr.replicas`, default `2`,
+  schema minimum `2`; `bbr.podAntiAffinity`) spread BBR across distinct
+  nodes so the loss of one node cannot take down every replica.
+* **Active gRPC health checking** is wired via Kubernetes
+  liveness/readiness probes (`bbr.healthCheck`) against BBR's
+  `grpc.health.v1.Health` service on `healthCheckPort`. BBR serves the
+  health protocol **only** on `healthCheckPort` (the ext_proc port
+  answers a probe with `UNIMPLEMENTED`), so the active check is wired at
+  the platform layer: the readiness result drives the pod Ready
+  condition → Istio EDS endpoint set → the ext_proc upstream cluster, so
+  only Ready replicas are dialed by the ext_proc filter.
+* **Passive outlier detection**
+  (`provider.istio.upstream.outlierDetection`) MERGEs
+  `outlier_detection` onto the ext_proc cluster via a CLUSTER
+  `EnvoyFilter` patch, ejecting a replica that starts erroring on the
+  request path faster than the readiness probe can flip it NotReady.
+  `maxEjectionPercent` is capped below 100 so outlier detection can
+  never eject every replica at once.
+
+Net effect: losing a single BBR replica is a transparent failover to
+the healthy replicas, and `502 bbr_unavailable` only fires when every
+replica is unhealthy.
 
 ## Uninstall
 
