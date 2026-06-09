@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "modelharness chart values",
+  "description": "Schema for charts/modelharness. Validates the harness-level inputs.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "namespace": {
+      "type": "string",
+      "description": "Workload namespace that owns the shared resources. Empty falls back to .Release.Namespace."
+    },
+    "manageNamespace": {
+      "type": "boolean",
+      "description": "Whether the chart renders the workload Namespace object (only when installed into a management namespace distinct from the workload namespace)."
+    },
+    "gatewayName": {
+      "type": "string",
+      "description": "Per-namespace Istio Gateway resource name. Empty derives '<namespace>-gw'."
+    },
+    "gatewayClassName": {
+      "type": "string",
+      "minLength": 1,
+      "description": "GatewayClass the per-namespace Gateway binds to. MUST be non-empty."
+    },
+    "gatewayPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "HTTP listener port on the Gateway."
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Toggles the per-namespace API-key authentication artifacts (APIKey CR + ext_authz EnvoyFilter)."
+        },
+        "apiKeyName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of the APIKey CR rendered when auth.enabled is true."
+        },
+        "extAuthz": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Wiring for the cluster-wide apikey-authz ext_authz gRPC service that the per-namespace EnvoyFilter targets.",
+          "properties": {
+            "serviceName": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Name of the apikey-authz gRPC Service."
+            },
+            "serviceNamespace": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Namespace the apikey-authz gRPC Service runs in."
+            },
+            "grpcPort": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "gRPC port of the apikey-authz Service."
+            },
+            "timeout": {
+              "type": "string",
+              "minLength": 1,
+              "description": "gRPC call timeout for the ext_authz check (e.g. '5s')."
+            },
+            "operation": {
+              "type": "string",
+              "enum": ["INSERT_FIRST", "INSERT_AFTER"],
+              "description": "How ext_authz is inserted into the gateway HTTP filter chain."
+            },
+            "metadataContextNamespaces": {
+              "type": "array",
+              "description": "Envoy filter metadata namespaces forwarded to the ext_authz server.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      },
+      "required": ["enabled"]
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Toggles the per-namespace CiliumNetworkPolicy locking down East-West ingress to inference workloads."
+        },
+        "allowedIngressNamespaces": {
+          "type": "array",
+          "description": "Optional allowlist of namespaces granted cross-namespace ingress to the inference pods. An empty list keeps strict same-namespace isolation. Each entry MUST be a non-empty namespace name; a namespace that does not exist simply matches no endpoints and is silently skipped.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": ["enabled"]
+    }
+  }
+}

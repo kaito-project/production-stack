@@ -1,33 +1,27 @@
 {{/*
 Per-namespace Body-Based Router (BBR) wiring.
 
-BBR runs as a cluster-wide WORKLOAD singleton (a single Deployment +
-Service installed once by charts/productionstack/charts/body-based-routing,
-co-located with the umbrella release in `bbr.namespace`). This template
-renders the dataplane half — the ext_proc EnvoyFilter that injects BBR
-into THIS namespace's Gateway HCM — and scopes it to that Gateway pod
-only via `workloadSelector`, so production-stack's BBR never patches
-unrelated Istio Gateways elsewhere in the mesh.
+BBR runs as a cluster-wide singleton (one Deployment + Service installed by
+charts/productionstack/charts/body-based-routing in `bbr.namespace`). This
+template renders the dataplane half: the ext_proc EnvoyFilter that injects
+BBR into this namespace's Gateway HCM, scoped to that Gateway pod via
+`workloadSelector`.
 
 Filter-chain placement:
   BBR injects `X-Gateway-Model-Name` from the JSON request body so the
-  per-Gateway HTTPRoute (and the Istio-injected InferencePool ext_proc
-  filter that points at EPP) can route the request to the correct
-  deployment / pod. For that to work BBR MUST run BEFORE the
-  InferencePool ext_proc filter — if ext_proc runs first it resolves
-  its per-route override before the BBR-injected header exists, the
-  route falls through to the catch-all, ext_proc silently uses its
-  default `cluster: dummy` config (a no-op), requests bypass EPP and
-  Envoy round-robins across the InferencePool pods. So anchor on
-  Istio's auto-injected `envoy.filters.http.ext_proc` (InferencePool)
-  with INSERT_BEFORE, giving the chain:
-    istio.metadata_exchange → bbr → ext_proc (InferencePool) → … → router
+  per-Gateway HTTPRoute and the InferencePool ext_proc filter (EPP) can
+  route to the correct deployment. BBR MUST run BEFORE the InferencePool
+  ext_proc filter, so it is anchored on Istio's auto-injected
+  `envoy.filters.http.ext_proc` with INSERT_BEFORE, giving the chain:
+    istio.metadata_exchange -> bbr -> ext_proc (InferencePool) -> ... -> router
+  If ext_proc ran first it would resolve its per-route override before the
+  header exists, fall through to the catch-all, and round-robin across the
+  InferencePool pods (bypassing EPP).
 
 Transport:
-  BBR serves plaintext HTTP/2 (`--secure-serving=false`); the upstream
-  cluster is plain `outbound|<port>||<svc>.<ns>.svc.cluster.local` with
-  NO upstream TLS and NO DestinationRule. The gateway↔BBR hop never
-  leaves the pod network.
+  BBR serves plaintext HTTP/2; the upstream cluster is plain
+  `outbound|<port>||<svc>` with no upstream TLS and no DestinationRule.
+  The gateway<->BBR hop never leaves the pod network.
 */}}
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
@@ -75,22 +69,18 @@ spec:
     #
     # Istio auto-generates the
     # `outbound|{{ .Values.bbr.port }}||{{ .Values.bbr.name }}.{{ .Values.bbr.namespace }}.svc.cluster.local`
-    # EDS cluster that the ext_proc filter above dials. This CLUSTER
-    # patch MERGEs `outlier_detection` onto it so a BBR replica that
-    # starts erroring (gateway / connect failures, or 5xx-mapped
-    # responses) is ejected from the load-balancing set and in-flight
-    # prompt requests fail over to the healthy replicas — without
-    # tripping the fail-closed `502 bbr_unavailable` path. The Kubernetes
-    # gRPC readiness probe (body-based-routing templates/bbr.yaml)
-    # provides the complementary ACTIVE health check via the EDS
-    # endpoint set; only Ready replicas are programmed into this cluster.
+    # cluster the ext_proc filter dials. This CLUSTER patch MERGEs
+    # `outlier_detection` onto it so a BBR replica that starts erroring is
+    # ejected from the load-balancing set and in-flight requests fail over
+    # to healthy replicas instead of tripping the fail-closed
+    # `502 bbr_unavailable` path. The Kubernetes gRPC readiness probe is the
+    # complementary ACTIVE health check.
     #
-    # `max_ejection_percent` is kept < 100 so outlier detection can never
-    # eject every replica at once: `502 bbr_unavailable` therefore only
-    # fires when ALL replicas are genuinely unhealthy (issue #89).
+    # `max_ejection_percent` stays < 100 so outlier detection can never
+    # eject every replica at once: `502 bbr_unavailable` only fires when ALL
+    # replicas are genuinely unhealthy.
     #
-    # Scoped to THIS namespace's Gateway pod via the workloadSelector
-    # above, so it never patches unrelated Istio Gateways.
+    # Scoped to this namespace's Gateway pod via the workloadSelector above.
     # ─────────────────────────────────────────────────────────────────
     - applyTo: CLUSTER
       match:
@@ -107,8 +97,7 @@ spec:
             consecutive_5xx: {{ .Values.bbr.outlierDetection.consecutive5xx }}
             enforcing_consecutive_5xx: 100
             # Treat ext_proc connect/stream failures (local-origin
-            # errors) as eject-worthy in their own right, not just
-            # upstream 5xx.
+            # errors) as eject-worthy, not just upstream 5xx.
             split_external_local_origin_errors: true
             consecutive_local_origin_failure: {{ .Values.bbr.outlierDetection.consecutiveGatewayFailure }}
             enforcing_consecutive_local_origin_failure: 100

@@ -389,21 +389,27 @@ var _ = Describe("Filter execution order",
 
 			// E1 — Request body with no `model` field. BBR cannot inject
 			// X-Gateway-Model-Name, the HTTPRoute header match fails, and
-			// the router falls through to the catch-all 404. Because the
-			// request *is* authenticated, the 404 (with the OpenAI-style
-			// `model_not_found` body) proves the chain's BBR-decided header
-			// drove the route choice (the router did NOT run before BBR).
-			It("E1: authed request with missing model field returns 404 model_not_found", func() {
+			// the router falls through to the ABSENT-header half of the
+			// split catch-all → 400 invalid_request_body. Because the
+			// request *is* authenticated, reaching the catch-all (rather
+			// than a 401) proves auth still ran; the 400 invalid_request_body
+			// body (rather than 404 model_not_found) proves BBR's absent
+			// header — not a present-but-unknown model — drove the route
+			// choice. BBR does not error on a missing model; it skips header
+			// injection, so this is a client request error (400), not a BBR
+			// outage (502).
+			It("E1: authed request with missing model field returns 400 invalid_request_body", func() {
 				body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
 				resp, err := sendRaw(body, "application/json", apiKey)
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 
-				Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
-					"authed request without `model` should fall through to catch-all 404")
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"authed request without `model` should fall through to the absent-header catch-all (400 invalid_request_body)")
+				Expect(resp.Header.Get("x-kaito-error-source")).To(Equal("bbr"))
 				errResp, err := utils.ParseErrorResponse(resp)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(errResp.ErrorCode()).To(Equal("model_not_found"))
+				Expect(errResp.ErrorCode()).To(Equal("invalid_request_body"))
 			})
 		})
 

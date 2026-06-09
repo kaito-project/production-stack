@@ -53,7 +53,21 @@ import (
 func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	// Stamp the namespace-discovery label the productionstack-status-reporter
+	// selects on. modelharness is installed directly into the workload
+	// namespace (release namespace == workload namespace), so Helm owns the
+	// Namespace's lifecycle and the installer — here, the E2E harness —
+	// stamps the discovery label at creation time, mirroring what an
+	// operator's onboarding flow does in production. See
+	// charts/modelharness/templates/namespace.yaml for the rationale.
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"productionstack.kaito.sh/managed-by": "modelharness",
+			},
+		},
+	}
 	if err := cl.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("create namespace %s: %w", name, err)
 	}

@@ -479,7 +479,27 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		// Note: basic 404 for unknown model is already tested in gpu_mocker_test.go.
 		// These tests cover additional negative-path scenarios.
 
-		It("should return 404 for a request with missing model field", func() {
+		It("should return 404 model_not_found + x-kaito-error-source: gateway for an unknown model", func() {
+			// An unknown but well-formed model name: BBR injects
+			// X-Gateway-Model-Name=<unknown>, no deployment HTTPRoute
+			// matches, so the PRESENT-but-unmatched half of the split
+			// catch-all (charts/modelharness/templates/envoyfilter-not-found.yaml)
+			// returns 404 model_not_found with x-kaito-error-source: gateway.
+			resp, err := sendChat(caseGatewayURL, "totally-unknown-model-xyz")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
+				"unknown but present model name should hit the model_not_found catch-all")
+			Expect(resp.Header.Get("x-kaito-error-source")).To(Equal("gateway"),
+				"model_not_found must name the gateway as the at-fault component")
+			errResp, err := utils.ParseErrorResponse(resp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(errResp.ErrorCode()).To(Equal("model_not_found"))
+			Expect(errResp.Error.Type).To(Equal("invalid_request_error"))
+		})
+
+		It("should return 400 invalid_request_body + x-kaito-error-source: bbr for a missing model field", func() {
 			// Refresh port-forwards before issuing a raw HTTP request so a
 			// kubectl port-forward channel that died between specs gets
 			// rebound; SendChatCompletion* does this internally.
@@ -497,13 +517,19 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
-			// Without a model field, BBR cannot inject x-gateway-model-name,
-			// so the request should fall through to the catch-all 404.
-			Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
-				"missing model field should result in 404")
+			// Without a model field, BBR cannot inject X-Gateway-Model-Name.
+			// The ABSENT-header half of the split catch-all returns
+			// 400 invalid_request_body (BBR does not error on a missing
+			// model — it simply skips header injection — so a missing
+			// routing header is a client request error, distinct from the
+			// 404 returned for a present-but-unmatched model name).
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+				"missing model field (absent routing header) should return 400 invalid_request_body")
+			Expect(resp.Header.Get("x-kaito-error-source")).To(Equal("bbr"),
+				"invalid_request_body must name bbr as the at-fault component")
 			errResp, err := utils.ParseErrorResponse(resp)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(errResp.ErrorCode()).To(Equal("model_not_found"))
+			Expect(errResp.ErrorCode()).To(Equal("invalid_request_body"))
 		})
 
 		It("should return a well-formed error for non-string model field", func() {

@@ -500,6 +500,10 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 
+				// The present-but-unmatched half of the split catch-all
+				// names the gateway as the at-fault component.
+				Expect(resp.Header.Get("x-kaito-error-source")).To(Equal("gateway"))
+
 				errResp, err := utils.ParseErrorResponse(resp)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(errResp.ErrorCode()).To(Equal("model_not_found"))

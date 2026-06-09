@@ -1,0 +1,23 @@
+{{- if .Values.manageNamespace }}
+{{- if ne (include "modelharness.namespace" .) .Release.Namespace }}
+{{/*
+Workload Namespace, stamped with the
+`productionstack.kaito.sh/managed-by: modelharness` discovery label so the
+productionstack-status-reporter can enumerate managed workload namespaces by
+label selector.
+
+Rendered ONLY when the release is installed into a management namespace
+distinct from the workload namespace (`.Values.namespace` is set and differs
+from `.Release.Namespace`). When the release is installed directly into the
+workload namespace, Helm owns that Namespace's lifecycle and the installer
+stamps the discovery label at creation time instead; templating it here would
+collide with Helm's ownership metadata.
+*/}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.namespaceLabels" . | nindent 4 }}
+{{- end }}
+{{- end }}
