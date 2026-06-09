@@ -15,15 +15,8 @@
         "podAntiAffinity": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
             "type": { "type": "string", "enum": ["soft", "hard"] },
             "topologyKey": { "type": "string", "minLength": 1 }
-          }
-        },
-        "healthCheck": {
-          "type": "object",
-          "properties": {
-            "enabled": { "type": "boolean" }
           }
         }
       }

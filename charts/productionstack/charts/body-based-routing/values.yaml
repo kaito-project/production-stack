@@ -55,11 +55,10 @@ bbr:
   replicas: 2
 
   # Spread the BBR replicas across distinct nodes so a single node
-  # failure cannot take down every replica at once.
+  # failure cannot take down every replica at once. Anti-affinity is
+  # load-bearing for HA (issue #89) and is therefore always rendered;
+  # only its strength (`type`) and `topologyKey` are tunable.
   podAntiAffinity:
-    # When true, render a pod-anti-affinity rule keyed on
-    # `topologyKey` so no two BBR replicas are co-scheduled.
-    enabled: true
     # `soft` => preferredDuringSchedulingIgnoredDuringExecution: a
     #           best-effort spread that still lets every replica
     #           schedule on a single-node (e.g. kind / dev) cluster.
@@ -88,9 +87,9 @@ bbr:
   # failing requests closed. Combined with the passive outlier
   # detection below (see `provider.istio.upstream.outlierDetection`),
   # the fail-closed `502 bbr_unavailable` path only fires when EVERY
-  # replica is unhealthy.
+  # replica is unhealthy. These probes are load-bearing for HA and are
+  # therefore always rendered; only their timing knobs are tunable.
   healthCheck:
-    enabled: true
     liveness:
       initialDelaySeconds: 5
       periodSeconds: 10

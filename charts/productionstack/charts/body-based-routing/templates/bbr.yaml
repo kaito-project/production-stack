@@ -16,11 +16,11 @@ spec:
         {{- include "bbr.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "bbr.serviceAccountName" . }}
-      {{- if .Values.bbr.podAntiAffinity.enabled }}
       # Spread BBR replicas across distinct {{ .Values.bbr.podAntiAffinity.topologyKey }}
       # domains so a single node failure cannot take down every replica
       # at once (issue #89: BBR is a cluster-scope SPOF on the request
-      # hot path).
+      # hot path). Anti-affinity is load-bearing for HA and is therefore
+      # always rendered (not optional).
       affinity:
         podAntiAffinity:
           {{- if eq .Values.bbr.podAntiAffinity.type "hard" }}
@@ -38,7 +38,6 @@ spec:
                   matchLabels:
                     {{- include "bbr.selectorLabels" . | nindent 20 }}
           {{- end }}
-      {{- end }}
       containers:
         - name: bbr
           image: "{{ .Values.bbr.image.registry }}/{{ .Values.bbr.image.repository }}:{{ .Values.bbr.image.tag }}"
@@ -96,7 +95,6 @@ spec:
               containerPort: {{ .Values.bbr.port }}
             - name: grpc-health
               containerPort: {{ .Values.bbr.healthCheckPort }}
-          {{- if .Values.bbr.healthCheck.enabled }}
           # Active gRPC health checking against BBR's grpc.health.v1.Health
           # service on healthCheckPort. The readiness result drives the
           # pod Ready condition, which drives the Istio EDS endpoint set
@@ -104,6 +102,8 @@ spec:
           # pulled out of the load-balancing set rather than failing
           # requests closed. (BBR serves the health protocol only on
           # healthCheckPort, never on the ext_proc port {{ .Values.bbr.port }}.)
+          # These probes are load-bearing for HA and are therefore always
+          # rendered (not optional).
           livenessProbe:
             grpc:
               port: {{ .Values.bbr.healthCheckPort }}
@@ -118,7 +118,6 @@ spec:
             periodSeconds: {{ .Values.bbr.healthCheck.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.bbr.healthCheck.readiness.timeoutSeconds }}
             failureThreshold: {{ .Values.bbr.healthCheck.readiness.failureThreshold }}
-          {{- end }}
 ---
 apiVersion: v1
 kind: Service
