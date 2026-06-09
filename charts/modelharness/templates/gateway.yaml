@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "modelharness.labels" . | nindent 4 }}
 spec:
-  gatewayClassName: istio
+  gatewayClassName: {{ .Values.gatewayClassName }}
   listeners:
     - name: http
       port: {{ .Values.gatewayPort }}

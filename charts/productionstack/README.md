@@ -13,7 +13,7 @@ the inference data plane relies on.
 |----------------------|----------------------------------------------------------------------------------------------------------|-------------------------------------|---------------------------|
 | `body-based-routing` | Cluster-wide singleton Body-Based Router (BBR) ext_proc service + Istio `EnvoyFilter` wiring it into every inference Gateway. | `body-based-routing.enabled` (default `true`) | `istio-system` |
 | `keda-kaito-scaler`  | KEDA external scaler that aggregates vLLM / `InferenceSet` metrics for workload-aware autoscaling.       | `keda-kaito-scaler.enabled` (default `true`)  | `keda` |
-| `llm-gateway-apikey` (upstream OCI dep) | API-key ext_authz for the inference Gateway: installs the `APIKey` CRD, `apikey-operator`, `apikey-authz` dataplane, and a hook Job that registers `apikey-ext-authz` as a CUSTOM extensionProvider in Istio's MeshConfig. | `llm-gateway-apikey.enabled` (default `true`) | `llm-gateway-auth` |
+| `llm-gateway-apikey` (upstream OCI dep, 0.0.11-alpha) | API-key auth control plane for the inference Gateway: installs the `APIKey` CRD, the `apikey-operator` (reconciles `APIKey` CRs into per-namespace `llm-api-key` Secrets), and the `apikey-authz` ext_authz gRPC dataplane (single cluster-wide Service). **ext_authz wiring on inference Gateway pods is rendered per-namespace by [`charts/modelharness`](../modelharness/) — not by this subchart.** The upstream chart's own cluster-wide `EnvoyFilter` is neutralised via a sentinel `gatewaySelector` so per-namespace EnvoyFilters in `modelharness` are the sole source of ext_authz wiring. The upstream chart's STRICT `PeerAuthentication` is disabled by default (`llm-gateway-apikey.istio.strictMTLS: false`) to avoid blocking control-plane probes during rollout on mixed-mTLS clusters; flip it back on once the cluster is fully meshed. | `llm-gateway-apikey.enabled` (default `true`) | `llm-gateway-auth` |
 
 The three subcharts each expose a `namespaceOverride` value pinning
 **all of their namespaced resources** to a specific namespace,
@@ -70,6 +70,34 @@ With the default values BBR lands in `istio-system`, the KEDA scaler
 in `keda`, and the upstream llm-gateway-apikey control plane in
 `llm-gateway-auth` (the `namespaceOverride` defaults). The umbrella
 release itself can live in any namespace.
+
+### API-key ext_authz is per-namespace
+
+`productionstack` only installs the **control plane** for API-key auth
+(`APIKey` CRD + apikey-operator + apikey-authz gRPC Service). The
+actual `EnvoyFilter` that splices `envoy.filters.http.ext_authz` into
+a Gateway pod is rendered **per workload namespace** by
+[`charts/modelharness`](../modelharness/) under
+`templates/envoyfilter-ext-authz.yaml`, gated by `auth.enabled: true`.
+Each modelharness release attaches ext_authz to its own `<namespace>-gw`
+Gateway pod and points it at the cluster-wide `apikey-authz` Service
+installed by this umbrella. To enforce auth in a workload namespace:
+
+```yaml
+# my-modelharness-values.yaml
+auth:
+  enabled: true
+```
+
+The 0.0.11-alpha bump of the upstream `llm-gateway-apikey` chart
+replaced its historic `MeshConfig.extensionProviders` + CUSTOM
+`AuthorizationPolicy` flow (which required a post-install hook Job to
+mutate the cluster-shared `istio` ConfigMap — impossible on the AKS
+Istio add-on) with a templated cluster-wide `EnvoyFilter`. Because
+auth scope is per workload namespace, we deliberately **neutralise**
+that cluster-wide EnvoyFilter (sentinel `gatewaySelector` that no
+Gateway pod carries, namespace pinned to the LGA control plane) and
+own the wiring in `modelharness` instead.
 
 ## Per-subchart install namespace
 

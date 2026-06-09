@@ -51,8 +51,16 @@ dependencies:
   # registry at `helm dependency update` time (no in-tree fork). Values
   # are passed through under the upstream chart name `llm-gateway-apikey`
   # in values.yaml.
+  #
+  # Since 0.0.11-alpha the chart ships its own `EnvoyFilter` (under
+  # `templates/istio/envoyfilter.yaml`) that inserts ext_authz directly
+  # into the inference gateway HTTP filter chain — replacing the
+  # historic MeshConfig.extensionProviders + post-install patch Job
+  # flow. The EnvoyFilter is rendered into `istio.gatewayNamespace` and
+  # is part of the umbrella `productionstack` release manifest, so
+  # `helm uninstall productionstack` cleans it up automatically.
   - name: llm-gateway-apikey
-    version: 0.0.10-alpha
+    version: 0.0.11-alpha
     repository: oci://mcr.microsoft.com/aks/kaito/helm
     condition: llm-gateway-apikey.enabled
     tags:

@@ -63,9 +63,27 @@ keda-kaito-scaler:
 # so the tarball is vendored into `charts/productionstack/charts/`.
 #
 # Installs the APIKey CRD, the apikey-operator (reconciles APIKey →
-# per-namespace Secret), the apikey-authz ext_authz dataplane, and a
-# post-install hook Job that patches Istio's MeshConfig to register
-# `apikey-ext-authz` as a CUSTOM extensionProvider.
+# per-namespace `llm-api-key` Secret), and the apikey-authz ext_authz
+# gRPC dataplane (single cluster-wide instance, consumed by
+# per-namespace EnvoyFilters rendered by `charts/modelharness`). The
+# 0.0.11-alpha bump replaces the historic
+# MeshConfig.extensionProviders + post-install patch Job flow with a
+# templated EnvoyFilter; that flow required a post-install Job to
+# mutate the cluster-shared `istio` ConfigMap (impossible on the AKS
+# Istio add-on where the MeshConfig ConfigMap lives in
+# `aks-istio-system`).
+#
+# ext_authz wiring on inference Gateway pods is owned per-namespace by
+# `charts/modelharness` (templates/envoyfilter-ext-authz.yaml) — auth
+# scope in production-stack is per-workload-namespace, so each
+# modelharness release inserts the ext_authz HTTP filter into its own
+# `<namespace>-gw` Gateway pod and points it at the shared
+# apikey-authz Service installed here. The upstream chart's own
+# cluster-wide EnvoyFilter is therefore neutralised below (selector
+# pinned to a label nothing matches and co-located in the LGA
+# namespace) — leaving `istio.enabled: true` is still required so the
+# apikey-authz Deployment gets a sidecar and the STRICT
+# PeerAuthentication is rendered.
 #
 # Since chart version 0.0.8-alpha the upstream chart exposes a
 # `namespaceOverride` knob, so its namespaced resources can be pinned
@@ -73,18 +91,16 @@ keda-kaito-scaler:
 # namespace — matching the pattern used by the other in-tree
 # subcharts. Cluster-scoped resources (APIKey CRD,
 # ValidatingWebhookConfiguration, ClusterRole, ClusterRoleBinding) are
-# unaffected. The AuthorizationPolicy is rendered into
-# `istio.gatewayNamespace` instead.
+# unaffected.
 #
 # The key below MUST match the dependency `name:` in Chart.yaml
 # (`llm-gateway-apikey`), not the directory name.
 llm-gateway-apikey:
   enabled: true
   # Co-locate the LGA control plane (apikey-operator, apikey-authz,
-  # webhook cert Issuer/Certificate, meshconfig-patch Job) in a
-  # dedicated namespace so the umbrella release itself can live
-  # elsewhere (e.g. kaito-system). Set to "" to inherit the umbrella
-  # release namespace instead.
+  # webhook cert Secret) in a dedicated namespace so the umbrella
+  # release itself can live elsewhere (e.g. kaito-system). Set to "" to
+  # inherit the umbrella release namespace instead.
   namespaceOverride: llm-gateway-auth
   # Mirror the umbrella's default LGA wiring so a single
   # `helm install productionstack` provisions a working data plane
@@ -96,19 +112,42 @@ llm-gateway-apikey:
     image:
       repository: mcr.microsoft.com/aks/kaito/apikey-authz
   istio:
+    # Keep istio.enabled=true so the upstream chart still injects a
+    # sidecar into the apikey-authz Deployment (and emits NOTES.txt
+    # context). The upstream chart also renders a cluster-wide
+    # ext_authz EnvoyFilter under this flag — we deliberately
+    # neutralise it below (see gatewayNamespace + gatewaySelector)
+    # because auth in production-stack is owned per-namespace by
+    # `charts/modelharness`.
     enabled: true
-    # Apply the MeshConfig extensionProvider patch automatically.
-    # Without this, the apikey-ext-authz CUSTOM provider must be
-    # merged into Istio's MeshConfig by hand before the per-namespace
-    # AuthorizationPolicy rendered by charts/modelharness can take
-    # effect.
-    meshConfigConfigMap:
-      patch: true
-    # Namespace where the cluster-wide `inference-gateway` Gateway pods
-    # run. The AuthorizationPolicy targeting the gateway pods is
-    # rendered into this namespace.
-    gatewayNamespace: default
+    # Skip the cluster-wide STRICT PeerAuthentication the chart would
+    # otherwise render in the LGA namespace. We disable it because:
+    #   * saturn-we (and other AKS Istio add-on clusters) may run a
+    #     mix of mTLS modes across namespaces, and a STRICT PA in
+    #     llm-gateway-auth would block plaintext probes from the
+    #     control plane during the rollout.
+    #   * the gateway pods that talk to apikey-authz already run an
+    #     Istio sidecar (managed by the AKS Istio add-on), so mTLS to
+    #     apikey-authz is auto-upgraded by Istio's PERMISSIVE default
+    #     for any sidecar-to-sidecar hop; we don't gain much by also
+    #     enforcing STRICT on the server side.
+    # Flip back to `true` once the cluster is fully meshed and you
+    # want to fail-closed on any non-mTLS traffic into apikey-authz.
+    strictMTLS: false
+    # Pin the cluster-wide EnvoyFilter to the LGA control-plane
+    # namespace (rather than `default`) so the no-op resource lives
+    # alongside the rest of the chart's manifests and never collides
+    # with a user Gateway.
+    gatewayNamespace: llm-gateway-auth
+    # Sentinel label that no Gateway pod carries. The cluster-wide
+    # EnvoyFilter still renders (required by the upstream template)
+    # but selects zero workloads, so it has no effect on the data
+    # plane. modelharness's per-namespace EnvoyFilter is the sole
+    # source of ext_authz wiring on inference Gateways.
     gatewaySelector:
-      gateway.networking.k8s.io/gateway-name: inference-gateway
-  crds:
-    install: true
+      kaito.sh/cluster-wide-ext-authz-disabled: "true"
+    # Insert mode for the (neutralised) cluster-wide EnvoyFilter. Has
+    # no runtime effect while the selector matches no pods, but kept
+    # at the chart default to avoid surprising the upstream template.
+    extAuthzInsert:
+      operation: INSERT_FIRST
