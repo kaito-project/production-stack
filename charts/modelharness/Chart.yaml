@@ -6,10 +6,14 @@ description: |
   every model deployment in that namespace shares: the Istio Gateway,
   the catch-all HTTPRoute (forwards unknown-model requests to the
   cluster-shared model-not-found Service via a ReferenceGrant), and —
-  when enabled — the AuthorizationPolicy + APIKey CR that wire the
-  Gateway into the cluster-wide apikey-ext-authz CUSTOM provider. The
-  shared model-not-found Service itself is installed once per cluster
-  by the E2E install script.
+  when enabled — the APIKey CR that triggers the apikey-operator to
+  mint the per-namespace `llm-api-key` Secret consumed by clients.
+  ext_authz enforcement on the Gateway HTTP filter chain is owned by
+  the cluster-wide EnvoyFilter shipped by the `llm-gateway-apikey`
+  subchart of `productionstack` (since 0.0.11-alpha), not by a
+  per-namespace AuthorizationPolicy. The shared model-not-found
+  Service itself is installed once per cluster by the E2E install
+  script.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"

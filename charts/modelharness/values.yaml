@@ -19,6 +19,16 @@ gatewayName: ""
 # gatewayPort is the HTTP listener port on the Gateway.
 gatewayPort: 80
 
+# gatewayClassName is the GatewayClass the per-namespace Gateway binds
+# to. The default `istio` matches the GatewayClass installed by the
+# upstream Istio control plane (vanilla Istio installs / e2e kind
+# clusters). On the **AKS Istio add-on with App Routing**, the
+# delivered class is `approuting-istio` (controllerName
+# `istio.aks.azure.com/gateway-controller`) — set this value to
+# `approuting-istio` (or whatever class your controller exposes) when
+# deploying onto such a cluster.
+gatewayClassName: istio
+
 # Catch-all "model not found" responses are now produced by an Envoy
 # direct_response patched onto the Gateway's HCM via the
 # `model-not-found-direct` EnvoyFilter (see
@@ -29,18 +39,63 @@ gatewayPort: 80
 
 # auth toggles the per-namespace API-key authentication artifacts. When
 # enabled, the chart renders:
-#   - AuthorizationPolicy `apikey-gateway-ext-authz`: wires this
-#     namespace's Gateway pod into the cluster-wide `apikey-ext-authz`
-#     CUSTOM provider registered in MeshConfig by the llm-gateway-apikey
-#     chart. The upstream chart only installs an AP for the cluster-wide
-#     `inference-gateway`; per-namespace Gateways must get their own AP
-#     or requests bypass authentication.
 #   - APIKey CR `default`: triggers the apikey-operator to reconcile a
 #     Secret named `llm-api-key` holding the bearer token clients send.
+#   - EnvoyFilter `apikey-ext-authz`: inserts the
+#     `envoy.filters.http.ext_authz` HTTP filter into THIS namespace's
+#     Gateway pod (selected via `gateway.networking.k8s.io/gateway-name:
+#     <ns>-gw`), pointing at the cluster-wide apikey-authz gRPC Service
+#     installed by the `llm-gateway-apikey` subchart of
+#     `productionstack`. ext_authz auth scope is therefore per-namespace
+#     — disable `auth.enabled` and unknown-API-key requests pass through
+#     unblocked in this namespace; flip it on per workload namespace
+#     that needs API-key enforcement.
+#
+# This replaces the historic CUSTOM AuthorizationPolicy +
+# MeshConfig.extensionProviders flow (removed in upstream chart
+# 0.0.11-alpha): we now own the EnvoyFilter directly per-namespace so
+# the cluster-wide `apikey-ext-authz` provider is no longer required.
 auth:
   enabled: false
   # apiKeyName is the name of the APIKey CR rendered when auth.enabled.
   apiKeyName: "default"
+  # Cluster-wide apikey-authz gRPC Service the per-namespace
+  # EnvoyFilter targets. Defaults match the `llm-gateway-apikey`
+  # subchart's defaults (Service `apikey-authz` in namespace
+  # `llm-gateway-auth`, gRPC port 9001 — `apikey` fullnameOverride +
+  # `-authz` suffix).
+  extAuthz:
+    serviceName: apikey-authz
+    serviceNamespace: llm-gateway-auth
+    grpcPort: 9001
+    # gRPC call timeout for the ext_authz check.
+    #
+    # ext_authz fires ONCE per request on headers only — it is not in
+    # the streaming body path, so a low single-digit-second budget is
+    # safe and desirable. The chart renders `failure_mode_allow: false`
+    # on the EnvoyFilter (templates/envoyfilter-ext-authz.yaml), so a
+    # hung or slow apikey-authz fails the request fast rather than
+    # silently letting traffic through.
+    #
+    # 5 s gives roughly 250,000x headroom over the ~20 µs healthy-path
+    # cost observed on AKS (saturn-we, see PR #97 description), while
+    # still failing fast enough to surface a stuck authz pod within a
+    # single user-visible request — instead of holding Envoy worker
+    # threads for ten minutes (the previous 600 s default), masking the
+    # outage and starving connections cluster-wide.
+    timeout: 5s
+    # How ext_authz is inserted into the gateway HTTP filter chain.
+    #   INSERT_FIRST — head of the chain (default). Works without any
+    #                  RequestAuthentication on the Gateway.
+    #   INSERT_AFTER — after jwt_authn so JWT claims are populated in
+    #                  the ext_authz request metadata. Use when a
+    #                  RequestAuthentication is configured on this
+    #                  Gateway.
+    operation: INSERT_FIRST
+    # Envoy filter metadata namespaces forwarded to the ext_authz
+    # server. Set to ["envoy.filters.http.jwt_authn"] when
+    # operation=INSERT_AFTER to forward JWT claims to apikey-authz.
+    metadataContextNamespaces: []
 
 # networkPolicy toggles the per-namespace CiliumNetworkPolicy that
 # locks down East-West ingress to production-stack inference workloads

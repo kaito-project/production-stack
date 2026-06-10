@@ -7,6 +7,14 @@ Enabled cluster-level components:
 {{- if index .Values "keda-kaito-scaler" "enabled" }}
   - keda-kaito-scaler (KEDA external scaler for vLLM / InferenceSet)
 {{- end }}
+{{- if index .Values "llm-gateway-apikey" "enabled" }}
+  - llm-gateway-apikey (APIKey CRD + apikey-operator + apikey-authz gRPC
+    Service in `{{ index .Values "llm-gateway-apikey" "namespaceOverride" | default .Release.Namespace }}`).
+    ext_authz wiring on inference Gateways is owned per workload
+    namespace by `charts/modelharness` (set `auth.enabled: true` in
+    each modelharness release to attach ext_authz to that namespace's
+    `<namespace>-gw` Gateway pod).
+{{- end }}
 
 To inspect rendered resources for a single component, use:
   helm get manifest {{ .Release.Name }} --namespace {{ .Release.Namespace }} \
