@@ -66,8 +66,15 @@ var (
 
 	// GinkgoLabelClusterFilterHA marks tests that verify the cluster-wide
 	// BBR ext_proc filter's high availability and single-replica-loss
-	// failover (issue #89). These tests perturb the shared istio-system
+	// failover (issue #89). These tests perturb the shared kaito-system
 	// BBR Deployment, so the suite MUST decorate them Serial.
 	// See test/e2e/cluster_filter_ha_test.go.
 	GinkgoLabelClusterFilterHA = g.Label("ClusterFilterHA")
+
+	// GinkgoLabelClusterOutage marks tests that verify the fail-closed
+	// behavior of the cluster-wide filters (BBR ext_proc, llm-gateway-auth
+	// ext_authz) and the unified outage local_reply mapping. These tests
+	// scale cluster-wide singleton Deployments to zero, so they MUST run
+	// Serial and are Nightly-only.
+	GinkgoLabelClusterOutage = g.Label("ClusterOutage")
 )

@@ -44,11 +44,11 @@ spec:
           imagePullPolicy: {{ .Values.bbr.image.pullPolicy }}
           args:
             - "--streaming"
-            # Render --secure-serving from the dedicated toggle (NOT the
-            # generic flags map below) so values.yaml has a single
-            # source of truth and we cannot accidentally render the
-            # flag twice.
-            - "--secure-serving={{ .Values.bbr.secureServing }}"
+            # BBR always serves plaintext HTTP/2 in this fork: the
+            # gateway↔BBR hop stays inside the pod network and there is
+            # no upstream TLS / DestinationRule. Hardcoded here so
+            # values.yaml has no TLS knob to misconfigure.
+            - "--secure-serving=false"
             {{- range $key, $value := .Values.bbr.flags }}
             - --{{ $key }}={{ $value }}
             {{- end }}
@@ -135,8 +135,7 @@ spec:
       protocol: TCP
       port: {{ .Values.bbr.port }}
       targetPort: {{ .Values.bbr.port }}
-      # HTTP2 (h2c) so Envoy's outbound cluster speaks plaintext
-      # gRPC. When `bbr.secureServing=true` this is still HTTP/2 — the
-      # only difference is the rendered DestinationRule below adds an
-      # upstream TLS context.
+      # HTTP2 (h2c) so Envoy's outbound cluster speaks plaintext gRPC.
+      # BBR always serves plaintext HTTP/2 (no upstream TLS / no
+      # DestinationRule); the gateway↔BBR hop stays in the pod network.
       appProtocol: HTTP2

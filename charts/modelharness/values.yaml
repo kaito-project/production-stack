@@ -29,6 +29,74 @@ gatewayPort: 80
 # deploying onto such a cluster.
 gatewayClassName: istio
 
+# bbr wires the cluster-wide Body-Based Router (BBR) into THIS
+# namespace's Gateway. BBR runs as a workload singleton installed once
+# by charts/productionstack/charts/body-based-routing; this chart only
+# renders the dataplane EnvoyFilter (templates/envoyfilter-bbr.yaml)
+# that injects BBR's ext_proc into the Gateway HCM, scoped to the
+# Gateway pod via workloadSelector. The BBR Service is reached purely
+# by its cluster FQDN, so `name`/`namespace`/`port` below MUST match
+# wherever BBR was installed.
+bbr:
+  # BBR Service name. Matches the body-based-routing chart default.
+  name: body-based-router
+
+  # Namespace BBR's Deployment/Service run in. Matches the umbrella
+  # release namespace by default (the body-based-routing subchart no
+  # longer pins itself to istio-system).
+  namespace: kaito-system
+
+  # BBR ext_proc gRPC port. Matches the body-based-routing chart default.
+  port: 9004
+
+  # Which HTTP lifecycle events Envoy forwards to BBR. Only
+  # requestHeaders + requestBody are required for the default model
+  # extraction; the rest are kept on for upstream parity.
+  supportedEvents:
+    requestHeaders: true
+    requestBody: true
+    requestTrailers: true
+    responseHeaders: true
+    responseBody: true
+    responseTrailers: true
+
+  envoyFilter:
+    # Filter-chain placement. Anchor on Istio's auto-injected
+    # InferencePool ext_proc filter and INSERT_BEFORE so BBR injects
+    # `X-Gateway-Model-Name` before the InferencePool/EPP ext_proc and
+    # the HTTPRoute match run. Final chain:
+    #   istio.metadata_exchange → bbr → ext_proc (InferencePool) → … → router
+    operation: INSERT_BEFORE
+    anchorSubFilter: envoy.filters.http.ext_proc
+
+  # Passive outlier detection for the BBR ext_proc upstream cluster.
+  # A CLUSTER patch on the BBR EnvoyFilter MERGEs `outlier_detection`
+  # onto the auto-generated `outbound|<port>||body-based-router...`
+  # cluster on THIS namespace's Gateway, so a BBR replica that starts
+  # erroring is ejected from the load-balancing set and in-flight
+  # requests fail over to the healthy replicas instead of tripping the
+  # fail-closed `502 bbr_unavailable` path. The Kubernetes gRPC
+  # readiness probe (rendered by the body-based-routing chart) is the
+  # complementary ACTIVE health check. `maxEjectionPercent` MUST stay
+  # < 100 so all replicas can never be ejected at once — `502
+  # bbr_unavailable` then only fires when every replica is genuinely
+  # unhealthy (issue #89).
+  outlierDetection:
+    # Eject after this many consecutive gateway (connect / stream)
+    # failures — the dominant failure mode for an ext_proc upstream
+    # that is down or hung.
+    consecutiveGatewayFailure: 3
+    # Eject after this many consecutive 5xx-mapped responses.
+    consecutive5xx: 3
+    # How often Envoy sweeps for outliers / considers un-ejecting.
+    interval: 5s
+    # How long an ejected host stays out before it is tried again
+    # (grows with the ejection count).
+    baseEjectionTime: 30s
+    # Hard cap on the share of the cluster that may be ejected at
+    # once. Keep < 100 (see note above).
+    maxEjectionPercent: 50
+
 # Catch-all "model not found" responses are now produced by an Envoy
 # direct_response patched onto the Gateway's HCM via the
 # `model-not-found-direct` EnvoyFilter (see

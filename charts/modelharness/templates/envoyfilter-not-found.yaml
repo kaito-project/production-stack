@@ -61,3 +61,7 @@ spec:
                     key: content-type
                     value: application/json
                   append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                - header:
+                    key: x-kaito-requested-model
+                    value: "%REQ(X-Gateway-Model-Name)%"
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD

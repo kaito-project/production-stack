@@ -1,15 +1,13 @@
-Body-Based Router (BBR) installed cluster-wide.
+Body-Based Router (BBR) installed as a cluster-wide workload singleton.
 
   Release          : {{ .Release.Name }}
-  Namespace        : {{ .Release.Namespace }}
-  Service          : {{ .Values.bbr.name }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.bbr.port }}
-  Provider         : {{ .Values.provider.name }}
-  Secure serving   : {{ .Values.bbr.secureServing }}
-{{- if eq .Values.provider.name "istio" }}
-  Filter operation : {{ .Values.provider.istio.envoyFilter.operation }}{{ if .Values.provider.istio.envoyFilter.anchorSubFilter }} (anchor: {{ .Values.provider.istio.envoyFilter.anchorSubFilter }}){{ end }}
+  Namespace        : {{ include "bbr.namespace" . }}
+  Service          : {{ .Values.bbr.name }}.{{ include "bbr.namespace" . }}.svc.cluster.local:{{ .Values.bbr.port }}
+  Serving          : plaintext HTTP/2 (--secure-serving=false, no upstream TLS)
 
-  The rendered EnvoyFilter has NO targetRefs and is scoped to
-  `match.context: GATEWAY`, so it attaches to every Istio-managed
-  Gateway in the mesh. Per-namespace Gateways therefore see BBR
-  automatically — no extra wiring needed per workload namespace.
-{{- end }}
+  This chart renders only the BBR Deployment + Service + cluster-scoped
+  RBAC. It does NOT render an EnvoyFilter. The per-namespace gateway
+  wiring (the ext_proc EnvoyFilter that injects BBR into a Gateway's
+  HCM, scoped to that Gateway pod) is rendered by charts/modelharness.
+  Make sure modelharness's `bbr.namespace` matches the namespace above
+  so its EnvoyFilter targets this Service's cluster FQDN.

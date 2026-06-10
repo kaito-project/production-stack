@@ -39,19 +39,24 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Body-Based Router (BBR) for the Gateway API Inference Extension.
-# Cluster-wide singleton; install once into Istio's root namespace.
+# Cluster-wide WORKLOAD singleton: a single Deployment + Service. It no
+# longer renders an EnvoyFilter, so it does NOT need to live in Istio's
+# root namespace — it is co-located with this umbrella release.
+# The per-namespace gateway wiring (ext_proc EnvoyFilter + outage
+# local_reply, both scoped to each Gateway pod) is rendered by
+# charts/modelharness; keep its `bbr.namespace` in sync with whatever
+# namespace BBR ends up in here.
 # See charts/body-based-routing/README.md for the full value reference.
 body-based-routing:
-  enabled: true
-  # MUST be Istio's root namespace so the rendered EnvoyFilter is
-  # visible to every Istio-managed Gateway in the mesh. Override only
-  # if you have moved Istio's root namespace.
-  namespaceOverride: istio-system
+  # Inherit the umbrella release namespace (kaito-system by default).
+  # BBR is reached by its cluster FQDN, so it can live anywhere; set a
+  # namespaceOverride only if you need it elsewhere (and then update
+  # modelharness `bbr.namespace` to match).
+  namespaceOverride: ""
 
 # KEDA external scaler for vLLM / InferenceSet workloads.
 # See charts/keda-kaito-scaler/values.yaml for the full value reference.
 keda-kaito-scaler:
-  enabled: true
   # Co-locate with the KEDA control plane by default. Set to "" to
   # inherit the umbrella release namespace instead.
   namespaceOverride: keda

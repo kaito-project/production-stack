@@ -7,18 +7,19 @@ description: |
 
   This chart is intended to be consumed as a dependency of the top-level
   `kaito` Helm chart. Each component is shipped as a subchart under
-  `charts/` and can be enabled or disabled individually via the
-  `<component>.enabled` toggle in values.yaml. Component-specific values
-  are passed through by nesting them under the subchart's name, e.g.:
+  `charts/`. body-based-routing and keda-kaito-scaler are mandatory
+  cluster infrastructure and are always installed; optional components
+  (e.g. llm-gateway-apikey) carry a `<component>.enabled` toggle in
+  values.yaml. Component-specific values are passed through by nesting
+  them under the subchart's name, e.g.:
 
       body-based-routing:
-        enabled: true
         bbr:
           replicas: 2
 
   Adding a new cluster-level component is a matter of dropping its chart
   under `charts/` and appending a new entry to the `dependencies` list
-  below (with a matching `<name>.enabled` toggle in values.yaml).
+  below.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
@@ -38,13 +39,11 @@ maintainers:
 dependencies:
   - name: body-based-routing
     version: 0.1.0
-    condition: body-based-routing.enabled
     tags:
       - gateway
       - routing
   - name: keda-kaito-scaler
     version: 0.5.1
-    condition: keda-kaito-scaler.enabled
     tags:
       - autoscaling
   # Upstream API-key ext_authz chart, pulled from the kaito-project OCI

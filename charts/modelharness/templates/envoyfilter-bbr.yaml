@@ -1,0 +1,117 @@
+{{/*
+Per-namespace Body-Based Router (BBR) wiring.
+
+BBR runs as a cluster-wide WORKLOAD singleton (a single Deployment +
+Service installed once by charts/productionstack/charts/body-based-routing,
+co-located with the umbrella release in `bbr.namespace`). This template
+renders the dataplane half — the ext_proc EnvoyFilter that injects BBR
+into THIS namespace's Gateway HCM — and scopes it to that Gateway pod
+only via `workloadSelector`, so production-stack's BBR never patches
+unrelated Istio Gateways elsewhere in the mesh.
+
+Filter-chain placement:
+  BBR injects `X-Gateway-Model-Name` from the JSON request body so the
+  per-Gateway HTTPRoute (and the Istio-injected InferencePool ext_proc
+  filter that points at EPP) can route the request to the correct
+  deployment / pod. For that to work BBR MUST run BEFORE the
+  InferencePool ext_proc filter — if ext_proc runs first it resolves
+  its per-route override before the BBR-injected header exists, the
+  route falls through to the catch-all, ext_proc silently uses its
+  default `cluster: dummy` config (a no-op), requests bypass EPP and
+  Envoy round-robins across the InferencePool pods. So anchor on
+  Istio's auto-injected `envoy.filters.http.ext_proc` (InferencePool)
+  with INSERT_BEFORE, giving the chain:
+    istio.metadata_exchange → bbr → ext_proc (InferencePool) → … → router
+
+Transport:
+  BBR serves plaintext HTTP/2 (`--secure-serving=false`); the upstream
+  cluster is plain `outbound|<port>||<svc>.<ns>.svc.cluster.local` with
+  NO upstream TLS and NO DestinationRule. The gateway↔BBR hop never
+  leaves the pod network.
+*/}}
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: bbr-ext-proc
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: {{ include "modelharness.gatewayName" . | quote }}
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              {{- if .Values.bbr.envoyFilter.anchorSubFilter }}
+              subFilter:
+                name: {{ .Values.bbr.envoyFilter.anchorSubFilter }}
+              {{- end }}
+      patch:
+        operation: {{ .Values.bbr.envoyFilter.operation }}
+        value:
+          name: envoy.filters.http.ext_proc.bbr
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+            failure_mode_allow: false
+            allow_mode_override: true
+            processing_mode:
+              request_header_mode: {{ if .Values.bbr.supportedEvents.requestHeaders }}"SEND"{{ else }}"SKIP"{{ end }}
+              response_header_mode: {{ if .Values.bbr.supportedEvents.responseHeaders }}"SEND"{{ else }}"SKIP"{{ end }}
+              request_body_mode: {{ if .Values.bbr.supportedEvents.requestBody }}"FULL_DUPLEX_STREAMED"{{ else }}"NONE"{{ end }}
+              response_body_mode: {{ if .Values.bbr.supportedEvents.responseBody }}"FULL_DUPLEX_STREAMED"{{ else }}"NONE"{{ end }}
+              request_trailer_mode: {{ if .Values.bbr.supportedEvents.requestTrailers }}"SEND"{{ else }}"SKIP"{{ end }}
+              response_trailer_mode: {{ if .Values.bbr.supportedEvents.responseTrailers }}"SEND"{{ else }}"SKIP"{{ end }}
+            grpc_service:
+              envoy_grpc:
+                cluster_name: outbound|{{ .Values.bbr.port }}||{{ .Values.bbr.name }}.{{ .Values.bbr.namespace }}.svc.cluster.local
+    # ─────────────────────────────────────────────────────────────────
+    # Passive outlier detection for the BBR ext_proc upstream cluster.
+    #
+    # Istio auto-generates the
+    # `outbound|{{ .Values.bbr.port }}||{{ .Values.bbr.name }}.{{ .Values.bbr.namespace }}.svc.cluster.local`
+    # EDS cluster that the ext_proc filter above dials. This CLUSTER
+    # patch MERGEs `outlier_detection` onto it so a BBR replica that
+    # starts erroring (gateway / connect failures, or 5xx-mapped
+    # responses) is ejected from the load-balancing set and in-flight
+    # prompt requests fail over to the healthy replicas — without
+    # tripping the fail-closed `502 bbr_unavailable` path. The Kubernetes
+    # gRPC readiness probe (body-based-routing templates/bbr.yaml)
+    # provides the complementary ACTIVE health check via the EDS
+    # endpoint set; only Ready replicas are programmed into this cluster.
+    #
+    # `max_ejection_percent` is kept < 100 so outlier detection can never
+    # eject every replica at once: `502 bbr_unavailable` therefore only
+    # fires when ALL replicas are genuinely unhealthy (issue #89).
+    #
+    # Scoped to THIS namespace's Gateway pod via the workloadSelector
+    # above, so it never patches unrelated Istio Gateways.
+    # ─────────────────────────────────────────────────────────────────
+    - applyTo: CLUSTER
+      match:
+        context: GATEWAY
+        cluster:
+          service: {{ .Values.bbr.name }}.{{ .Values.bbr.namespace }}.svc.cluster.local
+          portNumber: {{ .Values.bbr.port }}
+      patch:
+        operation: MERGE
+        value:
+          outlier_detection:
+            consecutive_gateway_failure: {{ .Values.bbr.outlierDetection.consecutiveGatewayFailure }}
+            enforcing_consecutive_gateway_failure: 100
+            consecutive_5xx: {{ .Values.bbr.outlierDetection.consecutive5xx }}
+            enforcing_consecutive_5xx: 100
+            # Treat ext_proc connect/stream failures (local-origin
+            # errors) as eject-worthy in their own right, not just
+            # upstream 5xx.
+            split_external_local_origin_errors: true
+            consecutive_local_origin_failure: {{ .Values.bbr.outlierDetection.consecutiveGatewayFailure }}
+            enforcing_consecutive_local_origin_failure: 100
+            interval: {{ .Values.bbr.outlierDetection.interval | quote }}
+            base_ejection_time: {{ .Values.bbr.outlierDetection.baseEjectionTime | quote }}
+            max_ejection_percent: {{ .Values.bbr.outlierDetection.maxEjectionPercent }}

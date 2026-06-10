@@ -1,0 +1,133 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-namespace outage `local_reply` for the fail-closed gateway filters.
+#
+# Why this exists:
+#   BBR ext_proc and llm-gateway-auth ext_authz are both configured
+#   fail-closed (`failure_mode_allow: false`). When either is unreachable,
+#   Envoy generates a LOCAL reply for the request. Without this mapping a BBR
+#   outage would skip `X-Gateway-Model-Name` injection and the request would
+#   fall through this namespace's catch-all `model-not-found-direct` filter as
+#   a misleading `404 model_not_found`. This filter rewrites those outage
+#   replies onto the unified OpenAI-compatible error envelope so both the
+#   client (response body) and the operator (`x-kaito-error-source` header) can
+#   tell which gateway filter is at fault.
+#
+# Scope:
+#   * `workloadSelector` pins the patch to THIS namespace's Gateway pod, so it
+#     never affects unrelated Istio Gateways elsewhere in the mesh.
+#   * `applyTo: NETWORK_FILTER` + `operation: MERGE` on the
+#     http_connection_manager merges `local_reply_config` into the existing
+#     HCM without replacing the Istio-managed filter chain.
+#   * `local_reply_config` only rewrites responses Envoy itself generates
+#     (filter-originated local replies and router `direct_response`s). A
+#     response proxied back from an upstream pod (e.g. a genuine vLLM 500) is
+#     NOT a local reply and is left unchanged.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: gateway-filter-outage-local-reply
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: {{ include "modelharness.gatewayName" . | quote }}
+  configPatches:
+    - applyTo: NETWORK_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: MERGE
+        value:
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+            local_reply_config:
+              mappers:
+                # ── ext_authz outage → 502 ext_authz_unavailable ──────────
+                # UAEX (UnauthorizedExternalService) fires on any ext_authz
+                # deny or error. The `>= 500` status guard keeps legitimate
+                # 401/403 denies untouched and only rewrites the 5xx an
+                # ext_authz outage produces under fail-closed.
+                - filter:
+                    and_filter:
+                      filters:
+                        - response_flag_filter:
+                            flags:
+                              - UAEX
+                        - status_code_filter:
+                            comparison:
+                              op: GE
+                              value:
+                                default_value: 500
+                                runtime_key: productionstack_ext_authz_min_status
+                  status_code: 502
+                  body:
+                    inline_string: |
+                      {"error":{"type":"service_unavailable","code":"ext_authz_unavailable","message":"The authentication service is temporarily unavailable. Please retry.","param":null}}
+                  headers_to_add:
+                    - header:
+                        key: x-kaito-error-source
+                        value: authz
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                    - header:
+                        key: content-type
+                        value: application/json
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                # ── BBR ext_proc outage → 502 bbr_unavailable ─────────────
+                # BBR's ext_proc filter emits a locally-generated 500 when it
+                # cannot reach the BBR Deployment under fail-closed.
+                #
+                # Disambiguation from an EPP (InferencePool) ext_proc outage:
+                # the EPP ext_proc filter ALSO runs fail-closed (the
+                # InferencePool endpointPickerRef defaults to FailClose) and
+                # also emits a locally-generated 500, with the SAME status and
+                # NO distinguishing response flag. Matching `status == 500`
+                # alone would therefore misattribute an EPP outage to BBR.
+                #
+                # The deterministic signal is the `X-Gateway-Model-Name`
+                # request header, which is injected BY BBR and only AFTER BBR
+                # runs (BBR sits before route matching, EPP after):
+                #   * BBR outage  -> BBR never ran -> header ABSENT  -> this is BBR.
+                #   * EPP outage  -> BBR already injected the header -> header
+                #                    PRESENT -> NOT matched here, so the EPP
+                #                    outage is not mislabeled as bbr.
+                # So this mapper matches a local 500 ONLY when the header is
+                # absent, which is uniquely the BBR fail-closed path.
+                #
+                # Prerequisite: the gateway/BBR must strip any client-supplied
+                # `X-Gateway-Model-Name` at ingress; otherwise a spoofed header
+                # could mask a real BBR outage. (BBR overwrites this header on
+                # the request path, so a present header on a 500 means BBR ran.)
+                - filter:
+                    and_filter:
+                      filters:
+                        - status_code_filter:
+                            comparison:
+                              op: EQ
+                              value:
+                                default_value: 500
+                                runtime_key: productionstack_bbr_status
+                        - header_filter:
+                            header:
+                              name: X-Gateway-Model-Name
+                              present_match: true
+                              invert_match: true
+                  status_code: 502
+                  body:
+                    inline_string: |
+                      {"error":{"type":"service_unavailable","code":"bbr_unavailable","message":"The request router is temporarily unavailable. Please retry.","param":null}}
+                  headers_to_add:
+                    - header:
+                        key: x-kaito-error-source
+                        value: bbr
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                    - header:
+                        key: content-type
+                        value: application/json
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
