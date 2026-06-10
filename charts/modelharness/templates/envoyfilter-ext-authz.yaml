@@ -96,6 +96,13 @@ spec:
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
             transport_api_version: V3
+            # Fail-closed: when apikey-authz is unreachable or slow
+            # (timeout, gRPC error, no response), Envoy denies the
+            # request rather than admitting it. Matches the Envoy
+            # default but is set explicitly so the security posture is
+            # readable on the live EnvoyFilter resource and survives
+            # any future change to the upstream default.
+            failure_mode_allow: false
             grpc_service:
               envoy_grpc:
                 cluster_name: {{ $cluster | quote }}

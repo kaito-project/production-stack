@@ -69,7 +69,21 @@ auth:
     serviceNamespace: llm-gateway-auth
     grpcPort: 9001
     # gRPC call timeout for the ext_authz check.
-    timeout: 600s
+    #
+    # ext_authz fires ONCE per request on headers only — it is not in
+    # the streaming body path, so a low single-digit-second budget is
+    # safe and desirable. The chart renders `failure_mode_allow: false`
+    # on the EnvoyFilter (templates/envoyfilter-ext-authz.yaml), so a
+    # hung or slow apikey-authz fails the request fast rather than
+    # silently letting traffic through.
+    #
+    # 5 s gives roughly 250,000x headroom over the ~20 µs healthy-path
+    # cost observed on AKS (saturn-we, see PR #97 description), while
+    # still failing fast enough to surface a stuck authz pod within a
+    # single user-visible request — instead of holding Envoy worker
+    # threads for ten minutes (the previous 600 s default), masking the
+    # outage and starving connections cluster-wide.
+    timeout: 5s
     # How ext_authz is inserted into the gateway HTTP filter chain.
     #   INSERT_FIRST — head of the chain (default). Works without any
     #                  RequestAuthentication on the Gateway.
