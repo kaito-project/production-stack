@@ -169,10 +169,13 @@ into one synchronous run. A release publishes:
 
 - a multi-arch container image at
   `ghcr.io/kaito-project/gpu-node-mocker:<X.Y.Z>` (no leading `v`);
-- the three Helm charts under [`charts/`](charts/) — `gpu-node-mocker`,
-  `modeldeployment`, and `modelharness` — to the chart repository hosted on
+- the four Helm charts under [`charts/`](charts/) — `gpu-node-mocker`,
+  `modeldeployment`, `modelharness`, and the `productionstack` umbrella
+  chart — to the chart repository hosted on
   this repo's `gh-pages` branch
   (`https://kaito-project.github.io/production-stack/charts/kaito-project`);
+  the `productionstack` chart has its OCI subchart dependency vendored via
+  `helm dependency update` before packaging.
 - a GitHub Release at the same `vX.Y.Z` tag with auto-generated changelog
   notes.
 
@@ -187,6 +190,7 @@ To publish `vX.Y.Z`:
      [`charts/gpu-node-mocker/values.yaml`](charts/gpu-node-mocker/values.yaml)
    - [`charts/modeldeployment/Chart.yaml`](charts/modeldeployment/Chart.yaml)
    - [`charts/modelharness/Chart.yaml`](charts/modelharness/Chart.yaml)
+   - [`charts/productionstack/Chart.yaml`](charts/productionstack/Chart.yaml)
 
 2. **After the PR is merged**, run **Actions → "Create release (manually)"**
    with `release_version=vX.Y.Z`.
