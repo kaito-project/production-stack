@@ -37,6 +37,18 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.release_version }}
 
+      - name: Setup Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Update productionstack chart dependencies
+        # productionstack is an umbrella chart with an OCI subchart
+        # (llm-gateway-apikey) pulled from a public registry at
+        # `helm dependency update` time. Vendor the dependency tarballs
+        # into charts/ before staging so helm-gh-pages can package it.
+        run: helm dependency update charts/productionstack
+
       - name: Stage charts for publishing
         # Copy each releasable chart into a clean staging dir so that any
         # in-tree dev-only Helm folders (added later) are not picked up by
@@ -46,6 +58,7 @@ jobs:
           cp -r charts/gpu-node-mocker packaged-charts/
           cp -r charts/modeldeployment packaged-charts/
           cp -r charts/modelharness    packaged-charts/
+          cp -r charts/productionstack packaged-charts/
 
       - name: Publish helm charts to gh-pages
         uses: stefanprodan/helm-gh-pages@0ad2bb377311d61ac04ad9eb6f252fb68e207260 # v1.7.0
@@ -81,3 +94,6 @@ jobs:
           make helm-package-and-push CHART_NAME='gpu-node-mocker'
           make helm-package-and-push CHART_NAME='modeldeployment'
           make helm-package-and-push CHART_NAME='modelharness'
+          # Umbrella chart: vendor its OCI subchart dependency before packaging.
+          helm dependency update charts/productionstack
+          make helm-package-and-push CHART_NAME='productionstack'
