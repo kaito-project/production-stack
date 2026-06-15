@@ -5,6 +5,7 @@ metadata:
   namespace: {{ include "modeldeployment.namespace" . }}
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
+    {{- include "modeldeployment.identifyingLabels" . | nindent 4 }}
 spec:
   targetPorts:
     - number: {{ .Values.epp.modelServerPort }}
@@ -21,3 +22,16 @@ spec:
     name: {{ include "modeldeployment.eppServiceName" . }}
     port:
       number: {{ .Values.epp.extProcPort }}
+    # Fail-closed (explicit; this is also the InferencePool v1 API default).
+    # When the EPP ext_proc endpoint picker is unreachable or errors, the
+    # request is dropped rather than round-robined across the pool bypassing
+    # the picker. NOTE: the EPP ext_proc filter is auto-injected by the
+    # Inference Gateway / GAIE from this InferencePool, and the InferencePool
+    # API only exposes `failureMode` (FailOpen/FailClose) — it does NOT expose
+    # the ext_proc `status_on_error` knob. The fail-closed local-reply status
+    # therefore takes the Envoy ext_proc default of 500 (Internal Server
+    # Error); the gateway local_reply matches that 500 with the model header
+    # PRESENT and maps it to 502 epp_unavailable (x-kaito-error-source: epp).
+    # A 504 timeout on this hop is reported as a router flag (UT) and mapped
+    # separately.
+    failureMode: FailClose

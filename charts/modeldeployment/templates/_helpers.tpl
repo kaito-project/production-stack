@@ -54,6 +54,27 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
+Stable identifying labels stamped on every chart-owned object's
+metadata.labels (EPP Deployment/Service, HTTPRoute, InferencePool,
+ConfigMap, and the InferenceSet itself). These give the
+productionstack-status-reporter a deterministic way to correlate an
+object back to the modeldeployment release that owns it:
+
+  * kaito.sh/inferenceset: <name>  — the owning InferenceSet / deployment name.
+  * kaito.sh/owned-by: modeldeployment — the owning layer, value-free and stable.
+
+Distinct from `modeldeployment.ownerLabel` (which carries only the
+`kaito.sh/owned-by` pod-selector label stamped additively into pod
+template metadata for the modelharness NetworkPolicies): these labels
+also pin the per-object `kaito.sh/inferenceset` identifier and are
+applied to object metadata rather than pod templates.
+*/}}
+{{- define "modeldeployment.identifyingLabels" -}}
+kaito.sh/inferenceset: {{ include "modeldeployment.name" . }}
+kaito.sh/owned-by: modeldeployment
+{{- end }}
+
+{{/*
 Ownership label stamped on every pod that production-stack owns —
 EPP pods rendered by this chart, inference workload pods that the
 KAITO InferenceSet / Workspace controller renders on our behalf,

@@ -5,6 +5,7 @@ metadata:
   namespace: {{ include "modeldeployment.namespace" . }}
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
+    {{- include "modeldeployment.identifyingLabels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.epp.replicas }}
   strategy:

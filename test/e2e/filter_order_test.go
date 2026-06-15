@@ -212,12 +212,18 @@ var _ = Describe("Filter execution order",
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
-				time.Sleep(3 * time.Second)
-
-				after, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(after)).To(BeNumerically(">", beforeLen),
-					"BBR log size should grow after a valid authenticated request (proves the A2 needle-absence is meaningful)")
+				// Poll for the log to grow rather than sleeping a fixed
+				// interval: BBR logs via klog, which buffers and flushes on a
+				// periodic (~5s) timer, so a single fixed wait races the flush
+				// and can observe a stale, unchanged log size. Re-fetch until
+				// the new log line lands (or the timeout proves BBR was truly
+				// silent, which is the real failure this counter-test guards).
+				Eventually(func(g Gomega) {
+					after, gErr := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
+					g.Expect(gErr).NotTo(HaveOccurred())
+					g.Expect(len(after)).To(BeNumerically(">", beforeLen),
+						"BBR log size should grow after a valid authenticated request (proves the A2 needle-absence is meaningful)")
+				}, 30*time.Second, 2*time.Second).Should(Succeed())
 			})
 		})
 

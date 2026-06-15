@@ -88,6 +88,17 @@ spec:
             # denies the request rather than admitting it. Set explicitly so
             # the security posture is readable on the live resource.
             failure_mode_allow: false
+            # Status returned to the client on a network/communication error
+            # between this filter and apikey-authz (i.e. a full ext_authz
+            # outage, e.g. the Deployment scaled to zero). Envoy's built-in
+            # default here is 403 Forbidden, which would NOT trip the gateway
+            # local_reply `UAEX + status >= 500 -> 502 ext_authz_unavailable`
+            # mapper and would mislead clients into treating an outage as an
+            # auth denial. Pin it to 503 so an ext_authz outage deterministically
+            # surfaces as a 5xx that the local_reply rewrites to
+            # 502 ext_authz_unavailable (x-kaito-error-source: authz).
+            status_on_error:
+              code: ServiceUnavailable
             grpc_service:
               envoy_grpc:
                 cluster_name: {{ $cluster | quote }}

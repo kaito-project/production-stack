@@ -52,7 +52,25 @@ spec:
           name: envoy.filters.http.ext_proc.bbr
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+            # Fail-closed (explicit). When the BBR ext_proc service is
+            # unreachable, Envoy rejects the request with a local reply rather
+            # than skipping BBR (which would drop the X-Gateway-Model-Name
+            # header and fall through to the catch-all as a misleading 404).
             failure_mode_allow: false
+            # Status returned downstream when the BBR ext_proc server errors,
+            # fails to respond, or cannot be reached. Envoy's built-in ext_proc
+            # default is 500, but we pin it explicitly to 503 Service
+            # Unavailable: a BBR outage is a transient "dependency temporarily
+            # down, retry" condition, which 503 expresses more accurately than
+            # the generic 500. It also aligns with the ext_authz outage status
+            # (also pinned to 503), so every fail-closed cluster-filter outage
+            # surfaces a consistent 503 upstream of the gateway local_reply.
+            # The local_reply matches this 5xx with the model header ABSENT and
+            # maps it to 502 bbr_unavailable (x-kaito-error-source: bbr). NOTE:
+            # an ext_proc TIMEOUT is reported as 504 regardless of this field;
+            # that path is mapped separately as a router-flag (UT) case.
+            status_on_error:
+              code: ServiceUnavailable
             allow_mode_override: true
             processing_mode:
               request_header_mode: {{ if .Values.bbr.supportedEvents.requestHeaders }}"SEND"{{ else }}"SKIP"{{ end }}

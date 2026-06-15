@@ -115,6 +115,27 @@ const (
 	// `ext_authz_unavailable` outage reply. Auth-enabled so ext_authz is
 	// in path.
 	CaseExtAuthzOutage = "ext-authz-outage"
+
+	// CaseEPPOutage covers epp_outage_test.go — verifies that when the
+	// per-InferenceSet EPP (InferencePool ext_proc, failureMode: FailClose)
+	// is unavailable, a request is mapped to a 502 `epp_unavailable` outage
+	// reply (x-kaito-error-source: epp) by the consolidated per-namespace
+	// local_reply (mapper #4: model header present + local 5xx, no router
+	// flag), and NOT to a misleading 404 model_not_found. Scaling the EPP
+	// Deployment to zero touches only this case's namespace, so the suite
+	// does not need Serial. Non-auth so only BBR + EPP are in path.
+	CaseEPPOutage = "epp-outage"
+
+	// CaseModelUnavailable covers model_unavailable_test.go — verifies that
+	// when the InferencePool has zero ready inference endpoints (the
+	// InferenceSet is scaled to replicas=0) while the HTTPRoute and EPP
+	// remain healthy, a request is mapped to a 503 `model_unavailable`
+	// outage reply (x-kaito-error-source: inferenceset, Retry-After) by the
+	// consolidated per-namespace local_reply (mapper #2: model header
+	// present + router flag), and NOT to a 404. Touches only this case's
+	// namespace (its InferenceSet replicas), so the suite does not need
+	// Serial. Non-auth so only BBR + EPP are in path.
+	CaseModelUnavailable = "model-unavailable"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -241,6 +262,24 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Replicas:          1,
 			InstanceType:      "Standard_NV36ads_A10_v5",
 			AuthAPIKeyEnabled: true,
+		},
+	},
+	CaseEPPOutage: {
+		{
+			Name:         "epp-outage-phi",
+			Namespace:    "e2e-epp-outage",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
+		},
+	},
+	CaseModelUnavailable: {
+		{
+			Name:         "model-unavailable-phi",
+			Namespace:    "e2e-model-unavailable",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseScaling: {

@@ -5,6 +5,7 @@ metadata:
   namespace: {{ include "modeldeployment.namespace" . }}
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
+    {{- include "modeldeployment.identifyingLabels" . | nindent 4 }}
 spec:
   parentRefs:
     - group: gateway.networking.k8s.io
@@ -32,6 +33,20 @@ spec:
           path:
             type: PathPrefix
             value: /
+      filters:
+        # Pass-through error-source stamp (§2.2, modeldeployment pass-through
+        # row): any non-error or vLLM-native response (e.g. a 429 rate-limit)
+        # is proxied back unchanged except for this header, which names the
+        # inference pod as the responsible component. Error responses Envoy
+        # generates locally (model_unavailable / epp_unavailable / the gateway
+        # and bbr/authz codes) are rewritten by the consolidated per-namespace
+        # envoyfilter-outage-reply local_reply mappers (charts/modelharness),
+        # which OVERWRITE this header with the correct at-fault source.
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: x-kaito-error-source
+                value: inferenceset
       backendRefs:
         - name: {{ include "modeldeployment.inferencePoolName" . }}
           group: inference.networking.k8s.io
