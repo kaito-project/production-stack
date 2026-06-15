@@ -2,56 +2,64 @@
 # Defaults to .Release.Namespace when empty.
 namespace: ""
 
+# manageNamespace controls whether the chart renders the workload
+# Namespace object (stamped with the
+# `productionstack.kaito.sh/managed-by: modelharness` discovery label the
+# productionstack-status-reporter selects on). Rendered only when the
+# release is installed into a management namespace distinct from the
+# workload namespace (`namespace` is set and differs from
+# `.Release.Namespace`); otherwise Helm owns the Namespace and the
+# installer stamps the label at creation time. See
+# templates/namespace.yaml.
+manageNamespace: true
+
+# gatewayClassName is the GatewayClass the per-namespace Gateway binds
+# to. MUST be non-empty (enforced by values.schema.json). Defaults to
+# Istio's "istio" GatewayClass.
+gatewayClassName: istio
+
 # gatewayName is the per-namespace Istio Gateway resource name. When
-# empty (the default), the chart derives it as "<namespace>-gw" so the
-# Gateway name self-identifies the workload namespace it serves while
-# remaining distinct from the namespace name (avoids accidental
-# conflation in selectors / Service names).
-#
-# Override only when you need a business-specific Gateway name (for
-# example, in a shared / multi-tenant cluster). All HTTPRoutes (the
-# catch-all rendered here, plus the per-deployment HTTPRoutes rendered
-# by charts/modeldeployment) will parent this Gateway. The Gateway's
-# Service follows Istio's "<gatewayName>-istio" convention; tests
-# port-forward to that Service to exercise the dataplane.
+# empty (the default), the chart derives "<namespace>-gw" so the Gateway
+# name self-identifies the workload namespace it serves while staying
+# distinct from the namespace name. Override only when you need a
+# business-specific name (e.g. a shared / multi-tenant cluster). All
+# HTTPRoutes (the catch-all here plus the per-deployment HTTPRoutes from
+# charts/modeldeployment) parent this Gateway. The Gateway's Service
+# follows Istio's "<gatewayName>-istio" convention.
 gatewayName: ""
 
 # gatewayPort is the HTTP listener port on the Gateway.
 gatewayPort: 80
 
 # gatewayClassName is the GatewayClass the per-namespace Gateway binds
-# to. The default `istio` matches the GatewayClass installed by the
-# upstream Istio control plane (vanilla Istio installs / e2e kind
-# clusters). On the **AKS Istio add-on with App Routing**, the
-# delivered class is `approuting-istio` (controllerName
-# `istio.aks.azure.com/gateway-controller`) — set this value to
-# `approuting-istio` (or whatever class your controller exposes) when
-# deploying onto such a cluster.
+# to. The default `istio` matches the GatewayClass from a vanilla Istio
+# install (e2e kind clusters). On the AKS Istio add-on with App Routing
+# the class is `approuting-istio` (controllerName
+# `istio.aks.azure.com/gateway-controller`) — set this value to match
+# whatever class your controller exposes.
 gatewayClassName: istio
 
 # bbr wires the cluster-wide Body-Based Router (BBR) into THIS
-# namespace's Gateway. BBR runs as a workload singleton installed once
-# by charts/productionstack/charts/body-based-routing; this chart only
+# namespace's Gateway. BBR runs as a singleton installed by
+# charts/productionstack/charts/body-based-routing; this chart only
 # renders the dataplane EnvoyFilter (templates/envoyfilter-bbr.yaml)
 # that injects BBR's ext_proc into the Gateway HCM, scoped to the
-# Gateway pod via workloadSelector. The BBR Service is reached purely
-# by its cluster FQDN, so `name`/`namespace`/`port` below MUST match
-# wherever BBR was installed.
+# Gateway pod. The BBR Service is reached by its cluster FQDN, so
+# `name`/`namespace`/`port` below MUST match wherever BBR was installed.
 bbr:
-  # BBR Service name. Matches the body-based-routing chart default.
+  # BBR Service name.
   name: body-based-router
 
-  # Namespace BBR's Deployment/Service run in. Matches the umbrella
-  # release namespace by default (the body-based-routing subchart no
-  # longer pins itself to istio-system).
+  # Namespace BBR's Deployment/Service run in (the umbrella release
+  # namespace by default).
   namespace: kaito-system
 
-  # BBR ext_proc gRPC port. Matches the body-based-routing chart default.
+  # BBR ext_proc gRPC port.
   port: 9004
 
   # Which HTTP lifecycle events Envoy forwards to BBR. Only
-  # requestHeaders + requestBody are required for the default model
-  # extraction; the rest are kept on for upstream parity.
+  # requestHeaders + requestBody are required for model extraction; the
+  # rest are kept on for upstream parity.
   supportedEvents:
     requestHeaders: true
     requestBody: true
@@ -70,21 +78,17 @@ bbr:
     anchorSubFilter: envoy.filters.http.ext_proc
 
   # Passive outlier detection for the BBR ext_proc upstream cluster.
-  # A CLUSTER patch on the BBR EnvoyFilter MERGEs `outlier_detection`
-  # onto the auto-generated `outbound|<port>||body-based-router...`
-  # cluster on THIS namespace's Gateway, so a BBR replica that starts
-  # erroring is ejected from the load-balancing set and in-flight
-  # requests fail over to the healthy replicas instead of tripping the
-  # fail-closed `502 bbr_unavailable` path. The Kubernetes gRPC
-  # readiness probe (rendered by the body-based-routing chart) is the
-  # complementary ACTIVE health check. `maxEjectionPercent` MUST stay
-  # < 100 so all replicas can never be ejected at once — `502
-  # bbr_unavailable` then only fires when every replica is genuinely
-  # unhealthy (issue #89).
+  # A CLUSTER patch MERGEs `outlier_detection` onto the auto-generated
+  # `outbound|<port>||body-based-router...` cluster so a BBR replica that
+  # starts erroring is ejected and in-flight requests fail over to
+  # healthy replicas instead of tripping the fail-closed
+  # `502 bbr_unavailable` path. The gRPC readiness probe is the
+  # complementary ACTIVE check. `maxEjectionPercent` MUST stay < 100 so
+  # all replicas can never be ejected at once — `502 bbr_unavailable`
+  # then only fires when every replica is genuinely unhealthy.
   outlierDetection:
     # Eject after this many consecutive gateway (connect / stream)
-    # failures — the dominant failure mode for an ext_proc upstream
-    # that is down or hung.
+    # failures — the dominant failure mode for a down/hung upstream.
     consecutiveGatewayFailure: 3
     # Eject after this many consecutive 5xx-mapped responses.
     consecutive5xx: 3
@@ -97,60 +101,36 @@ bbr:
     # once. Keep < 100 (see note above).
     maxEjectionPercent: 50
 
-# Catch-all "model not found" responses are now produced by an Envoy
-# direct_response patched onto the Gateway's HCM via the
-# `model-not-found-direct` EnvoyFilter (see
-# templates/envoyfilter-not-found.yaml). No backend Pod / Service /
-# ReferenceGrant is required, so the previous `modelNotFound` config
-# (which pointed at a cluster-shared `default/model-not-found` Service)
-# has been removed.
+# Catch-all "model not found" responses are produced by an Envoy
+# direct_response patched onto the Gateway HCM via the
+# `model-not-found-direct` EnvoyFilter (templates/envoyfilter-not-found.yaml).
+# No backend Pod / Service / ReferenceGrant is required.
 
 # auth toggles the per-namespace API-key authentication artifacts. When
 # enabled, the chart renders:
-#   - APIKey CR `default`: triggers the apikey-operator to reconcile a
-#     Secret named `llm-api-key` holding the bearer token clients send.
-#   - EnvoyFilter `apikey-ext-authz`: inserts the
-#     `envoy.filters.http.ext_authz` HTTP filter into THIS namespace's
-#     Gateway pod (selected via `gateway.networking.k8s.io/gateway-name:
-#     <ns>-gw`), pointing at the cluster-wide apikey-authz gRPC Service
-#     installed by the `llm-gateway-apikey` subchart of
-#     `productionstack`. ext_authz auth scope is therefore per-namespace
-#     — disable `auth.enabled` and unknown-API-key requests pass through
-#     unblocked in this namespace; flip it on per workload namespace
+#   - APIKey CR: triggers the apikey-operator to reconcile a Secret named
+#     `llm-api-key` holding the bearer token clients send.
+#   - EnvoyFilter `apikey-ext-authz`: inserts
+#     `envoy.filters.http.ext_authz` into THIS namespace's Gateway pod,
+#     pointing at the cluster-wide apikey-authz gRPC Service installed by
+#     the `llm-gateway-apikey` subchart of `productionstack`. Auth scope
+#     is per-namespace — flip `auth.enabled` on per workload namespace
 #     that needs API-key enforcement.
-#
-# This replaces the historic CUSTOM AuthorizationPolicy +
-# MeshConfig.extensionProviders flow (removed in upstream chart
-# 0.0.11-alpha): we now own the EnvoyFilter directly per-namespace so
-# the cluster-wide `apikey-ext-authz` provider is no longer required.
 auth:
   enabled: false
   # apiKeyName is the name of the APIKey CR rendered when auth.enabled.
   apiKeyName: "default"
-  # Cluster-wide apikey-authz gRPC Service the per-namespace
-  # EnvoyFilter targets. Defaults match the `llm-gateway-apikey`
-  # subchart's defaults (Service `apikey-authz` in namespace
-  # `llm-gateway-auth`, gRPC port 9001 — `apikey` fullnameOverride +
-  # `-authz` suffix).
+  # Cluster-wide apikey-authz gRPC Service the per-namespace EnvoyFilter
+  # targets. Defaults match the `llm-gateway-apikey` subchart.
   extAuthz:
     serviceName: apikey-authz
     serviceNamespace: llm-gateway-auth
     grpcPort: 9001
-    # gRPC call timeout for the ext_authz check.
-    #
-    # ext_authz fires ONCE per request on headers only — it is not in
-    # the streaming body path, so a low single-digit-second budget is
-    # safe and desirable. The chart renders `failure_mode_allow: false`
-    # on the EnvoyFilter (templates/envoyfilter-ext-authz.yaml), so a
-    # hung or slow apikey-authz fails the request fast rather than
-    # silently letting traffic through.
-    #
-    # 5 s gives roughly 250,000x headroom over the ~20 µs healthy-path
-    # cost observed on AKS (saturn-we, see PR #97 description), while
-    # still failing fast enough to surface a stuck authz pod within a
-    # single user-visible request — instead of holding Envoy worker
-    # threads for ten minutes (the previous 600 s default), masking the
-    # outage and starving connections cluster-wide.
+    # gRPC call timeout for the ext_authz check. ext_authz fires once per
+    # request on headers only (not in the streaming body path), so a low
+    # single-digit-second budget is safe. The chart renders
+    # `failure_mode_allow: false`, so a hung/slow apikey-authz fails the
+    # request fast rather than silently letting traffic through.
     timeout: 5s
     # How ext_authz is inserted into the gateway HTTP filter chain.
     #   INSERT_FIRST — head of the chain (default). Works without any
@@ -166,39 +146,26 @@ auth:
     metadataContextNamespaces: []
 
 # networkPolicy toggles the per-namespace CiliumNetworkPolicy that
-# locks down East-West ingress to production-stack inference workloads
-# (EPP, KAITO-rendered inference, shadow pods) while leaving the
-# per-namespace Istio Gateway pod and user-deployed pods unaffected.
-# When enabled, the chart renders:
-#   - CiliumNetworkPolicy `inference-pods-ingress`: selects pods with
-#     the stable `kaito.sh/owned-by: modeldeployment` label and allows
-#     ingress from the same namespace plus the
-#     `allowedIngressNamespaces` allowlist. Any other ingress to those
-#     pods is dropped by Cilium's implicit default-deny.
-# The chart uses CiliumNetworkPolicy rather than networking.k8s.io/v1
-# NetworkPolicy because the AKS Cilium dataplane intermittently fails
-# to compile K8s NetworkPolicies into the per-endpoint BPF maps for
-# pods that already exist when the policy is installed; CNPs reconcile
-# through Cilium's native path and avoid that race. See
-# charts/modelharness/templates/networkpolicies.yaml for the full
-# rationale.
+# locks down East-West ingress to inference workloads (EPP,
+# KAITO-rendered inference, shadow pods) while leaving the per-namespace
+# Istio Gateway pod and user-deployed pods unaffected. When enabled, the
+# chart renders CiliumNetworkPolicy `inference-pods-ingress`, which
+# selects pods with the `kaito.sh/owned-by: modeldeployment` label and
+# allows ingress from the same namespace plus `allowedIngressNamespaces`;
+# any other ingress is dropped by Cilium's implicit default-deny. CNP is
+# used rather than networking.k8s.io/v1 NetworkPolicy because the AKS
+# Cilium dataplane intermittently fails to compile K8s NetworkPolicies
+# for pre-existing pods. See templates/networkpolicies.yaml.
 networkPolicy:
   enabled: true
 
   # allowedIngressNamespaces grants cross-namespace ingress to the
-  # production-stack inference pods in this workload namespace. Each
-  # entry renders an additional `fromEndpoints` clause keyed off the
-  # standard `k8s:io.kubernetes.pod.namespace` label that Cilium
-  # derives from every pod's namespace metadata. Use this to permit
-  # control-plane / metric-scraper components living outside the
-  # workload namespace — for example, `keda-kaito-scaler` in the
-  # `keda` namespace must reach vLLM / InferencePool metric endpoints
-  # on shadow pods to drive autoscaling decisions.
-  #
-  # Leaving the list empty preserves strict per-namespace isolation:
-  # only same-namespace endpoints (the gateway pod, EPP, etc.) can
-  # reach the inference pods. The network-policy e2e suite asserts
-  # that label-only spoofing across namespaces is always denied.
+  # inference pods in this workload namespace. Each entry renders a
+  # `fromEndpoints` clause keyed off the `k8s:io.kubernetes.pod.namespace`
+  # label. Use it to permit control-plane / metric-scraper components
+  # outside the namespace (e.g. `keda-kaito-scaler` in `keda` reaching
+  # vLLM / InferencePool metric endpoints). An empty list keeps strict
+  # per-namespace isolation.
   allowedIngressNamespaces:
     - keda
     - kaito-system

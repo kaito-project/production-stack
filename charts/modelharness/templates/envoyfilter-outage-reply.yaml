@@ -1,28 +1,26 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Per-namespace outage `local_reply` for the fail-closed gateway filters.
+# Per-namespace gateway error `local_reply`: the single place that rewrites
+# Envoy-generated 5xx local replies into the unified OpenAI-compatible error
+# envelope. Every local reply with status >= 500 is intercepted here and, by
+# response flag and/or request header, mapped to a distinct `code` plus an
+# `x-kaito-error-source` header so client and operator can tell which layer
+# failed.
 #
-# Why this exists:
-#   BBR ext_proc and llm-gateway-auth ext_authz are both configured
-#   fail-closed (`failure_mode_allow: false`). When either is unreachable,
-#   Envoy generates a LOCAL reply for the request. Without this mapping a BBR
-#   outage would skip `X-Gateway-Model-Name` injection and the request would
-#   fall through this namespace's catch-all `model-not-found-direct` filter as
-#   a misleading `404 model_not_found`. This filter rewrites those outage
-#   replies onto the unified OpenAI-compatible error envelope so both the
-#   client (response body) and the operator (`x-kaito-error-source` header) can
-#   tell which gateway filter is at fault.
+# BBR ext_proc and apikey ext_authz both run fail-closed; an unhealthy or
+# not-yet-programmed namespace Gateway also emits a local 5xx. Mappers are
+# evaluated top-to-bottom, first-match wins:
+#   1. ext_authz outage  - UAEX + status >= 500              -> 502 authz
+#   2. BBR ext_proc outage - status == 500 + model header absent -> 502 bbr
+#   3. gateway dataplane - UH / LH                           -> 502 gateway
+#   4. gateway not ready - UF / UC / NC                      -> 503 gateway
+#   5. catch-all         - any remaining status >= 500       -> gateway
+# Specific cases precede the catch-all so each keeps its precise code; the
+# final mapper guarantees no local 5xx escapes unstructured.
 #
-# Scope:
-#   * `workloadSelector` pins the patch to THIS namespace's Gateway pod, so it
-#     never affects unrelated Istio Gateways elsewhere in the mesh.
-#   * `applyTo: NETWORK_FILTER` + `operation: MERGE` on the
-#     http_connection_manager merges `local_reply_config` into the existing
-#     HCM without replacing the Istio-managed filter chain.
-#   * `local_reply_config` only rewrites responses Envoy itself generates
-#     (filter-originated local replies and router `direct_response`s). A
-#     response proxied back from an upstream pod (e.g. a genuine vLLM 500) is
-#     NOT a local reply and is left unchanged.
-# ─────────────────────────────────────────────────────────────────────────────
+# `workloadSelector` scopes the patch to this namespace's Gateway pod.
+# `operation: MERGE` on the http_connection_manager merges `local_reply_config`
+# without replacing the Istio-managed filter chain. Only Envoy-generated local
+# replies are rewritten; responses proxied back from an upstream pod (e.g. a
+# genuine vLLM 500) are left unchanged.
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
@@ -49,11 +47,10 @@ spec:
             "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
             local_reply_config:
               mappers:
-                # ── ext_authz outage → 502 ext_authz_unavailable ──────────
-                # UAEX (UnauthorizedExternalService) fires on any ext_authz
-                # deny or error. The `>= 500` status guard keeps legitimate
-                # 401/403 denies untouched and only rewrites the 5xx an
-                # ext_authz outage produces under fail-closed.
+                # ext_authz outage -> 502 ext_authz_unavailable.
+                # UAEX fires on any ext_authz deny or error; the `>= 500`
+                # guard leaves legitimate 401/403 denies untouched and only
+                # rewrites the 5xx an ext_authz outage produces.
                 - filter:
                     and_filter:
                       filters:
@@ -79,31 +76,20 @@ spec:
                         key: content-type
                         value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
-                # ── BBR ext_proc outage → 502 bbr_unavailable ─────────────
-                # BBR's ext_proc filter emits a locally-generated 500 when it
-                # cannot reach the BBR Deployment under fail-closed.
-                #
-                # Disambiguation from an EPP (InferencePool) ext_proc outage:
-                # the EPP ext_proc filter ALSO runs fail-closed (the
-                # InferencePool endpointPickerRef defaults to FailClose) and
-                # also emits a locally-generated 500, with the SAME status and
-                # NO distinguishing response flag. Matching `status == 500`
-                # alone would therefore misattribute an EPP outage to BBR.
-                #
+                # BBR ext_proc outage -> 502 bbr_unavailable.
+                # Under fail-closed, BBR emits a local 500 when it cannot reach
+                # the BBR Deployment. The EPP (InferencePool) ext_proc filter
+                # also runs fail-closed and emits the SAME local 500 with no
+                # distinguishing response flag, so status alone is ambiguous.
                 # The deterministic signal is the `X-Gateway-Model-Name`
-                # request header, which is injected BY BBR and only AFTER BBR
-                # runs (BBR sits before route matching, EPP after):
-                #   * BBR outage  -> BBR never ran -> header ABSENT  -> this is BBR.
-                #   * EPP outage  -> BBR already injected the header -> header
-                #                    PRESENT -> NOT matched here, so the EPP
-                #                    outage is not mislabeled as bbr.
-                # So this mapper matches a local 500 ONLY when the header is
-                # absent, which is uniquely the BBR fail-closed path.
-                #
-                # Prerequisite: the gateway/BBR must strip any client-supplied
-                # `X-Gateway-Model-Name` at ingress; otherwise a spoofed header
-                # could mask a real BBR outage. (BBR overwrites this header on
-                # the request path, so a present header on a 500 means BBR ran.)
+                # request header, injected by BBR (which runs before route
+                # matching, EPP after):
+                #   * BBR outage -> BBR never ran  -> header ABSENT  -> match here.
+                #   * EPP outage -> BBR already ran -> header PRESENT -> skip.
+                # So match a local 500 ONLY when the header is absent. This
+                # requires the gateway to strip any client-supplied
+                # `X-Gateway-Model-Name` at ingress (BBR overwrites it on the
+                # request path) so a spoofed header cannot mask a BBR outage.
                 - filter:
                     and_filter:
                       filters:
@@ -130,4 +116,73 @@ spec:
                     - header:
                         key: content-type
                         value: application/json
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                # gateway_dataplane_unhealthy -> 502 (no healthy upstream).
+                # The namespace Gateway has no ready upstream to forward to:
+                # UH (NoHealthyUpstream) or LH (FailedLocalHealthCheck, active
+                # health checks marked every backend down).
+                - filter:
+                    response_flag_filter:
+                      flags:
+                        - UH
+                        - LH
+                  status_code: 502
+                  body:
+                    inline_string: |
+                      {"error":{"message":"The namespace gateway dataplane is unhealthy; no ready upstream is available.","type":"service_unavailable","code":"gateway_dataplane_unhealthy"}}
+                  headers_to_add:
+                    - header:
+                        key: content-type
+                        value: application/json
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                    - header:
+                        key: x-kaito-error-source
+                        value: gateway
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                # gateway_not_programmed -> 503 (listener/cluster not ready).
+                # The Gateway exists but its listener/cluster is not yet
+                # programmed while the harness converges: connection
+                # failure/termination (UF/UC) or the cluster has not been
+                # pushed to this Gateway yet (NC, NoClusterFound).
+                - filter:
+                    response_flag_filter:
+                      flags:
+                        - UF
+                        - UC
+                        - NC
+                  status_code: 503
+                  body:
+                    inline_string: |
+                      {"error":{"message":"The namespace gateway is not yet programmed; retry shortly.","type":"service_unavailable","code":"gateway_not_programmed"}}
+                  headers_to_add:
+                    - header:
+                        key: content-type
+                        value: application/json
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                    - header:
+                        key: x-kaito-error-source
+                        value: gateway
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                # Catch-all: any remaining local 5xx -> structured gateway
+                # error. Placed last so the specific mappers above keep their
+                # codes. `status_code` is omitted so the original 5xx status is
+                # preserved; only the body and source header are normalized.
+                - filter:
+                    status_code_filter:
+                      comparison:
+                        op: GE
+                        value:
+                          default_value: 500
+                          runtime_key: productionstack_gateway_min_status
+                  body:
+                    inline_string: |
+                      {"error":{"message":"The namespace gateway encountered an unexpected error. Please retry.","type":"service_unavailable","code":"gateway_internal_error"}}
+                  headers_to_add:
+                    - header:
+                        key: content-type
+                        value: application/json
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                    - header:
+                        key: x-kaito-error-source
+                        value: gateway
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD

@@ -216,9 +216,9 @@ individually so failures can be localised.
 Verifies the Gateway's client-compatibility contract for bad inputs: unknown models hit the catch-all
 JSON 404, and malformed bodies do not crash BBR or leak Envoy's raw error pages.
 
-* 404 for unknown model — Request with `{"model": "does-not-exist", ...}` returns HTTP 404 with the OpenAI-compatible JSON body `{"error":{"code":"model_not_found", ...}}` produced by the per-namespace `model-not-found-direct` EnvoyFilter (Envoy `direct_response`) — not Envoy's raw 404 HTML.
-* Missing `model` field — Request body `{"messages": [...]}` with no `model` key. BBR cannot inject `x-gateway-model-name`; verify the request is handled predictably (routed to the catch-all 404 JSON, not a 500 or hang).
-* Non-string `model` field — Body with `{"model": 42, ...}`. Verify BBR rejects or falls through cleanly (catch-all 404 JSON), with no Envoy 5xx.
+* 404 for unknown model — Request with `{"model": "does-not-exist", ...}` returns HTTP 404 with the OpenAI-compatible JSON body `{"error":{"code":"model_not_found", ...}}` and header `x-kaito-error-source: gateway`, produced by the present-but-unmatched half of the per-namespace `model-not-found-direct` EnvoyFilter (Envoy `direct_response`) — not Envoy's raw 404 HTML.
+* Missing `model` field — Request body `{"messages": [...]}` with no `model` key. BBR cannot inject `x-gateway-model-name`; the absent-header half of the split catch-all returns HTTP 400 with `{"error":{"code":"invalid_request_body", ...}}` and header `x-kaito-error-source: bbr` (BBR does not error on a missing model — it skips header injection — so a missing routing header is a client request error, never silently disguised as a 404).
+* Non-string `model` field — Body with `{"model": 42, ...}`. Verify BBR rejects or falls through cleanly (4xx/5xx JSON), with no Envoy crash.
 * Non-JSON body on `/v1/*` — Send `text/plain` or truncated JSON to `POST /v1/chat/completions`. Verify response is a well-formed error (4xx), the BBR ext_proc filter does not crash (Envoy stays up, subsequent valid requests succeed), and no goroutine leak appears in BBR logs.
 * Non-`/v1/*` path — `GET /healthz` or an arbitrary path bypasses BBR entirely; verify it is not wrongly inspected as an inference request and does not inject `x-gateway-model-name`.
 

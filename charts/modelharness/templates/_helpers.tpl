@@ -6,11 +6,10 @@ Resolved namespace. Falls back to .Release.Namespace when .Values.namespace is e
 {{- end }}
 
 {{/*
-Resolved Gateway name. Falls back to "<namespace>-gw" when .Values.gatewayName is empty.
-Keeping the Gateway name keyed off the workload namespace makes it
-self-evident in logs/events which namespace owns it; the `-gw` suffix
-keeps the Gateway name distinct from the namespace name so the two
-never get conflated in selectors / Service names.
+Resolved Gateway name. Falls back to "<namespace>-gw" when
+.Values.gatewayName is empty. Keying it off the workload namespace makes it
+self-evident which namespace owns the Gateway; the `-gw` suffix keeps the
+Gateway name distinct from the namespace name.
 */}}
 {{- define "modelharness.gatewayName" -}}
 {{- $ns := include "modelharness.namespace" . -}}
@@ -18,10 +17,29 @@ never get conflated in selectors / Service names.
 {{- end }}
 
 {{/*
-Common labels applied to managed resources.
+Common labels applied to every harness-owned resource.
+
+`kaito.sh/owned-by: modelharness` is the stable ownership label the
+productionstack-status-reporter keys off to enumerate the objects this chart
+owns (Gateway, APIKey, EnvoyFilters, CiliumNetworkPolicy). It is distinct
+from the `kaito.sh/owned-by: modeldeployment` label that charts/modeldeployment
+stamps on its pods, so the two layers never get conflated.
 */}}
 {{- define "modelharness.labels" -}}
 app.kubernetes.io/name: modelharness
 app.kubernetes.io/instance: {{ .Release.Name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
+kaito.sh/owned-by: modelharness
+{{- end }}
+
+{{/*
+Labels stamped on the workload Namespace. In addition to the common
+ownership labels, the Namespace carries the
+`productionstack.kaito.sh/managed-by: modelharness` discovery label that the
+productionstack-status-reporter uses as its namespace label selector; it
+ignores any workload Namespace that does not carry this label.
+*/}}
+{{- define "modelharness.namespaceLabels" -}}
+productionstack.kaito.sh/managed-by: modelharness
+{{ include "modelharness.labels" . }}
 {{- end }}
