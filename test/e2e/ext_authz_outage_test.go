@@ -46,14 +46,13 @@ import (
 //	Primary assertion (always in-scope, fully under this repo's control):
 //	an ext_authz outage must NOT surface as `404 model_not_found`.
 //
-//	Secondary assertion (best-effort): when the outage reply is a 5xx, the
-//	per-namespace local_reply maps it to a `502 ext_authz_unavailable`
-//	envelope with `x-kaito-error-source: authz`. This depends on
-//	llm-gateway-auth emitting a 5xx `status_on_error` under fail-closed,
-//	which is owned by the separate kaito-project/llm-gateway-auth repo
-//	(proposal §3). The assertion is therefore only enforced when a 5xx is
-//	actually returned, so this suite does not flake on that upstream's
-//	rollout state.
+//	Unified-envelope assertion: the chart pins the ext_authz filter's
+//	`status_on_error` to 503 (charts/modelharness/templates/envoyfilter-ext-authz.yaml),
+//	so a fail-closed outage deterministically becomes a 5xx that the
+//	per-namespace local_reply maps to a `502 ext_authz_unavailable`
+//	envelope with `x-kaito-error-source: authz`. Because the status is
+//	pinned in THIS repo's chart (not left to llm-gateway-auth's default,
+//	which would be 403), the envelope is asserted unconditionally.
 //
 // Why Serial: `apikey-authz` is a cluster-wide singleton shared by every
 // auth-enabled Gateway. Scaling it to zero breaks every other in-flight
@@ -118,7 +117,7 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 			UninstallCase(CaseExtAuthzOutage)
 		})
 
-		It("does not map an ext_authz outage to 404 model_not_found", func() {
+		It("maps an ext_authz outage to 502 ext_authz_unavailable (not 404 model_not_found)", func() {
 			By("scaling the apikey-authz Deployment to zero")
 			var err error
 			origReplicas, _, err = utils.GetDeploymentReplicas(ctx, authNamespace, authDeploymentName)
@@ -127,7 +126,7 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 			Expect(utils.ScaleDeployment(ctx, authNamespace, authDeploymentName, 0)).
 				To(Succeed(), "failed to scale apikey-authz to zero")
 
-			By("sending an authenticated request and asserting it is not a 404 model_not_found")
+			By("sending an authenticated request and asserting the outage envelope")
 			Eventually(func(g Gomega) {
 				resp, sErr := utils.SendChatCompletionWithAuth(caseURL, modelName, "hello", apiKey, hostHeader)
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
@@ -136,33 +135,25 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 				status := resp.StatusCode
 				errSource := resp.Header.Get("x-kaito-error-source")
 				parsed, pErr := utils.ParseErrorResponse(resp)
-				// A non-JSON body is acceptable for the primary guard; only
-				// the status / code must not be a model_not_found 404.
-				code := ""
-				if pErr == nil {
-					code = parsed.ErrorCode()
-				}
+				g.Expect(pErr).NotTo(HaveOccurred(), "response body should be a JSON error envelope")
+				code := parsed.ErrorCode()
 
-				// Core Story-5 regression guard (always enforced): an
-				// ext_authz outage must NEVER be misreported as an unknown
-				// model.
+				// Core Story-5 regression guard: an ext_authz outage must
+				// NEVER be misreported as an unknown model.
 				g.Expect(status).NotTo(Equal(http.StatusNotFound),
 					"ext_authz outage must not surface as 404")
 				g.Expect(code).NotTo(Equal("model_not_found"),
 					"ext_authz outage must not surface as model_not_found")
 
-				// Best-effort unified-envelope assertion: only enforced when
-				// the upstream returns a 5xx (i.e. llm-gateway-auth's
-				// fail-closed 5xx status_on_error is in effect). See the
-				// suite doc comment for why this is conditional.
-				if status >= http.StatusInternalServerError {
-					g.Expect(status).To(Equal(http.StatusBadGateway),
-						"a 5xx ext_authz outage should be mapped to 502")
-					g.Expect(code).To(Equal("ext_authz_unavailable"),
-						"a 5xx ext_authz outage should carry code ext_authz_unavailable")
-					g.Expect(errSource).To(Equal("authz"),
-						"a 5xx ext_authz outage should carry x-kaito-error-source: authz")
-				}
+				// Unified outage envelope: the chart pins ext_authz
+				// status_on_error to 503, so the fail-closed outage is
+				// deterministically a 5xx mapped to 502 ext_authz_unavailable.
+				g.Expect(status).To(Equal(http.StatusBadGateway),
+					"ext_authz outage should surface as 502")
+				g.Expect(code).To(Equal("ext_authz_unavailable"),
+					"ext_authz outage should carry code ext_authz_unavailable")
+				g.Expect(errSource).To(Equal("authz"),
+					"ext_authz outage should carry x-kaito-error-source: authz")
 			}, 90*time.Second, 5*time.Second).Should(Succeed())
 		})
 

@@ -7,6 +7,20 @@ Extension) artifacts for a single model:
 - `inference.networking.k8s.io/v1` `InferencePool` (normally provisioned by KAITO via Flux; rendered inline here)
 - Endpoint Picker (EPP) `Deployment` + `Service` + `ServiceAccount` + `Role` + `RoleBinding` + `ConfigMap`
 - `gateway.networking.k8s.io/v1` `HTTPRoute` matching `X-Gateway-Model-Name: <name>`
+- `networking.istio.io/v1alpha3` `EnvoyFilter` mapping EPP / upstream response flags onto the unified OpenAI-compatible error envelope
+
+Every chart-owned object (EPP `Deployment` / `Service`, `HTTPRoute`,
+`InferencePool`, `ConfigMap`, `EnvoyFilter`) is stamped with the
+identifying labels `kaito.sh/inferenceset: <name>` and
+`kaito.sh/owned-by: modeldeployment` so the
+`productionstack-status-reporter` can correlate them back to the owning
+deployment.
+
+Chart values are validated by `values.schema.json` at install time
+(`model` non-empty, `replicas` / `maxReplicas` / `scalingThreshold`
+positive). The cross-field guard `maxReplicas >= replicas` (not
+expressible in JSON Schema) is enforced by a fail-fast template guard
+when `enableScaling=true`.
 
 The EPP runs the [`llm-d-inference-scheduler`](https://github.com/llm-d/llm-d-inference-scheduler/tree/v0.7.1)
 distribution with `--secure-serving=false`, so the Istio Gateway can reach it

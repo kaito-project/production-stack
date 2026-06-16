@@ -77,4 +77,13 @@ var (
 	// scale cluster-wide singleton Deployments to zero, so they MUST run
 	// Serial and are Nightly-only.
 	GinkgoLabelClusterOutage = g.Label("ClusterOutage")
+
+	// GinkgoLabelDataplaneOutage marks tests that verify the per-namespace
+	// half of the consolidated outage local_reply: the model-serving hops
+	// (EPP ext_proc fail-closed -> epp_unavailable; zero ready inference
+	// endpoints -> model_unavailable). Unlike GinkgoLabelClusterOutage,
+	// these perturb only the case's OWN namespace (its EPP Deployment or
+	// InferenceSet replicas), so they do not need Serial; they are Nightly
+	// because they take an inference pool through an outage + recovery.
+	GinkgoLabelDataplaneOutage = g.Label("DataplaneOutage")
 )

@@ -1,3 +1,8 @@
+{{- if .Values.enableScaling }}
+{{- if lt ((.Values.maxReplicas | int)) ((.Values.replicas | int)) }}
+{{- fail (printf "modeldeployment: maxReplicas (%d) must be >= replicas (%d) when enableScaling is true" (.Values.maxReplicas | int) (.Values.replicas | int)) }}
+{{- end }}
+{{- end }}
 apiVersion: kaito.sh/v1alpha1
 kind: InferenceSet
 metadata:

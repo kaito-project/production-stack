@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "modeldeployment chart values",
+  "description": "Schema for charts/modeldeployment. Validates the per-InferenceSet inputs whose misconfiguration is surfaced by the modeldeployment-level schema reasons in the end-to-end error-handling proposal (e.g. inferencesetScalingMisconfigured). Cross-field guards that JSON Schema cannot express on its own (notably maxReplicas >= replicas) are additionally enforced by a fail-fast Helm template guard at render time.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Deployment / InferenceSet name. Empty falls back to .Release.Name."
+    },
+    "namespace": {
+      "type": "string",
+      "description": "Target workload namespace. Empty falls back to .Release.Namespace."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Inference preset name set on the InferenceSet. MUST be non-empty."
+    },
+    "instanceType": {
+      "type": "string",
+      "minLength": 1,
+      "description": "VM instance type used for the underlying GPU nodes."
+    },
+    "replicas": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Desired number of InferenceSet replicas. MUST be at least 1."
+    },
+    "enableScaling": {
+      "type": "boolean",
+      "description": "Toggles KAITO ScaledObject auto-provisioning. When false, maxReplicas and scalingThreshold are ignored."
+    },
+    "maxReplicas": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Upper bound for autoscaling. Only used when enableScaling is true. MUST be at least 1; the Helm template additionally enforces maxReplicas >= replicas when enableScaling is true."
+    },
+    "scalingThreshold": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Queue-depth threshold used by the ScaledObject. Only used when enableScaling is true. MUST be positive."
+    },
+    "gatewayName": {
+      "type": "string",
+      "description": "Gateway the HTTPRoute attaches to. Empty derives '<namespace>-gw'."
+    },
+    "epp": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Endpoint Picker (EPP) configuration.",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of EPP replicas."
+        },
+        "modelServerPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port exposed by the inference (model server) pods."
+        },
+        "extProcPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "EPP gRPC ext_proc port consumed by the Gateway."
+        },
+        "healthPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "EPP gRPC health-check port."
+        },
+        "metricsPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "EPP HTTP metrics port."
+        }
+      }
+    }
+  }
+}
