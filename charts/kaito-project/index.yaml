@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   gpu-node-mocker:
   - apiVersion: v2
+    appVersion: 0.2.1
+    created: "2026-06-16T06:46:14.772006666Z"
+    description: GPU Node Mocker controller for KAITO production-stack
+    digest: 530b85249512b42300c6360b71a6524ed8f5b678d1dc9acb9116398a3a6e1bbf
+    name: gpu-node-mocker
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/gpu-node-mocker-0.2.1.tgz
+    version: 0.2.1
+  - apiVersion: v2
     appVersion: 0.2.0
     created: "2026-06-11T04:41:42.686885685Z"
     description: GPU Node Mocker controller for KAITO production-stack
@@ -22,6 +32,17 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/gpu-node-mocker-0.1.0.tgz
     version: 0.1.0
   modeldeployment:
+  - apiVersion: v2
+    appVersion: 0.2.1
+    created: "2026-06-16T06:46:14.772475834Z"
+    description: 'Deploys a KAITO InferenceSet together with the Istio DestinationRule
+      and Gateway API HTTPRoute required to route inference traffic to it. '
+    digest: 217ec3d36222cb4c1c618309aab680e0b5e59bb0ea5d80c94020d2e2e172044d
+    name: modeldeployment
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/modeldeployment-0.2.1.tgz
+    version: 0.2.1
   - apiVersion: v2
     appVersion: 0.2.0
     created: "2026-06-11T04:41:42.68750313Z"
@@ -45,6 +66,26 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/modeldeployment-0.1.0.tgz
     version: 0.1.0
   modelharness:
+  - apiVersion: v2
+    appVersion: 0.2.1
+    created: "2026-06-16T06:46:14.773161652Z"
+    description: 'Per-namespace shared resources for production-stack workloads. One
+      modelharness release per workload namespace provisions the artifacts every model
+      deployment in that namespace shares: the Istio Gateway, the catch-all HTTPRoute
+      (forwards unknown-model requests to the cluster-shared model-not-found Service
+      via a ReferenceGrant), and — when enabled — the APIKey CR that triggers the
+      apikey-operator to mint the per-namespace `llm-api-key` Secret consumed by clients.
+      ext_authz enforcement on the Gateway HTTP filter chain is owned by the cluster-wide
+      EnvoyFilter shipped by the `llm-gateway-apikey` subchart of `productionstack`
+      (since 0.0.11-alpha), not by a per-namespace AuthorizationPolicy. The shared
+      model-not-found Service itself is installed once per cluster by the E2E install
+      script. '
+    digest: ec556d153b8d1858a65311af12d944676239c3e25fab74156285c39f9a6a0225
+    name: modelharness
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/modelharness-0.2.1.tgz
+    version: 0.2.1
   - apiVersion: v2
     appVersion: 0.2.0
     created: "2026-06-11T04:41:42.689058019Z"
@@ -83,6 +124,57 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/modelharness-0.1.0.tgz
     version: 0.1.0
   productionstack:
+  - apiVersion: v2
+    appVersion: 0.2.1
+    created: "2026-06-16T06:46:14.775179683Z"
+    dependencies:
+    - name: body-based-routing
+      repository: ""
+      tags:
+      - gateway
+      - routing
+      version: 0.1.0
+    - name: keda-kaito-scaler
+      repository: ""
+      tags:
+      - autoscaling
+      version: 0.5.1
+    - condition: llm-gateway-apikey.enabled
+      name: llm-gateway-apikey
+      repository: oci://mcr.microsoft.com/aks/kaito/helm
+      tags:
+      - gateway
+      - auth
+      version: 0.0.11-alpha
+    description: 'Umbrella Helm chart that installs all CLUSTER-LEVEL components and
+      CRDs required by the Kaito production stack: body-based routing (BBR), KEDA
+      Kaito scaler, LLM gateway auth, and other shared infrastructure.  This chart
+      is intended to be consumed as a dependency of the top-level `kaito` Helm chart.
+      Each component is shipped as a subchart under `charts/`. body-based-routing
+      and keda-kaito-scaler are mandatory cluster infrastructure and are always installed;
+      optional components (e.g. llm-gateway-apikey) carry a `<component>.enabled`
+      toggle in values.yaml. Component-specific values are passed through by nesting
+      them under the subchart''s name, e.g.:      body-based-routing:       bbr:         replicas:
+      2  Adding a new cluster-level component is a matter of dropping its chart under
+      `charts/` and appending a new entry to the `dependencies` list below. '
+    digest: f7628f6f0b5bf94de54a77f1fe6cb1ff2eb63c96523b2e587fe84b6a8c557dd8
+    home: https://github.com/kaito-project/production-stack
+    keywords:
+    - kaito
+    - production-stack
+    - inference
+    - gateway-api-inference-extension
+    - keda
+    maintainers:
+    - name: kaito-project
+      url: https://github.com/kaito-project
+    name: productionstack
+    sources:
+    - https://github.com/kaito-project/production-stack
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/productionstack-0.2.1.tgz
+    version: 0.2.1
   - apiVersion: v2
     appVersion: 0.2.0
     created: "2026-06-11T04:41:42.691720106Z"
@@ -134,4 +226,4 @@ entries:
     urls:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/productionstack-0.2.0.tgz
     version: 0.2.0
-generated: "2026-06-11T04:41:42.686338155Z"
+generated: "2026-06-16T06:46:14.771643884Z"
