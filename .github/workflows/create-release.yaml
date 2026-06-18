@@ -104,7 +104,17 @@ jobs:
           \`\`\`
 
           ### Helm charts
-          Add the chart repository (once):
+          Charts are published to three channels on every release. Pick
+          whichever installation source matches your environment.
+
+          OCI (GHCR):
+          \`\`\`
+          helm install productionstack  oci://ghcr.io/kaito-project/productionstack  --version ${IMG_TAG} -n kaito-system --create-namespace
+          helm install modelharness     oci://ghcr.io/kaito-project/modelharness     --version ${IMG_TAG} -n my-models     --create-namespace
+          helm install qwen             oci://ghcr.io/kaito-project/modeldeployment  --version ${IMG_TAG} -n my-models     --set name=gemma --set model=google/gemma-4-e4b-it
+          \`\`\`
+
+          Helm repo (gh-pages):
           \`\`\`
           helm repo add production-stack https://kaito-project.github.io/production-stack/charts/kaito-project
           helm repo update production-stack
@@ -116,6 +126,7 @@ jobs:
           - \`production-stack/gpu-node-mocker\`
           - \`production-stack/modeldeployment\`
           - \`production-stack/modelharness\`
+          - \`production-stack/productionstack\`
 
           See [README.md](https://github.com/kaito-project/production-stack/blob/${TAG}/README.md) for installation steps.
 

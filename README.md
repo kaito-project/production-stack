@@ -35,94 +35,66 @@ This project evaluates a production inference stack built on top of existing OSS
 
 ## Installation
 
-Install the stack in three steps. Step 1 is one-time per cluster;
-steps 2 and 3 are repeated per workload namespace and per model.
+Install the stack in three steps. Step 1 is one-time per cluster; steps 2 and 3 are repeated per workload namespace and per model.
+
+All three releasable charts are published as OCI artifacts on every release; pick whichever installation source matches your environment:
+
+| Source       | Reference                                                                          |
+| ------------ | ---------------------------------------------------------------------------------- |
+| OCI (GHCR)   | `oci://ghcr.io/kaito-project/{productionstack,modelharness,modeldeployment}`       |
+| OCI (MCR)    | `oci://mcr.microsoft.com/aks/kaito/helm/{productionstack,modelharness,modeldeployment}` |
+| Helm repo    | `helm repo add production-stack https://kaito-project.github.io/production-stack/charts/kaito-project` |
+| In-tree      | `./charts/{productionstack,modelharness,modeldeployment}`                          |
+
+The OCI commands below assume `ghcr.io`; swap the registry to suit. Pin `--version <X.Y.Z>` to a specific release tag — see the latest release on [GitHub Releases](https://github.com/kaito-project/production-stack/releases).
 
 ### Step 1. Cluster + addons (one-time, cluster-wide)
 
-Installed by [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh)
-(or its production equivalent). These components live across multiple
-namespaces and are shared by every model deployment:
-
-| Component                            | Namespace        | Version (`versions.env`)                | Install method | Role                                                                                  |
-| ------------------------------------ | ---------------- | --------------------------------------- | -------------- | ------------------------------------------------------------------------------------- |
-| KAITO workspace controller           | `kaito-system`   | latest chart, image `nightly-latest`    | helm           | Reconciles `InferenceSet` and provisions inference pods.                              |
-| `gpu-node-mocker` (E2E-only)         | `kaito-system`   | repo `HEAD` (`SHADOW_CONTROLLER_IMAGE`) | helm           | Creates fake GPU nodes + shadow pods on CPU-only clusters.                            |
-| Gateway API CRDs                     | _cluster-scoped_ | `GATEWAY_API_VERSION` (v1.2.0)          | kubectl        | Required for `Gateway`, `HTTPRoute`, `ReferenceGrant`.                                |
-| Istio control plane (`istiod`)       | `istio-system`   | `ISTIO_VERSION` (1.29.2)                | istioctl       | Implements the Gateway dataplane (Envoy) and ext_proc filter chain.                   |
-| GAIE CRDs                            | _cluster-scoped_ | latest                                  | kubectl        | `InferencePool`, `InferenceObjective`.                                                |
-| KEDA                                 | `keda` (upstream) / `kube-system` (azure) | `KEDA_VERSION` (v2.19.0) | helm (upstream) / AKS managed add-on (azure) | Workload-metric autoscaling control plane.                                            |
-| `productionstack` umbrella chart ([`charts/productionstack`](charts/productionstack)) | release in `kaito-system`; subcharts pinned per-namespace via `namespaceOverride` | in-tree (`charts/productionstack`) | helm | Single Helm release that bundles every cluster-level helper. Currently ships **three** subcharts (versions pinned in `Chart.yaml`, not `versions.env`): `body-based-routing` → `kaito-system` (BBR `v1.5.0` ext_proc **workload** only; the per-namespace `EnvoyFilter` injecting `X-Gateway-Model-Name` is rendered by `charts/modelharness`), `keda-kaito-scaler` `v0.5.1` → KEDA's namespace (vLLM / `InferenceSet` metric aggregator for KEDA-driven autoscaling), and `llm-gateway-apikey` `0.0.9-alpha` (OCI dep from `mcr.microsoft.com/aks/kaito/helm`) → `llm-gateway-auth` (API-key ext_authz: `APIKey` CRD + `apikey-operator` + `apikey-authz` wired into Istio via `MeshConfig` + `AuthorizationPolicy`). |
-
-The `productionstack` umbrella chart consolidates the BBR and KEDA-Kaito-Scaler installs into a **single `helm install`**. The E2E suite installs it via [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh) with the following overrides:
+Install the `productionstack` umbrella chart, plus any external prerequisites your environment does not already provide (Gateway API CRDs, Istio, GAIE CRDs, KEDA, KAITO). The umbrella chart bundles the cluster-level singletons every model deployment shares: BBR data plane, KEDA Kaito scaler, and the `llm-gateway-auth` control plane.
 
 ```sh
-helm upgrade --install productionstack charts/productionstack \
-  --namespace kaito-system --create-namespace \
-  --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}"
+# keda must already exist (Helm only auto-creates the release namespace).
+kubectl create namespace keda
+
+helm install productionstack oci://ghcr.io/kaito-project/productionstack \
+  --version <X.Y.Z> \
+  --namespace kaito-system \
+  --create-namespace \
+  --set keda-kaito-scaler.namespaceOverride=keda
 ```
 
-Each subchart can be independently disabled via `<subchart>.enabled=false` (see [`charts/productionstack/README.md`](charts/productionstack/README.md) for the full value reference). Additional cluster-level components will be folded into this umbrella over time.
+The full list of prerequisites the E2E suite installs alongside the umbrella chart is in [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh). For the bundled subcharts, toggles, and per-subchart values, see [`charts/productionstack/README.md`](charts/productionstack/README.md).
 
 ### Step 2. modelharness (one-time per workload namespace)
 
-Provisioned by the [`charts/modelharness`](charts/modelharness) Helm
-chart. One Helm release per workload namespace owns every per-namespace
-shared resource — the Istio `Gateway` that fronts the namespace, the
-catch-all `EnvoyFilter` (`model-not-found-direct`) that returns an
-OpenAI-compatible 404 for unknown models directly from Envoy, and —
-when enabled — the per-namespace `AuthorizationPolicy` + `APIKey` CR
-that wire that Gateway into the cluster-wide `apikey-ext-authz` CUSTOM
-provider, plus optional `CiliumNetworkPolicy` resources that lock down
-East-West ingress to inference workloads. A namespace may host one or
-more model deployments, all of which share its Gateway.
+One Helm release per workload namespace provisions every per-namespace shared resource: the Istio `Gateway`, the BBR / catch-all 404 / unified-error `EnvoyFilter`s, and — when enabled — the API-key auth artifacts and a Cilium-based East-West network policy.
 
-> **Cilium is required for the network-policy path.** The chart renders
-> `cilium.io/v2` `CiliumNetworkPolicy` (CNP) rather than
-> `networking.k8s.io/v1` `NetworkPolicy`, because on the AKS Azure-CNI
-> overlay dataplane a vanilla K8s `NetworkPolicy` that selects a pod
-> created **before** the policy is installed is intermittently never
-> compiled into the per-endpoint BPF map (the `CiliumEndpoint` reports
-> `status.policy.ingress.enforcing=false` and traffic flows
-> unrestricted). Native CNPs bypass that translation step and reconcile
-> through Cilium's own path, becoming enforcing within a single tick.
-> Production deployments should therefore run on a cluster with the
-> Cilium dataplane enabled — for AKS this means `--network-dataplane
-> cilium --network-policy cilium` (see [`hack/e2e/scripts/setup-cluster.sh`](hack/e2e/scripts/setup-cluster.sh)).
-> If you cannot run Cilium, set `networkPolicy.enabled=false` and apply
-> equivalent ingress isolation out-of-band.
+```sh
+helm install modelharness oci://ghcr.io/kaito-project/modelharness \
+  --version <X.Y.Z> \
+  --namespace my-models \
+  --create-namespace
+```
 
-| Resource                                                       | Where                     | Version                | Source                                | Role                                                                                                                                       |
-| -------------------------------------------------------------- | ------------------------- | ---------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `Gateway` (`gateway.networking.k8s.io/v1`)                     | Per namespace             | API `v1`               | `charts/modelharness`                 | Public entry point; `gatewayClassName: istio`, HTTP/80.                                                                                    |
-| Catch-all `EnvoyFilter` `model-not-found-direct`               | Per namespace             | `networking.istio.io/v1alpha3` | `charts/modelharness`         | Patches a `direct_response` onto the namespace Gateway's HCM, returning an OpenAI 404 for any path not matched by a deployment-specific `HTTPRoute`. Required to keep API-key ext_authz running on unknown-model requests. |
-| `AuthorizationPolicy` `apikey-gateway-ext-authz` (auth-enabled) | Per namespace             | `security.istio.io/v1` | `charts/modelharness` (`auth.enabled`) | Wires the per-namespace Gateway pod into the cluster-wide `apikey-ext-authz` CUSTOM provider (registered in `MeshConfig` by `llm-gateway-auth`). |
-| `APIKey` `default` (auth-enabled)                              | Per namespace             | `apikeys.kaito.sh/v1alpha1` | `charts/modelharness` (`auth.enabled`) | Triggers the `apikey-operator` to reconcile a Secret (`llm-api-key`) holding the bearer token clients send.                                 |
-| `CiliumNetworkPolicy` `inference-pods-ingress` (network-policy enabled, **requires Cilium dataplane**) | Per namespace | `cilium.io/v2` | `charts/modelharness` (`networkPolicy.enabled`) | Selects pods labelled `kaito.sh/owned-by: modeldeployment` (EPP, KAITO-rendered inference, shadow pods) and admits ingress from the same namespace plus the `networkPolicy.allowedIngressNamespaces` allowlist (e.g. `keda` for the keda-kaito-scaler); all other ingress is dropped by Cilium's implicit default-deny. |
-
-In the E2E suite the chart is installed and uninstalled by
-[`EnsureNamespace` / `DeleteNamespace`](test/e2e/utils/setup.go) (called
-from `InstallCase` / `UninstallCase` in
-[`cases.go`](test/e2e/cases.go)). The auth- and network-policy-related
-resources are skipped when `auth.enabled=false` /
-`networkPolicy.enabled=false`.
+For the rendered resource list, the API-key auth / network-policy toggles, the Cilium dataplane requirement, and the full value reference, see [`charts/modelharness/README.md`](charts/modelharness/README.md).
 
 ### Step 3. modeldeployment (per model deployment)
 
-Provisioned by the [`charts/modeldeployment`](charts/modeldeployment) Helm chart. One Helm release
-per model deployment, parented to the namespace's `Gateway`:
+One Helm release per model deployment, parented to the namespace's `Gateway`. Renders the `InferenceSet`, `InferencePool`, EPP (`llm-d-inference-scheduler`) Deployment / Service / RBAC / ConfigMap, and the `HTTPRoute` that matches `X-Gateway-Model-Name: <name>`.
 
-| Resource                                         | Version (chart-rendered) | Install method | Role                                                                  |
-| ------------------------------------------------ | ------------------------ | -------------- | --------------------------------------------------------------------- |
-| `InferenceSet` (`kaito.sh/v1alpha1`)             | `v1alpha1`               | helm           | Reconciled by KAITO; renders inference pods running vLLM.             |
-| `InferencePool` (`inference.networking.k8s.io/v1`) | `v1`                   | helm           | Selects the inference pods backing this deployment.                   |
-| EPP `Deployment` + `Service` + RBAC + `ConfigMap` | `apps/v1`, `v1`, `rbac/v1` | helm         | Endpoint Picker (`llm-d-inference-scheduler`) for KV-cache aware routing. |
-| `HTTPRoute` (`gateway.networking.k8s.io/v1`)     | `v1`                     | helm           | Matches `X-Gateway-Model-Name == <name>` on the namespace's Gateway and forwards to the InferencePool. |
+```sh
+helm install qwen oci://ghcr.io/kaito-project/modeldeployment \
+  --version <X.Y.Z> \
+  --namespace my-models \
+  --set name=qwen \
+  --set model=qwen2-5-coder-7b-instruct \
+  --set replicas=2 \
+  --set maxReplicas=5 \
+  --set enableScaling=true \
+  --set scalingThreshold=10
+```
 
-The chart's `name` value is the per-deployment routing key; `model` is
-the underlying KAITO preset. See the
-[`charts/modeldeployment` chart README](charts/modeldeployment/README.md)
-for the full value schema and install examples.
+For the full value schema (EPP image / ports / resources, scaling knobs, naming conventions, KAITO `FeatureFlagGatewayAPIInferenceExtension` compatibility note), see [`charts/modeldeployment/README.md`](charts/modeldeployment/README.md).
 
 ## Resource Reference
 
@@ -167,17 +139,13 @@ chains two reusable workflows
 [`publish-helm-chart.yaml`](.github/workflows/publish-helm-chart.yaml))
 into one synchronous run. A release publishes:
 
-- a multi-arch container image at
-  `ghcr.io/kaito-project/gpu-node-mocker:<X.Y.Z>` (no leading `v`);
-- the four Helm charts under [`charts/`](charts/) — `gpu-node-mocker`,
-  `modeldeployment`, `modelharness`, and the `productionstack` umbrella
-  chart — to the chart repository hosted on
-  this repo's `gh-pages` branch
-  (`https://kaito-project.github.io/production-stack/charts/kaito-project`);
-  the `productionstack` chart has its OCI subchart dependency vendored via
-  `helm dependency update` before packaging.
-- a GitHub Release at the same `vX.Y.Z` tag with auto-generated changelog
-  notes.
+- a multi-arch container image at `ghcr.io/kaito-project/gpu-node-mocker:<X.Y.Z>` (no leading `v`);
+- the four Helm charts under [`charts/`](charts/) — `gpu-node-mocker`, `modeldeployment`, `modelharness`, and the `productionstack` umbrella chart — published to **all three** chart distribution channels:
+  - the gh-pages Helm repo `https://kaito-project.github.io/production-stack/charts/kaito-project`,
+  - OCI artifacts under `oci://ghcr.io/kaito-project/<chart>`,
+  - OCI artifacts under `oci://mcr.microsoft.com/aks/kaito/helm/<chart>`;
+  the `productionstack` chart has its OCI subchart dependency vendored via `helm dependency update` before packaging.
+- a GitHub Release at the same `vX.Y.Z` tag with auto-generated changelog notes.
 
 To publish `vX.Y.Z`:
 
