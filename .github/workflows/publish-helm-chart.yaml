@@ -68,6 +68,50 @@ jobs:
           target_dir: charts/kaito-project
           linting: off
 
+  push-charts-to-ghcr:
+    # Publish the same four releasable charts as OCI artifacts to GHCR
+    # under oci://ghcr.io/kaito-project/<chart>. This mirrors the
+    # gh-pages publication so consumers can `helm install ... oci://...`
+    # without adding a Helm repo first.
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+          disable-sudo: true
+          disable-telemetry: true
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.release_version }}
+
+      - name: Setup Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Helm login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      - name: Push charts to GHCR
+        run: |
+          export CHART_REGISTRY='ghcr.io/kaito-project'
+          export CHART_VERSION="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
+          make helm-package-and-push CHART_NAME='gpu-node-mocker'
+          make helm-package-and-push CHART_NAME='modeldeployment'
+          make helm-package-and-push CHART_NAME='modelharness'
+          # Umbrella chart: vendor its OCI subchart dependency before packaging.
+          helm dependency update charts/productionstack
+          make helm-package-and-push CHART_NAME='productionstack'
+
   push-charts-to-mcr:
     runs-on:
       labels:
