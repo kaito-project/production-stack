@@ -53,6 +53,16 @@ az group create --name "${RESOURCE_GROUP}" --location "${LOCATION}" >&2
 echo "=== Creating ACR ${ACR_NAME} ===" >&2
 az acr create --resource-group "${RESOURCE_GROUP}" --name "${ACR_NAME}" --sku Basic >&2
 
+# When KAITO_NODE_PROVISIONER=karpenter the cluster uses real Karpenter (AKS NAP)
+# for node provisioning — gpu-node-mocker is not deployed, so there is no
+# image to build or push. The ACR above is still created so that
+# setup-cluster.sh can attach it to AKS via --attach-acr.
+if [[ "${KAITO_NODE_PROVISIONER:-}" == "karpenter" ]]; then
+  echo "=== Skipping gpu-node-mocker image build/push (KAITO_NODE_PROVISIONER=karpenter) ===" >&2
+  echo "image="
+  exit 0
+fi
+
 echo "=== Building gpu-node-mocker image (${IMG}) ===" >&2
 IMG="${IMG}" make -C "${REPO_ROOT}" docker-build >&2
 

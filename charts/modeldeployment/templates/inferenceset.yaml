@@ -41,3 +41,7 @@ spec:
     inference:
       preset:
         name: {{ .Values.model | quote }}
+        {{- if .Values.presetImage }}
+        presetOptions:
+          image: {{ .Values.presetImage | quote }}
+        {{- end }}

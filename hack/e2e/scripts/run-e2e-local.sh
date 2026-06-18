@@ -62,7 +62,8 @@ if [ -z "${KEDA_NAMESPACE:-}" ]; then
   esac
 fi
 
-export E2E_PROVIDER KEDA_NAMESPACE ISTIO_VERSION GATEWAY_API_VERSION KEDA_VERSION AKS_K8S_VERSION
+export E2E_PROVIDER KEDA_NAMESPACE ISTIO_VERSION GATEWAY_API_VERSION KEDA_VERSION LLM_GATEWAY_AUTH_VERSION LLM_GATEWAY_AUTH_IMAGE_TAG AKS_K8S_VERSION
+export KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-}"
 
 echo "=== Component versions (from versions.env) ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
@@ -143,7 +144,10 @@ do_setup() {
 }
 
 do_install() {
-  if [[ -z "${SHADOW_CONTROLLER_IMAGE:-}" ]]; then
+  # SHADOW_CONTROLLER_IMAGE is required for the gpu-node-mocker path.
+  # When KAITO_NODE_PROVISIONER=karpenter, real Karpenter (AKS NAP) is used and
+  # gpu-node-mocker is not deployed, so the image is not needed.
+  if [[ "${KAITO_NODE_PROVISIONER:-}" != "karpenter" && -z "${SHADOW_CONTROLLER_IMAGE:-}" ]]; then
     echo "❌ SHADOW_CONTROLLER_IMAGE is not set. Run prepare-image.sh first and export the resulting image= value." >&2
     exit 1
   fi
