@@ -58,7 +58,7 @@ helm install modelharness oci://ghcr.io/kaito-project/modelharness \
   --namespace my-models \
   --create-namespace \
   --set auth.enabled=true \
-  --set 'networkPolicy.allowedIngressNamespaces={keda,kaito-system,kube-system,monitoring}'
+  --set 'networkPolicy.allowedIngressNamespaces={kube-system,monitoring}'
 ```
 
 ## Inputs
@@ -72,14 +72,14 @@ Top-level values (see [`values.yaml`](./values.yaml) for the full schema, defaul
 | `gatewayName`                             | `<namespace>-gw`                 | Per-namespace Istio Gateway name. The Service follows Istio's `<gatewayName>-istio` convention.                                                                                                            |
 | `gatewayClassName`                        | `istio`                          | `GatewayClass` the Gateway binds to (AKS Istio add-on with App Routing: `approuting-istio`).                                                                                                               |
 | `gatewayPort`                             | `80`                             | HTTP listener port on the Gateway.                                                                                                                                                                         |
-| `bbr.name` / `bbr.namespace` / `bbr.port` | `body-based-router` / `kaito-system` / `9004` | Cluster FQDN coordinates of the BBR Service installed by `productionstack/body-based-routing`. Must match wherever BBR was installed.                                                              |
+| `bbr.name` / `bbr.namespace` / `bbr.port` | `body-based-router` / `kube-system` / `9004` | Cluster FQDN coordinates of the BBR Service installed by `productionstack/body-based-routing`. Must match wherever BBR was installed.                                                              |
 | `bbr.envoyFilter.operation` / `anchorSubFilter` | `INSERT_BEFORE` / `envoy.filters.http.ext_proc` | Filter-chain placement so BBR injects `X-Gateway-Model-Name` before the InferencePool / EPP ext_proc and the `HTTPRoute` match run.                                                |
 | `bbr.outlierDetection.*`                  | see `values.yaml`                | Passive outlier detection on the BBR ext_proc upstream cluster so an erroring replica is ejected before tripping the fail-closed `502 bbr_unavailable` path.                                               |
 | `auth.enabled`                            | `false`                          | Render the per-namespace API-key auth artifacts (`AuthorizationPolicy`, `APIKey`, `apikey-ext-authz` `EnvoyFilter`).                                                                                       |
 | `auth.apiKeyName`                         | `default`                        | Name of the rendered `APIKey` CR.                                                                                                                                                                          |
-| `auth.extAuthz.*`                         | `apikey-authz` / `llm-gateway-auth` / `9001` / `5s` | Cluster-wide `apikey-authz` gRPC Service coordinates the per-namespace `EnvoyFilter` targets. Defaults match the `llm-gateway-apikey` subchart.                                              |
+| `auth.extAuthz.*`                         | `apikey-authz` / `kube-system` / `9001` / `5s` | Cluster-wide `apikey-authz` gRPC Service coordinates the per-namespace `EnvoyFilter` targets. Defaults match the `llm-gateway-apikey` subchart.                                              |
 | `networkPolicy.enabled`                   | `true`                           | Render the per-namespace `CiliumNetworkPolicy`. **Requires the Cilium dataplane** (see above). Disable when running on a non-Cilium cluster.                                                               |
-| `networkPolicy.allowedIngressNamespaces`  | `[keda, kaito-system, kube-system, monitoring]` | Cross-namespace ingress allowlist for inference pods. Each entry renders a `fromEndpoints` clause keyed off `k8s:io.kubernetes.pod.namespace`. Empty = strict per-namespace isolation. |
+| `networkPolicy.allowedIngressNamespaces`  | `[kube-system, monitoring]` | Cross-namespace ingress allowlist for inference pods. Each entry renders a `fromEndpoints` clause keyed off `k8s:io.kubernetes.pod.namespace`. Empty = strict per-namespace isolation. |
 
 ## Companion charts
 

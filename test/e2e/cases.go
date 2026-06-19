@@ -96,7 +96,7 @@ const (
 	// high-availability and single-replica-loss failover (issue #89).
 	// A lightweight gpu-mocker-style deployment provides a working
 	// BBR → EPP request path; the test then perturbs the cluster-wide
-	// BBR Deployment in kaito-system (delete one replica / scale to
+	// BBR Deployment in kube-system (delete one replica / scale to
 	// zero) and asserts the request path stays healthy while ≥1 replica
 	// survives and only fails closed when ALL replicas are down.
 	CaseClusterFilterHA = "cluster-filter-ha"

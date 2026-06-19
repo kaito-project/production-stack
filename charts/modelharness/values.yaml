@@ -50,9 +50,10 @@ bbr:
   # BBR Service name.
   name: body-based-router
 
-  # Namespace BBR's Deployment/Service run in (the umbrella release
-  # namespace by default).
-  namespace: kaito-system
+  # Namespace BBR's Deployment/Service run in (kube-system by default,
+  # matching the productionstack umbrella's body-based-routing
+  # namespaceOverride).
+  namespace: kube-system
 
   # BBR ext_proc gRPC port.
   port: 9004
@@ -124,7 +125,7 @@ auth:
   # targets. Defaults match the `llm-gateway-apikey` subchart.
   extAuthz:
     serviceName: apikey-authz
-    serviceNamespace: llm-gateway-auth
+    serviceNamespace: kube-system
     grpcPort: 9001
     # gRPC call timeout for the ext_authz check. ext_authz fires once per
     # request on headers only (not in the streaming body path), so a low
@@ -163,11 +164,9 @@ networkPolicy:
   # inference pods in this workload namespace. Each entry renders a
   # `fromEndpoints` clause keyed off the `k8s:io.kubernetes.pod.namespace`
   # label. Use it to permit control-plane / metric-scraper components
-  # outside the namespace (e.g. `keda-kaito-scaler` in `keda` reaching
-  # vLLM / InferencePool metric endpoints). An empty list keeps strict
-  # per-namespace isolation.
+  # outside the namespace (e.g. `keda-kaito-scaler` in `kube-system`
+  # reaching vLLM / InferencePool metric endpoints). An empty list keeps
+  # strict per-namespace isolation.
   allowedIngressNamespaces:
-    - keda
-    - kaito-system
     - kube-system
     - monitoring

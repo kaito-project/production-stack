@@ -53,15 +53,15 @@ The OCI commands below assume `ghcr.io`; swap the registry to suit. Pin `--versi
 Install the `productionstack` umbrella chart, plus any external prerequisites your environment does not already provide (Gateway API CRDs, Istio, GAIE CRDs, KEDA, KAITO). The umbrella chart bundles the cluster-level singletons every model deployment shares: BBR data plane, KEDA Kaito scaler, and the `llm-gateway-auth` control plane.
 
 ```sh
-# keda must already exist (Helm only auto-creates the release namespace).
-kubectl create namespace keda
-
 helm install productionstack oci://ghcr.io/kaito-project/productionstack \
   --version <X.Y.Z> \
-  --namespace kaito-system \
-  --create-namespace \
-  --set keda-kaito-scaler.namespaceOverride=keda
+  --namespace kube-system \
+  --create-namespace
 ```
+
+With the default values the umbrella release and all the cluster-level
+singletons it bundles — BBR data plane, KEDA Kaito scaler, and the
+`llm-gateway-auth` control plane — install into `kube-system`.
 
 The full list of prerequisites the E2E suite installs alongside the umbrella chart is in [`hack/e2e/scripts/install-components.sh`](hack/e2e/scripts/install-components.sh). For the bundled subcharts, toggles, and per-subchart values, see [`charts/productionstack/README.md`](charts/productionstack/README.md).
 

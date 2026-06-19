@@ -95,17 +95,10 @@ echo "── Recent events (last 5 min) ─────────────�
 kubectl get events -A --sort-by='.lastTimestamp' 2>/dev/null | tail -40 || true
 
 echo ""
-echo "── kaito-system logs (last 80 lines per pod) ─────────────────"
-for pod in $(kubectl -n kaito-system get pods --no-headers -o custom-columns=':metadata.name' 2>/dev/null); do
+echo "── kube-system logs (last 80 lines per pod) ──────────────────"
+for pod in $(kubectl -n kube-system get pods --no-headers -o custom-columns=':metadata.name' 2>/dev/null); do
   echo "  ── ${pod} ──"
-  kubectl -n kaito-system logs "${pod}" --all-containers --tail=80 2>/dev/null || true
-done
-
-echo ""
-echo "── keda logs (last 80 lines per pod) ─────────────────────────"
-for pod in $(kubectl -n keda get pods --no-headers -o custom-columns=':metadata.name' 2>/dev/null); do
-  echo "  ── ${pod} ──"
-  kubectl -n keda logs "${pod}" --all-containers --tail=80 2>/dev/null || true
+  kubectl -n kube-system logs "${pod}" --all-containers --tail=80 2>/dev/null || true
 done
 
 echo ""

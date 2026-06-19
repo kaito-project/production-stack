@@ -62,7 +62,7 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 	Ordered, Serial, utils.GinkgoLabelClusterOutage, utils.GinkgoLabelAuth, func() {
 
 		const (
-			authNamespace      = "llm-gateway-auth"
+			authNamespace      = "kube-system"
 			authDeploymentName = "apikey-authz"
 		)
 

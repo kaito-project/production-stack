@@ -13,7 +13,7 @@ Gateway's HCM is rendered **per workload namespace** by the
 (`templates/envoyfilter-bbr.yaml`) and scoped to that namespace's Gateway
 pod via a `workloadSelector`. Because BBR is reached purely by its
 cluster FQDN, it no longer has to live in Istio's root namespace and is
-co-located with the umbrella release (`kaito-system` by default).
+installed into `kube-system` by default.
 
 BBR always serves **plaintext HTTP/2** (`--secure-serving=false`): the
 gateway↔BBR hop never leaves the pod network, so there is no upstream
@@ -37,7 +37,7 @@ comments, and recapped here:
 | Filter anchored INSERT_BEFORE the InferencePool `envoy.filters.http.ext_proc` (configured in `modelharness`) | Enforces the gateway HTTP filter-chain order required by this repo: `ext_authz (if any) → bbr → ext_proc/epp → router`. BBR must inject `X-Gateway-Model-Name` before the InferencePool ext_proc resolves its per-route override. |
 | BBR always serves plaintext HTTP/2; the `bbr.secureServing` toggle and the upstream `DestinationRule` are removed | The gateway↔BBR hop never leaves the pod network, so upstream TLS adds a per-request self-signed-cert handshake for no benefit. `--secure-serving=false` is hardcoded and no `DestinationRule` is rendered. |
 | `bbr.multiNamespace` value removed; RBAC is **always** cluster-wide | Upstream defaults `multiNamespace: false` and renders a namespace-scoped `Role`/`RoleBinding`, which would leave BBR blind to the LoRA-adapter → base-model ConfigMaps living in workload namespaces and silently break adapter-aware routing. This fork ships a single `ClusterRole` + `ClusterRoleBinding` unconditionally. |
-| `namespaceOverride` value retained | Lets the umbrella `productionstack` chart place BBR in a namespace independent of the parent release namespace if needed. Empty string falls back to the release namespace (`kaito-system`). BBR no longer needs to live in Istio's root namespace. |
+| `namespaceOverride` value retained | Lets the umbrella `productionstack` chart place BBR in a namespace independent of the parent release namespace if needed. Empty string falls back to the release namespace. BBR no longer needs to live in Istio's root namespace. |
 | GKE provider template dropped | Upstream offers a `provider.name=gke` rendering path; this repo only ships the Istio data plane today. Reintroduce when a GKE-backed E2E lane lands. |
 | Image tag pinned (`v1.5.0`) instead of upstream `main` | Reproducible installs; `main` is a moving floating tag in the upstream staging registry. |
 | `app.kubernetes.io/*` labels added via `bbr.labels` / `bbr.selectorLabels` helpers; ConfigMap-reader `ClusterRole` name is release-scoped (`<bbr.name>-<release>-configmap-reader`) | Lets multiple unrelated releases coexist on the same cluster and makes `kubectl ... -l app.kubernetes.io/name=body-based-routing` work for ops. |
@@ -45,12 +45,12 @@ comments, and recapped here:
 ## Install via the umbrella chart (recommended)
 
 When consumed through [`productionstack`](../../README.md) a single
-`helm install` of the parent is enough; BBR is co-located with the
-umbrella release namespace:
+`helm install` of the parent is enough; BBR is installed into
+`kube-system` (the umbrella's default for this subchart):
 
 ```sh
 helm upgrade --install productionstack charts/productionstack \
-  --namespace kaito-system --create-namespace --wait
+  --namespace kube-system --create-namespace --wait
 ```
 
 Override BBR-specific values by nesting them under `body-based-routing:`
@@ -68,7 +68,7 @@ FQDN); co-locating with the rest of the stack is typical:
 ```sh
 helm upgrade --install body-based-router \
   charts/productionstack/charts/body-based-routing \
-  --namespace kaito-system \
+  --namespace kube-system \
   --create-namespace \
   --wait
 ```
@@ -99,7 +99,7 @@ so the per-namespace EnvoyFilter targets the right Service FQDN.
 
 | Parameter                                        | Default                                                                       | Description                                                                                                                    |
 |--------------------------------------------------|-------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
-| `namespaceOverride`                              | `""`                                                                          | Pin the BBR Deployment / Service / RBAC (and the upstream FQDN modelharness uses) to this namespace. Empty ⇒ inherit the Helm release namespace (`kaito-system`). |
+| `namespaceOverride`                              | `""`                                                                          | Pin the BBR Deployment / Service / RBAC (and the upstream FQDN modelharness uses) to this namespace. Empty ⇒ inherit the Helm release namespace. |
 | `bbr.name`                                       | `body-based-router`                                                           | Name of the Deployment / Service.                                                                                              |
 | `bbr.replicas`                                   | `2`                                                                           | Replica count. BBR is a cluster-scope singleton on the request hot path, so it runs HA by default. `values.schema.json` pins the minimum to **2**; lowering it below 2 is rejected at render time. |
 | `bbr.podAntiAffinity.type`                       | `soft`                                                                        | `soft` ⇒ `preferredDuringScheduling…` (best-effort spread, still schedules on a single-node cluster); `hard` ⇒ `requiredDuringScheduling…` (a replica stays Pending until a distinct node is free). The anti-affinity rule itself is load-bearing for HA and is always rendered. |
@@ -152,5 +152,5 @@ replica is unhealthy.
 ## Uninstall
 
 ```sh
-helm uninstall body-based-router --namespace kaito-system
+helm uninstall body-based-router --namespace kube-system
 ```

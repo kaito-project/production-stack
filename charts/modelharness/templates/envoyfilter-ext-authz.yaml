@@ -9,7 +9,7 @@ release renders its own EnvoyFilter that splices
 `envoy.filters.http.ext_authz` into this namespace's Gateway pod
 (`<namespace>-gw`), pointing at the cluster-wide apikey-authz gRPC Service
 installed by the `llm-gateway-apikey` subchart of `productionstack`
-(defaults: `apikey-authz` in `llm-gateway-auth`, port 9001).
+(defaults: `apikey-authz` in `kube-system`, port 9001).
 
 Why per-namespace and not cluster-wide:
   - Auth scope is per workload namespace — different tenants get different

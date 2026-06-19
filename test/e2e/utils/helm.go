@@ -183,8 +183,8 @@ func modelHarnessChartPath() string {
 // default-deny-ingress / allow-inference-traffic NetworkPolicies that
 // lock down East-West ingress while keeping the gateway pod reachable;
 // the chart-default `allowedIngressNamespaces` (currently
-// keda + kaito-system) covers the control-plane scrapers every workload
-// in this repo needs.
+// kube-system + monitoring) covers the control-plane scrapers every
+// workload in this repo needs.
 //
 // Idempotent: re-running on an existing release reconciles the values.
 func InstallModelHarness(namespace string, authEnabled bool) error {

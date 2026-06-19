@@ -82,7 +82,7 @@ runs:
 
         # Derive KEDA install namespace from provider.
         case "${E2E_PROVIDER}" in
-          upstream) KEDA_NAMESPACE="keda" ;;
+          upstream) KEDA_NAMESPACE="kube-system" ;;
           azure)    KEDA_NAMESPACE="kube-system" ;;
         esac
 

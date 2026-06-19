@@ -66,7 +66,7 @@ var (
 
 	// GinkgoLabelClusterFilterHA marks tests that verify the cluster-wide
 	// BBR ext_proc filter's high availability and single-replica-loss
-	// failover (issue #89). These tests perturb the shared kaito-system
+	// failover (issue #89). These tests perturb the shared kube-system
 	// BBR Deployment, so the suite MUST decorate them Serial.
 	// See test/e2e/cluster_filter_ha_test.go.
 	GinkgoLabelClusterFilterHA = g.Label("ClusterFilterHA")

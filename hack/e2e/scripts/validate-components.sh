@@ -14,7 +14,7 @@ E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
 # Derive KEDA namespace from provider when not explicitly provided.
 if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
   case "${E2E_PROVIDER}" in
-    upstream) KEDA_NAMESPACE="keda" ;;
+    upstream) KEDA_NAMESPACE="kube-system" ;;
     azure)    KEDA_NAMESPACE="kube-system" ;;
     *)
       echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
@@ -38,22 +38,22 @@ echo ""
 
 # ── KAITO controller ─────────────────────────────────────────────────────
 echo "=== KAITO workspace controller ==="
-if kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=workspace --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/name=workspace --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "KAITO controller is Running"
 else
   fail "KAITO controller is NOT Running"
 fi
-kubectl -n kaito-system get pods -l app.kubernetes.io/name=workspace
+kubectl -n kube-system get pods -l app.kubernetes.io/name=workspace
 echo ""
 
 # ── Shadow-pod-controller (GPU node mocker) ──────────────────────────────
 echo "=== Shadow-pod-controller ==="
-if kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=gpu-node-mocker --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/name=gpu-node-mocker --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "gpu-node-mocker is Running"
 else
   fail "gpu-node-mocker is NOT Running"
 fi
-kubectl -n kaito-system get pods -l app.kubernetes.io/name=gpu-node-mocker
+kubectl -n kube-system get pods -l app.kubernetes.io/name=gpu-node-mocker
 echo ""
 
 # ── Istio (istiod) ──────────────────────────────────────────────────────
@@ -67,17 +67,17 @@ kubectl -n istio-system get pods -l app=istiod
 echo ""
 
 # ── BBR ──────────────────────────────────────────────────────────────────
-# BBR is a workload-only singleton co-located with the umbrella release
-# (kaito-system). The per-namespace ext_proc EnvoyFilter that wires it
+# BBR is a workload-only singleton installed into kube-system by the
+# umbrella release. The per-namespace ext_proc EnvoyFilter that wires it
 # into each Gateway's HCM is rendered by charts/modelharness; here we
 # only validate the BBR Deployment is Running.
 echo "=== BBR (Body-Based Router) ==="
-if kubectl -n kaito-system wait --for=condition=ready pod -l app=body-based-router --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n kube-system wait --for=condition=ready pod -l app=body-based-router --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "BBR is Running"
 else
   fail "BBR is NOT Running"
 fi
-kubectl -n kaito-system get pods -l app=body-based-router 2>/dev/null || true
+kubectl -n kube-system get pods -l app=body-based-router 2>/dev/null || true
 echo ""
 
 # (Catch-all 404 handling is now produced by an EnvoyFilter
@@ -111,22 +111,22 @@ echo ""
 
 # ── LLM Gateway Auth (apikey-operator) ──────────────────────────────────
 echo "=== LLM Gateway Auth (operator) ==="
-if kubectl -n llm-gateway-auth wait --for=condition=ready pod -l app.kubernetes.io/component=apikey-operator --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/component=apikey-operator --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "apikey-operator is Running"
 else
   fail "apikey-operator is NOT Running"
 fi
-kubectl -n llm-gateway-auth get pods -l app.kubernetes.io/component=apikey-operator 2>/dev/null || true
+kubectl -n kube-system get pods -l app.kubernetes.io/component=apikey-operator 2>/dev/null || true
 echo ""
 
 # ── LLM Gateway Auth (apikey-authz) ─────────────────────────────────────
 echo "=== LLM Gateway Auth (authz) ==="
-if kubectl -n llm-gateway-auth wait --for=condition=ready pod -l app.kubernetes.io/component=apikey-authz --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/component=apikey-authz --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "apikey-authz is Running"
 else
   fail "apikey-authz is NOT Running"
 fi
-kubectl -n llm-gateway-auth get pods -l app.kubernetes.io/component=apikey-authz 2>/dev/null || true
+kubectl -n kube-system get pods -l app.kubernetes.io/component=apikey-authz 2>/dev/null || true
 echo ""
 
 # ── CRDs ─────────────────────────────────────────────────────────────────

@@ -50,14 +50,14 @@ case "${E2E_PROVIDER}" in
 esac
 
 # Derive KEDA install namespace from provider.
-#   upstream → install KEDA via Helm into the dedicated `keda` namespace.
+#   upstream → install KEDA via Helm into `kube-system`.
 #   azure    → KEDA is provided by the AKS managed add-on, which lives in
 #              `kube-system`. The keda-kaito-scaler chart must be installed
 #              in the same namespace as KEDA so KEDA can resolve the
 #              ClusterTriggerAuthentication Secrets it ships.
 if [ -z "${KEDA_NAMESPACE:-}" ]; then
   case "${E2E_PROVIDER}" in
-    upstream) KEDA_NAMESPACE="keda" ;;
+    upstream) KEDA_NAMESPACE="kube-system" ;;
     azure)    KEDA_NAMESPACE="kube-system" ;;
   esac
 fi

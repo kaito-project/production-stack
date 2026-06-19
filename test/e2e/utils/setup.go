@@ -43,8 +43,8 @@ import (
 // per-namespace gateway pod reachable from outside the namespace
 // (matched via the standard `gateway.networking.k8s.io/gateway-name`
 // label that Istio stamps on every gateway pod). The chart-default
-// `allowedIngressNamespaces` (currently keda + kaito-system) covers
-// the control-plane scrapers — `keda-kaito-scaler` and the
+// `allowedIngressNamespaces` (currently kube-system + monitoring)
+// covers the control-plane scrapers — `keda-kaito-scaler` and the
 // gpu-node-mocker / kaito-workspace controllers — that need to reach
 // shadow pods directly from outside the workload namespace.
 //

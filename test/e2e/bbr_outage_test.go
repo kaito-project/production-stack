@@ -57,7 +57,7 @@ var _ = Describe("BBR outage (fail-closed cluster filter)",
 	Ordered, Serial, utils.GinkgoLabelClusterOutage, func() {
 
 		const (
-			bbrNamespace      = "kaito-system"
+			bbrNamespace      = "kube-system"
 			bbrDeploymentName = "body-based-router"
 		)
 

@@ -29,10 +29,12 @@
 # name. The keys below mirror each subchart's `values.yaml` exactly;
 # see the subchart's own README for the full set of supported keys.
 #
-# Example — install BBR into istio-system and the scaler into keda
-# while the umbrella release itself lives in kaito-system:
+# By default every subchart below installs into kube-system, and the
+# umbrella release itself is also installed into kube-system. Override a
+# subchart's namespaceOverride to relocate it — e.g. install BBR into
+# istio-system and the scaler into keda:
 #   helm upgrade --install productionstack charts/productionstack \
-#     --namespace kaito-system --create-namespace \
+#     --namespace kube-system --create-namespace \
 #     --set body-based-routing.namespaceOverride=istio-system \
 #     --set keda-kaito-scaler.namespaceOverride=keda
 # (`istio-system` and `keda` must already exist.)
@@ -41,25 +43,24 @@
 # Body-Based Router (BBR) for the Gateway API Inference Extension.
 # Cluster-wide WORKLOAD singleton: a single Deployment + Service. It no
 # longer renders an EnvoyFilter, so it does NOT need to live in Istio's
-# root namespace — it is co-located with this umbrella release.
+# root namespace — it is installed into kube-system by default.
 # The per-namespace gateway wiring (ext_proc EnvoyFilter + outage
 # local_reply, both scoped to each Gateway pod) is rendered by
 # charts/modelharness; keep its `bbr.namespace` in sync with whatever
 # namespace BBR ends up in here.
 # See charts/body-based-routing/README.md for the full value reference.
 body-based-routing:
-  # Inherit the umbrella release namespace (kaito-system by default).
-  # BBR is reached by its cluster FQDN, so it can live anywhere; set a
-  # namespaceOverride only if you need it elsewhere (and then update
-  # modelharness `bbr.namespace` to match).
-  namespaceOverride: ""
+  # Install BBR into kube-system by default. BBR is reached by its
+  # cluster FQDN, so it can live anywhere; change this only if you need
+  # it elsewhere (and then update modelharness `bbr.namespace` to match).
+  namespaceOverride: kube-system
 
 # KEDA external scaler for vLLM / InferenceSet workloads.
 # See charts/keda-kaito-scaler/values.yaml for the full value reference.
 keda-kaito-scaler:
-  # Co-locate with the KEDA control plane by default. Set to "" to
-  # inherit the umbrella release namespace instead.
-  namespaceOverride: keda
+  # Co-locate with the KEDA control plane in kube-system by default. Set
+  # to "" to inherit the umbrella release namespace instead.
+  namespaceOverride: kube-system
 
 # LLM Gateway Auth — API-key ext_authz for the inference Gateway.
 # Pulled from the upstream `oci://mcr.microsoft.com/aks/kaito/helm`
@@ -103,10 +104,9 @@ keda-kaito-scaler:
 llm-gateway-apikey:
   enabled: true
   # Co-locate the LGA control plane (apikey-operator, apikey-authz,
-  # webhook cert Secret) in a dedicated namespace so the umbrella
-  # release itself can live elsewhere (e.g. kaito-system). Set to "" to
+  # webhook cert Secret) in kube-system by default. Set to "" to
   # inherit the umbrella release namespace instead.
-  namespaceOverride: llm-gateway-auth
+  namespaceOverride: kube-system
   # Mirror the umbrella's default LGA wiring so a single
   # `helm install productionstack` provisions a working data plane
   # without extra --set flags. Override at install time as needed.
@@ -129,7 +129,7 @@ llm-gateway-apikey:
     # otherwise render in the LGA namespace. We disable it because:
     #   * saturn-we (and other AKS Istio add-on clusters) may run a
     #     mix of mTLS modes across namespaces, and a STRICT PA in
-    #     llm-gateway-auth would block plaintext probes from the
+    #     kube-system would block plaintext probes from the
     #     control plane during the rollout.
     #   * the gateway pods that talk to apikey-authz already run an
     #     Istio sidecar (managed by the AKS Istio add-on), so mTLS to
@@ -140,10 +140,10 @@ llm-gateway-apikey:
     # want to fail-closed on any non-mTLS traffic into apikey-authz.
     strictMTLS: false
     # Pin the cluster-wide EnvoyFilter to the LGA control-plane
-    # namespace (rather than `default`) so the no-op resource lives
-    # alongside the rest of the chart's manifests and never collides
-    # with a user Gateway.
-    gatewayNamespace: llm-gateway-auth
+    # namespace (kube-system) so the no-op resource lives alongside the
+    # rest of the chart's manifests and never collides with a user
+    # Gateway.
+    gatewayNamespace: kube-system
     # Sentinel label that no Gateway pod carries. The cluster-wide
     # EnvoyFilter still renders (required by the upstream template)
     # but selects zero workloads, so it has no effect on the data

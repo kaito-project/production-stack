@@ -185,9 +185,9 @@ kubectl -n kube-system wait --for=condition=ready pod \
 #              --enable-gateway-api`. We only wait for their controllers
 #              / CRDs to be served. Istio is still installed via
 #              istioctl here.
-#   upstream → install KEDA via Helm into a dedicated `keda` namespace
-#              and apply the upstream Gateway API base CRDs via kubectl.
-#              Istio is installed via istioctl.
+#   upstream → install KEDA via Helm into `kube-system` and apply the
+#              upstream Gateway API base CRDs via kubectl. Istio is
+#              installed via istioctl.
 #
 # Istio is installed here (rather than in install-components.sh's
 # phase1-base) so the productionstack umbrella chart — which ships an
@@ -210,7 +210,7 @@ kubectl -n kube-system wait --for=condition=ready pod \
 # Derive KEDA install namespace from provider when not explicitly provided.
 if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
   case "${E2E_PROVIDER}" in
-    upstream) KEDA_NAMESPACE="keda" ;;
+    upstream) KEDA_NAMESPACE="kube-system" ;;
     azure)    KEDA_NAMESPACE="kube-system" ;;
   esac
 fi
@@ -252,7 +252,6 @@ install_keda() {
       helm upgrade --install keda kedacore/keda \
         --version "${KEDA_VERSION}" \
         --namespace "${KEDA_NAMESPACE}" \
-        --create-namespace \
         --wait --timeout=300s
       echo "⏳ Waiting for KEDA operator..."
       kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator --timeout=180s || true

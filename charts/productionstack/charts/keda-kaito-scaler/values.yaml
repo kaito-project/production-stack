@@ -13,9 +13,9 @@ nameOverrider: ""
 #
 # Set this when the chart is consumed as a subchart of an umbrella
 # release that is installed into a different namespace than where the
-# scaler should actually run (e.g. parent installed into
-# `kaito-system`, scaler pinned to `keda`). The target namespace MUST
-# already exist — Helm only auto-creates the release namespace.
+# scaler should actually run (e.g. parent installed into `kube-system`,
+# scaler pinned to `keda`). The target namespace MUST already exist —
+# Helm only auto-creates the release namespace.
 namespaceOverride: ""
 
 image:

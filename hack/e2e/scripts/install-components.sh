@@ -30,13 +30,13 @@ E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
 source "${SCRIPT_DIR}/lib-parallel.sh"
 
 # Derive KEDA install namespace from provider:
-#   upstream → `keda` (Helm-installed KEDA)
+#   upstream → `kube-system` (Helm-installed KEDA)
 #   azure    → `kube-system` (AKS managed KEDA add-on). keda-kaito-scaler
 #              must be co-located with KEDA so KEDA can resolve the
 #              ClusterTriggerAuthentication Secrets it ships.
 if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
   case "${E2E_PROVIDER}" in
-    upstream) KEDA_NAMESPACE="keda" ;;
+    upstream) KEDA_NAMESPACE="kube-system" ;;
     azure)    KEDA_NAMESPACE="kube-system" ;;
     *)
       echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
@@ -71,8 +71,7 @@ install_kaito() {
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
   helm install kaito kaito/workspace \
-    --namespace kaito-system \
-    --create-namespace \
+    --namespace kube-system \
     --set featureGates.enableInferenceSetController=true \
     --set featureGates.gatewayAPIInferenceExtension=false \
     --set image.repository=ghcr.io/kaito-project/kaito/workspace \
@@ -81,8 +80,8 @@ install_kaito() {
     --wait --timeout=300s
 
   echo "⏳ Waiting for KAITO controller..."
-  kubectl -n kaito-system rollout status deployment -l app.kubernetes.io/name=workspace --timeout=120s || true
-  kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=workspace --timeout=120s || \
+  kubectl -n kube-system rollout status deployment -l app.kubernetes.io/name=workspace --timeout=120s || true
+  kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/name=workspace --timeout=120s || \
     echo "⚠️  KAITO pods not ready yet — continuing (will re-check later)."
 }
 
@@ -98,8 +97,7 @@ install_gwie_crds() {
 install_gpu_mocker() {
   echo "=== Deploying gpu-node-mocker (GPU node mocker) ==="
   helm install gpu-node-mocker ./charts/gpu-node-mocker \
-    --namespace kaito-system \
-    --create-namespace \
+    --namespace kube-system \
     --set image.repository="${SHADOW_CONTROLLER_IMAGE%:*}" \
     --set image.tag="${SHADOW_CONTROLLER_IMAGE##*:}"
 
@@ -107,7 +105,7 @@ install_gpu_mocker() {
   # exits if the CRD is not served, so early restarts are expected while
   # KAITO installs that CRD in parallel.
   echo "⏳ Waiting for gpu-node-mocker (will tolerate restarts while KAITO CRDs come online)..."
-  kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=420s || true
+  kubectl -n kube-system rollout status deployment/gpu-node-mocker --timeout=420s || true
 }
 
 
@@ -120,26 +118,25 @@ install_productionstack() {
   #
   # Per-subchart install namespaces (each via the subchart's own
   # `namespaceOverride` value):
-  #   * body-based-routing → kaito-system    (inherits the umbrella
-  #     release namespace). BBR is a workload-only singleton now: this
-  #     subchart renders just the Deployment + Service + RBAC and NO
-  #     EnvoyFilter, so it no longer has to live in Istio's root
-  #     namespace. The ext_proc EnvoyFilter that injects BBR into each
-  #     Gateway's HCM (anchored INSERT_BEFORE the InferencePool
-  #     ext_proc, giving ext_authz → bbr → ext_proc/epp → router) is
-  #     rendered per-namespace by charts/modelharness and scoped to that
-  #     namespace's Gateway pod.
+  #   * body-based-routing → kube-system. BBR is a workload-only
+  #     singleton now: this subchart renders just the Deployment +
+  #     Service + RBAC and NO EnvoyFilter, so it no longer has to live
+  #     in Istio's root namespace. The ext_proc EnvoyFilter that injects
+  #     BBR into each Gateway's HCM (anchored INSERT_BEFORE the
+  #     InferencePool ext_proc, giving ext_authz → bbr → ext_proc/epp →
+  #     router) is rendered per-namespace by charts/modelharness and
+  #     scoped to that namespace's Gateway pod.
   #   * keda-kaito-scaler  → ${KEDA_NAMESPACE}  (co-located with KEDA so
   #     KEDA can resolve the ClusterTriggerAuthentication Secrets it
   #     ships.)
-  #   * llm-gateway-apikey → llm-gateway-auth  (upstream chart 0.0.8-alpha+
+  #   * llm-gateway-apikey → kube-system  (upstream chart 0.0.8-alpha+
   #     supports namespaceOverride; the LGA operator + authz control
   #     plane live here, matching where validate-components.sh and the
   #     e2e suite expect them.)
   #
-  # The umbrella release itself is installed into `kaito-system`; the
-  # release Secret therefore lives in `kaito-system`. `helm uninstall
-  # productionstack -n kaito-system` correctly cleans up across all
+  # The umbrella release itself is installed into `kube-system`; the
+  # release Secret therefore lives in `kube-system`. `helm uninstall
+  # productionstack -n kube-system` correctly cleans up across all
   # override namespaces because Helm tracks the rendered manifest, not
   # the namespace.
   #
@@ -148,39 +145,35 @@ install_productionstack() {
   # Istio has injected the InferencePool ext_proc anchor; it is created
   # up-front and attaches lazily, which is fine.
 
-  echo "⏳ Ensuring per-subchart target namespaces exist..."
-  kubectl create namespace "${KEDA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
-  kubectl create namespace llm-gateway-auth  --dry-run=client -o yaml | kubectl apply -f -
-
   echo "⏳ Vendoring upstream llm-gateway-apikey OCI dependency..."
   helm dependency update "${PRODUCTIONSTACK_CHART_DIR}"
 
   echo "=== Installing productionstack umbrella chart ==="
-  echo "    body-based-routing → kaito-system (umbrella release namespace)"
+  echo "    body-based-routing → kube-system"
   echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE}"
-  echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
+  echo "    llm-gateway-apikey → kube-system (chart version pinned in Chart.yaml)"
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
-    --namespace kaito-system \
-    --create-namespace \
+    --namespace kube-system \
+    --set body-based-routing.namespaceOverride=kube-system \
     --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}" \
     --set llm-gateway-apikey.enabled=true \
-    --set llm-gateway-apikey.namespaceOverride=llm-gateway-auth \
+    --set llm-gateway-apikey.namespaceOverride=kube-system \
     --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."
-  kubectl -n kaito-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
-    kubectl -n kaito-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
+  kubectl -n kube-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
+    kubectl -n kube-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
     echo "⚠️  BBR not ready yet — continuing."
 
   echo "⏳ Waiting for keda-kaito-scaler..."
   kubectl -n "${KEDA_NAMESPACE}" rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true
 
   echo "⏳ Waiting for apikey-operator..."
-  kubectl -n llm-gateway-auth wait --for=condition=Available \
+  kubectl -n kube-system wait --for=condition=Available \
     deployment/apikey-operator --timeout=15m
 
   echo "⏳ Waiting for apikey-authz..."
-  kubectl -n llm-gateway-auth wait --for=condition=Available \
+  kubectl -n kube-system wait --for=condition=Available \
     deployment/apikey-authz --timeout=15m
 }
 

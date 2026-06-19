@@ -49,7 +49,7 @@ import (
 //	so that the loss of ONE replica is a transparent failover and the
 //	fail-closed `502` path only fires when ALL replicas are down.
 //
-//	This suite perturbs the shared kaito-system BBR Deployment, so it is
+//	This suite perturbs the shared kube-system BBR Deployment, so it is
 //	decorated Serial — no other spec may run while BBR is degraded.
 //
 // Scope note: the structured `502 bbr_unavailable` envelope (+
@@ -62,7 +62,7 @@ var _ = Describe("BBR cluster-filter HA",
 	Ordered, Serial, utils.GinkgoLabelClusterFilterHA, utils.GinkgoLabelSmoke, func() {
 
 		const (
-			bbrNamespace  = "kaito-system"
+			bbrNamespace  = "kube-system"
 			bbrDeployment = "body-based-router"
 			bbrHealthPort = 9005
 		)

@@ -3,11 +3,10 @@
 #
 # Design intent for this fork:
 #   1. BBR is a cluster-wide WORKLOAD singleton: a single Deployment +
-#      Service + cluster-scoped RBAC. It is co-located with the
-#      productionstack umbrella release (kaito-system by default) — it
-#      no longer has to live in Istio's root namespace because this
-#      chart no longer renders any EnvoyFilter. The gateway dataplane
-#      wiring (the ext_proc EnvoyFilter that injects BBR into a
+#      Service + cluster-scoped RBAC. It is installed into kube-system
+#      by default — it no longer has to live in Istio's root namespace
+#      because this chart no longer renders any EnvoyFilter. The gateway
+#      dataplane wiring (the ext_proc EnvoyFilter that injects BBR into a
 #      Gateway's HCM) is rendered per-workload-namespace by
 #      charts/modelharness and scoped to that namespace's Gateway pod
 #      via a workloadSelector, so BBR's Service is reached purely by
@@ -29,9 +28,10 @@
 # (standard Helm behavior).
 #
 # BBR no longer renders an EnvoyFilter, so it is NOT required to live in
-# Istio's root namespace; co-locating it with the umbrella release
-# (kaito-system) is the default. The target namespace MUST already
-# exist — Helm only auto-creates the release namespace.
+# Istio's root namespace; installing it into kube-system is the
+# default (set via the umbrella chart's namespaceOverride). The target
+# namespace MUST already exist — Helm only auto-creates the release
+# namespace.
 namespaceOverride: ""
 
 bbr:

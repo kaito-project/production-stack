@@ -49,13 +49,13 @@ kubectl -n keda logs deploy/keda-kaito-scaler | head
 
 ## Install as a subchart of `productionstack`
 
-The umbrella chart pins `keda-kaito-scaler.namespaceOverride: keda` by
-default, so the scaler lands in the `keda` namespace regardless of the
-Helm release namespace:
+The umbrella chart pins `keda-kaito-scaler.namespaceOverride: kube-system`
+by default, so the scaler lands in the `kube-system` namespace
+regardless of the Helm release namespace:
 
 ```sh
 helm upgrade --install productionstack charts/productionstack \
-  --namespace kaito-system \
+  --namespace kube-system \
   --create-namespace
 ```
 
