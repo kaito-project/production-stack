@@ -32,10 +32,13 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 ## --------------------------------------
 
 .PHONY: manifests
-manifests: controller-gen ## Generate RBAC ClusterRole from kubebuilder markers into the Helm chart.
-	$(CONTROLLER_GEN) rbac:roleName=gpu-node-mocker paths="./pkg/..." output:rbac:artifacts:config=charts/gpu-node-mocker/templates
+manifests: controller-gen ## Generate RBAC ClusterRoles from kubebuilder markers into the Helm charts.
+	$(CONTROLLER_GEN) rbac:roleName=gpu-node-mocker paths="./pkg/gpu-node-mocker/..." output:rbac:artifacts:config=charts/gpu-node-mocker/templates
 	@mv charts/gpu-node-mocker/templates/role.yaml charts/gpu-node-mocker/templates/clusterrole-auto-generated.yaml
 	@echo "Generated charts/gpu-node-mocker/templates/clusterrole-auto-generated.yaml"
+	$(CONTROLLER_GEN) rbac:roleName=productionstack-status-reporter paths="./pkg/productionstack-status-reporter/..." output:rbac:artifacts:config=charts/productionstack/charts/productionstack-status-reporter/templates
+	@mv charts/productionstack/charts/productionstack-status-reporter/templates/role.yaml charts/productionstack/charts/productionstack-status-reporter/templates/clusterrole-auto-generated.yaml
+	@echo "Generated charts/productionstack/charts/productionstack-status-reporter/templates/clusterrole-auto-generated.yaml"
 
 .PHONY: verify-manifests
 verify-manifests: manifests ## Verify generated manifests are up to date.
@@ -86,6 +89,14 @@ build: ## Build the gpu-node-mocker binary.
 	@mkdir -p $(OUTPUT_DIR)
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -o $(OUTPUT_DIR)/gpu-node-mocker ./cmd/gpu-node-mocker
 
+STATUS_REPORTER_IMG_NAME ?= productionstack-status-reporter
+STATUS_REPORTER_IMG ?= $(REGISTRY)/$(STATUS_REPORTER_IMG_NAME):$(IMG_TAG)
+
+.PHONY: build-status-reporter
+build-status-reporter: ## Build the productionstack-status-reporter binary.
+	@mkdir -p $(OUTPUT_DIR)
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(ARCH) go build -o $(OUTPUT_DIR)/productionstack-status-reporter ./cmd/productionstack-status-reporter
+
 .PHONY: test
 test: ## Run unit tests.
 	go test -v -race -count=1 ./pkg/... ./cmd/...
@@ -95,6 +106,10 @@ CONTAINER_TOOL ?= $(shell command -v docker 2>/dev/null || command -v podman 2>/
 .PHONY: docker-build
 docker-build: ## Build docker image for the target ARCH.
 	$(CONTAINER_TOOL) build --platform linux/$(ARCH) -f docker/Dockerfile -t $(IMG) .
+
+.PHONY: docker-build-status-reporter
+docker-build-status-reporter: ## Build the productionstack-status-reporter docker image for the target ARCH.
+	$(CONTAINER_TOOL) build --platform linux/$(ARCH) -f docker/Dockerfile.status-reporter -t $(STATUS_REPORTER_IMG) .
 
 # Multi-arch buildx target used by the release workflow. Set
 #   OUTPUT_TYPE=type=registry  to push directly to $(IMG), or
@@ -111,6 +126,16 @@ docker-buildx: ## Multi-arch build (and optionally push) the gpu-node-mocker ima
 		--output=$(OUTPUT_TYPE) \
 		-f docker/Dockerfile \
 		-t $(IMG) .
+
+.PHONY: docker-buildx-status-reporter
+docker-buildx-status-reporter: ## Multi-arch build (and optionally push) the productionstack-status-reporter image.
+	$(CONTAINER_TOOL) buildx inspect production-stack-builder >/dev/null 2>&1 || \
+		$(CONTAINER_TOOL) buildx create --name production-stack-builder --use
+	$(CONTAINER_TOOL) buildx build \
+		--platform $(PLATFORMS) \
+		--output=$(OUTPUT_TYPE) \
+		-f docker/Dockerfile.status-reporter \
+		-t $(STATUS_REPORTER_IMG) .
 
 ## --------------------------------------
 ## E2E Tests
@@ -175,6 +200,15 @@ e2e-push-image-local: ## Tag and push locally-built image to ACR (no hash, uses 
 	$(CONTAINER_TOOL) tag $(IMG) "$${IMAGE}" >&2; \
 	$(CONTAINER_TOOL) push "$${IMAGE}" >&2; \
 	echo "image=$${IMAGE}"
+
+.PHONY: e2e-push-status-reporter-image
+e2e-push-status-reporter-image: ## Tag and push status-reporter image to ACR. Sets STATUS_REPORTER_IMAGE.
+	az acr login --name "$${ACR_NAME}" >&2; \
+	IMAGE_TAG="latest-$$(head -c 8 /dev/urandom | xxd -p)"; \
+	IMAGE="$${ACR_NAME}.azurecr.io/$(STATUS_REPORTER_IMG_NAME):$${IMAGE_TAG}"; \
+	$(CONTAINER_TOOL) tag $(STATUS_REPORTER_IMG) "$${IMAGE}" >&2; \
+	$(CONTAINER_TOOL) push "$${IMAGE}" >&2; \
+	echo "status_reporter_image=$${IMAGE}"
 
 .PHONY: e2e-install
 e2e-install: ## Install all E2E components onto the cluster.

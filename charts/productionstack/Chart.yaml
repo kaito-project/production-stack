@@ -80,3 +80,11 @@ dependencies:
     tags:
       - gateway
       - auth
+  # Control-plane status reporter: the single, leader-elected, read-only
+  # producer of the end-to-end error-handling reason catalogue as
+  # Kubernetes Events in kube-system. In-tree subchart under `charts/`.
+  - name: productionstack-status-reporter
+    version: 0.1.0
+    condition: productionstack-status-reporter.enabled
+    tags:
+      - observability

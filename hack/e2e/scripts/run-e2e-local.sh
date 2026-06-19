@@ -157,6 +157,10 @@ do_install() {
     echo "❌ SHADOW_CONTROLLER_IMAGE is not set. Run prepare-image.sh first and export the resulting image= value." >&2
     exit 1
   fi
+  if [[ -z "${STATUS_REPORTER_IMAGE:-}" ]]; then
+    echo "❌ STATUS_REPORTER_IMAGE is not set. Run prepare-image.sh first and export the resulting status_reporter_image= value." >&2
+    exit 1
+  fi
   echo "=== Installing components ==="
   "${SCRIPT_DIR}/install-components.sh"
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
 # prepare-image.sh — Create the resource group + ACR, then build and push
-# the gpu-node-mocker image into ACR.
+# the gpu-node-mocker and productionstack-status-reporter images into ACR.
 #
 # This step is intentionally split from setup-cluster.sh so that AKS-create
 # wall time can be measured in isolation. Both `az group create` and
@@ -14,9 +14,12 @@
 #   LOCATION         — Azure region              (default: australiaeast)
 #   IMG              — Local docker tag for the gpu-node-mocker image
 #                      (default: gpu-node-mocker:latest)
+#   STATUS_REPORTER_IMG — Local docker tag for the status-reporter image
+#                      (default: productionstack-status-reporter:latest)
 #
 # Outputs (on stdout):
 #   image=<acr-fqdn>/gpu-node-mocker:<tag>
+#   status_reporter_image=<acr-fqdn>/productionstack-status-reporter:<tag>
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -34,6 +37,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-kaito-aks}"
 ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
 LOCATION="${LOCATION:-australiaeast}"
 IMG="${IMG:-gpu-node-mocker:latest}"
+STATUS_REPORTER_IMG="${STATUS_REPORTER_IMG:-productionstack-status-reporter:latest}"
 
 # Verify the container tool used by the Makefile (docker/podman) is installed
 # and its daemon is reachable. Fail fast here so users get an actionable error
@@ -73,3 +77,9 @@ IMG="${IMG}" make -C "${REPO_ROOT}" docker-build >&2
 
 echo "=== Pushing gpu-node-mocker image to ACR (${ACR_NAME}) ===" >&2
 ACR_NAME="${ACR_NAME}" IMG="${IMG}" make -C "${REPO_ROOT}" e2e-push-image
+
+echo "=== Building productionstack-status-reporter image (${STATUS_REPORTER_IMG}) ===" >&2
+STATUS_REPORTER_IMG="${STATUS_REPORTER_IMG}" make -C "${REPO_ROOT}" docker-build-status-reporter >&2
+
+echo "=== Pushing productionstack-status-reporter image to ACR (${ACR_NAME}) ===" >&2
+ACR_NAME="${ACR_NAME}" STATUS_REPORTER_IMG="${STATUS_REPORTER_IMG}" make -C "${REPO_ROOT}" e2e-push-status-reporter-image

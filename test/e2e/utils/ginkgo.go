@@ -90,4 +90,18 @@ var (
 	// InferenceSet replicas), so they do not need Serial; they are Nightly
 	// because they take an inference pool through an outage + recovery.
 	GinkgoLabelDataplaneOutage = g.Label("DataplaneOutage")
+
+	// GinkgoLabelStatusReporter marks tests that verify the
+	// productionstack-status-reporter control-plane reason catalogue (issue
+	// #87): cluster / modelharness / modeldeployment Warning + Ready Events
+	// in kube-system, the §1.3 priority order, the §1.4 cross-layer
+	// suppression suffix, the inferencesetWeightDownloadSlow sliding window,
+	// and the §3 "no TSG URLs in messages" hygiene rule. Several specs
+	// perturb shared cluster-wide control-plane Deployments (BBR,
+	// llm-gateway-auth, KAITO), so those MUST be decorated Serial and are
+	// Nightly-only. See test/e2e/cluster_status_test.go,
+	// harness_status_test.go, control_plane_error_test.go,
+	// upstream_gating_test.go, weight_download_slow_test.go,
+	// event_message_hygiene_test.go.
+	GinkgoLabelStatusReporter = g.Label("StatusReporter")
 )

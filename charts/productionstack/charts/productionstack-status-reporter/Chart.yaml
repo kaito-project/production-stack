@@ -1,0 +1,22 @@
+apiVersion: v2
+name: productionstack-status-reporter
+description: |
+  Control-plane status reporter for the Kaito production stack. A single,
+  leader-elected, read-only controller that evaluates the end-to-end
+  error-handling reason catalogue (cluster / modelharness / modeldeployment
+  layers) on every resync and surfaces the result as aggregated Kubernetes
+  Events in kube-system. It is the SOLE producer of these reasons.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kaito
+  - production-stack
+  - observability
+  - status
+home: https://github.com/kaito-project/production-stack
+sources:
+  - https://github.com/kaito-project/production-stack
+maintainers:
+  - name: kaito-project
+    url: https://github.com/kaito-project

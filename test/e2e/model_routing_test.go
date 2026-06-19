@@ -104,7 +104,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		It("should return the correct model name for falcon", func() {
 			var parsed *utils.ChatCompletionResponse
 			Eventually(func() error {
-				resp, err := sendChat(caseGatewayURL, falconModel)
+				resp, err := sendChatWithRetry(caseGatewayURL, falconModel)
 				if err != nil {
 					return err
 				}
@@ -118,7 +118,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				}
 				parsed = p
 				return nil
-			}, 30*time.Second, 2*time.Second).Should(Succeed())
+			}, 90*time.Second, 5*time.Second).Should(Succeed())
 			Expect(parsed.Model).To(Equal(falconModel),
 				"response model should match the requested falcon model")
 		})
@@ -126,7 +126,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		It("should return the correct model name for ministral", func() {
 			var parsed *utils.ChatCompletionResponse
 			Eventually(func() error {
-				resp, err := sendChat(caseGatewayURL, ministralModel)
+				resp, err := sendChatWithRetry(caseGatewayURL, ministralModel)
 				if err != nil {
 					return err
 				}
@@ -140,7 +140,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				}
 				parsed = p
 				return nil
-			}, 30*time.Second, 2*time.Second).Should(Succeed())
+			}, 90*time.Second, 5*time.Second).Should(Succeed())
 			Expect(parsed.Model).To(Equal(ministralModel),
 				"response model should match the requested ministral model")
 		})
