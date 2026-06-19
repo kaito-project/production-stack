@@ -131,7 +131,7 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 		./test/e2e/...
 
 .PHONY: test-e2e-karpenter
-test-e2e-karpenter: ## Run Karpenter nightly e2e with safe defaults for swedencentral quota.
+test-e2e-karpenter: ## Run the Karpenter nightly scale-from-zero scenarios with safe swedencentral defaults.
 	$(MAKE) test-e2e E2E_LABEL='Karpenter' E2E_PARALLEL=1 E2E_TIMEOUT=180m
 ## --------------------------------------
 ## E2E Targets
@@ -276,7 +276,7 @@ e2e-up-karpenter: ## One command to set up full local E2E env using real Karpent
 	echo "=== E2E environment is ready (Karpenter / AKS NAP) ==="; \
 	echo "  Cluster: $(E2E_CLUSTER_NAME)"; \
 	echo "  Resource Group: $(E2E_RESOURCE_GROUP)"; \
-	echo "Run nightly tests with: test-e2e-karpenter"; \
+	echo "Run nightly tests with: make test-e2e-karpenter"; \
 	echo "Tear down with: CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) make e2e-teardown"
 
 ## --------------------------------------

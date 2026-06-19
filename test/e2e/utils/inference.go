@@ -32,8 +32,9 @@ const (
 	// InferenceSetReadyTimeout is the default timeout for waiting for an
 	// InferenceSet to be reconciled (i.e. the InferencePool has been
 	// rendered by the modeldeployment Helm chart and is observable on the
-	// cluster).
-	InferenceSetReadyTimeout = 5 * time.Minute
+	// cluster). Extended to 20 minutes to absorb cold-start variance from
+	// GPU node bring-up, image reconciliation, and multi-node model warmup.
+	InferenceSetReadyTimeout = 20 * time.Minute
 )
 
 // InferencePoolName returns the InferencePool name derived from the

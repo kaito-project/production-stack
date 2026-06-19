@@ -18,10 +18,28 @@
       "minLength": 1,
       "description": "Inference preset name set on the InferenceSet. MUST be non-empty."
     },
+    "presetImage": {
+      "type": "string",
+      "description": "Optional preset image override passed via presetOptions.image."
+    },
+    "modelAccessSecret": {
+      "type": "string",
+      "description": "Optional Hugging Face access token Secret name passed via presetOptions.modelAccessSecret."
+    },
     "instanceType": {
       "type": "string",
       "minLength": 1,
       "description": "VM instance type used for the underlying GPU nodes."
+    },
+    "nodeCount": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Node count limit for the InferenceSet."
+    },
+    "tensorParallelSize": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "When >= 1, renders an inference config with vLLM tensor-parallel-size set to this value."
     },
     "replicas": {
       "type": "integer",

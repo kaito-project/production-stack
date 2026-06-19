@@ -19,6 +19,9 @@ metadata:
   {{- end }}
 spec:
   replicas: {{ .Values.replicas }}
+  {{- if gt (.Values.nodeCount | int) 0 }}
+  nodeCountLimit: {{ .Values.nodeCount }}
+  {{- end }}
   labelSelector:
     matchLabels:
       apps: {{ include "modeldeployment.name" . }}
@@ -39,9 +42,17 @@ spec:
     resource:
       instanceType: {{ .Values.instanceType | quote }}
     inference:
+      {{- if ge (.Values.tensorParallelSize | int) 1 }}
+      config: {{ include "modeldeployment.inferenceConfigName" . | quote }}
+      {{- end }}
       preset:
         name: {{ .Values.model | quote }}
-        {{- if .Values.presetImage }}
+        {{- if or .Values.presetImage .Values.modelAccessSecret }}
         presetOptions:
+          {{- if .Values.presetImage }}
           image: {{ .Values.presetImage | quote }}
+          {{- end }}
+          {{- if .Values.modelAccessSecret }}
+          modelAccessSecret: {{ .Values.modelAccessSecret | quote }}
+          {{- end }}
         {{- end }}

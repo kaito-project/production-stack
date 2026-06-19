@@ -54,8 +54,8 @@ inputs:
     default: ''
   node-provisioner:
     description: >
-      KAITO node provisioner. Set to "karpenter" to use real Karpenter (AKS Node
-      Auto Provisioning). When "karpenter": gpu-node-mocker is not built or
+      KAITO node provisioner. Set to "karpenter" to use self-managed Karpenter
+      (installed via Helm). When "karpenter": gpu-node-mocker is not built or
       deployed, and KAITO is launched with --node-provisioner=karpenter.
       Default: empty (gpu-node-mocker path).
     required: false

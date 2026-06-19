@@ -20,9 +20,10 @@
 #   ISTIO_VERSION         — Istio control-plane version (sourced from versions.env)
 #   KEDA_NAMESPACE        — Override the namespace KEDA is installed into
 #                           (derived from E2E_PROVIDER when unset)
-#   KAITO_NODE_PROVISIONER — When set to "karpenter", enables AKS Node Auto
-#                            Provisioning (NAP / Karpenter). Default: empty
-#                            (gpu-node-mocker path).
+#   KAITO_NODE_PROVISIONER — When set to "karpenter", enables OIDC issuer and
+#                            Workload Identity on the cluster so that the
+#                            self-managed Karpenter Helm install can federate
+#                            credentials. Default: empty (gpu-node-mocker path).
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -36,8 +37,8 @@ LOCATION="${LOCATION:-australiaeast}"
 NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v5}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
-# When set to "karpenter", AKS Node Auto Provisioning (NAP, powered by Karpenter)
-# is enabled at cluster-create time via --node-provisioning-mode Auto.
+# When set to "karpenter", OIDC issuer + Workload Identity are enabled so that
+# the self-managed Karpenter Helm install can obtain federated credentials.
 KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-}"
 
 # Optional AKS-managed add-ons toggled by provider.
@@ -104,10 +105,12 @@ esac
 # Enable AKS Node Auto Provisioning (NAP, powered by Karpenter) when
 # KAITO_NODE_PROVISIONER=karpenter so the cluster can provision real GPU nodes.
 if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
-  # AKS Node Auto Provisioning (NAP) requires OIDC issuer + Workload Identity
-  # so that Karpenter can obtain federated credentials to call the Azure ARM API.
-  # Enabling these at cluster-create time avoids a post-create az aks update.
-  EXTRA_AKS_ARGS+=(--node-provisioning-mode Auto --enable-oidc-issuer --enable-workload-identity)
+  # Self-managed Karpenter (installed separately via azure-karpenter-helm) requires
+  # OIDC issuer + Workload Identity so it can obtain federated credentials to call
+  # the Azure ARM API. --node-provisioning-mode Auto is NOT set here — that flag
+  # enables AKS-managed NAP, which conflicts with the self-managed Karpenter Helm
+  # install and causes extra ARM list calls that trigger subscription throttling.
+  EXTRA_AKS_ARGS+=(--enable-oidc-issuer --enable-workload-identity)
 fi
 
 echo "=== Creating AKS cluster ${CLUSTER_NAME} (provider=${E2E_PROVIDER}, node-provisioner=${KAITO_NODE_PROVISIONER:-gpu-node-mocker}) ==="

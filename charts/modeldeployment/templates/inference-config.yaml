@@ -1,0 +1,14 @@
+{{- if ge (.Values.tensorParallelSize | int) 1 }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "modeldeployment.inferenceConfigName" . }}
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+    {{- include "modeldeployment.identifyingLabels" . | nindent 4 }}
+data:
+  inference_config.yaml: |
+    vllm:
+      tensor-parallel-size: {{ .Values.tensorParallelSize }}
+{{- end }}

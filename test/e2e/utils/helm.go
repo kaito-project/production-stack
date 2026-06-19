@@ -45,6 +45,17 @@ type ModelDeploymentValues struct {
 	Replicas int64
 	// InstanceType is the VM instance type. Defaults to chart default when empty.
 	InstanceType string
+	// NodeCount is interpreted by the chart as nodeCountLimit for InferenceSet.
+	NodeCount int64
+	// TensorParallelSize renders a vLLM inference config with the given
+	// tensor-parallel-size when > 1.
+	TensorParallelSize int64
+	// ModelAccessSecret passes a Hugging Face access token Secret name through
+	// presetOptions.modelAccessSecret when non-empty.
+	ModelAccessSecret string
+	// PresetImage overrides the KAITO preset's default base image via
+	// presetOptions.image when non-empty.
+	PresetImage string
 	// EnableScaling toggles scaledobject.kaito.sh/* annotations.
 	EnableScaling bool
 	// MaxReplicas is the upper bound for autoscaling. Only used when
@@ -93,6 +104,18 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 	if v.InstanceType != "" {
 		args = append(args, "--set", "instanceType="+v.InstanceType)
 	}
+	if v.NodeCount > 0 {
+		args = append(args, "--set", "nodeCount="+strconv.FormatInt(v.NodeCount, 10))
+	}
+	if v.TensorParallelSize > 1 {
+		args = append(args, "--set", "tensorParallelSize="+strconv.FormatInt(v.TensorParallelSize, 10))
+	}
+	if v.ModelAccessSecret != "" {
+		args = append(args, "--set", "modelAccessSecret="+v.ModelAccessSecret)
+	}
+	if v.PresetImage != "" {
+		args = append(args, "--set", "presetImage="+v.PresetImage)
+	}
 	if v.EnableScaling {
 		args = append(args, "--set", "enableScaling=true")
 		if v.MaxReplicas > 0 {
@@ -103,6 +126,12 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 		}
 	}
 	return args
+}
+
+// InferencePodSelector returns the label selector that finds the model-serving
+// pods for this deployment.
+func (v ModelDeploymentValues) InferencePodSelector() string {
+	return "inferenceset.kaito.sh/created-by=" + v.Name
 }
 
 // InstallModelDeployment runs `helm upgrade --install` for the modeldeployment
