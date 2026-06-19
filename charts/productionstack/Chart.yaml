@@ -80,6 +80,7 @@ dependencies:
     tags:
       - gateway
       - auth
+  #
   # Upstream Azure Entra ID (RBAC) ext_authz chart, pulled from the
   # kaito-project OCI registry at `helm dependency update` time (no
   # in-tree fork), same source and release train as `llm-gateway-apikey`.
@@ -96,3 +97,12 @@ dependencies:
     tags:
       - gateway
       - auth
+  #
+  # Control-plane status reporter: the single, leader-elected, read-only
+  # producer of the end-to-end error-handling reason catalogue as
+  # Kubernetes Events in kube-system. In-tree subchart under `charts/`.
+  - name: productionstack-status-reporter
+    version: 0.1.0
+    condition: productionstack-status-reporter.enabled
+    tags:
+      - observability

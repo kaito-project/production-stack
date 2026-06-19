@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "productionstack-status-reporter.fullname" . }}
+  namespace: {{ include "productionstack-status-reporter.namespace" . }}
+  labels:
+    {{- include "productionstack-status-reporter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "productionstack-status-reporter.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "productionstack-status-reporter.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: status-reporter
+    spec:
+      serviceAccountName: {{ include "productionstack-status-reporter.fullname" . }}
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if .Values.podAntiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "productionstack-status-reporter.selectorLabels" . | nindent 20 }}
+      {{- end }}
+      containers:
+        - name: reporter
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+            - --leader-elect={{ .Values.leaderElection.enabled }}
+            - --leader-election-id={{ .Values.leaderElection.id }}
+            - --resync-seconds={{ .Values.resyncSeconds }}
+            - --startup-grace-seconds={{ .Values.startupGraceSeconds }}
+            - --release-namespace={{ .Release.Namespace }}
+            - --istio-namespace={{ .Values.controlPlane.istioNamespace }}
+            - --kaito-namespace={{ .Values.controlPlane.kaitoNamespace }}
+            - --keda-namespace={{ .Values.controlPlane.kedaNamespace }}
+            - --gateway-auth-namespace={{ .Values.controlPlane.gatewayAuthNamespace }}
+            - --bbr-namespace={{ .Values.controlPlane.bbrNamespace }}
+            - --keda-scaler-namespace={{ .Values.controlPlane.kedaScalerNamespace }}
+            - --istiod-deployment={{ .Values.controlPlane.istiodDeployment }}
+            - --kaito-deployment={{ .Values.controlPlane.kaitoDeployment }}
+            - --bbr-deployment={{ .Values.controlPlane.bbrDeployment }}
+            - --keda-scaler-deployment={{ .Values.controlPlane.kedaScalerDeployment }}
+            - --gateway-auth-deployment={{ .Values.controlPlane.gatewayAuthDeployment }}
+            {{- with .Values.controlPlane.nodeProvisioner }}
+            {{- if .name }}
+            - --node-provisioner-name={{ .name }}
+            - --node-provisioner-namespace={{ .namespace }}
+            {{- end }}
+            {{- end }}
+            - --weight-download-window-seconds={{ .Values.controlPlane.weightDownload.windowSeconds }}
+            - --weight-download-min-mbps={{ .Values.controlPlane.weightDownload.minMBps }}
+            - --weight-download-metric={{ .Values.controlPlane.weightDownload.metricName }}
+            - --weight-download-metric-port={{ .Values.controlPlane.weightDownload.metricPort }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault

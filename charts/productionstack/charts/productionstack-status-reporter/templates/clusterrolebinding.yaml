@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "productionstack-status-reporter.fullname" . }}
+  labels:
+    {{- include "productionstack-status-reporter.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: productionstack-status-reporter
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "productionstack-status-reporter.fullname" . }}
+    namespace: {{ include "productionstack-status-reporter.namespace" . }}
