@@ -42,9 +42,6 @@ spec:
     resource:
       instanceType: {{ .Values.instanceType | quote }}
     inference:
-      {{- if ge (.Values.tensorParallelSize | int) 1 }}
-      config: {{ include "modeldeployment.inferenceConfigName" . | quote }}
-      {{- end }}
       preset:
         name: {{ .Values.model | quote }}
         {{- if or .Values.presetImage .Values.modelAccessSecret }}

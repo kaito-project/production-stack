@@ -36,11 +36,6 @@
       "minimum": 1,
       "description": "Node count limit for the InferenceSet."
     },
-    "tensorParallelSize": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "When >= 1, renders an inference config with vLLM tensor-parallel-size set to this value."
-    },
     "replicas": {
       "type": "integer",
       "minimum": 1,

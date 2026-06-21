@@ -45,13 +45,6 @@ HTTPRoute name.
 {{- end }}
 
 {{/*
-Inference config ConfigMap name.
-*/}}
-{{- define "modeldeployment.inferenceConfigName" -}}
-{{ include "modeldeployment.name" . }}-inference-config
-{{- end }}
-
-{{/*
 Common labels applied to managed resources.
 */}}
 {{- define "modeldeployment.labels" -}}

@@ -47,9 +47,6 @@ type ModelDeploymentValues struct {
 	InstanceType string
 	// NodeCount is interpreted by the chart as nodeCountLimit for InferenceSet.
 	NodeCount int64
-	// TensorParallelSize renders a vLLM inference config with the given
-	// tensor-parallel-size when > 1.
-	TensorParallelSize int64
 	// ModelAccessSecret passes a Hugging Face access token Secret name through
 	// presetOptions.modelAccessSecret when non-empty.
 	ModelAccessSecret string
@@ -106,9 +103,6 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 	}
 	if v.NodeCount > 0 {
 		args = append(args, "--set", "nodeCount="+strconv.FormatInt(v.NodeCount, 10))
-	}
-	if v.TensorParallelSize > 1 {
-		args = append(args, "--set", "tensorParallelSize="+strconv.FormatInt(v.TensorParallelSize, 10))
 	}
 	if v.ModelAccessSecret != "" {
 		args = append(args, "--set", "modelAccessSecret="+v.ModelAccessSecret)
