@@ -15,7 +15,7 @@
 #   CLUSTER_NAME     (default: kaito-e2e-local)
 #   LOCATION         (default: australiaeast)
 #   NODE_COUNT       (default: 2)
-#   NODE_VM_SIZE     (default: Standard_D8s_v5)
+#   NODE_VM_SIZE     (default: Standard_D8d_v4)
 #   E2E_PARALLEL     (default: 2) — Ginkgo parallel worker count
 #   SKIP_TEARDOWN    (default: false) — set to "true" to keep cluster after tests
 # ---------------------------------------------------------------------------
@@ -65,6 +65,11 @@ fi
 export E2E_PROVIDER KEDA_NAMESPACE ISTIO_VERSION GATEWAY_API_VERSION KEDA_VERSION LLM_GATEWAY_AUTH_VERSION LLM_GATEWAY_AUTH_IMAGE_TAG AKS_K8S_VERSION
 export KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-}"
 
+# Resolve/validate the node provisioner and expose its predicates. The child
+# scripts inherit KAITO_NODE_PROVISIONER and source this library themselves.
+# shellcheck source=lib-node-provisioner.sh
+source "${SCRIPT_DIR}/lib-node-provisioner.sh"
+
 echo "=== Component versions (from versions.env) ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
@@ -77,7 +82,7 @@ export RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-e2e-local}"
 export CLUSTER_NAME="${CLUSTER_NAME:-kaito-e2e-local}"
 export LOCATION="${LOCATION:-australiaeast}"
 export NODE_COUNT="${NODE_COUNT:-2}"
-export NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v5}"
+export NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 export E2E_PARALLEL="${E2E_PARALLEL:-2}"
 SKIP_TEARDOWN="${SKIP_TEARDOWN:-false}"
 
@@ -144,10 +149,10 @@ do_setup() {
 }
 
 do_install() {
-  # SHADOW_CONTROLLER_IMAGE is required for the gpu-node-mocker path.
-  # When KAITO_NODE_PROVISIONER=karpenter, real Karpenter (AKS NAP) is used and
-  # gpu-node-mocker is not deployed, so the image is not needed.
-  if [[ "${KAITO_NODE_PROVISIONER:-}" != "karpenter" && -z "${SHADOW_CONTROLLER_IMAGE:-}" ]]; then
+  # SHADOW_CONTROLLER_IMAGE is required only for the gpu-node-mocker
+  # provisioner. Other provisioners (e.g. Karpenter / AKS NAP) provision real
+  # nodes and deploy no mocker, so the image is not needed.
+  if node_provisioner_uses_mocker && [[ -z "${SHADOW_CONTROLLER_IMAGE:-}" ]]; then
     echo "❌ SHADOW_CONTROLLER_IMAGE is not set. Run prepare-image.sh first and export the resulting image= value." >&2
     exit 1
   fi

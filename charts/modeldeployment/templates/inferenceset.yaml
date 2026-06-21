@@ -19,9 +19,6 @@ metadata:
   {{- end }}
 spec:
   replicas: {{ .Values.replicas }}
-  {{- if gt (.Values.nodeCount | int) 0 }}
-  nodeCountLimit: {{ .Values.nodeCount }}
-  {{- end }}
   labelSelector:
     matchLabels:
       apps: {{ include "modeldeployment.name" . }}
@@ -44,12 +41,7 @@ spec:
     inference:
       preset:
         name: {{ .Values.model | quote }}
-        {{- if or .Values.presetImage .Values.modelAccessSecret }}
+        {{- if .Values.presetImage }}
         presetOptions:
-          {{- if .Values.presetImage }}
           image: {{ .Values.presetImage | quote }}
-          {{- end }}
-          {{- if .Values.modelAccessSecret }}
-          modelAccessSecret: {{ .Values.modelAccessSecret | quote }}
-          {{- end }}
         {{- end }}

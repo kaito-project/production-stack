@@ -7,12 +7,14 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib-node-provisioner.sh
+source "${SCRIPT_DIR}/lib-node-provisioner.sh"
+
 FAILED=0
 TIMEOUT="${VALIDATE_TIMEOUT:-120s}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
-# When set to "karpenter", gpu-node-mocker is not deployed (real Karpenter / AKS NAP
-# is used instead) and its validation check is skipped.
-KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-}"
 
 # Derive KEDA namespace from provider when not explicitly provided.
 if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
@@ -49,23 +51,22 @@ fi
 kubectl -n kaito-system get pods -l app.kubernetes.io/name=workspace
 echo ""
 
-# ── Shadow-pod-controller (GPU node mocker) ──────────────────────────────
-echo "=== Shadow-pod-controller ==="
-if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
-  echo "  ⏭  Skipping gpu-node-mocker check (KAITO_NODE_PROVISIONER=karpenter — using real Karpenter)"
-else
+# ── Node provisioner ──────────────────────────────────────────────────────
+# Each implementation validates only the components it actually deploys, so
+# there is no cross-provisioner "skip" branching here.
+np_gpu_node_mocker__validate() {
+  echo "=== Shadow-pod-controller ==="
   if kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=gpu-node-mocker --timeout="${TIMEOUT}" >/dev/null 2>&1; then
     pass "gpu-node-mocker is Running"
   else
     fail "gpu-node-mocker is NOT Running"
   fi
   kubectl -n kaito-system get pods -l app.kubernetes.io/name=gpu-node-mocker
-fi
-echo ""
+  echo ""
+}
 
-# ── Local CSI (Karpenter) ───────────────────────────────────────────────
-echo "=== Local CSI driver (Karpenter mode) ==="
-if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
+np_karpenter__validate() {
+  echo "=== Local CSI driver (Karpenter mode) ==="
   if kubectl -n kaito-system rollout status deployment/csi-local-manager --timeout="${TIMEOUT}" >/dev/null 2>&1; then
     pass "csi-local-manager is Available"
   else
@@ -80,10 +81,11 @@ if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
 
   kubectl -n kaito-system get deploy csi-local-manager 2>/dev/null || true
   kubectl -n kaito-system get ds csi-local-node 2>/dev/null || true
-else
-  echo "  ⏭  Skipping local CSI check (not in Karpenter mode)"
-fi
-echo ""
+  echo ""
+}
+
+node_provisioner_run validate
+
 
 # ── Istio (istiod) ──────────────────────────────────────────────────────
 echo "=== Istio ==="

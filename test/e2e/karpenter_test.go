@@ -42,14 +42,16 @@ limitations under the License.
 // BeforeAll failure in Small cascade-skip Medium and Large. Top-level
 // Describes have no shared proc affinity.
 //
-// QUOTA NOTE: swedencentral NCA100v4 family limit is 50 vCPUs:
+// QUOTA NOTE: eastus NCADS_A100_v4 family limit is 288 vCPUs:
 //
 //	Small  1× NC24ads_A100_v4 = 24 vCPUs
 //	Medium 1× NC48ads_A100_v4 = 48 vCPUs
-//	Large  2× NC24ads_A100_v4 = 48 vCPUs
+//	Large  2× NC48ads_A100_v4 = 96 vCPUs
 //
-// Running all three concurrently demands 120 vCPUs (exceeds quota). Use
-// --procs=1 so scenarios run serially; peak demand stays at 48 vCPUs:
+// Running all three concurrently demands 168 vCPUs, which fits within quota.
+// --procs=1 is still recommended so a BeforeAll failure in one scenario does
+// not cascade-skip the others (see proc-affinity note above) and to keep peak
+// VM demand predictable:
 //
 //	E2E_LABEL='Karpenter' E2E_PARALLEL=1 E2E_TIMEOUT=180m make test-e2e
 

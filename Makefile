@@ -131,7 +131,7 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 		./test/e2e/...
 
 .PHONY: test-e2e-karpenter
-test-e2e-karpenter: ## Run the Karpenter nightly scale-from-zero scenarios with safe swedencentral defaults.
+test-e2e-karpenter: ## Run the Karpenter nightly scale-from-zero scenarios with safe eastus defaults.
 	$(MAKE) test-e2e E2E_LABEL='Karpenter' E2E_PARALLEL=1 E2E_TIMEOUT=180m
 ## --------------------------------------
 ## E2E Targets
@@ -188,7 +188,7 @@ e2e-validate: ## Validate all E2E components are healthy.
 e2e-dump: ## Dump cluster state for debugging.
 	hack/e2e/scripts/dump-cluster-state.sh
 
-USER_ID ?= $(shell whoami)
+USER_ID ?= $(shell whoami)2
 # Honor pre-set CLUSTER_NAME / RESOURCE_GROUP env vars (e.g. from CI) so they
 # are not silently overwritten with the local-developer default of kaito-$(USER_ID).
 E2E_CLUSTER_NAME ?= $(if $(CLUSTER_NAME),$(CLUSTER_NAME),kaito-$(USER_ID))
@@ -265,7 +265,7 @@ azure-karpenter-helm: ## Install Azure Karpenter Helm chart (run karpenter-azure
 .PHONY: e2e-up-karpenter
 e2e-up-karpenter: ## One command to set up full local E2E env using real Karpenter (AKS NAP, no gpu-node-mocker).
 	@set -e; \
-	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) LOCATION=swedencentral KAITO_NODE_PROVISIONER=karpenter; \
+	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) LOCATION=eastus KAITO_NODE_PROVISIONER=karpenter; \
 	hack/e2e/scripts/prepare-image.sh; \
 	hack/e2e/scripts/run-e2e-local.sh setup; \
 	$(MAKE) karpenter-azure-identity AZURE_CLUSTER_NAME=$(E2E_CLUSTER_NAME) AZURE_RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \

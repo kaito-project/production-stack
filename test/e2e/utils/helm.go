@@ -45,11 +45,6 @@ type ModelDeploymentValues struct {
 	Replicas int64
 	// InstanceType is the VM instance type. Defaults to chart default when empty.
 	InstanceType string
-	// NodeCount is interpreted by the chart as nodeCountLimit for InferenceSet.
-	NodeCount int64
-	// ModelAccessSecret passes a Hugging Face access token Secret name through
-	// presetOptions.modelAccessSecret when non-empty.
-	ModelAccessSecret string
 	// PresetImage overrides the KAITO preset's default base image via
 	// presetOptions.image when non-empty.
 	PresetImage string
@@ -100,12 +95,6 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 	}
 	if v.InstanceType != "" {
 		args = append(args, "--set", "instanceType="+v.InstanceType)
-	}
-	if v.NodeCount > 0 {
-		args = append(args, "--set", "nodeCount="+strconv.FormatInt(v.NodeCount, 10))
-	}
-	if v.ModelAccessSecret != "" {
-		args = append(args, "--set", "modelAccessSecret="+v.ModelAccessSecret)
 	}
 	if v.PresetImage != "" {
 		args = append(args, "--set", "presetImage="+v.PresetImage)

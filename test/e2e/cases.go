@@ -39,6 +39,7 @@ const (
 	presetMinistral = "ministral-3-3b-instruct"
 	presetQwen7B    = "qwen2.5-coder-7b-instruct"
 	presetQwen32B   = "qwen2.5-coder-32b-instruct"
+	presetLlama70B  = "llama-3.3-70b-instruct"
 )
 
 // Preset image overrides.
@@ -101,8 +102,11 @@ const (
 	// Karpenter-provisioned node.
 	CaseKarpenterMedium = "karpenter-medium"
 
-	// CaseKarpenterLarge covers the Karpenter nightly large scenario: an
-	// InferenceSet deployment that explicitly requires two GPU nodes.
+	// CaseKarpenterLarge covers the Karpenter nightly large scenario: a
+	// single InferenceSet replica whose large model (70B) is sharded across
+	// two GPU nodes using KAITO's native multi-node support (no LWS, no Ray).
+	// Validates that Karpenter provisions two GPU nodes and that KAITO +
+	// production-stack schedule the distributed inference workload across them.
 	CaseKarpenterLarge = "karpenter-large"
 
 	// CaseFilterOrder covers filter_order_test.go — verifies the Envoy
@@ -328,7 +332,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetQwen7B,
 			Replicas:     1,
 			InstanceType: "Standard_NC24ads_A100_v4",
-			NodeCount:    1,
 			PresetImage:  presetImageKaitoBaseMCR,
 		},
 	},
@@ -336,21 +339,19 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 		{
 			Name:         "k-32b",
 			Namespace:    "e2e-k-md",
-			Model:        presetQwen7B,
+			Model:        presetQwen32B,
 			Replicas:     1,
 			InstanceType: "Standard_NC24ads_A100_v4",
-			NodeCount:    1,
 			PresetImage:  presetImageKaitoBaseMCR,
 		},
 	},
 	CaseKarpenterLarge: {
 		{
-			Name:         "k-32b-2n",
+			Name:         "k-70b-2n",
 			Namespace:    "e2e-k-lg",
-			Model:        presetQwen7B,
-			Replicas:     2,
-			InstanceType: "Standard_NC24ads_A100_v4",
-			NodeCount:    2,
+			Model:        presetLlama70B,
+			Replicas:     1,
+			InstanceType: "Standard_NC48ads_A100_v4",
 			PresetImage:  presetImageKaitoBaseMCR,
 		},
 	},

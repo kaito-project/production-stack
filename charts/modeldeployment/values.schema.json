@@ -22,19 +22,10 @@
       "type": "string",
       "description": "Optional preset image override passed via presetOptions.image."
     },
-    "modelAccessSecret": {
-      "type": "string",
-      "description": "Optional Hugging Face access token Secret name passed via presetOptions.modelAccessSecret."
-    },
     "instanceType": {
       "type": "string",
       "minLength": 1,
       "description": "VM instance type used for the underlying GPU nodes."
-    },
-    "nodeCount": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Node count limit for the InferenceSet."
     },
     "replicas": {
       "type": "integer",

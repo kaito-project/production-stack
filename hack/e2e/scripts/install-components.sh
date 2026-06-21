@@ -25,13 +25,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
-# When set to "karpenter", KAITO uses real Karpenter (AKS NAP) for node
-# provisioning instead of gpu-node-mocker. gpu-node-mocker is skipped and
-# KAITO is launched with --node-provisioner=karpenter.
-KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-}"
 
 # shellcheck source=lib-parallel.sh
 source "${SCRIPT_DIR}/lib-parallel.sh"
+# shellcheck source=lib-node-provisioner.sh
+source "${SCRIPT_DIR}/lib-node-provisioner.sh"
 
 # Derive KEDA install namespace from provider:
 #   upstream → `keda` (Helm-installed KEDA)
@@ -52,7 +50,7 @@ export KEDA_NAMESPACE
 
 echo "=== Component versions ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
-echo "  KAITO_NODE_PROVISIONER:    ${KAITO_NODE_PROVISIONER:-<unset, using gpu-node-mocker>}"
+echo "  NODE_PROVISIONER:          ${NODE_PROVISIONER}"
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
 echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
@@ -67,37 +65,47 @@ if ! command -v helm &>/dev/null; then
   curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash
 fi
 
+# ── KAITO chart resolution (per node provisioner) ─────────────────────────
+# Each implementation populates the install plan consumed by install_kaito:
+#   KAITO_CHART_REF       — helm chart reference for `helm upgrade --install`
+#   KAITO_EXTRA_SET_ARGS  — array of extra `--set ...` args
+#   KAITO_CHART_TMPDIR    — temp dir to clean up after install (empty if none)
+
+np_gpu_node_mocker__kaito_chart() {
+  helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
+  helm repo update kaito
+  KAITO_CHART_REF="kaito/workspace"
+}
+
+np_karpenter__kaito_chart() {
+  # The published Helm chart already has the NAP-related feature gates
+  # (`featureGates.disableNodeAutoProvisioning`, `localCSIDriver`), but it
+  # does not yet expose `nodeProvisioner` or template the corresponding
+  # `--node-provisioner` / Karpenter node-class args. Those chart changes are
+  # present on kaito main but are not in the published chart repo yet, so we
+  # install from the in-tree chart on main and override it here.
+  echo "  Karpenter mode: installing from kaito main branch chart (published chart lacks nodeProvisioner)"
+  KAITO_CHART_TMPDIR=$(mktemp -d)
+  git clone --depth 1 --quiet \
+    https://github.com/kaito-project/kaito.git "${KAITO_CHART_TMPDIR}"
+  KAITO_CHART_REF="${KAITO_CHART_TMPDIR}/charts/kaito/workspace"
+  KAITO_EXTRA_SET_ARGS=(--set nodeProvisioner=karpenter)
+}
+
 install_kaito() {
   echo "=== Installing KAITO workspace operator (image: nightly-latest) ==="
 
-  local chart_ref extra_set_args=()
-
-  if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
-    # The published Helm chart already has the NAP-related feature gates
-    # (`featureGates.disableNodeAutoProvisioning`, `localCSIDriver`), but it
-    # does not yet expose `nodeProvisioner` or template the corresponding
-    # `--node-provisioner` / Karpenter node-class args. Those chart changes are
-    # present on kaito main but are not in the published chart repo yet, so we
-    # install from the in-tree chart on main and override it here.
-    echo "  Karpenter mode: installing from kaito main branch chart (published chart lacks nodeProvisioner)"
-    local kaito_tmp
-    kaito_tmp=$(mktemp -d)
-    trap 'rm -rf "${kaito_tmp}"' RETURN
-    git clone --depth 1 --quiet \
-      https://github.com/kaito-project/kaito.git "${kaito_tmp}"
-    chart_ref="${kaito_tmp}/charts/kaito/workspace"
-    extra_set_args=(
-      --set nodeProvisioner=karpenter
-    )
-  else
-    helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
-    helm repo update kaito
-    chart_ref="kaito/workspace"
+  KAITO_CHART_REF=""
+  KAITO_EXTRA_SET_ARGS=()
+  KAITO_CHART_TMPDIR=""
+  node_provisioner_run kaito_chart
+  if [[ -n "${KAITO_CHART_TMPDIR}" ]]; then
+    trap 'rm -rf "${KAITO_CHART_TMPDIR}"' RETURN
   fi
 
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
-  helm upgrade --install kaito "${chart_ref}" \
+  helm upgrade --install kaito "${KAITO_CHART_REF}" \
     --namespace kaito-system \
     --create-namespace \
     --set featureGates.enableInferenceSetController=true \
@@ -105,7 +113,7 @@ install_kaito() {
     --set image.repository=ghcr.io/kaito-project/kaito/workspace \
     --set image.tag=nightly-latest \
     --set image.pullPolicy=Always \
-    "${extra_set_args[@]}" \
+    "${KAITO_EXTRA_SET_ARGS[@]}" \
     --wait --timeout=300s
 
   echo "⏳ Waiting for KAITO controller..."
@@ -123,7 +131,11 @@ install_gwie_crds() {
     -f "https://github.com/kubernetes-sigs/gateway-api-inference-extension/releases/latest/download/manifests.yaml"
 }
 
-install_gpu_mocker() {
+# ── Node-provisioner install (per node provisioner) ───────────────────────
+# gpu-node-mocker deploys its controller here. Karpenter provisions real nodes
+# via AKS NAP and has no in-cluster component to install, so it defines no hook
+# and install_node_provisioner is a no-op for it.
+np_gpu_node_mocker__install() {
   echo "=== Deploying gpu-node-mocker (GPU node mocker) ==="
   helm install gpu-node-mocker ./charts/gpu-node-mocker \
     --namespace kaito-system \
@@ -136,6 +148,10 @@ install_gpu_mocker() {
   # KAITO installs that CRD in parallel.
   echo "⏳ Waiting for gpu-node-mocker (will tolerate restarts while KAITO CRDs come online)..."
   kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=420s || true
+}
+
+install_node_provisioner() {
+  node_provisioner_run install
 }
 
 
@@ -213,20 +229,14 @@ install_productionstack() {
 }
 
 # ── Phased execution ──────────────────────────────────────────────────────
-# When KAITO_NODE_PROVISIONER=karpenter the cluster uses real Karpenter (AKS NAP)
-# for node provisioning, so gpu-node-mocker is not needed.
-if [[ "${KAITO_NODE_PROVISIONER}" == "karpenter" ]]; then
-  run_phase phase1-base \
-    install_kaito \
-    install_gwie_crds \
-    install_productionstack
-else
-  run_phase phase1-base \
-    install_kaito \
-    install_gwie_crds \
-    install_gpu_mocker \
-    install_productionstack
-fi
+# install_node_provisioner deploys the in-cluster component for the active
+# node provisioner (gpu-node-mocker) or is a no-op when none is needed
+# (Karpenter / AKS NAP provisions real nodes with no in-cluster install).
+run_phase phase1-base \
+  install_kaito \
+  install_gwie_crds \
+  install_node_provisioner \
+  install_productionstack
 
 echo ""
 echo "✅ All components installed."
