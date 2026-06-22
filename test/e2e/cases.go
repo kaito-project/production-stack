@@ -42,11 +42,6 @@ const (
 	presetLlama70B  = "llama-3.3-70b-instruct"
 )
 
-// Preset image overrides.
-const (
-	presetImageKaitoBaseMCR = "mcr.microsoft.com/aks/kaito/kaito-base:0.3.3"
-)
-
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
 // entry — deployments are NOT shared across cases. Suite-level cases install
 // their deployments via the Ordered Describe's BeforeAll / AfterAll;
@@ -332,7 +327,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetQwen7B,
 			Replicas:     1,
 			InstanceType: "Standard_NC24ads_A100_v4",
-			PresetImage:  presetImageKaitoBaseMCR,
 		},
 	},
 	CaseKarpenterMedium: {
@@ -342,7 +336,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetQwen32B,
 			Replicas:     1,
 			InstanceType: "Standard_NC24ads_A100_v4",
-			PresetImage:  presetImageKaitoBaseMCR,
 		},
 	},
 	CaseKarpenterLarge: {
@@ -352,7 +345,6 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetLlama70B,
 			Replicas:     1,
 			InstanceType: "Standard_NC48ads_A100_v4",
-			PresetImage:  presetImageKaitoBaseMCR,
 		},
 	},
 	CaseClusterFilterHA: {

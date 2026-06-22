@@ -18,10 +18,6 @@
       "minLength": 1,
       "description": "Inference preset name set on the InferenceSet. MUST be non-empty."
     },
-    "presetImage": {
-      "type": "string",
-      "description": "Optional preset image override passed via presetOptions.image."
-    },
     "instanceType": {
       "type": "string",
       "minLength": 1,

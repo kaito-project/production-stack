@@ -20,11 +20,6 @@ namespace: ""
 # of `name` — multiple deployments may share the same preset model. Required.
 model: ""
 
-# presetImage optionally overrides the runtime image resolved by KAITO preset
-# catalog defaults, wiring to
-# spec.template.inference.preset.presetOptions.image.
-presetImage: ""
-
 # instanceType is the VM instance type used for the underlying nodes.
 instanceType: "Standard_NV36ads_A10_v5"
 

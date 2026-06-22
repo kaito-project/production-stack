@@ -20,120 +20,15 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 )
-
-// reconcileInferenceStatefulSetImage ensures model-serving StatefulSets use the
-// image requested by ModelDeploymentValues.PresetImage. In some KAITO
-// controller versions, the generated StatefulSet can drift to a stale catalog
-// default image; patching the StatefulSet template here keeps E2E behavior
-// deterministic.
-func reconcileInferenceStatefulSetImage(ctx context.Context, d ModelDeploymentValues) error {
-	if d.PresetImage == "" {
-		return nil
-	}
-
-	clientset, err := GetK8sClientset()
-	if err != nil {
-		return fmt.Errorf("init clientset: %w", err)
-	}
-
-	stsList, err := clientset.AppsV1().StatefulSets(d.Namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("list workspace StatefulSets for %s/%s: %w", d.Namespace, d.Name, err)
-	}
-	var targets []appsv1.StatefulSet
-	for _, sts := range stsList.Items {
-		if sts.Labels["apps"] == d.Name ||
-			sts.Labels["inferenceset.kaito.sh/created-by"] == d.Name ||
-			sts.Labels["kaito.sh/workspace"] == d.Name ||
-			sts.Name == d.Name ||
-			strings.HasPrefix(sts.Name, d.Name+"-") {
-			targets = append(targets, sts)
-		}
-	}
-	if len(targets) == 0 {
-		return fmt.Errorf("no inference StatefulSet found yet for %s/%s", d.Namespace, d.Name)
-	}
-
-	for _, sts := range targets {
-		selector := metav1.FormatLabelSelector(sts.Spec.Selector)
-		patch := func(sts *appsv1.StatefulSet) bool {
-			patched := false
-			for i := range sts.Spec.Template.Spec.Containers {
-				c := &sts.Spec.Template.Spec.Containers[i]
-				if c.Name != d.Name {
-					continue
-				}
-				if c.Image != d.PresetImage {
-					By(fmt.Sprintf("Reconciling inference StatefulSet image for %s/%s: %q -> %q",
-						d.Namespace, sts.Name, c.Image, d.PresetImage))
-					c.Image = d.PresetImage
-					patched = true
-				}
-				return patched
-			}
-
-			// Fallback when controller used a different container name.
-			if len(sts.Spec.Template.Spec.Containers) == 0 {
-				return false
-			}
-			if sts.Spec.Template.Spec.Containers[0].Image != d.PresetImage {
-				By(fmt.Sprintf("Reconciling inference StatefulSet image for %s/%s (fallback first container): %q -> %q",
-					d.Namespace, sts.Name, sts.Spec.Template.Spec.Containers[0].Image, d.PresetImage))
-				sts.Spec.Template.Spec.Containers[0].Image = d.PresetImage
-				return true
-			}
-			return false
-		}(sts.DeepCopy())
-
-		if !patch {
-			continue
-		}
-
-		current := sts.DeepCopy()
-		for i := range current.Spec.Template.Spec.Containers {
-			if current.Spec.Template.Spec.Containers[i].Name == d.Name {
-				current.Spec.Template.Spec.Containers[i].Image = d.PresetImage
-			}
-		}
-		if len(current.Spec.Template.Spec.Containers) > 0 && current.Spec.Template.Spec.Containers[0].Image != d.PresetImage {
-			current.Spec.Template.Spec.Containers[0].Image = d.PresetImage
-		}
-
-		if _, err := clientset.AppsV1().StatefulSets(d.Namespace).Update(ctx, current, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("update StatefulSet %s/%s image: %w", d.Namespace, sts.Name, err)
-		}
-
-		// Force any stale-image pods off the old template immediately so the
-		// workspace does not spend minutes pulling a known-bad catalog default.
-		pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
-		if err != nil {
-			return fmt.Errorf("list StatefulSet pods %s/%s: %w", d.Namespace, sts.Name, err)
-		}
-		for _, pod := range pods.Items {
-			if len(pod.Spec.Containers) == 0 || pod.Spec.Containers[0].Image == d.PresetImage {
-				continue
-			}
-			By(fmt.Sprintf("Deleting stale-image pod %s/%s to pick up reconciled image %q",
-				d.Namespace, pod.Name, d.PresetImage))
-			if err := clientset.CoreV1().Pods(d.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("delete stale-image pod %s/%s: %w", d.Namespace, pod.Name, err)
-			}
-		}
-	}
-
-	return nil
-}
 
 // EnsureNamespace creates the namespace if it does not exist and installs
 // the modelharness Helm chart into it. modelharness owns every per-namespace
@@ -327,16 +222,6 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 	for _, d := range resolved {
 		By(fmt.Sprintf("Waiting for inference pods for %s to be Running", d.Name))
 		Eventually(func() error {
-			// Re-patch any StatefulSet that still carries the wrong image on every
-			// iteration. KAITO may create new child StatefulSets with the catalog
-			// default after our initial reconcile exits, so we must keep correcting
-			// them throughout the readiness wait rather than in a one-shot pass.
-			if d.PresetImage != "" {
-				if err := reconcileInferenceStatefulSetImage(ctx, d); err != nil {
-					return fmt.Errorf("image reconcile for %s: %w", d.Name, err)
-				}
-			}
-
 			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
 				LabelSelector: d.InferencePodSelector(),
 			})
@@ -352,9 +237,6 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 			for _, pod := range items {
 				if pod.Status.Phase != "Running" {
 					return fmt.Errorf("pod %s is %s, not Running", pod.Name, pod.Status.Phase)
-				}
-				if d.PresetImage != "" && len(pod.Spec.Containers) > 0 && pod.Spec.Containers[0].Image != d.PresetImage {
-					return fmt.Errorf("pod %s has image %q, want %q", pod.Name, pod.Spec.Containers[0].Image, d.PresetImage)
 				}
 				if len(pod.Status.ContainerStatuses) == 0 || !pod.Status.ContainerStatuses[0].Ready {
 					return fmt.Errorf("pod %s container is not Ready yet", pod.Name)

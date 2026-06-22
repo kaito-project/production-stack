@@ -45,9 +45,6 @@ type ModelDeploymentValues struct {
 	Replicas int64
 	// InstanceType is the VM instance type. Defaults to chart default when empty.
 	InstanceType string
-	// PresetImage overrides the KAITO preset's default base image via
-	// presetOptions.image when non-empty.
-	PresetImage string
 	// EnableScaling toggles scaledobject.kaito.sh/* annotations.
 	EnableScaling bool
 	// MaxReplicas is the upper bound for autoscaling. Only used when
@@ -95,9 +92,6 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 	}
 	if v.InstanceType != "" {
 		args = append(args, "--set", "instanceType="+v.InstanceType)
-	}
-	if v.PresetImage != "" {
-		args = append(args, "--set", "presetImage="+v.PresetImage)
 	}
 	if v.EnableScaling {
 		args = append(args, "--set", "enableScaling=true")
