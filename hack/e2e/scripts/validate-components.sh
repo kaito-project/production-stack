@@ -7,10 +7,11 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# shellcheck source=lib-node-provisioner.sh
-source "${SCRIPT_DIR}/lib-node-provisioner.sh"
+# Node-provisioner selection (decoupled from real-vs-mocked):
+#   KAITO_NODE_PROVISIONER — azure-gpu-provisioner | karpenter (default karpenter).
+#   ENABLE_NODE_MOCKER     — true (default): validate gpu-node-mocker; false: real provisioner.
+NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-karpenter}"
+ENABLE_NODE_MOCKER="${ENABLE_NODE_MOCKER:-true}"
 
 FAILED=0
 TIMEOUT="${VALIDATE_TIMEOUT:-120s}"
@@ -52,9 +53,9 @@ kubectl -n kaito-system get pods -l app.kubernetes.io/name=workspace
 echo ""
 
 # ── Node provisioner ──────────────────────────────────────────────────────
-# Each implementation validates only the components it actually deploys, so
-# there is no cross-provisioner "skip" branching here.
-np_gpu_node_mocker__validate() {
+# With ENABLE_NODE_MOCKER=true we validate the gpu-node-mocker controller; with
+# a real provisioner we validate only the components that provisioner deploys.
+validate_gpu_node_mocker() {
   echo "=== Shadow-pod-controller ==="
   if kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=gpu-node-mocker --timeout="${TIMEOUT}" >/dev/null 2>&1; then
     pass "gpu-node-mocker is Running"
@@ -65,7 +66,7 @@ np_gpu_node_mocker__validate() {
   echo ""
 }
 
-np_karpenter__validate() {
+validate_karpenter_csi() {
   echo "=== Local CSI driver (Karpenter mode) ==="
   if kubectl -n kaito-system rollout status deployment/csi-local-manager --timeout="${TIMEOUT}" >/dev/null 2>&1; then
     pass "csi-local-manager is Available"
@@ -84,7 +85,11 @@ np_karpenter__validate() {
   echo ""
 }
 
-node_provisioner_run validate
+if [[ "${ENABLE_NODE_MOCKER}" == "true" ]]; then
+  validate_gpu_node_mocker
+elif [[ "${NODE_PROVISIONER}" == "karpenter" ]]; then
+  validate_karpenter_csi
+fi
 
 
 # ── Istio (istiod) ──────────────────────────────────────────────────────

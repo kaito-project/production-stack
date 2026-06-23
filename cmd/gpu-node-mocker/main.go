@@ -67,6 +67,7 @@ func main() {
 		udsTokenizerImage     string
 		leaseDurationSec      int
 		leaseRenewIntervalSec int
+		nodeProvisioner       string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -79,36 +80,14 @@ func main() {
 		"Duration in seconds for fake node lease.")
 	flag.IntVar(&leaseRenewIntervalSec, "lease-renew-interval-seconds", 10,
 		"Interval in seconds at which the fake node lease is renewed.")
+	flag.StringVar(&nodeProvisioner, "node-provisioner", controllers.ProvisionerAzureGPU,
+		fmt.Sprintf("The KAITO node provisioner to mock (%q or %q).",
+			controllers.ProvisionerAzureGPU, controllers.ProvisionerKarpenter))
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
-
-	restCfg := ctrl.GetConfigOrDie()
-
-	// Fail fast if required CRDs are not yet installed in the cluster. The
-	// gpu-node-mocker controllers watch karpenter.sh/v1 NodeClaim objects;
-	// without the CRD, controller-runtime's informers loop on "no kind is
-	// registered" errors instead of failing. Exiting with a non-zero status
-	// here lets the Deployment's restart policy back off and retry until
-	// the KAITO operator (which ships the karpenter CRDs) finishes
-	// installing them. This unblocks parallel install ordering at the
-	// shell level (no need to gate on KAITO CRDs before deploying us).
-	if err := checkRequiredCRDs(restCfg); err != nil {
-		setupLog.Error(err, "required CRDs are not ready; exiting so the pod is restarted")
-		os.Exit(1)
-	}
-
-	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
-		HealthProbeBindAddress: probeAddr,
-	})
-	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
-	}
 
 	if leaseRenewIntervalSec <= 0 {
 		setupLog.Error(nil, "--lease-renew-interval-seconds must be > 0")
@@ -126,8 +105,42 @@ func main() {
 		LeaseRenewIntervalSec: leaseRenewIntervalSec,
 	}
 
+	restCfg := ctrl.GetConfigOrDie()
+
+	// Build the provisioner-specific mocker first so we can validate exactly
+	// the CRDs it depends on (and fail fast on an invalid --node-provisioner).
+	mocker, err := controllers.NewProvisionerMocker(nodeProvisioner, cfg)
+	if err != nil {
+		setupLog.Error(err, "invalid --node-provisioner")
+		os.Exit(1)
+	}
+	setupLog.Info("mocking node provisioner", "provisioner", mocker.Type())
+
+	// Fail fast if required CRDs are not yet installed in the cluster. The
+	// gpu-node-mocker controllers watch karpenter.sh/v1 NodeClaim (and, in
+	// karpenter mode, NodePool) objects; without the CRDs, controller-runtime's
+	// informers loop on "no kind is registered" errors instead of failing.
+	// Exiting with a non-zero status here lets the Deployment's restart policy
+	// back off and retry until the KAITO operator (which ships the karpenter
+	// CRDs) finishes installing them. This unblocks parallel install ordering
+	// at the shell level (no need to gate on KAITO CRDs before deploying us).
+	if err := checkRequiredCRDs(restCfg, mocker.RequiredCRDs()); err != nil {
+		setupLog.Error(err, "required CRDs are not ready; exiting so the pod is restarted")
+		os.Exit(1)
+	}
+
+	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
+		HealthProbeBindAddress: probeAddr,
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to start manager")
+		os.Exit(1)
+	}
+
 	// Register all controllers.
-	if err := controllers.NewControllers(mgr, cfg); err != nil {
+	if err := controllers.NewControllers(mgr, cfg, mocker); err != nil {
 		setupLog.Error(err, "unable to register controllers")
 		os.Exit(1)
 	}
@@ -154,37 +167,28 @@ func main() {
 // served — only that the apiserver advertises the resource. A single
 // missing resource returns an error; the caller is expected to exit so
 // the kubelet restarts the pod (the simplest "wait for CRDs" strategy).
-func checkRequiredCRDs(cfg *rest.Config) error {
+func checkRequiredCRDs(cfg *rest.Config, required []controllers.RequiredCRD) error {
 	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
 		return err
 	}
 
-	required := []struct {
-		groupVersion string
-		resource     string
-	}{
-		// Karpenter NodeClaim CRD is installed by the KAITO workspace
-		// operator's chart; the NodeClaimReconciler watches it.
-		{groupVersion: "karpenter.sh/v1", resource: "nodeclaims"},
-	}
-
 	for _, r := range required {
-		list, err := dc.ServerResourcesForGroupVersion(r.groupVersion)
+		list, err := dc.ServerResourcesForGroupVersion(r.GroupVersion)
 		if err != nil {
-			return fmt.Errorf("discovering resources for %s: %w", r.groupVersion, err)
+			return fmt.Errorf("discovering resources for %s: %w", r.GroupVersion, err)
 		}
 		found := false
 		for _, api := range list.APIResources {
-			if api.Name == r.resource {
+			if api.Name == r.Resource {
 				found = true
 				break
 			}
 		}
 		if !found {
-			return fmt.Errorf("required resource %s.%s is not yet registered with the apiserver", r.resource, r.groupVersion)
+			return fmt.Errorf("required resource %s.%s is not yet registered with the apiserver", r.Resource, r.GroupVersion)
 		}
-		setupLog.Info("required CRD is ready", "groupVersion", r.groupVersion, "resource", r.resource)
+		setupLog.Info("required CRD is ready", "groupVersion", r.GroupVersion, "resource", r.Resource)
 	}
 	return nil
 }

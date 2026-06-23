@@ -2,7 +2,7 @@ name: 'E2E Base Setup'
 description: >-
   Reusable composite action that prepares the full E2E base environment:
   loads component versions, sets up Go, logs in to Azure, optionally builds
-  the gpu-node-mocker image (skipped when node-provisioner=karpenter), creates
+  the gpu-node-mocker image (skipped when enable-node-mocker=false), creates
   the AKS cluster, installs all components, and validates them.
 
 inputs:
@@ -16,7 +16,7 @@ inputs:
     description: 'ACR name (no FQDN).'
     required: true
   gpu-mocker-image:
-    description: 'Local docker tag for the gpu-node-mocker image (e.g. gpu-node-mocker:latest-<runid>). Ignored when node-provisioner=karpenter.'
+    description: 'Local docker tag for the gpu-node-mocker image (e.g. gpu-node-mocker:latest-<runid>). Ignored when enable-node-mocker=false.'
     required: false
     default: ''
   location:
@@ -54,12 +54,20 @@ inputs:
     default: ''
   node-provisioner:
     description: >
-      KAITO node provisioner. Set to "karpenter" to use self-managed Karpenter
-      (installed via Helm). When "karpenter": gpu-node-mocker is not built or
-      deployed, and KAITO is launched with --node-provisioner=karpenter.
-      Default: empty (gpu-node-mocker path).
+      Provisioner KAITO is configured to use (passed to KAITO's
+      --node-provisioner). One of "azure-gpu-provisioner" or "karpenter".
+      Default: karpenter.
     required: false
-    default: ''
+    default: 'karpenter'
+  enable-node-mocker:
+    description: >
+      When "true" (default), deploy gpu-node-mocker, which fakes the selected
+      node-provisioner flow; the mocker image is built and no real provisioner
+      backend is installed. When "false", install the real provisioner
+      (Karpenter helm install for node-provisioner=karpenter) and skip the
+      mocker build/deploy.
+    required: false
+    default: 'true'
 
 outputs:
   image:
@@ -81,12 +89,14 @@ runs:
         INPUT_KEDA="${{ inputs.keda-version }}"
         INPUT_LGA="${{ inputs.llm-gateway-auth-version }}"
         INPUT_NODE_PROVISIONER="${{ inputs.node-provisioner }}"
+        INPUT_ENABLE_NODE_MOCKER="${{ inputs.enable-node-mocker }}"
         [ -n "${INPUT_PROVIDER}" ] && E2E_PROVIDER="${INPUT_PROVIDER}"
         [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
         [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
         [ -n "${INPUT_KEDA}" ]  && KEDA_VERSION="${INPUT_KEDA}"
         [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
-        KAITO_NODE_PROVISIONER="${INPUT_NODE_PROVISIONER}"
+        KAITO_NODE_PROVISIONER="${INPUT_NODE_PROVISIONER:-karpenter}"
+        ENABLE_NODE_MOCKER="${INPUT_ENABLE_NODE_MOCKER:-true}"
 
         # Validate provider value.
         case "${E2E_PROVIDER}" in
@@ -115,6 +125,7 @@ runs:
           echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
           echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
           echo "KAITO_NODE_PROVISIONER=${KAITO_NODE_PROVISIONER}"
+          echo "ENABLE_NODE_MOCKER=${ENABLE_NODE_MOCKER}"
         } >> "$GITHUB_ENV"
 
     - name: Print versions
@@ -130,6 +141,7 @@ runs:
         echo "LLM_GATEWAY_AUTH_IMAGE_TAG=${LLM_GATEWAY_AUTH_IMAGE_TAG}"
         echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
         echo "KAITO_NODE_PROVISIONER=${KAITO_NODE_PROVISIONER}"
+        echo "ENABLE_NODE_MOCKER=${ENABLE_NODE_MOCKER}"
 
     - name: Setup Go
       uses: actions/setup-go@v6
@@ -142,7 +154,6 @@ runs:
 
     - name: Prepare gpu-node-mocker image
       id: image
-      if: ${{ inputs.node-provisioner != 'karpenter' }}
       shell: bash
       env:
         RESOURCE_GROUP: ${{ inputs.resource-group }}
@@ -151,18 +162,12 @@ runs:
         LOCATION: ${{ inputs.location }}
         IMG: ${{ inputs.gpu-mocker-image }}
       run: |
+        # ENABLE_NODE_MOCKER (inherited from GITHUB_ENV) drives prepare-image.sh:
+        #   true  -> build/push the mocker image; OUTPUT carries image=<acr-fqdn:tag>
+        #   false -> only create the resource group + ACR; OUTPUT carries an empty
+        #            `image=` line (IMG is ignored, no mocker image is built).
         OUTPUT=$(make e2e-prepare-image)
         echo "image=$(echo "$OUTPUT" | grep '^image=' | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
-
-    - name: Create resource group and ACR (Karpenter path)
-      if: ${{ inputs.node-provisioner == 'karpenter' }}
-      shell: bash
-      env:
-        RESOURCE_GROUP: ${{ inputs.resource-group }}
-        CLUSTER_NAME: ${{ inputs.cluster-name }}
-        ACR_NAME: ${{ inputs.acr-name }}
-        LOCATION: ${{ inputs.location }}
-      run: make e2e-prepare-image
 
     - name: Setup cluster
       shell: bash
@@ -176,7 +181,7 @@ runs:
       run: make e2e-setup
 
     - name: Install karpenter helm chart
-      if: ${{ inputs.node-provisioner == 'karpenter' }}
+      if: ${{ inputs.enable-node-mocker == 'false' && inputs.node-provisioner == 'karpenter' }}
       shell: bash
       run: |
         # Ensure yq v4.30+ is available for envsubst(nu) support required by configure-values.sh
@@ -193,6 +198,7 @@ runs:
       env:
         SHADOW_CONTROLLER_IMAGE: ${{ steps.image.outputs.image }}
         KAITO_NODE_PROVISIONER: ${{ inputs.node-provisioner }}
+        ENABLE_NODE_MOCKER: ${{ inputs.enable-node-mocker }}
       run: make e2e-install
 
     - name: Validate components

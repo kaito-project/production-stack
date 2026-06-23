@@ -63,12 +63,13 @@ if [ -z "${KEDA_NAMESPACE:-}" ]; then
 fi
 
 export E2E_PROVIDER KEDA_NAMESPACE ISTIO_VERSION GATEWAY_API_VERSION KEDA_VERSION LLM_GATEWAY_AUTH_VERSION LLM_GATEWAY_AUTH_IMAGE_TAG AKS_K8S_VERSION
-export KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-}"
 
-# Resolve/validate the node provisioner and expose its predicates. The child
-# scripts inherit KAITO_NODE_PROVISIONER and source this library themselves.
-# shellcheck source=lib-node-provisioner.sh
-source "${SCRIPT_DIR}/lib-node-provisioner.sh"
+# Node-provisioner selection (decoupled from real-vs-mocked); exported so the
+# child scripts (setup/install/validate) inherit canonical values:
+#   KAITO_NODE_PROVISIONER — azure-gpu-provisioner | karpenter (default karpenter).
+#   ENABLE_NODE_MOCKER     — true (default): deploy gpu-node-mocker; false: real provisioner.
+export KAITO_NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-karpenter}"
+export ENABLE_NODE_MOCKER="${ENABLE_NODE_MOCKER:-true}"
 
 echo "=== Component versions (from versions.env) ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
@@ -149,10 +150,10 @@ do_setup() {
 }
 
 do_install() {
-  # SHADOW_CONTROLLER_IMAGE is required only for the gpu-node-mocker
-  # provisioner. Other provisioners (e.g. Karpenter / AKS NAP) provision real
-  # nodes and deploy no mocker, so the image is not needed.
-  if node_provisioner_uses_mocker && [[ -z "${SHADOW_CONTROLLER_IMAGE:-}" ]]; then
+  # SHADOW_CONTROLLER_IMAGE is required only when gpu-node-mocker is deployed
+  # (ENABLE_NODE_MOCKER=true). With a real provisioner (Karpenter / AKS NAP)
+  # no mocker is deployed, so the image is not needed.
+  if [[ "${ENABLE_NODE_MOCKER}" == "true" && -z "${SHADOW_CONTROLLER_IMAGE:-}" ]]; then
     echo "❌ SHADOW_CONTROLLER_IMAGE is not set. Run prepare-image.sh first and export the resulting image= value." >&2
     exit 1
   fi

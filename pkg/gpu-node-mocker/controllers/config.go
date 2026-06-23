@@ -104,6 +104,15 @@ const (
 
 	// MaxLabelValueLength is the maximum length of a Kubernetes label value.
 	MaxLabelValueLength = 63
+
+	// LabelNodePool is the standard karpenter label that links a NodeClaim to
+	// the NodePool it was provisioned from.
+	LabelNodePool = "karpenter.sh/nodepool"
+
+	// KarpenterManagedByLabel / KarpenterManagedByValue mirror the labels KAITO
+	// stamps on the NodePool it creates in karpenter mode.
+	KarpenterManagedByLabel = "karpenter.kaito.sh/managed-by"
+	KarpenterManagedByValue = "kaito"
 )
 
 // Config holds operator-wide settings injected via CLI flags.

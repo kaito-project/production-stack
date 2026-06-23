@@ -76,6 +76,7 @@ jobs:
           node-count: ${{ env.NODE_COUNT }}
           node-vm-size: ${{ env.NODE_VM_SIZE }}
           node-provisioner: karpenter
+          enable-node-mocker: false
           provider: ${{ github.event.inputs.provider }}
           istio-version: ${{ github.event.inputs.istio_version }}
           gateway-api-version: ${{ github.event.inputs.gateway_api_version }}

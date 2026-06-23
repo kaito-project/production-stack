@@ -62,10 +62,28 @@ rules:
   - patch
   - watch
 - apiGroups:
+  - karpenter.azure.com
+  resources:
+  - aksnodeclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - karpenter.azure.com
+  resources:
+  - aksnodeclasses/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - karpenter.sh
   resources:
   - nodeclaims
   verbs:
+  - create
+  - delete
   - get
   - list
   - update
@@ -76,3 +94,11 @@ rules:
   - nodeclaims/status
   verbs:
   - patch
+- apiGroups:
+  - karpenter.sh
+  resources:
+  - nodepools
+  verbs:
+  - get
+  - list
+  - watch
