@@ -13,17 +13,24 @@
 #   ACR_NAME              — ACR registry name           (default: <cluster_name>acr, sanitized)
 #   LOCATION              — Azure region               (default: australiaeast)
 #   NODE_COUNT            — Number of worker nodes      (default: 2)
-#   NODE_VM_SIZE          — VM SKU for the node pool    (default: Standard_D8s_v5)
+#   NODE_VM_SIZE          — VM SKU for the node pool    (default: Standard_D8d_v4)
 #   E2E_PROVIDER          — upstream|azure              (default: upstream)
 #   GATEWAY_API_VERSION   — Gateway API CRD version    (sourced from versions.env)
 #   KEDA_VERSION          — KEDA Helm chart version    (sourced from versions.env)
 #   ISTIO_VERSION         — Istio control-plane version (sourced from versions.env)
 #   KEDA_NAMESPACE        — Override the namespace KEDA is installed into
 #                           (derived from E2E_PROVIDER when unset)
+#   KAITO_NODE_PROVISIONER — When set to "karpenter", enables OIDC issuer and
+#                            Workload Identity on the cluster so that the
+#                            self-managed Karpenter Helm install can federate
+#                            credentials. Default: empty (gpu-node-mocker path).
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib-node-provisioner.sh
+source "${SCRIPT_DIR}/lib-node-provisioner.sh"
 
 RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-rg}"
 CLUSTER_NAME="${CLUSTER_NAME:-kaito-aks}"
@@ -31,8 +38,17 @@ CLUSTER_NAME="${CLUSTER_NAME:-kaito-aks}"
 ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
 LOCATION="${LOCATION:-australiaeast}"
 NODE_COUNT="${NODE_COUNT:-2}"
-NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8s_v5}"
+NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+
+# Karpenter needs cluster OIDC issuer + Workload Identity so a self-managed
+# Karpenter Helm install can obtain federated credentials to call the Azure
+# ARM API. --node-provisioning-mode Auto is intentionally NOT set — that flag
+# enables AKS-managed NAP, which conflicts with the self-managed Karpenter Helm
+# install and triggers extra ARM list calls that cause subscription throttling.
+np_karpenter__aks_create_args() {
+  echo "--enable-oidc-issuer --enable-workload-identity"
+}
 
 # Optional AKS-managed add-ons toggled by provider.
 #   azure    -> enable the managed KEDA add-on so the cluster ships with
@@ -95,7 +111,15 @@ case "${E2E_PROVIDER}" in
     ;;
 esac
 
-echo "=== Creating AKS cluster ${CLUSTER_NAME} (provider=${E2E_PROVIDER}) ==="
+# Append any provisioner-specific `az aks create` flags (e.g. Karpenter needs
+# OIDC issuer + Workload Identity so the cluster can provision real GPU nodes).
+provisioner_aks_args="$(node_provisioner_run aks_create_args)"
+if [[ -n "${provisioner_aks_args}" ]]; then
+  # shellcheck disable=SC2206  # flags are space-separated and contain no spaces
+  EXTRA_AKS_ARGS+=(${provisioner_aks_args})
+fi
+
+echo "=== Creating AKS cluster ${CLUSTER_NAME} (provider=${E2E_PROVIDER}, node-provisioner=${NODE_PROVISIONER}) ==="
 az aks create \
   --resource-group "${RESOURCE_GROUP}" \
   --name "${CLUSTER_NAME}" \

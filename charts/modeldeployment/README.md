@@ -34,9 +34,9 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `namespace`               | optional | `.Release.Namespace`                                                 | Target namespace.                                                                          |
 | `model`                   | required | `""`                                                                 | Preset model name. Used only as `spec.template.inference.preset.name`.                     |
 | `instanceType`            | required | `Standard_NV36ads_A10_v5`                                            | VM instance type for the underlying nodes.                                                 |
-| `replicas`                | required | `2`                                                                  | InferenceSet replicas. Also wired to `scaledobject.kaito.sh/min-replicas`.                 |
+| `replicas`                | required | `1`                                                                  | InferenceSet replicas. Also wired to `scaledobject.kaito.sh/min-replicas`.                 |
 | `enableScaling`           | optional | `false`                                                              | Wired to `scaledobject.kaito.sh/auto-provision`.                                           |
-| `maxReplicas`             | optional | `5`                                                                  | Wired to `scaledobject.kaito.sh/max-replicas` (only when `enableScaling=true`).            |
+| `maxReplicas`             | optional | `3`                                                                  | Wired to `scaledobject.kaito.sh/max-replicas` (only when `enableScaling=true`).            |
 | `scalingThreshold`        | optional | `10`                                                                 | Wired to `scaledobject.kaito.sh/threshold` (only when `enableScaling=true`).               |
 | `gatewayName`             | optional | _empty_ → `<namespace>-gw`                                          | Gateway the HTTPRoute attaches to. Defaults to the per-namespace Gateway provisioned by `charts/modelharness`. |
 | `epp.image.repository`    | optional | `mcr.microsoft.com/oss/v2/llm-d/llm-d-inference-scheduler`           | EPP container image.                                                                       |

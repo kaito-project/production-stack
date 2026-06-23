@@ -105,6 +105,12 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 	return args
 }
 
+// InferencePodSelector returns the label selector that finds the model-serving
+// pods for this deployment.
+func (v ModelDeploymentValues) InferencePodSelector() string {
+	return "inferenceset.kaito.sh/created-by=" + v.Name
+}
+
 // InstallModelDeployment runs `helm upgrade --install` for the modeldeployment
 // chart with the supplied values. It is idempotent — re-running it on an
 // existing release reconciles to the new values. The release name equals

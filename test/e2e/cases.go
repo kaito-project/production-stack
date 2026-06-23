@@ -37,6 +37,9 @@ import (
 const (
 	presetPhi       = "phi-4-mini-instruct"
 	presetMinistral = "ministral-3-3b-instruct"
+	presetQwen7B    = "qwen2.5-coder-7b-instruct"
+	presetQwen32B   = "qwen2.5-coder-32b-instruct"
+	presetLlama70B  = "llama-3.3-70b-instruct"
 )
 
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
@@ -83,6 +86,23 @@ const (
 	// of a single model, fake-node and shadow-pod inventory churn,
 	// background load to assert no 5xx during transitions).
 	CaseScaling = "scaling"
+
+	// CaseKarpenterSmall covers the Karpenter nightly small-model scenario:
+	// a single-GPU, single-node deployment that proves basic NAP provisioning,
+	// readiness, request serving, and scale-back-to-zero.
+	CaseKarpenterSmall = "karpenter-small"
+
+	// CaseKarpenterMedium covers the Karpenter nightly medium-model scenario:
+	// a single-node, multi-GPU deployment with tensor parallelism on one
+	// Karpenter-provisioned node.
+	CaseKarpenterMedium = "karpenter-medium"
+
+	// CaseKarpenterLarge covers the Karpenter nightly large scenario: a
+	// single InferenceSet replica whose large model (70B) is sharded across
+	// two GPU nodes using KAITO's native multi-node support (no LWS, no Ray).
+	// Validates that Karpenter provisions two GPU nodes and that KAITO +
+	// production-stack schedule the distributed inference workload across them.
+	CaseKarpenterLarge = "karpenter-large"
 
 	// CaseFilterOrder covers filter_order_test.go — verifies the Envoy
 	// HTTP filter chain execution order on a per-namespace Gateway:
@@ -298,6 +318,33 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			EnableScaling:    true,
 			MaxReplicas:      2,
 			ScalingThreshold: 10, // low threshold to trigger scaling during tests
+		},
+	},
+	CaseKarpenterSmall: {
+		{
+			Name:         "k-7b",
+			Namespace:    "e2e-k-sm",
+			Model:        presetQwen7B,
+			Replicas:     1,
+			InstanceType: "Standard_NC24ads_A100_v4",
+		},
+	},
+	CaseKarpenterMedium: {
+		{
+			Name:         "k-32b",
+			Namespace:    "e2e-k-md",
+			Model:        presetQwen32B,
+			Replicas:     1,
+			InstanceType: "Standard_NC24ads_A100_v4",
+		},
+	},
+	CaseKarpenterLarge: {
+		{
+			Name:         "k-70b-2n",
+			Namespace:    "e2e-k-lg",
+			Model:        presetLlama70B,
+			Replicas:     1,
+			InstanceType: "Standard_NC48ads_A100_v4",
 		},
 	},
 	CaseClusterFilterHA: {

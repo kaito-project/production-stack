@@ -223,24 +223,30 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 		By(fmt.Sprintf("Waiting for inference pods for %s to be Running", d.Name))
 		Eventually(func() error {
 			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", d.Name),
+				LabelSelector: d.InferencePodSelector(),
 			})
 			if err != nil {
 				return fmt.Errorf("failed to list pods: %w", err)
 			}
-			if len(pods.Items) == 0 {
+
+			items := pods.Items
+
+			if len(items) == 0 {
 				return fmt.Errorf("no inference pods found for %s", d.Name)
 			}
-			for _, pod := range pods.Items {
+			for _, pod := range items {
 				if pod.Status.Phase != "Running" {
 					return fmt.Errorf("pod %s is %s, not Running", pod.Name, pod.Status.Phase)
+				}
+				if len(pod.Status.ContainerStatuses) == 0 || !pod.Status.ContainerStatuses[0].Ready {
+					return fmt.Errorf("pod %s container is not Ready yet", pod.Name)
 				}
 				if pod.Status.PodIP == "" {
 					return fmt.Errorf("pod %s has no PodIP yet", pod.Name)
 				}
 			}
 			return nil
-		}, 5*time.Minute, 10*time.Second).Should(Succeed(),
+		}, InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),
 			"inference pods for %s should be Running with PodIPs", d.Name)
 	}
 
@@ -316,7 +322,7 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 						resp.StatusCode, d.Namespace, d.Name, hostHeader, d.AuthAPIKeyEnabled, string(body))
 				}
 				return nil
-			}, 5*time.Minute, 10*time.Second).Should(Succeed(),
+			}, InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),
 				"gateway should route to deployment %s successfully", d.Name)
 		}
 	}

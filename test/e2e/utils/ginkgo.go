@@ -37,6 +37,10 @@ var (
 	// GinkgoLabelNightly marks tests that are destructive or slow and only run in nightly CI.
 	GinkgoLabelNightly = g.Label("Nightly")
 
+	// GinkgoLabelKarpenter marks tests that exercise AKS NAP / Karpenter-driven
+	// GPU node provisioning from zero and back to zero.
+	GinkgoLabelKarpenter = g.Label("Karpenter")
+
 	// GinkgoLabelAuth marks tests that verify API key authentication.
 	GinkgoLabelAuth = g.Label("Auth")
 
