@@ -23,12 +23,13 @@ import (
 )
 
 // NewControllers sets up all controllers with the given manager.
-func NewControllers(mgr ctrl.Manager, cfg Config) error {
-	if err := (&NodeClaimReconciler{
-		Client: mgr.GetClient(),
-		Config: cfg,
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create NodeClaim controller: %w", err)
+//
+// The Phase-1 controllers are provisioner-specific and provided via the
+// already-constructed ProvisionerMocker. The Phase-2 ShadowPodReconciler is
+// provisioner-agnostic and always registered.
+func NewControllers(mgr ctrl.Manager, cfg Config, mocker ProvisionerMocker) error {
+	if err := mocker.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to set up %s mocker: %w", mocker.Type(), err)
 	}
 
 	if err := (&ShadowPodReconciler{

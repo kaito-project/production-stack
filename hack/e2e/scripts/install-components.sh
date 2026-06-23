@@ -110,6 +110,7 @@ install_kaito() {
     --create-namespace \
     --set featureGates.enableInferenceSetController=true \
     --set featureGates.gatewayAPIInferenceExtension=false \
+    --set nodeProvisioner=karpenter \
     --set image.repository=ghcr.io/kaito-project/kaito/workspace \
     --set image.tag=nightly-latest \
     --set image.pullPolicy=Always \
@@ -140,13 +141,16 @@ np_gpu_node_mocker__install() {
   helm install gpu-node-mocker ./charts/gpu-node-mocker \
     --namespace kaito-system \
     --create-namespace \
+    --set nodeProvisioner=karpenter \
     --set image.repository="${SHADOW_CONTROLLER_IMAGE%:*}" \
     --set image.tag="${SHADOW_CONTROLLER_IMAGE##*:}"
 
-  # The mocker discovery-checks `nodeclaims.karpenter.sh` at startup and
-  # exits if the CRD is not served, so early restarts are expected while
-  # KAITO installs that CRD in parallel.
-  echo "⏳ Waiting for gpu-node-mocker (will tolerate restarts while KAITO CRDs come online)..."
+  # In karpenter mode the mocker discovery-checks nodeclaims.karpenter.sh
+  # (shipped by KAITO) plus nodepools.karpenter.sh and aksnodeclasses.karpenter.
+  # azure.com (both shipped by this chart's crds/) at startup and exits if any
+  # is not served, so early restarts are expected while the KAITO-owned
+  # nodeclaims CRD comes online in parallel.
+  echo "⏳ Waiting for gpu-node-mocker (will tolerate restarts while karpenter CRDs come online)..."
   kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=420s || true
 }
 

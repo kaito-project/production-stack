@@ -29,6 +29,7 @@ spec:
             - --uds-tokenizer-image={{ .Values.shadowPod.udsTokenizerImage }}
             - --lease-duration-seconds={{ .Values.leaseDurationSeconds }}
             - --lease-renew-interval-seconds={{ .Values.leaseRenewIntervalSeconds }}
+            - --node-provisioner={{ .Values.nodeProvisioner }}
           ports:
             - name: metrics
               containerPort: 8080
