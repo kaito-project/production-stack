@@ -20,11 +20,7 @@ concurrency:
 
 jobs:
   build-publish-image-acr:
-    runs-on:
-      labels:
-        - self-hosted
-        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
-        - JobId=nightlyAcrImage-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
     environment: publish-mcr
     outputs:
       img_tag: ${{ steps.get-image-tag.outputs.img_tag }}
@@ -76,11 +72,7 @@ jobs:
 
   publish-charts-acr:
     needs: [build-publish-image-acr]
-    runs-on:
-      labels:
-        - self-hosted
-        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
-        - JobId=nightlyAcrCharts-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
     environment: publish-mcr
     env:
       IMG_TAG: ${{ needs.build-publish-image-acr.outputs.img_tag }}
