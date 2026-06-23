@@ -1,0 +1,122 @@
+name: Publish nightly ACR images and charts
+
+on:
+  schedule:
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: 'Git ref to build from (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-acr
+  cancel-in-progress: true
+
+jobs:
+  build-publish-image-acr:
+    runs-on:
+      labels:
+        - self-hosted
+        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
+        - JobId=nightlyAcrImage-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    environment: publish-mcr
+    outputs:
+      img_tag: ${{ steps.get-image-tag.outputs.img_tag }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: gpu-node-mocker
+            chart_path: charts/gpu-node-mocker
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.git_ref || 'main' }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - id: get-image-tag
+        name: Compute nightly image tag
+        run: |
+          # Semver-compatible nightly tag: <chart version>-<UTC date>, e.g. 0.2.1-20260623.
+          base_version="$(yq '.version' ${{ matrix.chart_path }}/Chart.yaml)"
+          date_tag="$(date -u +%Y%m%d)"
+          echo "img_tag=${base_version}-${date_tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to ACR
+        run: |
+          az login --identity
+          az acr login -n "${REGISTRY}"
+        env:
+          REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
+
+      - name: Build and push ${{ matrix.image_name }}:${{ steps.get-image-tag.outputs.img_tag }}
+        run: |
+          OUTPUT_TYPE=type=registry make docker-buildx
+        env:
+          REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
+          IMG_NAME: ${{ matrix.image_name }}
+          IMG_TAG: ${{ steps.get-image-tag.outputs.img_tag }}
+
+  publish-charts-acr:
+    needs: [build-publish-image-acr]
+    runs-on:
+      labels:
+        - self-hosted
+        - 1ES.Pool=1es-aks-kaito-agent-pool-ubuntu
+        - JobId=nightlyAcrCharts-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    environment: publish-mcr
+    env:
+      IMG_TAG: ${{ needs.build-publish-image-acr.outputs.img_tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.git_ref || 'main' }}
+
+      - name: Setup Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Authenticate to ACR
+        run: |
+          az login --identity
+          az acr login -n "${REGISTRY}"
+        env:
+          REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
+
+      - name: Pin gpu-node-mocker chart to nightly ACR image
+        # Point values.yaml at the nightly ACR image so an install of the
+        # nightly chart pulls the matching nightly controller image.
+        run: |
+          yq -i ".image.repository = \"${REGISTRY}/gpu-node-mocker\" | .image.tag = \"${IMG_TAG}\"" \
+            charts/gpu-node-mocker/values.yaml
+        env:
+          REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
+
+      - name: Vendor productionstack subchart dependencies
+        # Umbrella chart pulls an OCI subchart at package time; vendor it
+        # into charts/ before make helm-package-and-push runs.
+        run: helm dependency update charts/productionstack
+
+      - name: Package and push charts to ACR
+        run: |
+          export CHART_REGISTRY="${REGISTRY}/helm"
+          export CHART_VERSION="${IMG_TAG}"
+          make helm-package-and-push CHART_NAME='gpu-node-mocker'
+          make helm-package-and-push CHART_NAME='modeldeployment'
+          make helm-package-and-push CHART_NAME='modelharness'
+          make helm-package-and-push CHART_NAME='productionstack'
+        env:
+          REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}

@@ -1,0 +1,98 @@
+name: Publish nightly GH images
+
+# Mirrors publish-image.yaml (release flow) but runs daily on a schedule
+# and tags images with <chart-version>-<UTC-date>, then promotes the
+# nightly-latest alias after a successful Trivy scan.
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: 'Git ref to build from (branch, tag, or SHA)'
+        required: false
+        default: 'main'
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: nightly-ghcr-images
+  cancel-in-progress: true
+
+jobs:
+  build-scan-publish-gh-nightly-images:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: gpu-node-mocker
+            chart_path: charts/gpu-node-mocker
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.git_ref || 'main' }}
+
+      - id: get-registry
+        name: Compute registry repository
+        run: |
+          # registry must be in lowercase
+          echo "registry_repository=$(echo "${{ env.REGISTRY }}/kaito-project" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
+      - id: get-image-tag
+        name: Compute nightly image tag
+        run: |
+          # Semver-compatible nightly tag: <chart version>-<UTC date>, e.g. 0.2.1-20260623.
+          base_version="$(yq '.version' ${{ matrix.chart_path }}/Chart.yaml)"
+          date_tag="$(date -u +%Y%m%d)"
+          echo "IMG_TAG=${base_version}-${date_tag}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Login to ${{ steps.get-registry.outputs.registry_repository }}
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.image_name }}:${{ env.IMG_TAG }}
+        run: |
+          OUTPUT_TYPE=type=registry make docker-buildx
+        env:
+          REGISTRY: ${{ steps.get-registry.outputs.registry_repository }}
+          IMG_NAME: ${{ matrix.image_name }}
+
+      - name: Scan ${{ steps.get-registry.outputs.registry_repository }}/${{ matrix.image_name }}:${{ env.IMG_TAG }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.get-registry.outputs.registry_repository }}/${{ matrix.image_name }}:${{ env.IMG_TAG }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update ${{ matrix.image_name }}:nightly-latest
+        run: |
+          # Promote alias only after the scan step succeeds.
+          image_ref="${REGISTRY}/${IMAGE_NAME}"
+          docker buildx imagetools create \
+            --tag "${image_ref}:nightly-latest" \
+            "${image_ref}:${IMG_TAG}"
+        env:
+          REGISTRY: ${{ steps.get-registry.outputs.registry_repository }}
+          IMAGE_NAME: ${{ matrix.image_name }}
