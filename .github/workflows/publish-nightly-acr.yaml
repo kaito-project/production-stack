@@ -60,9 +60,10 @@ jobs:
 
       - name: Authenticate to ACR
         run: |
-          az login --identity
+          az login --identity --client-id "${CLIENTID}"
           az acr login -n "${REGISTRY}"
         env:
+          CLIENTID: ${{ secrets.IDENTITY_CLIENT_ID }}
           REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
 
       - name: Build and push ${{ matrix.image_name }}:${{ steps.get-image-tag.outputs.img_tag }}
@@ -103,9 +104,10 @@ jobs:
 
       - name: Authenticate to ACR
         run: |
-          az login --identity
+          az login --identity --client-id "${CLIENTID}"
           az acr login -n "${REGISTRY}"
         env:
+          CLIENTID: ${{ secrets.IDENTITY_CLIENT_ID }}
           REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
 
       - name: Pin gpu-node-mocker chart to nightly ACR image
