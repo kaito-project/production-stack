@@ -207,11 +207,9 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		var (
 			lastCanaryOut     string
 			lastCanaryExecErr string
-			pollAttempts      int
 			connectedCount    int
 		)
 		probeOnce := func() bool {
-			pollAttempts++
 			// `agnhost connect` is a pure TCP probe with documented exit
 			// codes: 0 = connected, 1 = TIMEOUT (silent drop — what
 			// NetworkPolicy default-deny produces), 2 = REFUSED (TCP RST
@@ -276,9 +274,10 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 			return true
 		}
 
-		// Manual poll loop (rather than Eventually().Should(BeTrue())) so a
-		// timeout does NOT automatically fail the spec. When enforcement
-		// never comes up we must distinguish two very different worlds:
+		// Poll for enforcement via Eventually, but wrap it in
+		// InterceptGomegaFailures so a timeout does NOT automatically fail
+		// the spec. We still need to distinguish two very different worlds
+		// on timeout, which a bare Eventually().Should(BeTrue()) cannot do:
 		//   - the CiliumNetworkPolicy is present AND was accepted by
 		//     cilium-agent (status Valid=True) yet the dataplane still isn't
 		//     enforcing it → a known AKS-managed-Cilium limitation we cannot
@@ -287,26 +286,23 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 		//     suite instead of flooding CI with red.
 		//   - the policy is missing or was rejected → a real chart /
 		//     dataplane regression that must Fail() loudly.
-		enforced := false
-		deadline := time.Now().Add(2 * time.Minute)
-		for {
-			if probeOnce() {
-				enforced = true
-				break
-			}
-			if !time.Now().Before(deadline) {
-				break
-			}
-			time.Sleep(5 * time.Second)
-		}
+		// InterceptGomegaFailures collects any failure from the closure and
+		// returns it instead of aborting, letting us branch Skip vs Fail
+		// below. probeOnce returns only a bool (never calls Expect), so the
+		// only failure the interceptor can capture is the Eventually
+		// timeout itself.
+		failures := InterceptGomegaFailures(func() {
+			Eventually(probeOnce, 2*time.Minute, 5*time.Second).Should(BeTrue(),
+				"NetworkPolicy enforcement did not become active")
+		})
 
-		if !enforced {
+		if len(failures) > 0 {
 			diag := networkPolicyEnforcementDiagnostics(ctx, clientset, namespace, eppIP, canaryNS)
 			detail := fmt.Sprintf(
-				"polled %d times; %d probes saw EXIT=0 (canary reached the EPP pod)\n"+
+				"%d probes saw EXIT=0 (canary reached the EPP pod)\n"+
 					"last agnhost connect output: %q\nlast exec error: %q\n"+
 					"eppIP=%s eppPort=%d canaryNS=%s\n--- diagnostics ---\n%s",
-				pollAttempts, connectedCount,
+				connectedCount,
 				lastCanaryOut, lastCanaryExecErr,
 				eppIP, eppPort, canaryNS, diag)
 
