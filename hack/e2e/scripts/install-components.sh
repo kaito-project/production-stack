@@ -36,6 +36,37 @@ source "${SCRIPT_DIR}/lib-parallel.sh"
 NODE_PROVISIONER="${KAITO_NODE_PROVISIONER:-karpenter}"
 ENABLE_NODE_MOCKER="${ENABLE_NODE_MOCKER:-true}"
 
+# Karpenter NodeClass selection (karpenter mode only):
+#   KAITO_NODE_CLASS — mock (default) | azure.
+#     mock  → karpenter.kaito.sh/MockNodeClass, a kind ONLY gpu-node-mocker
+#             recognizes. A real Karpenter provider cannot resolve it and skips
+#             any NodePool referencing it, so the mocker can run alongside real
+#             karpenter. This is the default.
+#     azure → the real karpenter.azure.com/AKSNodeClass (use when mocking the
+#             real Azure node class end to end).
+# Both KAITO (its NodePool nodeClassRef + the NodeClass objects it creates) and
+# gpu-node-mocker (the NodeClass it watches / discovery-checks) are pointed at
+# the SAME GVK below so they agree on the node class.
+KAITO_NODE_CLASS="${KAITO_NODE_CLASS:-mock}"
+case "${KAITO_NODE_CLASS}" in
+  mock)
+    NODE_CLASS_GROUP="karpenter.kaito.sh"
+    NODE_CLASS_KIND="MockNodeClass"
+    NODE_CLASS_VERSION="v1alpha1"
+    NODE_CLASS_RESOURCE="mocknodeclasses"
+    ;;
+  azure)
+    NODE_CLASS_GROUP="karpenter.azure.com"
+    NODE_CLASS_KIND="AKSNodeClass"
+    NODE_CLASS_VERSION="v1beta1"
+    NODE_CLASS_RESOURCE="aksnodeclasses"
+    ;;
+  *)
+    echo "Invalid KAITO_NODE_CLASS='${KAITO_NODE_CLASS}'. Must be 'mock' or 'azure'." >&2
+    exit 1
+    ;;
+esac
+
 # Derive KEDA install namespace from provider:
 #   upstream → `keda` (Helm-installed KEDA)
 #   azure    → `kube-system` (AKS managed KEDA add-on). keda-kaito-scaler
@@ -57,6 +88,7 @@ echo "=== Component versions ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
 echo "  NODE_PROVISIONER:          ${NODE_PROVISIONER}"
 echo "  ENABLE_NODE_MOCKER:        ${ENABLE_NODE_MOCKER}"
+echo "  KAITO_NODE_CLASS:          ${KAITO_NODE_CLASS} (${NODE_CLASS_GROUP}/${NODE_CLASS_VERSION} ${NODE_CLASS_KIND})"
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
 echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
@@ -72,46 +104,59 @@ if ! command -v helm &>/dev/null; then
 fi
 
 # ── KAITO chart resolution ────────────────────────────────────────────────
-# Sets KAITO_CHART_REF (and KAITO_CHART_TMPDIR when a clone is needed). The
-# karpenter provisioner needs the kaito main-branch chart because the published
-# chart does not yet expose `nodeProvisioner`; azure-gpu-provisioner uses the
-# published chart.
-resolve_kaito_chart() {
-  if [[ "${NODE_PROVISIONER}" == "karpenter" ]]; then
-    # The published Helm chart does not yet expose `nodeProvisioner` or template
-    # the corresponding `--node-provisioner` / Karpenter node-class args. Those
-    # chart changes are present on kaito main but not in the published chart repo
-    # yet, so install from the in-tree chart on main.
-    echo "  Karpenter mode: installing from kaito main branch chart (published chart lacks nodeProvisioner)"
-    KAITO_CHART_TMPDIR=$(mktemp -d)
-    git clone --depth 1 --quiet \
-      https://github.com/kaito-project/kaito.git "${KAITO_CHART_TMPDIR}"
-    KAITO_CHART_REF="${KAITO_CHART_TMPDIR}/charts/kaito/workspace"
-  else
-    helm repo add kaito https://kaito-project.github.io/kaito/charts/kaito 2>/dev/null || true
-    helm repo update kaito
-    KAITO_CHART_REF="kaito/workspace"
-  fi
-}
+# KAITO is always installed from the latest main-branch chart cloned from
+# https://github.com/kaito-project/kaito.git. The published Helm chart lags
+# main (e.g. `nodeProvisioner` / the Karpenter node-class args land on main
+# first), so cloning keeps install behavior consistent across provisioners.
 
 install_kaito() {
   echo "=== Installing KAITO workspace operator (image: nightly-latest) ==="
 
-  KAITO_CHART_REF=""
-  KAITO_CHART_TMPDIR=""
-  resolve_kaito_chart
-  if [[ -n "${KAITO_CHART_TMPDIR}" ]]; then
-    trap 'rm -rf "${KAITO_CHART_TMPDIR}"' RETURN
-  fi
+  echo "  Installing from kaito main branch chart (clone of kaito.git)"
+  KAITO_CHART_TMPDIR=$(mktemp -d)
+  trap 'rm -rf "${KAITO_CHART_TMPDIR}"' RETURN
+  git clone --depth 1 --quiet \
+    https://github.com/kaito-project/kaito.git "${KAITO_CHART_TMPDIR}"
+  KAITO_CHART_REF="${KAITO_CHART_TMPDIR}/charts/kaito/workspace"
 
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
+  #
+  # In karpenter mode, point KAITO's karpenter provider at the selected
+  # NodeClass GVK (default: the mock node class only gpu-node-mocker
+  # recognizes). KAITO renders the `kaito-nodeclasses` ConfigMap from
+  # karpenterProviders.azure.{group,kind,version,resourceName,nodeClasses} and
+  # creates one NodeClass CR per nodeClasses entry, then references the
+  # `default: true` one from every NodePool's nodeClassRef. So both the GVK and
+  # the nodeClasses list must match what the mocker watches.
+  KAITO_NODE_CLASS_ARGS=()
+  if [[ "${NODE_PROVISIONER}" == "karpenter" ]]; then
+    KAITO_NODE_CLASS_ARGS=(
+      --set karpenterProviders.azure.group="${NODE_CLASS_GROUP}"
+      --set karpenterProviders.azure.kind="${NODE_CLASS_KIND}"
+      --set karpenterProviders.azure.version="${NODE_CLASS_VERSION}"
+      --set karpenterProviders.azure.resourceName="${NODE_CLASS_RESOURCE}"
+    )
+    if [[ "${KAITO_NODE_CLASS}" == "mock" ]]; then
+      # Replace the chart-default Azure node classes (image-family-ubuntu /
+      # image-family-azure-linux, whose specs carry AKSNodeClass-only fields
+      # like imageFamily/osDiskSizeGB) with a single mock node class. KAITO
+      # creates one MockNodeClass CR named "mock-nodeclass" (default) that
+      # gpu-node-mocker marks Ready. The spec is empty because MockNodeClass is
+      # schema-less and neither KAITO nor the mocker reads it in mock mode.
+      KAITO_NODE_CLASS_ARGS+=(
+        --set-json 'karpenterProviders.azure.nodeClasses=[{"name":"mock-nodeclass","default":true,"spec":{}}]'
+      )
+    fi
+  fi
+
   helm upgrade --install kaito "${KAITO_CHART_REF}" \
     --namespace kaito-system \
     --create-namespace \
     --set featureGates.enableInferenceSetController=true \
     --set featureGates.gatewayAPIInferenceExtension=false \
     --set nodeProvisioner="${NODE_PROVISIONER}" \
+    "${KAITO_NODE_CLASS_ARGS[@]+"${KAITO_NODE_CLASS_ARGS[@]}"}" \
     --set image.repository=ghcr.io/kaito-project/kaito/workspace \
     --set image.tag=nightly-latest \
     --set image.pullPolicy=Always \
@@ -138,30 +183,31 @@ install_gwie_crds() {
 # instead: karpenter is installed via separate helm steps (CI / make targets)
 # and azure-gpu-provisioner is handled by KAITO itself — so there is nothing to
 # install in-cluster here.
-install_gpu_node_mocker() {
+install_node_provisioner() {
+  if [[ "${ENABLE_NODE_MOCKER}" != "true" ]]; then
+    echo "=== ENABLE_NODE_MOCKER=false: skipping gpu-node-mocker (using real ${NODE_PROVISIONER}) ==="
+    return
+  fi
+
   echo "=== Deploying gpu-node-mocker (GPU node mocker, --node-provisioner=${NODE_PROVISIONER}) ==="
   helm install gpu-node-mocker ./charts/gpu-node-mocker \
     --namespace kaito-system \
     --create-namespace \
     --set nodeProvisioner="${NODE_PROVISIONER}" \
+    --set nodeClass.group="${NODE_CLASS_GROUP}" \
+    --set nodeClass.version="${NODE_CLASS_VERSION}" \
+    --set nodeClass.kind="${NODE_CLASS_KIND}" \
+    --set nodeClass.resource="${NODE_CLASS_RESOURCE}" \
     --set image.repository="${SHADOW_CONTROLLER_IMAGE%:*}" \
     --set image.tag="${SHADOW_CONTROLLER_IMAGE##*:}"
 
   # In karpenter mode the mocker discovery-checks nodeclaims.karpenter.sh
-  # (shipped by KAITO) plus nodepools.karpenter.sh and aksnodeclasses.karpenter.
-  # azure.com (both shipped by this chart's crds/) at startup and exits if any
-  # is not served, so early restarts are expected while the KAITO-owned
-  # nodeclaims CRD comes online in parallel.
+  # (shipped by KAITO) plus nodepools.karpenter.sh and the selected NodeClass
+  # CRD (mocknodeclasses.karpenter.kaito.sh by default, both shipped by this
+  # chart's crds/) at startup and exits if any is not served, so early restarts
+  # are expected while the KAITO-owned nodeclaims CRD comes online in parallel.
   echo "⏳ Waiting for gpu-node-mocker (will tolerate restarts while karpenter CRDs come online)..."
   kubectl -n kaito-system rollout status deployment/gpu-node-mocker --timeout=420s || true
-}
-
-install_node_provisioner() {
-  if [[ "${ENABLE_NODE_MOCKER}" == "true" ]]; then
-    install_gpu_node_mocker
-    return
-  fi
-  echo "=== ENABLE_NODE_MOCKER=false: skipping gpu-node-mocker (using real ${NODE_PROVISIONER}) ==="
 }
 
 

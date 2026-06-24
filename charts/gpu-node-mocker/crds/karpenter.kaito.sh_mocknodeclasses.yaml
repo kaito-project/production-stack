@@ -1,0 +1,98 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: mocknodeclasses.karpenter.kaito.sh
+spec:
+  # karpenter.kaito.sh is intentionally a DIFFERENT API group from the real
+  # Azure provider's karpenter.azure.com/AKSNodeClass. A real Karpenter
+  # provider only resolves the NodeClass kind it registers (AKSNodeClass for
+  # the Azure provider), so it cannot resolve a NodePool whose nodeClassRef
+  # points at MockNodeClass and therefore skips that NodePool entirely. Only
+  # gpu-node-mocker watches this kind, marks it Ready, and materializes the
+  # fake NodeClaims — letting the mocker coexist with a real Karpenter install.
+  group: karpenter.kaito.sh
+  names:
+    categories:
+    - karpenter
+    kind: MockNodeClass
+    listKind: MockNodeClassList
+    plural: mocknodeclasses
+    shortNames:
+    - mocknc
+    - mockncs
+    singular: mocknodeclass
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MockNodeClass is a stand-in NodeClass that only gpu-node-mocker
+          recognizes. Its spec is intentionally schema-less (it accepts whatever
+          fields KAITO would set on a real AKSNodeClass, e.g. imageFamily /
+          osDiskSizeGB) because the mocker never reads spec — it only patches
+          status.conditions to Ready=True.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Cannot be updated. In CamelCase.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec mirrors the provider NodeClass spec; fields are not
+              validated because the mocker never reads them.
+            type: object
+            x-kubernetes-preserve-unknown-fields: true
+          status:
+            description: status holds the Ready condition gpu-node-mocker patches.
+            properties:
+              conditions:
+                description: conditions describe the readiness of the NodeClass.
+                items:
+                  description: Condition is a standard Kubernetes status condition.
+                  properties:
+                    lastTransitionTime:
+                      type: string
+                    message:
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      type: integer
+                    reason:
+                      type: string
+                    status:
+                      type: string
+                    type:
+                      type: string
+                  required:
+                  - status
+                  - type
+                  type: object
+                type: array
+            type: object
+            x-kubernetes-preserve-unknown-fields: true
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

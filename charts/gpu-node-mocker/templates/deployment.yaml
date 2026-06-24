@@ -30,6 +30,10 @@ spec:
             - --lease-duration-seconds={{ .Values.leaseDurationSeconds }}
             - --lease-renew-interval-seconds={{ .Values.leaseRenewIntervalSeconds }}
             - --node-provisioner={{ .Values.nodeProvisioner }}
+            - --node-class-group={{ .Values.nodeClass.group }}
+            - --node-class-version={{ .Values.nodeClass.version }}
+            - --node-class-kind={{ .Values.nodeClass.kind }}
+            - --node-class-resource={{ .Values.nodeClass.resource }}
           ports:
             - name: metrics
               containerPort: 8080

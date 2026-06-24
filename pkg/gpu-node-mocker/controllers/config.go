@@ -36,6 +36,8 @@ limitations under the License.
 //	  real shadow pod and the LLM Mocker.
 package controllers
 
+import "k8s.io/apimachinery/pkg/runtime/schema"
+
 const (
 	// LabelFakeNode is set on every Node created by Phase 1 so Phase 2 can
 	// cheaply filter pods assigned to fake nodes without re-fetching nodes.
@@ -113,7 +115,53 @@ const (
 	// stamps on the NodePool it creates in karpenter mode.
 	KarpenterManagedByLabel = "karpenter.kaito.sh/managed-by"
 	KarpenterManagedByValue = "kaito"
+
+	// MockNodeClass* identify the gpu-node-mocker's own karpenter NodeClass
+	// kind. It lives in the karpenter.kaito.sh group — NOT karpenter.azure.com —
+	// so a real Azure Karpenter provider (which only understands
+	// karpenter.azure.com AKSNodeClass) does not recognize it and therefore
+	// skips any KAITO NodePool whose nodeClassRef points at it. That lets the
+	// mocker run alongside a real karpenter install: the mocker reconciles the
+	// MockNodeClass (marks it Ready, materializes fake NodeClaims) while real
+	// karpenter ignores the same NodePool. It is the default NodeClass the
+	// mocker watches.
+	MockNodeClassGroup    = "karpenter.kaito.sh"
+	MockNodeClassVersion  = "v1alpha1"
+	MockNodeClassKind     = "MockNodeClass"
+	MockNodeClassResource = "mocknodeclasses"
 )
+
+// NodeClassRef identifies the cluster-scoped karpenter NodeClass resource that
+// KAITO's NodePool template references and that the NodeClassReconciler marks
+// Ready in karpenter mode. It is configurable so the mocker can target either
+// its own mock node class (karpenter.kaito.sh/MockNodeClass — the default) or
+// the real karpenter.azure.com AKSNodeClass.
+type NodeClassRef struct {
+	Group    string
+	Version  string
+	Kind     string
+	Resource string
+}
+
+// DefaultNodeClassRef returns the gpu-node-mocker mock node class, the kind a
+// real karpenter provider does not recognize.
+func DefaultNodeClassRef() NodeClassRef {
+	return NodeClassRef{
+		Group:    MockNodeClassGroup,
+		Version:  MockNodeClassVersion,
+		Kind:     MockNodeClassKind,
+		Resource: MockNodeClassResource,
+	}
+}
+
+// GroupVersion returns the discovery group/version string, e.g.
+// "karpenter.kaito.sh/v1alpha1".
+func (n NodeClassRef) GroupVersion() string { return n.Group + "/" + n.Version }
+
+// GVK returns the GroupVersionKind for the NodeClass.
+func (n NodeClassRef) GVK() schema.GroupVersionKind {
+	return schema.GroupVersionKind{Group: n.Group, Version: n.Version, Kind: n.Kind}
+}
 
 // Config holds operator-wide settings injected via CLI flags.
 type Config struct {
@@ -130,4 +178,8 @@ type Config struct {
 	// LeaseRenewIntervalSec controls how often the background goroutine
 	// refreshes each lease's renewTime.
 	LeaseRenewIntervalSec int
+
+	// NodeClass is the karpenter NodeClass GVK the mocker reconciles (and
+	// discovery-checks) in karpenter mode. Defaults to the mock node class.
+	NodeClass NodeClassRef
 }

@@ -24,65 +24,66 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// aksScheme extends the shared test scheme with the unstructured AKSNodeClass
-// GVK so the fake client can serve get/list/patch for it.
-func aksScheme() *runtime.Scheme {
+// nodeClassScheme extends the shared test scheme with the unstructured mock
+// NodeClass GVK so the fake client can serve get/list/patch for it.
+func nodeClassScheme() *runtime.Scheme {
 	s := testScheme()
-	s.AddKnownTypeWithName(aksNodeClassGVK(), &unstructured.Unstructured{})
-	listGVK := aksNodeClassGVK()
+	gvk := DefaultNodeClassRef().GVK()
+	s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+	listGVK := gvk
 	listGVK.Kind += "List"
 	s.AddKnownTypeWithName(listGVK, &unstructured.UnstructuredList{})
 	return s
 }
 
-func newAKSNodeClass(name string) *unstructured.Unstructured {
+func newNodeClass(name string) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(aksNodeClassGVK())
+	obj.SetGroupVersionKind(DefaultNodeClassRef().GVK())
 	obj.SetName(name)
 	return obj
 }
 
-func getAKSNodeClass(t *testing.T, r *AKSNodeClassReconciler, name string) *unstructured.Unstructured {
+func getNodeClass(t *testing.T, r *NodeClassReconciler, name string) *unstructured.Unstructured {
 	t.Helper()
 	got := &unstructured.Unstructured{}
-	got.SetGroupVersionKind(aksNodeClassGVK())
+	got.SetGroupVersionKind(DefaultNodeClassRef().GVK())
 	if err := r.Get(context.Background(), types.NamespacedName{Name: name}, got); err != nil {
-		t.Fatalf("get AKSNodeClass %q: %v", name, err)
+		t.Fatalf("get NodeClass %q: %v", name, err)
 	}
 	return got
 }
 
-func reconcileAKSNodeClass(t *testing.T, r *AKSNodeClassReconciler, name string) {
+func reconcileNodeClass(t *testing.T, r *NodeClassReconciler, name string) {
 	t.Helper()
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}); err != nil {
-		t.Fatalf("reconcile AKSNodeClass %q: %v", name, err)
+		t.Fatalf("reconcile NodeClass %q: %v", name, err)
 	}
 }
 
-func TestAKSNodeClassReconciler_MarksReady(t *testing.T) {
-	scheme := aksScheme()
-	nc := newAKSNodeClass("image-family-ubuntu")
+func TestNodeClassReconciler_MarksReady(t *testing.T) {
+	scheme := nodeClassScheme()
+	nc := newNodeClass("image-family-ubuntu")
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nc).WithStatusSubresource(nc).Build()
-	r := &AKSNodeClassReconciler{Client: cl, Config: testConfig()}
+	r := &NodeClassReconciler{Client: cl, Config: testConfig()}
 
-	reconcileAKSNodeClass(t, r, "image-family-ubuntu")
+	reconcileNodeClass(t, r, "image-family-ubuntu")
 
-	got := getAKSNodeClass(t, r, "image-family-ubuntu")
-	if !aksNodeClassReady(got) {
-		t.Fatalf("expected AKSNodeClass to be Ready=True, got conditions: %v", got.Object["status"])
+	got := getNodeClass(t, r, "image-family-ubuntu")
+	if !nodeClassReady(got) {
+		t.Fatalf("expected NodeClass to be Ready=True, got conditions: %v", got.Object["status"])
 	}
 }
 
-func TestAKSNodeClassReconciler_Idempotent(t *testing.T) {
-	scheme := aksScheme()
-	nc := newAKSNodeClass("image-family-ubuntu")
+func TestNodeClassReconciler_Idempotent(t *testing.T) {
+	scheme := nodeClassScheme()
+	nc := newNodeClass("image-family-ubuntu")
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nc).WithStatusSubresource(nc).Build()
-	r := &AKSNodeClassReconciler{Client: cl, Config: testConfig()}
+	r := &NodeClassReconciler{Client: cl, Config: testConfig()}
 
-	reconcileAKSNodeClass(t, r, "image-family-ubuntu")
-	reconcileAKSNodeClass(t, r, "image-family-ubuntu")
+	reconcileNodeClass(t, r, "image-family-ubuntu")
+	reconcileNodeClass(t, r, "image-family-ubuntu")
 
-	got := getAKSNodeClass(t, r, "image-family-ubuntu")
+	got := getNodeClass(t, r, "image-family-ubuntu")
 	conds, found, err := unstructured.NestedSlice(got.Object, "status", "conditions")
 	if err != nil || !found {
 		t.Fatalf("expected status.conditions, found=%v err=%v", found, err)
@@ -92,11 +93,11 @@ func TestAKSNodeClassReconciler_Idempotent(t *testing.T) {
 	}
 }
 
-func TestAKSNodeClassReconciler_NotFound(t *testing.T) {
-	scheme := aksScheme()
+func TestNodeClassReconciler_NotFound(t *testing.T) {
+	scheme := nodeClassScheme()
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-	r := &AKSNodeClassReconciler{Client: cl, Config: testConfig()}
+	r := &NodeClassReconciler{Client: cl, Config: testConfig()}
 
 	// Reconciling a non-existent object must be a no-op, not an error.
-	reconcileAKSNodeClass(t, r, "does-not-exist")
+	reconcileNodeClass(t, r, "does-not-exist")
 }

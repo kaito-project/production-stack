@@ -68,7 +68,13 @@ func main() {
 		leaseDurationSec      int
 		leaseRenewIntervalSec int
 		nodeProvisioner       string
+		nodeClassGroup        string
+		nodeClassVersion      string
+		nodeClassKind         string
+		nodeClassResource     string
 	)
+
+	defaultNodeClass := controllers.DefaultNodeClassRef()
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -83,6 +89,14 @@ func main() {
 	flag.StringVar(&nodeProvisioner, "node-provisioner", controllers.ProvisionerAzureGPU,
 		fmt.Sprintf("The KAITO node provisioner to mock (%q or %q).",
 			controllers.ProvisionerAzureGPU, controllers.ProvisionerKarpenter))
+	flag.StringVar(&nodeClassGroup, "node-class-group", defaultNodeClass.Group,
+		"API group of the karpenter NodeClass to reconcile in karpenter mode.")
+	flag.StringVar(&nodeClassVersion, "node-class-version", defaultNodeClass.Version,
+		"API version of the karpenter NodeClass to reconcile in karpenter mode.")
+	flag.StringVar(&nodeClassKind, "node-class-kind", defaultNodeClass.Kind,
+		"Kind of the karpenter NodeClass to reconcile in karpenter mode.")
+	flag.StringVar(&nodeClassResource, "node-class-resource", defaultNodeClass.Resource,
+		"Plural resource name of the karpenter NodeClass (used for the startup CRD discovery check).")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -103,6 +117,12 @@ func main() {
 		UDSTokenizerImage:     udsTokenizerImage,
 		LeaseDurationSec:      int32(leaseDurationSec),
 		LeaseRenewIntervalSec: leaseRenewIntervalSec,
+		NodeClass: controllers.NodeClassRef{
+			Group:    nodeClassGroup,
+			Version:  nodeClassVersion,
+			Kind:     nodeClassKind,
+			Resource: nodeClassResource,
+		},
 	}
 
 	restCfg := ctrl.GetConfigOrDie()

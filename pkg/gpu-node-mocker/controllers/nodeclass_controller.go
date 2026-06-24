@@ -24,76 +24,63 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-const (
-	// AKSNodeClassGroup / AKSNodeClassVersion / AKSNodeClassKind identify the
-	// Azure karpenter provider's NodeClass resource. In karpenter mode KAITO's
-	// NodePool template references an AKSNodeClass by name and, before it will
-	// provision nodes, polls that NodeClass for a Ready=True status condition.
-	AKSNodeClassGroup   = "karpenter.azure.com"
-	AKSNodeClassVersion = "v1beta1"
-	AKSNodeClassKind    = "AKSNodeClass"
+// NodeClassReadyCondition is the rollup condition type KAITO waits on. In a
+// real cluster the karpenter provider sets it once it has resolved images,
+// subnets and the Kubernetes version; in the mock environment no provider
+// runs, so this reconciler sets it instead.
+const NodeClassReadyCondition = "Ready"
 
-	// AKSNodeClassReadyCondition is the rollup condition type KAITO waits on.
-	// In a real cluster the Azure karpenter provider sets it once it has
-	// resolved images, subnets and the Kubernetes version; in the mock
-	// environment no provider runs, so this reconciler sets it instead.
-	AKSNodeClassReadyCondition = "Ready"
-)
-
-// AKSNodeClassReconciler mocks the Azure karpenter provider's NodeClass
-// readiness. KAITO creates one or more AKSNodeClass objects on startup (e.g.
+// NodeClassReconciler mocks the karpenter provider's NodeClass readiness. In
+// karpenter mode KAITO creates one or more NodeClass objects on startup (e.g.
 // "image-family-ubuntu") and blocks ProvisionNodes() until the default class
 // reports Ready=True. Since no real provider runs in the mock environment, this
-// reconciler watches AKSNodeClass objects and patches their status to Ready so
+// reconciler watches NodeClass objects and patches their status to Ready so
 // KAITO proceeds to create the NodePool that NodePoolReconciler then mocks.
 //
-// AKSNodeClass is handled as an unstructured object so the mocker does not have
-// to vendor the karpenter-provider-azure API types; the CRD is shipped by this
-// chart and the only field this reconciler touches is status.conditions.
-type AKSNodeClassReconciler struct {
+// The NodeClass GVK is taken from Config.NodeClass so the mocker can target its
+// own mock node class (karpenter.kaito.sh/MockNodeClass — a kind only the
+// mocker recognizes, so a real karpenter provider skips any NodePool that
+// references it) or, when configured to, the real karpenter.azure.com
+// AKSNodeClass. The object is handled as unstructured so the mocker does not
+// have to vendor any provider API types; the only field this reconciler
+// touches is status.conditions.
+type NodeClassReconciler struct {
 	client.Client
 	Config Config
 }
 
-func aksNodeClassGVK() schema.GroupVersionKind {
-	return schema.GroupVersionKind{
-		Group:   AKSNodeClassGroup,
-		Version: AKSNodeClassVersion,
-		Kind:    AKSNodeClassKind,
-	}
-}
-
-// SetupWithManager registers the controller. It watches every AKSNodeClass;
-// there is no managed-by filter because KAITO owns the only AKSNodeClass
-// objects in the mock cluster and they all need to be marked Ready.
-func (r *AKSNodeClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
+// SetupWithManager registers the controller. It watches every NodeClass of the
+// configured GVK; there is no managed-by filter because KAITO owns the only
+// NodeClass objects in the mock cluster and they all need to be marked Ready.
+func (r *NodeClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	nc := &unstructured.Unstructured{}
-	nc.SetGroupVersionKind(aksNodeClassGVK())
+	nc.SetGroupVersionKind(r.Config.NodeClass.GVK())
 	return ctrl.NewControllerManagedBy(mgr).
 		For(nc).
-		Named("aksnodeclass").
+		Named("nodeclass").
 		Complete(r)
 }
 
+// +kubebuilder:rbac:groups=karpenter.kaito.sh,resources=mocknodeclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=karpenter.kaito.sh,resources=mocknodeclasses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=karpenter.azure.com,resources=aksnodeclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=karpenter.azure.com,resources=aksnodeclasses/status,verbs=get;update;patch
 
-func (r *AKSNodeClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx).WithValues("aksnodeclass", req.Name)
+func (r *NodeClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := log.FromContext(ctx).WithValues("nodeclass", req.Name)
 
 	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(aksNodeClassGVK())
+	obj.SetGroupVersionKind(r.Config.NodeClass.GVK())
 	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
 		if errors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("get AKSNodeClass: %w", err)
+		return ctrl.Result{}, fmt.Errorf("get NodeClass: %w", err)
 	}
 
 	// Nothing to do for objects on their way out.
@@ -102,25 +89,25 @@ func (r *AKSNodeClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Already Ready for the current generation — avoid a no-op status write.
-	if aksNodeClassReady(obj) {
+	if nodeClassReady(obj) {
 		return ctrl.Result{}, nil
 	}
 
 	if err := r.markReady(ctx, obj); err != nil {
 		return ctrl.Result{}, err
 	}
-	log.Info("patched AKSNodeClass status to Ready=True")
+	log.Info("patched NodeClass status to Ready=True")
 	return ctrl.Result{}, nil
 }
 
-// markReady patches the AKSNodeClass status subresource so it carries a single
+// markReady patches the NodeClass status subresource so it carries a single
 // Ready=True condition, which is all KAITO's checkNodeClassReady inspects.
-func (r *AKSNodeClassReconciler) markReady(ctx context.Context, obj *unstructured.Unstructured) error {
+func (r *NodeClassReconciler) markReady(ctx context.Context, obj *unstructured.Unstructured) error {
 	cond := map[string]interface{}{
-		"type":               AKSNodeClassReadyCondition,
+		"type":               NodeClassReadyCondition,
 		"status":             "True",
 		"reason":             "Mocked",
-		"message":            "AKSNodeClass marked Ready by gpu-node-mocker",
+		"message":            "NodeClass marked Ready by gpu-node-mocker",
 		"lastTransitionTime": metav1.Now().Format(time.RFC3339),
 		"observedGeneration": obj.GetGeneration(),
 	}
@@ -130,14 +117,14 @@ func (r *AKSNodeClassReconciler) markReady(ctx context.Context, obj *unstructure
 		return fmt.Errorf("set status.conditions: %w", err)
 	}
 	if err := r.Status().Patch(ctx, patched, client.MergeFrom(obj)); err != nil {
-		return fmt.Errorf("patch AKSNodeClass status: %w", err)
+		return fmt.Errorf("patch NodeClass status: %w", err)
 	}
 	return nil
 }
 
-// aksNodeClassReady reports whether the object already has a Ready=True
-// status condition.
-func aksNodeClassReady(obj *unstructured.Unstructured) bool {
+// nodeClassReady reports whether the object already has a Ready=True status
+// condition.
+func nodeClassReady(obj *unstructured.Unstructured) bool {
 	conds, found, err := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	if err != nil || !found {
 		return false
@@ -147,7 +134,7 @@ func aksNodeClassReady(obj *unstructured.Unstructured) bool {
 		if !ok {
 			continue
 		}
-		if m["type"] == AKSNodeClassReadyCondition && m["status"] == "True" {
+		if m["type"] == NodeClassReadyCondition && m["status"] == "True" {
 			return true
 		}
 	}

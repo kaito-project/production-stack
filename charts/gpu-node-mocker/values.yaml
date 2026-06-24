@@ -12,6 +12,21 @@ shadowPod:
 # Must match KAITO's --node-provisioner value: azure-gpu-provisioner or karpenter.
 nodeProvisioner: karpenter
 
+# nodeClass selects the karpenter NodeClass kind the mocker reconciles (and
+# discovery-checks at startup) in karpenter mode. The default mock node class
+# lives in the karpenter.kaito.sh group, which a real Karpenter provider does
+# NOT recognize — so a KAITO NodePool referencing it is ignored by real
+# karpenter and handled only by gpu-node-mocker. Point KAITO's
+# karpenterProviders.<provider> group/kind/version/resourceName at the SAME
+# values so its NodePool nodeClassRef and the NodeClass objects it creates
+# match what the mocker watches. Set to the karpenter.azure.com AKSNodeClass
+# values to mock the real Azure node class instead.
+nodeClass:
+  group: karpenter.kaito.sh
+  version: v1alpha1
+  kind: MockNodeClass
+  resource: mocknodeclasses
+
 leaseDurationSeconds: 40
 leaseRenewIntervalSeconds: 10
 
