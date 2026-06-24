@@ -47,15 +47,20 @@ ENABLE_NODE_MOCKER="${ENABLE_NODE_MOCKER:-true}"
 # Both KAITO (its NodePool nodeClassRef + the NodeClass objects it creates) and
 # gpu-node-mocker (the NodeClass it watches / discovery-checks) are pointed at
 # the SAME GVK below so they agree on the node class.
+# KARPENTER_PROVIDER selects which key under the chart's `karpenterProviders`
+# map KAITO reads (`karpenterProvider`). The mock node class lives under its own
+# `mock` key so it never collides with the chart-default `azure` provider.
 KAITO_NODE_CLASS="${KAITO_NODE_CLASS:-mock}"
 case "${KAITO_NODE_CLASS}" in
   mock)
+    KARPENTER_PROVIDER="mock"
     NODE_CLASS_GROUP="karpenter.kaito.sh"
     NODE_CLASS_KIND="MockNodeClass"
     NODE_CLASS_VERSION="v1alpha1"
     NODE_CLASS_RESOURCE="mocknodeclasses"
     ;;
   azure)
+    KARPENTER_PROVIDER="azure"
     NODE_CLASS_GROUP="karpenter.azure.com"
     NODE_CLASS_KIND="AKSNodeClass"
     NODE_CLASS_VERSION="v1beta1"
@@ -122,30 +127,31 @@ install_kaito() {
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
   #
-  # In karpenter mode, point KAITO's karpenter provider at the selected
-  # NodeClass GVK (default: the mock node class only gpu-node-mocker
-  # recognizes). KAITO renders the `kaito-nodeclasses` ConfigMap from
-  # karpenterProviders.azure.{group,kind,version,resourceName,nodeClasses} and
-  # creates one NodeClass CR per nodeClasses entry, then references the
-  # `default: true` one from every NodePool's nodeClassRef. So both the GVK and
-  # the nodeClasses list must match what the mocker watches.
+  # In karpenter mode, select the karpenter provider via `karpenterProvider`
+  # first, then populate that provider's entry under `karpenterProviders`. The
+  # chart looks up `index .Values.karpenterProviders .Values.karpenterProvider`,
+  # so `karpenterProvider=${KARPENTER_PROVIDER}` plus
+  # karpenterProviders.${KARPENTER_PROVIDER}.{group,kind,version,resourceName,nodeClasses}
+  # drive both the controller's --karpenter-node-class-* args and the
+  # `kaito-nodeclasses` ConfigMap (one NodeClass CR per nodeClasses entry,
+  # NodePool nodeClassRef -> the `default: true` one). So the GVK and the
+  # nodeClasses list must match what the mocker watches.
   KAITO_NODE_CLASS_ARGS=()
   if [[ "${NODE_PROVISIONER}" == "karpenter" ]]; then
     KAITO_NODE_CLASS_ARGS=(
-      --set karpenterProviders.azure.group="${NODE_CLASS_GROUP}"
-      --set karpenterProviders.azure.kind="${NODE_CLASS_KIND}"
-      --set karpenterProviders.azure.version="${NODE_CLASS_VERSION}"
-      --set karpenterProviders.azure.resourceName="${NODE_CLASS_RESOURCE}"
+      --set "karpenterProvider=${KARPENTER_PROVIDER}"
+      --set "karpenterProviders.${KARPENTER_PROVIDER}.group=${NODE_CLASS_GROUP}"
+      --set "karpenterProviders.${KARPENTER_PROVIDER}.kind=${NODE_CLASS_KIND}"
+      --set "karpenterProviders.${KARPENTER_PROVIDER}.version=${NODE_CLASS_VERSION}"
+      --set "karpenterProviders.${KARPENTER_PROVIDER}.resourceName=${NODE_CLASS_RESOURCE}"
     )
     if [[ "${KAITO_NODE_CLASS}" == "mock" ]]; then
-      # Replace the chart-default Azure node classes (image-family-ubuntu /
-      # image-family-azure-linux, whose specs carry AKSNodeClass-only fields
-      # like imageFamily/osDiskSizeGB) with a single mock node class. KAITO
+      # Define a single mock node class under the `mock` provider key. KAITO
       # creates one MockNodeClass CR named "mock-nodeclass" (default) that
       # gpu-node-mocker marks Ready. The spec is empty because MockNodeClass is
       # schema-less and neither KAITO nor the mocker reads it in mock mode.
       KAITO_NODE_CLASS_ARGS+=(
-        --set-json 'karpenterProviders.azure.nodeClasses=[{"name":"mock-nodeclass","default":true,"spec":{}}]'
+        --set-json "karpenterProviders.${KARPENTER_PROVIDER}.nodeClasses=[{\"name\":\"mock-nodeclass\",\"default\":true,\"spec\":{}}]"
       )
     fi
   fi
