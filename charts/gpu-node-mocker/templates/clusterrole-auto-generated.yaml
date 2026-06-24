@@ -78,6 +78,22 @@ rules:
   - patch
   - update
 - apiGroups:
+  - karpenter.kaito.sh
+  resources:
+  - mocknodeclasses
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - karpenter.kaito.sh
+  resources:
+  - mocknodeclasses/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
   - karpenter.sh
   resources:
   - nodeclaims

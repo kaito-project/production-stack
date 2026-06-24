@@ -108,7 +108,7 @@ func (m *GPUProvisionerMocker) SetupWithManager(mgr ctrl.Manager) error {
 // NodeClaims from it. Since no real karpenter engine runs in the mock
 // environment, three reconcilers stand in for it:
 //
-//   - AKSNodeClassReconciler marks the AKSNodeClass KAITO references Ready, so
+//   - NodeClassReconciler marks the NodeClass KAITO references Ready, so
 //     KAITO stops blocking and creates the NodePool.
 //   - NodePoolReconciler materializes Spec.Replicas NodeClaims from the pool.
 //   - the shared NodeClaimReconciler turns each NodeClaim into a fake Node.
@@ -120,26 +120,26 @@ func (m *KarpenterMocker) Type() string { return ProvisionerKarpenter }
 
 func (m *KarpenterMocker) RequiredCRDs() []RequiredCRD {
 	return []RequiredCRD{
-		// nodeclaims is shipped by KAITO; nodepools and aksnodeclasses are
+		// nodeclaims is shipped by KAITO; nodepools and the NodeClass CRD are
 		// shipped by this chart's crds/ directory (upstream KAITO installs only
 		// nodeclaims, and no real karpenter provider runs in the mock to install
-		// NodePool/AKSNodeClass). KAITO references the AKSNodeClass from the
-		// NodePool template and blocks until it is Ready.
+		// NodePool/NodeClass). KAITO references the NodeClass from the NodePool
+		// template and blocks until it is Ready.
 		{GroupVersion: "karpenter.sh/v1", Resource: "nodeclaims"},
 		{GroupVersion: "karpenter.sh/v1", Resource: "nodepools"},
-		{GroupVersion: AKSNodeClassGroup + "/" + AKSNodeClassVersion, Resource: "aksnodeclasses"},
+		{GroupVersion: m.Config.NodeClass.GroupVersion(), Resource: m.Config.NodeClass.Resource},
 	}
 }
 
 func (m *KarpenterMocker) SetupWithManager(mgr ctrl.Manager) error {
-	// Phase 1-pre: AKSNodeClass -> Ready (mimics the Azure karpenter provider).
-	// KAITO blocks node provisioning until the referenced AKSNodeClass is Ready,
-	// so this must run for the NodePool to ever be created.
-	if err := (&AKSNodeClassReconciler{
+	// Phase 1-pre: NodeClass -> Ready (mimics the karpenter provider). KAITO
+	// blocks node provisioning until the referenced NodeClass is Ready, so this
+	// must run for the NodePool to ever be created.
+	if err := (&NodeClassReconciler{
 		Client: mgr.GetClient(),
 		Config: m.Config,
 	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create AKSNodeClass controller: %w", err)
+		return fmt.Errorf("unable to create NodeClass controller: %w", err)
 	}
 	// Phase 1a: NodePool -> NodeClaim materialization (mimics karpenter engine).
 	if err := (&NodePoolReconciler{

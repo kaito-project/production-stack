@@ -31,6 +31,14 @@ on:
         description: 'KEDA Helm chart version (e.g. v2.19.0). Leave empty to use default from versions.env'
         required: false
         default: ''
+      node_class:
+        description: 'Karpenter NodeClass: "mock" (gpu-node-mocker MockNodeClass) or "azure" (real AKSNodeClass).'
+        required: false
+        default: 'mock'
+        type: choice
+        options:
+          - mock
+          - azure
 
 env:
   RESOURCE_GROUP: "kaito-gw-e2e-rg-${{ github.run_id }}"
@@ -71,6 +79,7 @@ jobs:
           istio-version: ${{ github.event.inputs.istio_version }}
           gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
           keda-version: ${{ github.event.inputs.keda_version }}
+          node-class: ${{ github.event.inputs.node_class }}
 
       - name: Run E2E tests
         # Skip Nightly-labeled specs (slow/destructive scaling cases, etc.).

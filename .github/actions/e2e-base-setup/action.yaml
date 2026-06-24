@@ -68,6 +68,16 @@ inputs:
       mocker build/deploy.
     required: false
     default: 'true'
+  node-class:
+    description: >
+      Karpenter NodeClass to use (karpenter mode only). One of "mock"
+      (karpenter.kaito.sh/MockNodeClass — a kind only gpu-node-mocker
+      recognizes, so a real Karpenter provider skips NodePools referencing it)
+      or "azure" (the real karpenter.azure.com/AKSNodeClass). Use "mock" with
+      enable-node-mocker=true and "azure" with a real Karpenter install.
+      Default: mock.
+    required: false
+    default: 'mock'
 
 outputs:
   image:
@@ -90,6 +100,7 @@ runs:
         INPUT_LGA="${{ inputs.llm-gateway-auth-version }}"
         INPUT_NODE_PROVISIONER="${{ inputs.node-provisioner }}"
         INPUT_ENABLE_NODE_MOCKER="${{ inputs.enable-node-mocker }}"
+        INPUT_NODE_CLASS="${{ inputs.node-class }}"
         [ -n "${INPUT_PROVIDER}" ] && E2E_PROVIDER="${INPUT_PROVIDER}"
         [ -n "${INPUT_ISTIO}" ] && ISTIO_VERSION="${INPUT_ISTIO}"
         [ -n "${INPUT_GWAPI}" ] && GATEWAY_API_VERSION="${INPUT_GWAPI}"
@@ -97,6 +108,7 @@ runs:
         [ -n "${INPUT_LGA}" ]   && LLM_GATEWAY_AUTH_VERSION="${INPUT_LGA}"
         KAITO_NODE_PROVISIONER="${INPUT_NODE_PROVISIONER:-karpenter}"
         ENABLE_NODE_MOCKER="${INPUT_ENABLE_NODE_MOCKER:-true}"
+        KAITO_NODE_CLASS="${INPUT_NODE_CLASS:-mock}"
 
         # Validate provider value.
         case "${E2E_PROVIDER}" in
@@ -126,6 +138,7 @@ runs:
           echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
           echo "KAITO_NODE_PROVISIONER=${KAITO_NODE_PROVISIONER}"
           echo "ENABLE_NODE_MOCKER=${ENABLE_NODE_MOCKER}"
+          echo "KAITO_NODE_CLASS=${KAITO_NODE_CLASS}"
         } >> "$GITHUB_ENV"
 
     - name: Print versions
@@ -142,6 +155,7 @@ runs:
         echo "AKS_K8S_VERSION=${AKS_K8S_VERSION}"
         echo "KAITO_NODE_PROVISIONER=${KAITO_NODE_PROVISIONER}"
         echo "ENABLE_NODE_MOCKER=${ENABLE_NODE_MOCKER}"
+        echo "KAITO_NODE_CLASS=${KAITO_NODE_CLASS}"
 
     - name: Setup Go
       uses: actions/setup-go@v6
@@ -199,6 +213,7 @@ runs:
         SHADOW_CONTROLLER_IMAGE: ${{ steps.image.outputs.image }}
         KAITO_NODE_PROVISIONER: ${{ inputs.node-provisioner }}
         ENABLE_NODE_MOCKER: ${{ inputs.enable-node-mocker }}
+        KAITO_NODE_CLASS: ${{ inputs.node-class }}
       run: make e2e-install
 
     - name: Validate components

@@ -54,6 +54,7 @@ func testConfig() Config {
 		UDSTokenizerImage:     DefaultUDSTokenizerImage,
 		LeaseDurationSec:      40,
 		LeaseRenewIntervalSec: 10,
+		NodeClass:             DefaultNodeClassRef(),
 	}
 }
 
