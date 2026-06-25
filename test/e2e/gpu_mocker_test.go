@@ -25,6 +25,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -296,6 +297,138 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					Expect(containerNames).To(ContainElement("uds-tokenizer"),
 						"shadow pod %q should have uds-tokenizer container", pod.Name)
 				}
+			})
+
+			It("should create a shadow pod for a KAITO Workspace (StatefulSet) pod", func() {
+				clientset, err := utils.GetK8sClientset()
+				Expect(err).NotTo(HaveOccurred())
+
+				ctx := context.Background()
+
+				// The gpu-mocker case deploys InferenceSet (modeldeployment)
+				// pods, which already provisioned at least one Ready fake node.
+				// KAITO Workspace pods (owned by a StatefulSet, labelled
+				// kaito.sh/workspace) take a different provisioning path but
+				// must still get a shadow pod. Synthesize a Workspace-style pod
+				// bound to one of THIS case's fake nodes and assert the
+				// gpu-node-mocker mirrors it just like an InferenceSet pod.
+				//
+				// Scoping the target to a fake node that hosts a pod in
+				// caseNamespace keeps cases running in parallel isolated.
+				deploymentName := caseDeployments[0].Name
+				origPods, err := clientset.CoreV1().Pods(caseNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", deploymentName),
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(origPods.Items).NotTo(BeEmpty(),
+					"need at least one original pod in %s for deployment %q", caseNamespace, deploymentName)
+
+				var fakeNodeName string
+				for _, p := range origPods.Items {
+					if strings.HasPrefix(p.Spec.NodeName, "fake-") {
+						fakeNodeName = p.Spec.NodeName
+						break
+					}
+				}
+				Expect(fakeNodeName).NotTo(BeEmpty(),
+					"no original pod for %q is scheduled on a fake- node yet", deploymentName)
+
+				const wsName = "e2e-workspace-shadow"
+				wsPodName := wsName + "-0"
+
+				wsPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      wsPodName,
+						Namespace: caseNamespace,
+						// KAITO Workspace StatefulSet pods carry this label
+						// instead of inferenceset.kaito.sh/created-by.
+						Labels: map[string]string{"kaito.sh/workspace": wsName},
+					},
+					Spec: corev1.PodSpec{
+						// Bind directly to the fake node (no kubelet runs there)
+						// so the pod stays Pending — exactly the state the
+						// ShadowPodReconciler mirrors. A blanket toleration
+						// clears the fake node's sku=gpu taint.
+						NodeName:    fakeNodeName,
+						Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+						Containers: []corev1.Container{{
+							Name:  "model",
+							Image: "mcr.microsoft.com/oss/kubernetes/pause:3.6",
+							Args: []string{
+								"--model", "microsoft/phi-4-mini-instruct",
+								"--served-model-name", "phi-4-mini-instruct",
+							},
+							Ports: []corev1.ContainerPort{{ContainerPort: 5000}},
+						}},
+					},
+				}
+
+				By(fmt.Sprintf("creating synthetic Workspace pod %s/%s bound to fake node %q",
+					caseNamespace, wsPodName, fakeNodeName))
+				_, err = clientset.CoreV1().Pods(caseNamespace).Create(ctx, wsPod, metav1.CreateOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Deleting the original pod cascades the shadow pod and its
+				// ConfigMap via native Kubernetes GC (OwnerReference).
+				DeferCleanup(func() {
+					_ = clientset.CoreV1().Pods(caseNamespace).Delete(
+						context.Background(), wsPodName, metav1.DeleteOptions{})
+				})
+
+				shadowName := "shadow-" + caseNamespace + "-" + wsPodName
+
+				By(fmt.Sprintf("waiting for shadow pod %q to be created and Running", shadowName))
+				Eventually(func() error {
+					shadow, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, shadowName, metav1.GetOptions{})
+					if err != nil {
+						return fmt.Errorf("get shadow pod %q: %w", shadowName, err)
+					}
+					if shadow.Labels["kaito.sh/managed-by"] != "gpu-mocker" {
+						return fmt.Errorf("shadow pod %q missing managed-by label", shadowName)
+					}
+					if _, ok := shadow.Labels["kaito.sh/shadow-pod-for"]; !ok {
+						return fmt.Errorf("shadow pod %q missing shadow-pod-for label", shadowName)
+					}
+					// The ownership label drives modelharness NetworkPolicy
+					// selection and must be present on Workspace shadow pods too.
+					if shadow.Labels["kaito.sh/owned-by"] != "modeldeployment" {
+						return fmt.Errorf("shadow pod %q missing owned-by label", shadowName)
+					}
+					var ownedByWsPod bool
+					for _, ref := range shadow.OwnerReferences {
+						if ref.Kind == "Pod" && ref.Name == wsPodName {
+							ownedByWsPod = true
+							break
+						}
+					}
+					if !ownedByWsPod {
+						return fmt.Errorf("shadow pod %q should be owned by Workspace pod %q", shadowName, wsPodName)
+					}
+					if shadow.Status.Phase != corev1.PodRunning || shadow.Status.PodIP == "" {
+						return fmt.Errorf("shadow pod %q not Running yet (phase=%s)", shadowName, shadow.Status.Phase)
+					}
+					return nil
+				}, 3*time.Minute, 10*time.Second).Should(Succeed(),
+					"gpu-node-mocker should create a Running shadow pod for the Workspace pod")
+
+				By("verifying the original Workspace pod is patched to Running with the shadow pod IP")
+				Eventually(func() error {
+					orig, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, wsPodName, metav1.GetOptions{})
+					if err != nil {
+						return err
+					}
+					if orig.Status.Phase != corev1.PodRunning {
+						return fmt.Errorf("workspace pod %q phase = %s, want Running", wsPodName, orig.Status.Phase)
+					}
+					if orig.Status.PodIP == "" {
+						return fmt.Errorf("workspace pod %q has no podIP", wsPodName)
+					}
+					if _, ok := orig.Annotations["kaito.sh/shadow-pod-ref"]; !ok {
+						return fmt.Errorf("workspace pod %q missing shadow-pod-ref annotation", wsPodName)
+					}
+					return nil
+				}, 2*time.Minute, 10*time.Second).Should(Succeed(),
+					"original Workspace pod should be patched to Running with the shadow pod IP")
 			})
 		})
 
