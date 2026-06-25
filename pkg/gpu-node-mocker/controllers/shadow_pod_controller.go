@@ -213,14 +213,16 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		LabelManagedBy:    ControllerName,
 		ShadowPodLabelKey: shadowPodLabel,
 		// Stamp the production-stack ownership label so the modelharness
-		// `allow-inference-traffic` NetworkPolicy positively selects this
-		// shadow pod. Without it, EPP traffic forwarded to the (patched)
-		// inference-pod IP — which is actually the shadow pod's IP —
-		// would be dropped by `default-deny-ingress`.
+		// `inference-pods-ingress` CiliumNetworkPolicy positively selects
+		// this shadow pod. That policy's endpointSelector matches
+		// `kaito.sh/owned-by: modeldeployment`; a selected endpoint enters
+		// Cilium's default-deny ingress and only same-namespace (plus
+		// `allowedIngressNamespaces`) traffic is permitted. Stamping this
+		// label brings the shadow pod under the same East-West isolation as
+		// real inference pods while still allowing EPP — which forwards to
+		// the (patched) inference-pod IP that is actually the shadow pod's
+		// IP — to reach it from within the namespace.
 		OwnedByLabelKey: OwnedByLabelValue,
-	}
-	if v, ok := original.Labels[InferenceSetCreatedByLabelKey]; ok && v != "" {
-		labels[ShadowPodInferenceSetLabelKey] = v
 	}
 
 	udsTokenizerImage := r.Config.UDSTokenizerImage
@@ -437,8 +439,13 @@ func isPendingOnFakeNode(obj client.Object) bool {
 	if !ok {
 		return false
 	}
-	// Only process pods created by KAITO InferenceSets
-	if _, hasLabel := pod.Labels["inferenceset.kaito.sh/created-by"]; !hasLabel {
+	// Only process pods created by KAITO. Two provisioning paths exist:
+	//   - InferenceSet (modeldeployment) pods carry `inferenceset.kaito.sh/created-by`.
+	//   - Workspace pods (KAITO StatefulSet) carry `kaito.sh/workspace`.
+	// Both end up Pending on a fake node and need a shadow pod.
+	_, hasInferenceSet := pod.Labels[InferenceSetCreatedByLabelKey]
+	_, hasWorkspace := pod.Labels[LabelKaitoWorkspace]
+	if !hasInferenceSet && !hasWorkspace {
 		return false
 	}
 	return pod.Spec.NodeName != "" &&
