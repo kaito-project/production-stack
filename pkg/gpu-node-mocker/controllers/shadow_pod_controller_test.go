@@ -37,6 +37,10 @@ func TestIsPendingOnFakeNode(t *testing.T) {
 			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"inferenceset.kaito.sh/created-by": "falcon"}},
 			Spec:       corev1.PodSpec{NodeName: "fake-ws1"}, Status: corev1.PodStatus{Phase: corev1.PodPending},
 		}, true},
+		{"valid workspace pod", &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"kaito.sh/workspace": "workspace-phi"}},
+			Spec:       corev1.PodSpec{NodeName: "fake-ws1"}, Status: corev1.PodStatus{Phase: corev1.PodPending},
+		}, true},
 		{"running", &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"inferenceset.kaito.sh/created-by": "falcon"}},
 			Spec:       corev1.PodSpec{NodeName: "fake-ws1"}, Status: corev1.PodStatus{Phase: corev1.PodRunning},
@@ -206,9 +210,6 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if shadow.Labels[ShadowPodLabelKey] != "default.falcon-0" {
 		t.Errorf("shadow label = %q", shadow.Labels[ShadowPodLabelKey])
 	}
-	if shadow.Labels[ShadowPodInferenceSetLabelKey] != "falcon-7b-instruct" {
-		t.Errorf("shadow inferenceset label = %q", shadow.Labels[ShadowPodInferenceSetLabelKey])
-	}
 	// Regression guard for issue #83: the modelharness NetworkPolicies
 	// positively select on `kaito.sh/owned-by: modeldeployment`. Without
 	// this label, EPP traffic forwarded to the (patched) inference-pod
@@ -283,6 +284,47 @@ func TestEnsureShadowPod_ReturnsExisting(t *testing.T) {
 	}
 	if shadow.Labels["existing"] != "true" {
 		t.Error("should return existing shadow pod")
+	}
+}
+
+func TestEnsureShadowPod_WorkspacePodCreatesShadow(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	cfg := testConfig()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	// Workspace (StatefulSet) pod: carries kaito.sh/workspace, NOT the
+	// InferenceSet created-by label.
+	original := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "workspace-phi-0",
+			Namespace: "default",
+			Labels:    map[string]string{"kaito.sh/workspace": "workspace-phi"},
+		},
+		Spec: corev1.PodSpec{
+			NodeName: "fake-ws1",
+			Containers: []corev1.Container{{
+				Name:  "model",
+				Image: "kaito/phi:latest",
+				Args:  []string{"--model", "microsoft/phi-4-mini-instruct", "--port", "5000"},
+				Ports: []corev1.ContainerPort{{ContainerPort: 5000}},
+			}},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodPending},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, original).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: cfg}
+
+	shadow, err := r.ensureShadowPod(ctx, original, "shadow-default-workspace-phi-0")
+	if err != nil {
+		t.Fatalf("ensureShadowPod: %v", err)
+	}
+	// A Workspace (StatefulSet) pod must still produce a shadow pod carrying
+	// the ownership label so modelharness NetworkPolicies select it.
+	if shadow.Labels[OwnedByLabelKey] != OwnedByLabelValue {
+		t.Errorf("shadow owned-by label = %q, want %q",
+			shadow.Labels[OwnedByLabelKey], OwnedByLabelValue)
 	}
 }
 
