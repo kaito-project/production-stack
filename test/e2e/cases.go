@@ -39,7 +39,12 @@ const (
 	presetMinistral = "ministral-3-3b-instruct"
 	presetQwen7B    = "qwen2.5-coder-7b-instruct"
 	presetQwen32B   = "qwen2.5-coder-32b-instruct"
-	presetLlama70B  = "llama-3.3-70b-instruct"
+	// presetQwen72B is an ungated HuggingFace model-card path (contains
+	// "/"), so KAITO's IsValidPreset accepts it at runtime without it being
+	// curated in supported_models.yaml. Used by the large case to force a
+	// three-node split on A100 (the ~145GB bf16 model does not fit a single
+	// 80GB NC24ads_A100_v4 node).
+	presetQwen72B = "Qwen/Qwen2.5-72B-Instruct"
 )
 
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
@@ -98,10 +103,16 @@ const (
 	CaseKarpenterMedium = "karpenter-medium"
 
 	// CaseKarpenterLarge covers the Karpenter nightly large scenario: a
-	// single InferenceSet replica whose large model (70B) is sharded across
-	// two GPU nodes using KAITO's native multi-node support (no LWS, no Ray).
-	// Validates that Karpenter provisions two GPU nodes and that KAITO +
-	// production-stack schedule the distributed inference workload across them.
+	// single InferenceSet replica whose model (the public, ungated
+	// Qwen2.5-72B-Instruct) is sharded across multiple GPU nodes using
+	// KAITO's native multi-node support (no LWS, no Ray). KAITO derives the
+	// node count from the preset's total GPU-memory requirement (weights +
+	// KV cache + runtime overhead) divided by the 80GB per-node A100
+	// capacity; for this model that resolves to three NC24ads_A100_v4 nodes.
+	// Validates that Karpenter provisions the GPU nodes and that KAITO +
+	// production-stack schedule the distributed inference workload across
+	// them. The preset is an ungated HuggingFace model-card path, so no
+	// HuggingFace token is required.
 	CaseKarpenterLarge = "karpenter-large"
 
 	// CaseFilterOrder covers filter_order_test.go — verifies the Envoy
@@ -340,11 +351,11 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	},
 	CaseKarpenterLarge: {
 		{
-			Name:         "k-70b-2n",
+			Name:         "k-72b-2n",
 			Namespace:    "e2e-k-lg",
-			Model:        presetLlama70B,
+			Model:        presetQwen72B,
 			Replicas:     1,
-			InstanceType: "Standard_NC48ads_A100_v4",
+			InstanceType: "Standard_NC24ads_A100_v4",
 		},
 	},
 	CaseClusterFilterHA: {

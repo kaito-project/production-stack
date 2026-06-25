@@ -20,8 +20,8 @@ limitations under the License.
 // (AKS NAP) across three model-size classes:
 //
 //   - Small  (~7B qwen2.5-coder) — single GPU, single A100 node
-//   - Medium (~7B qwen2.5-coder fallback) — single GPU fallback node
-//   - Large  (~7B qwen2.5-coder fallback) — two-node InferenceSet deployment
+//   - Medium (~32B qwen2.5-coder) — single 2-GPU A100 node
+//   - Large  (~72B Qwen2.5, public) — three-node A100 InferenceSet deployment
 //
 // KAITO's Karpenter flow for InferenceSet:
 //
@@ -42,13 +42,19 @@ limitations under the License.
 // BeforeAll failure in Small cascade-skip Medium and Large. Top-level
 // Describes have no shared proc affinity.
 //
-// QUOTA NOTE: eastus NCADS_A100_v4 family limit is 288 vCPUs:
+// QUOTA NOTE: all three scenarios run on the A100 (NCADS_A100_v4) family.
 //
-//	Small  1× NC24ads_A100_v4 = 24 vCPUs
-//	Medium 1× NC48ads_A100_v4 = 48 vCPUs
-//	Large  2× NC48ads_A100_v4 = 96 vCPUs
+//	A100 (NCADS_A100_v4) family limit 288 vCPUs:
+//	  Small  1× NC24ads_A100_v4 = 24 vCPUs
+//	  Medium 1× NC24ads_A100_v4 = 24 vCPUs
+//	  Large  3× NC24ads_A100_v4 = 72 vCPUs
 //
-// Running all three concurrently demands 168 vCPUs, which fits within quota.
+// The Large scenario uses the public/ungated Qwen2.5-72B-Instruct (an
+// ungated HuggingFace model-card path) on 1-GPU A100 nodes. KAITO derives
+// the node count from the preset's total GPU-memory requirement (weights +
+// KV cache + runtime overhead) divided by the 80GB per-node A100 capacity;
+// for this model that resolves to three nodes, which exercises the
+// multi-node distributed inference path. No HuggingFace token is required.
 // --procs=1 is still recommended so a BeforeAll failure in one scenario does
 // not cascade-skip the others (see proc-affinity note above) and to keep peak
 // VM demand predictable:
@@ -83,7 +89,7 @@ type karpenterScenario struct {
 	// every node that hosts an inference pod.
 	minGPUsPerNode int64
 	// expectedNodes is the number of distinct GPU nodes Karpenter must
-	// provision for the deployment. 1 for small/medium, 2 for large.
+	// provision for the deployment. 1 for small/medium, 3 for large.
 	expectedNodes int
 }
 
@@ -96,15 +102,15 @@ var karpenterScenarios = []karpenterScenario{
 	},
 	{
 		caseName:       CaseKarpenterMedium,
-		description:    "Medium (~7B qwen2.5-coder fallback, single GPU fallback node)",
+		description:    "Medium (~32B qwen2.5-coder, single 2-GPU A100 node)",
 		minGPUsPerNode: 1,
 		expectedNodes:  1,
 	},
 	{
 		caseName:       CaseKarpenterLarge,
-		description:    "Large (~7B qwen2.5-coder fallback, two-node InferenceSet)",
+		description:    "Large (~72B Qwen2.5 public, three-node A100 InferenceSet)",
 		minGPUsPerNode: 1,
-		expectedNodes:  2,
+		expectedNodes:  3,
 	},
 }
 
