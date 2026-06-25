@@ -17,9 +17,10 @@ name: ModelDeployment benchmark
 #      complete request path Gateway → BBR → EPP → vLLM (mock) pod can be
 #      exercised from localhost. The endpoint URL and API key are echoed
 #      to the workflow log.
-#   5. Installs guidellm and runs a sweep benchmark against the endpoint,
-#      printing TTFT / TPOT / TPM (and the rest of the guidellm console
-#      summary) into the workflow log.
+#   5. Runs `hack/loadgen.sh` with its `guidellm` engine against the
+#      endpoint (loadgen auto-discovers the gateway/model/API key and
+#      manages its own port-forward), printing TTFT / TPOT / TPM (and the
+#      rest of the guidellm console summary) into the workflow log.
 #
 # All component versions and benchmark parameters are hard-coded in the
 # `env:` block below — there are no workflow_dispatch inputs. To change a
@@ -327,9 +328,10 @@ jobs:
 
       - name: Run benchmark test for inference workload
         env:
-          ENDPOINT: ${{ steps.endpoint.outputs.endpoint }}
-          API_KEY:  ${{ steps.endpoint.outputs.api_key }}
-          MODEL:    ${{ env.DEPLOYMENT_NAME }}
+          MODEL: ${{ env.DEPLOYMENT_NAME }}
+          # Redirect loadgen.sh's guidellm engine output (JSON + CSV) into
+          # ./benchmark-results so the "Collect metrics" step can pick it up.
+          OUT_DIR: ${{ github.workspace }}/benchmark-results
         run: |
           set -euo pipefail
 
@@ -337,49 +339,42 @@ jobs:
           python -m pip install --upgrade pip
           # Mirrors the version pattern used by KAITO's vLLM benchmark
           # entrypoint (https://github.com/kaito-project/kaito/blob/main/presets/workspace/inference/vllm/benchmark_entrypoint.py).
+          # Pre-installing it onto PATH lets hack/loadgen.sh reuse this binary
+          # instead of provisioning its own venv.
           pip install 'guidellm[recommended]'
           guidellm --version
 
-          # ---------- 2. Run guidellm benchmark ----------
-          mkdir -p ./benchmark-results
-          echo "── Running guidellm against ${ENDPOINT} (model=${MODEL}) ──"
+          # ---------- 2. Run the benchmark via hack/loadgen.sh ----------
+          mkdir -p "${OUT_DIR}"
+          echo "── Running hack/loadgen.sh (guidellm engine) against ${MODEL} in ${WORKLOAD_NAMESPACE} ──"
           echo "    profile=${BENCHMARK_PROFILE}  rate=${BENCHMARK_RATE}  max-seconds=${BENCHMARK_MAX_SECONDS}  data=${BENCHMARK_DATA}"
           echo "    processor=${BENCHMARK_PROCESSOR}"
           echo ""
 
-          # `--backend-kwargs` carries the OpenAI bearer token used by the
-          # llm-gateway-apikey AuthorizationPolicy guarding the
-          # `inference-gateway`. The console output below contains the
-          # TTFT, TPOT (per-output-token latency) and request/token
-          # throughput tables that satisfy the "TTFT / TPOT / TPM" report
-          # required by the workflow spec.
-          #
-          # `validate_backend: false` disables guidellm's startup probe
-          # (a `GET /health` against the target). The modeldeployment
-          # HTTPRoute only matches requests carrying the
-          # `X-Gateway-Model-Name` header and routes by model name via
-          # the EPP, so `/health` is not exposed at the gateway and the
-          # probe returns 404. The previous "Wait for Inference
-          # WorkloadEndpoint and API Key" step already smoke-tested the
-          # full path with a real `/v1/chat/completions` request, so
-          # skipping guidellm's redundant validation is safe.
-          guidellm benchmark run \
-            --target "${ENDPOINT}" \
+          # loadgen.sh auto-discovers the per-namespace Gateway, the model,
+          # and (since auth.enabled=true) the bearer token from the
+          # `llm-api-key` Secret. It starts (and tears down) its own
+          # kubectl port-forward to the Gateway Service and then delegates to
+          # the guidellm benchmark CLI — the same tool, and the same
+          # `verify:false` / `validate_backend:false` backend kwargs, this
+          # workflow used to invoke directly. The console output contains the
+          # TTFT / TPOT / throughput tables; --out-dir writes the JSON + CSV
+          # result files into ./benchmark-results for the next step.
+          hack/loadgen.sh \
+            --namespace "${WORKLOAD_NAMESPACE}" \
             --model "${MODEL}" \
+            --gateway "${GATEWAY_NAME}" \
+            --engine guidellm \
             --processor "${BENCHMARK_PROCESSOR}" \
-            --backend-kwargs "{\"api_key\":\"${API_KEY}\",\"verify\":false,\"validate_backend\":false}" \
             --profile "${BENCHMARK_PROFILE}" \
             --rate "${BENCHMARK_RATE}" \
             --max-seconds "${BENCHMARK_MAX_SECONDS}" \
             --data "${BENCHMARK_DATA}" \
-            --output-dir ./benchmark-results \
-            --outputs json \
-            --outputs csv \
-            --disable-console-interactive
+            --out-dir "${OUT_DIR}"
 
           echo ""
           echo "── benchmark-results contents ──"
-          ls -al ./benchmark-results || true
+          ls -al "${OUT_DIR}" || true
 
       - name: Collect metrics for inference workload
         if: always()
