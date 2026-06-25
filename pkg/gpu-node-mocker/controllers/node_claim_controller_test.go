@@ -768,3 +768,80 @@ func TestReconcile_DeletionPath_StopsLeaseRenewer(t *testing.T) {
 		t.Error("cancelFunc should be removed from map")
 	}
 }
+
+func TestMatchesNodeClassFilter(t *testing.T) {
+	mockRef := DefaultNodeClassRef()
+	withRef := func(group, kind string) *karpenterv1.NodeClaim {
+		nc := newNodeClaim("ws-x")
+		nc.Spec.NodeClassRef = &karpenterv1.NodeClassReference{
+			Group: group, Kind: kind, Name: "any",
+		}
+		return nc
+	}
+
+	tests := []struct {
+		name   string
+		filter *NodeClassRef
+		nc     *karpenterv1.NodeClaim
+		want   bool
+	}{
+		{"nil filter matches anything", nil, withRef("karpenter.azure.com", "AKSNodeClass"), true},
+		{"nil filter matches nil ref", nil, newNodeClaim("ws-y"), true},
+		{"matches mock NodeClass", &mockRef, withRef(MockNodeClassGroup, MockNodeClassKind), true},
+		{"rejects other group", &mockRef, withRef("karpenter.azure.com", MockNodeClassKind), false},
+		{"rejects other kind", &mockRef, withRef(MockNodeClassGroup, "AKSNodeClass"), false},
+		{"rejects nil nodeClassRef", &mockRef, newNodeClaim("ws-z"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &NodeClaimReconciler{NodeClassFilter: tt.filter}
+			if got := r.matchesNodeClassFilter(tt.nc); got != tt.want {
+				t.Errorf("matchesNodeClassFilter = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReconcile_SkipsNonMatchingNodeClass(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+
+	// NodeClaim references a NodeClass owned by a different provisioner (real
+	// karpenter's AKSNodeClass) — the mocker must not touch it.
+	nc := newNodeClaim("ws-foreign")
+	nc.Spec.NodeClassRef = &karpenterv1.NodeClassReference{
+		Group: "karpenter.azure.com",
+		Kind:  "AKSNodeClass",
+		Name:  "default",
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(nc).Build()
+	mockRef := DefaultNodeClassRef()
+	r := &NodeClaimReconciler{
+		Client:          cl,
+		Config:          testConfig(),
+		NodeClassFilter: &mockRef,
+		cancelFuncs:     make(map[string]context.CancelFunc),
+	}
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "ws-foreign"}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// No fake node, no lease, and no finalizer should be added.
+	if err := cl.Get(ctx, types.NamespacedName{Name: "fake-ws-foreign"}, &corev1.Node{}); err == nil {
+		t.Error("fake node should not be created for foreign NodeClass")
+	}
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: "kube-node-lease", Name: "fake-ws-foreign"}, &coordinationv1.Lease{}); err == nil {
+		t.Error("lease should not be created for foreign NodeClass")
+	}
+	got := &karpenterv1.NodeClaim{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "ws-foreign"}, got); err != nil {
+		t.Fatalf("get NodeClaim: %v", err)
+	}
+	for _, f := range got.Finalizers {
+		if f == fakeNodeFinalizer {
+			t.Error("finalizer should not be added to foreign NodeClass NodeClaim")
+		}
+	}
+}
