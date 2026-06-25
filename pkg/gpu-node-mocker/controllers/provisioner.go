@@ -149,9 +149,14 @@ func (m *KarpenterMocker) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("unable to create NodePool controller: %w", err)
 	}
 	// Phase 1b: NodeClaim -> fake Node (shared with gpu-provisioner mode).
+	// Filter on the configured mock NodeClass so a real karpenter provider
+	// running in the same cluster can manage its own NodeClaims (e.g. those
+	// referencing karpenter.azure.com/AKSNodeClass) without interference.
+	nodeClass := m.Config.NodeClass
 	if err := (&NodeClaimReconciler{
-		Client: mgr.GetClient(),
-		Config: m.Config,
+		Client:          mgr.GetClient(),
+		Config:          m.Config,
+		NodeClassFilter: &nodeClass,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create NodeClaim controller: %w", err)
 	}

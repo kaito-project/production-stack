@@ -31,9 +31,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	karpenterv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
 
@@ -57,6 +59,16 @@ type NodeClaimReconciler struct {
 	client.Client
 	Config Config
 
+	// NodeClassFilter, if non-nil, restricts the reconciler to NodeClaims
+	// whose spec.nodeClassRef matches the given Group+Kind. This lets the
+	// mocker coexist with a real karpenter provider in the same cluster: real
+	// karpenter creates NodeClaims pointing at its own NodeClass
+	// (e.g. karpenter.azure.com/AKSNodeClass) which this filter drops, while
+	// KAITO's NodePool template points at the mock NodeClass and those
+	// NodeClaims are handled here. When nil, all NodeClaims are reconciled
+	// (used by the azure-gpu-provisioner mode where no other provisioner runs).
+	NodeClassFilter *NodeClassRef
+
 	// mu protects cancelFuncs.
 	mu          sync.Mutex
 	cancelFuncs map[string]context.CancelFunc // key = node name
@@ -65,10 +77,35 @@ type NodeClaimReconciler struct {
 // SetupWithManager registers the controller and initialises internal state.
 func (r *NodeClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.cancelFuncs = make(map[string]context.CancelFunc)
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&karpenterv1.NodeClaim{}).
-		Owns(&corev1.Node{}).
-		Complete(r)
+	b := ctrl.NewControllerManagedBy(mgr)
+	if r.NodeClassFilter != nil {
+		nodeClassPred := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+			nc, ok := obj.(*karpenterv1.NodeClaim)
+			if !ok {
+				return false
+			}
+			return r.matchesNodeClassFilter(nc)
+		})
+		b = b.For(&karpenterv1.NodeClaim{}, builder.WithPredicates(nodeClassPred))
+	} else {
+		b = b.For(&karpenterv1.NodeClaim{})
+	}
+	return b.Owns(&corev1.Node{}).Complete(r)
+}
+
+// matchesNodeClassFilter reports whether nc.Spec.NodeClassRef matches the
+// configured NodeClassFilter (matched by Group+Kind; Name is intentionally not
+// compared so multiple NodeClass instances of the same kind are all handled).
+// Returns true when no filter is configured.
+func (r *NodeClaimReconciler) matchesNodeClassFilter(nc *karpenterv1.NodeClaim) bool {
+	if r.NodeClassFilter == nil {
+		return true
+	}
+	ref := nc.Spec.NodeClassRef
+	if ref == nil {
+		return false
+	}
+	return ref.Group == r.NodeClassFilter.Group && ref.Kind == r.NodeClassFilter.Kind
 }
 
 // +kubebuilder:rbac:groups=karpenter.sh,resources=nodeclaims,verbs=get;list;watch;update
@@ -86,6 +123,15 @@ func (r *NodeClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("get NodeClaim: %w", err)
+	}
+
+	// Skip NodeClaims that reference a NodeClass owned by another provisioner
+	// (e.g. a real karpenter install running alongside the mocker). The watch
+	// predicate already filters these out; this is defense-in-depth in case the
+	// reconciler is invoked through a path that bypasses the predicate
+	// (e.g. owned-object events).
+	if !r.matchesNodeClassFilter(nc) {
+		return ctrl.Result{}, nil
 	}
 
 	if !nc.DeletionTimestamp.IsZero() {
