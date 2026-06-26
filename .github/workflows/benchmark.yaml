@@ -34,10 +34,12 @@ on:
   workflow_dispatch:
 
 env:
-  RESOURCE_GROUP: "kaito-gw-bench-rg-${{ github.run_id }}"
-  CLUSTER_NAME: "kaito-gw-bench-aks-${{ github.run_id }}"
-  ACR_NAME: "kaitogwbenchaks${{ github.run_id }}acr"
-  GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}"
+  # github.run_attempt is appended so retried runs ("Re-run failed jobs")
+  # don't collide with leftover resources from the previous attempt.
+  RESOURCE_GROUP: "kaito-gw-bench-rg-${{ github.run_id }}-${{ github.run_attempt }}"
+  CLUSTER_NAME: "kaito-gw-bench-aks-${{ github.run_id }}-${{ github.run_attempt }}"
+  ACR_NAME: "kaitogwbenchaks${{ github.run_id }}a${{ github.run_attempt }}acr"
+  GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}-${{ github.run_attempt }}"
   LOCATION: australiaeast
   NODE_COUNT: '3'
   NODE_VM_SIZE: Standard_D8s_v5
