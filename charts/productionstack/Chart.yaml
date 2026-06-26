@@ -74,7 +74,7 @@ dependencies:
   # is part of the umbrella `productionstack` release manifest, so
   # `helm uninstall productionstack` cleans it up automatically.
   - name: llm-gateway-apikey
-    version: 0.0.11-alpha
+    version: 0.0.12-alpha
     repository: oci://mcr.microsoft.com/aks/kaito/helm
     condition: llm-gateway-apikey.enabled
     tags:
