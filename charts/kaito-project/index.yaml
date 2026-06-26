@@ -3,9 +3,9 @@ entries:
   gpu-node-mocker:
   - apiVersion: v2
     appVersion: 0.2.1
-    created: "2026-06-16T06:46:14.772006666Z"
+    created: "2026-06-26T09:39:40.844818579Z"
     description: GPU Node Mocker controller for KAITO production-stack
-    digest: 530b85249512b42300c6360b71a6524ed8f5b678d1dc9acb9116398a3a6e1bbf
+    digest: 1f8ec083e9519cefdf64a94b52f485f17f568f4d4d23144853d7a97480990156
     name: gpu-node-mocker
     type: application
     urls:
@@ -34,10 +34,10 @@ entries:
   modeldeployment:
   - apiVersion: v2
     appVersion: 0.2.1
-    created: "2026-06-16T06:46:14.772475834Z"
+    created: "2026-06-26T09:39:40.845251402Z"
     description: 'Deploys a KAITO InferenceSet together with the Istio DestinationRule
       and Gateway API HTTPRoute required to route inference traffic to it. '
-    digest: 217ec3d36222cb4c1c618309aab680e0b5e59bb0ea5d80c94020d2e2e172044d
+    digest: 77d2ff23f5f196b8d39f97447bef7b524b1cd2ee63048ff1cee76e2184947b58
     name: modeldeployment
     type: application
     urls:
@@ -68,7 +68,7 @@ entries:
   modelharness:
   - apiVersion: v2
     appVersion: 0.2.1
-    created: "2026-06-16T06:46:14.773161652Z"
+    created: "2026-06-26T09:39:40.845985798Z"
     description: 'Per-namespace shared resources for production-stack workloads. One
       modelharness release per workload namespace provisions the artifacts every model
       deployment in that namespace shares: the Istio Gateway, the catch-all HTTPRoute
@@ -80,7 +80,7 @@ entries:
       (since 0.0.11-alpha), not by a per-namespace AuthorizationPolicy. The shared
       model-not-found Service itself is installed once per cluster by the E2E install
       script. '
-    digest: ec556d153b8d1858a65311af12d944676239c3e25fab74156285c39f9a6a0225
+    digest: 4556ea1ced6da857bb57bbf40aaa23da286206d19de4ce44c751bdf6b69795c4
     name: modelharness
     type: application
     urls:
@@ -126,7 +126,7 @@ entries:
   productionstack:
   - apiVersion: v2
     appVersion: 0.2.1
-    created: "2026-06-16T06:46:14.775179683Z"
+    created: "2026-06-26T09:39:40.84907288Z"
     dependencies:
     - name: body-based-routing
       repository: ""
@@ -139,13 +139,20 @@ entries:
       tags:
       - autoscaling
       version: 0.5.1
+    - condition: gpu-node-mocker.enabled
+      name: gpu-node-mocker
+      repository: file://../gpu-node-mocker
+      tags:
+      - node-provisioner
+      - mocker
+      version: 0.2.1
     - condition: llm-gateway-apikey.enabled
       name: llm-gateway-apikey
       repository: oci://mcr.microsoft.com/aks/kaito/helm
       tags:
       - gateway
       - auth
-      version: 0.0.11-alpha
+      version: 0.0.12-alpha
     description: 'Umbrella Helm chart that installs all CLUSTER-LEVEL components and
       CRDs required by the Kaito production stack: body-based routing (BBR), KEDA
       Kaito scaler, LLM gateway auth, and other shared infrastructure.  This chart
@@ -157,7 +164,7 @@ entries:
       them under the subchart''s name, e.g.:      body-based-routing:       bbr:         replicas:
       2  Adding a new cluster-level component is a matter of dropping its chart under
       `charts/` and appending a new entry to the `dependencies` list below. '
-    digest: f7628f6f0b5bf94de54a77f1fe6cb1ff2eb63c96523b2e587fe84b6a8c557dd8
+    digest: 2ceb50415ed1db1858ccb00e5f2219e526a388e2c46cd00031e3b7d6f20b339a
     home: https://github.com/kaito-project/production-stack
     keywords:
     - kaito
@@ -226,4 +233,4 @@ entries:
     urls:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/productionstack-0.2.0.tgz
     version: 0.2.0
-generated: "2026-06-16T06:46:14.771643884Z"
+generated: "2026-06-26T09:39:40.843589747Z"
