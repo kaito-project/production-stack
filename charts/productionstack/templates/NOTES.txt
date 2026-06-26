@@ -7,6 +7,10 @@ Enabled cluster-level components:
 {{- if index .Values "keda-kaito-scaler" "enabled" }}
   - keda-kaito-scaler (KEDA external scaler for vLLM / InferenceSet)
 {{- end }}
+{{- if index .Values "gpu-node-mocker" "enabled" }}
+  - gpu-node-mocker (mock GPU node provisioner for E2E / dev clusters,
+    --node-provisioner={{ index .Values "gpu-node-mocker" "nodeProvisioner" | default "karpenter" }})
+{{- end }}
 {{- if index .Values "llm-gateway-apikey" "enabled" }}
   - llm-gateway-apikey (APIKey CRD + apikey-operator + apikey-authz gRPC
     Service in `{{ index .Values "llm-gateway-apikey" "namespaceOverride" | default .Release.Namespace }}`).
