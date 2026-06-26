@@ -11,4 +11,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ include "gpu-node-mocker.fullname" . }}
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ include "gpu-node-mocker.namespace" . }}

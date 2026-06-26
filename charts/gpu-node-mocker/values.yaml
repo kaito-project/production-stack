@@ -1,3 +1,10 @@
+# Install namespace for namespaced resources (Deployment, ServiceAccount,
+# RoleBinding subject). Empty string ⇒ inherit the Helm release namespace
+# (standard Helm behavior). Used when consumed as a subchart of the
+# productionstack umbrella so the mocker can live in a dedicated namespace
+# (e.g. kaito-system) independent of the umbrella release namespace.
+namespaceOverride: ""
+
 image:
   # REQUIRED: set via --set image.repository=<your-acr>.azurecr.io/gpu-node-mocker
   repository: ""

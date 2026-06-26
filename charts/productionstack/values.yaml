@@ -61,6 +61,23 @@ keda-kaito-scaler:
   # inherit the umbrella release namespace instead.
   namespaceOverride: keda
 
+# GPU Node Mocker — fakes a Karpenter / azure-gpu-provisioner node
+# provisioner for E2E and dev clusters that don't have real GPU
+# capacity. Disabled by default because it requires an image push
+# (`image.repository` has no sensible default) and is irrelevant on
+# clusters that already run a real provisioner. Enable with:
+#   --set gpu-node-mocker.enabled=true \
+#   --set gpu-node-mocker.image.repository=<your-acr>/gpu-node-mocker \
+#   --set gpu-node-mocker.image.tag=<tag>
+# See charts/gpu-node-mocker/values.yaml for the full value reference.
+gpu-node-mocker:
+  enabled: false
+  # Inherit the umbrella release namespace (kaito-system by default).
+  # The mocker's ClusterRole is cluster-scoped and named
+  # `gpu-node-mocker`, so at most one instance can exist per cluster
+  # regardless of namespace.
+  namespaceOverride: ""
+
 # LLM Gateway Auth — API-key ext_authz for the inference Gateway.
 # Pulled from the upstream `oci://mcr.microsoft.com/aks/kaito/helm`
 # registry as a Helm dependency (no in-tree fork); run

@@ -46,6 +46,21 @@ dependencies:
     version: 0.5.1
     tags:
       - autoscaling
+  # In-tree gpu-node-mocker chart. Sourced via a `file://` repository
+  # so the standalone chart at `charts/gpu-node-mocker` remains the
+  # single source of truth (still published independently to OCI / gh-
+  # pages); `helm dependency update charts/productionstack` packages
+  # it and vendors the tarball into `charts/productionstack/charts/`.
+  # Gated behind `gpu-node-mocker.enabled` because the mocker requires
+  # an `image.repository` and is only relevant for E2E / dev clusters
+  # that don't have a real GPU node provisioner.
+  - name: gpu-node-mocker
+    version: 0.2.1
+    repository: file://../gpu-node-mocker
+    condition: gpu-node-mocker.enabled
+    tags:
+      - node-provisioner
+      - mocker
   # Upstream API-key ext_authz chart, pulled from the kaito-project OCI
   # registry at `helm dependency update` time (no in-tree fork). Values
   # are passed through under the upstream chart name `llm-gateway-apikey`
