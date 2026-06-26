@@ -15,5 +15,5 @@ description: |
   Service itself is installed once per cluster by the E2E install
   script.
 type: application
-version: 0.2.1
-appVersion: "0.2.1"
+version: 0.2.2
+appVersion: "0.2.2"
