@@ -21,8 +21,8 @@ description: |
   under `charts/` and appending a new entry to the `dependencies` list
   below.
 type: application
-version: 0.2.1
-appVersion: "0.2.1"
+version: 0.2.2
+appVersion: "0.2.2"
 keywords:
   - kaito
   - production-stack
@@ -55,7 +55,7 @@ dependencies:
   # an `image.repository` and is only relevant for E2E / dev clusters
   # that don't have a real GPU node provisioner.
   - name: gpu-node-mocker
-    version: 0.2.1
+    version: 0.2.2
     repository: file://../gpu-node-mocker
     condition: gpu-node-mocker.enabled
     tags:
