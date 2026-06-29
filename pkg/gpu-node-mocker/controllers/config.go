@@ -89,6 +89,24 @@ const (
 	// DefaultUDSTokenizerImage is the default UDS tokenizer sidecar image.
 	DefaultUDSTokenizerImage = "ghcr.io/llm-d/llm-d-uds-tokenizer:v0.6.0"
 
+	// DefaultTimeToFirstToken / DefaultInterTokenLatency are the simulator
+	// latency knobs passed to llm-d-inference-sim's "constant" calculator. The
+	// defaults mirror an 8B-class model on H100 under balanced load (Profile 1
+	// in llm-d-inference-sim/docs/latency-profiles.md). Override per-deployment
+	// to mimic other model/hardware combinations.
+	DefaultTimeToFirstToken  = "100ms"
+	DefaultInterTokenLatency = "30ms"
+
+	// Default*StdDev add jitter so the simulator does not emit flat latencies.
+	// DefaultTimeFactorUnderLoad scales latency as concurrency approaches
+	// max-num-seqs. DefaultKVCacheTransferLatency models the constant
+	// prefill-cache transfer overhead. Values follow Profile 1.
+	DefaultTimeToFirstTokenStdDev  = "20ms"
+	DefaultInterTokenLatencyStdDev = "2ms"
+	DefaultKVCacheTransferLatency  = "2ms"
+	DefaultKVCacheTransferStdDev   = "400us"
+	DefaultTimeFactorUnderLoad     = "2.0"
+
 	// InferenceSimPort is the default port for the inference simulator.
 	InferenceSimPort = 8001
 
@@ -164,6 +182,22 @@ type Config struct {
 
 	// UDSTokenizerImage is the UDS tokenizer sidecar image.
 	UDSTokenizerImage string
+
+	// TimeToFirstToken / InterTokenLatency tune the llm-d-inference-sim
+	// "constant" latency calculator (values include a unit suffix, e.g.
+	// "100ms"). See llm-d-inference-sim/docs/latency-profiles.md.
+	TimeToFirstToken  string
+	InterTokenLatency string
+
+	// Latency jitter and load-scaling knobs for the "constant" calculator.
+	// StdDev values add jitter; TimeFactorUnderLoad scales latency as
+	// concurrency approaches max-num-seqs; KVCacheTransfer* model prefill-cache
+	// transfer overhead. See llm-d-inference-sim/docs/latency-profiles.md.
+	TimeToFirstTokenStdDev  string
+	InterTokenLatencyStdDev string
+	KVCacheTransferLatency  string
+	KVCacheTransferStdDev   string
+	TimeFactorUnderLoad     string
 
 	// LeaseDurationSec is the Lease.spec.leaseDurationSeconds written to the
 	// kube-node-lease Lease for each fake node.

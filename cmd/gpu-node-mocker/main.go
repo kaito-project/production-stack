@@ -65,6 +65,13 @@ func main() {
 		probeAddr             string
 		shadowPodImage        string
 		udsTokenizerImage     string
+		timeToFirstToken      string
+		interTokenLatency     string
+		ttftStdDev            string
+		itlStdDev             string
+		kvCacheTransfer       string
+		kvCacheTransferStdDev string
+		timeFactorUnderLoad   string
 		leaseDurationSec      int
 		leaseRenewIntervalSec int
 		nodeProvisioner       string
@@ -82,6 +89,20 @@ func main() {
 		"Container image for the inference simulator running in shadow pods.")
 	flag.StringVar(&udsTokenizerImage, "uds-tokenizer-image", controllers.DefaultUDSTokenizerImage,
 		"Container image for the UDS tokenizer sidecar in shadow pods.")
+	flag.StringVar(&timeToFirstToken, "time-to-first-token", controllers.DefaultTimeToFirstToken,
+		"Inference simulator time-to-first-token latency (e.g. 100ms). See llm-d-inference-sim latency-profiles.md.")
+	flag.StringVar(&interTokenLatency, "inter-token-latency", controllers.DefaultInterTokenLatency,
+		"Inference simulator inter-token latency (e.g. 30ms). See llm-d-inference-sim latency-profiles.md.")
+	flag.StringVar(&ttftStdDev, "time-to-first-token-std-dev", controllers.DefaultTimeToFirstTokenStdDev,
+		"Std-dev jitter for time-to-first-token (e.g. 20ms).")
+	flag.StringVar(&itlStdDev, "inter-token-latency-std-dev", controllers.DefaultInterTokenLatencyStdDev,
+		"Std-dev jitter for inter-token latency (e.g. 2ms).")
+	flag.StringVar(&kvCacheTransfer, "kv-cache-transfer-latency", controllers.DefaultKVCacheTransferLatency,
+		"Constant KV-cache transfer overhead (e.g. 2ms).")
+	flag.StringVar(&kvCacheTransferStdDev, "kv-cache-transfer-latency-std-dev", controllers.DefaultKVCacheTransferStdDev,
+		"Std-dev jitter for KV-cache transfer latency (e.g. 400us).")
+	flag.StringVar(&timeFactorUnderLoad, "time-factor-under-load", controllers.DefaultTimeFactorUnderLoad,
+		"Latency multiplier as concurrency approaches max-num-seqs (e.g. 2.0).")
 	flag.IntVar(&leaseDurationSec, "lease-duration-seconds", 40,
 		"Duration in seconds for fake node lease.")
 	flag.IntVar(&leaseRenewIntervalSec, "lease-renew-interval-seconds", 10,
@@ -113,10 +134,17 @@ func main() {
 	}
 
 	cfg := controllers.Config{
-		ShadowPodImage:        shadowPodImage,
-		UDSTokenizerImage:     udsTokenizerImage,
-		LeaseDurationSec:      int32(leaseDurationSec),
-		LeaseRenewIntervalSec: leaseRenewIntervalSec,
+		ShadowPodImage:          shadowPodImage,
+		UDSTokenizerImage:       udsTokenizerImage,
+		TimeToFirstToken:        timeToFirstToken,
+		InterTokenLatency:       interTokenLatency,
+		TimeToFirstTokenStdDev:  ttftStdDev,
+		InterTokenLatencyStdDev: itlStdDev,
+		KVCacheTransferLatency:  kvCacheTransfer,
+		KVCacheTransferStdDev:   kvCacheTransferStdDev,
+		TimeFactorUnderLoad:     timeFactorUnderLoad,
+		LeaseDurationSec:        int32(leaseDurationSec),
+		LeaseRenewIntervalSec:   leaseRenewIntervalSec,
 		NodeClass: controllers.NodeClassRef{
 			Group:    nodeClassGroup,
 			Version:  nodeClassVersion,

@@ -14,6 +14,17 @@ image:
 shadowPod:
   image: ghcr.io/llm-d/llm-d-inference-sim:v0.8.1
   udsTokenizerImage: ghcr.io/llm-d/llm-d-uds-tokenizer:v0.6.0
+  # Inference simulator "constant" latency calculator knobs. Defaults mirror
+  # an 8B-class model on H100 under balanced load (Profile 1 in
+  # llm-d-inference-sim/docs/latency-profiles.md). Override to mimic other
+  # model/hardware combinations.
+  timeToFirstToken: 100ms
+  interTokenLatency: 30ms
+  timeToFirstTokenStdDev: 20ms
+  interTokenLatencyStdDev: 2ms
+  kvCacheTransferLatency: 2ms
+  kvCacheTransferLatencyStdDev: 400us
+  timeFactorUnderLoad: "2.0"
 
 # nodeProvisioner selects which KAITO node provisioner to mock.
 # Must match KAITO's --node-provisioner value: azure-gpu-provisioner or karpenter.
