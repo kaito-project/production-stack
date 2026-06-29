@@ -81,9 +81,11 @@ jobs:
 
   push-charts-to-ghcr:
     # Publish the same four releasable charts as OCI artifacts to GHCR
-    # under oci://ghcr.io/kaito-project/<chart>. This mirrors the
+    # under oci://ghcr.io/kaito-project/helm/<chart>. This mirrors the
     # gh-pages publication so consumers can `helm install ... oci://...`
-    # without adding a Helm repo first.
+    # without adding a Helm repo first. The `/helm/` path segment keeps
+    # chart artifacts separate from container images published at
+    # ghcr.io/kaito-project/<image>.
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -122,7 +124,7 @@ jobs:
 
       - name: Push charts to GHCR
         run: |
-          export CHART_REGISTRY='ghcr.io/kaito-project'
+          export CHART_REGISTRY='ghcr.io/kaito-project/helm'
           export CHART_VERSION="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
           make helm-package-and-push CHART_NAME='gpu-node-mocker'
           make helm-package-and-push CHART_NAME='modeldeployment'

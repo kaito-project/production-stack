@@ -109,9 +109,9 @@ jobs:
 
           OCI (GHCR):
           \`\`\`
-          helm install productionstack  oci://ghcr.io/kaito-project/productionstack  --version ${IMG_TAG} -n kaito-system --create-namespace
-          helm install modelharness     oci://ghcr.io/kaito-project/modelharness     --version ${IMG_TAG} -n my-models     --create-namespace
-          helm install qwen             oci://ghcr.io/kaito-project/modeldeployment  --version ${IMG_TAG} -n my-models     --set name=gemma --set model=google/gemma-4-e4b-it
+          helm install productionstack  oci://ghcr.io/kaito-project/helm/productionstack  --version ${IMG_TAG} -n kaito-system --create-namespace
+          helm install modelharness     oci://ghcr.io/kaito-project/helm/modelharness     --version ${IMG_TAG} -n my-models     --create-namespace
+          helm install qwen             oci://ghcr.io/kaito-project/helm/modeldeployment  --version ${IMG_TAG} -n my-models     --set name=gemma --set model=google/gemma-4-e4b-it
           \`\`\`
 
           Helm repo (gh-pages):

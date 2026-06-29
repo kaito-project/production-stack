@@ -36,7 +36,7 @@ Production deployments should therefore run on a cluster with the Cilium datapla
 OCI (recommended):
 
 ```sh
-helm install modelharness oci://ghcr.io/kaito-project/modelharness \
+helm install modelharness oci://ghcr.io/kaito-project/helm/modelharness \
   --version <X.Y.Z> \
   --namespace my-models \
   --create-namespace
@@ -53,7 +53,7 @@ helm install modelharness ./charts/modelharness \
 Enable API-key auth and customize the allowed ingress namespaces:
 
 ```sh
-helm install modelharness oci://ghcr.io/kaito-project/modelharness \
+helm install modelharness oci://ghcr.io/kaito-project/helm/modelharness \
   --version <X.Y.Z> \
   --namespace my-models \
   --create-namespace \
