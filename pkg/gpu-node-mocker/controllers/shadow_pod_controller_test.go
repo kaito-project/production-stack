@@ -906,9 +906,64 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	if strings.Contains(configYAML, "threshold") {
 		t.Errorf("config should not contain threshold: %s", configYAML)
 	}
+	// Empty Config latency fields ⇒ Profile 1 defaults applied.
+	for _, want := range []string{
+		"time-to-first-token: 100ms",
+		"inter-token-latency: 30ms",
+		"time-to-first-token-std-dev: 20ms",
+		"inter-token-latency-std-dev: 2ms",
+		"kv-cache-transfer-latency: 2ms",
+		"kv-cache-transfer-latency-std-dev: 400us",
+		"time-factor-under-load: 2.0",
+	} {
+		if !strings.Contains(configYAML, want) {
+			t.Errorf("missing default %q in config: %s", want, configYAML)
+		}
+	}
 
 	// Idempotent: calling again should not error
 	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef); err != nil {
 		t.Fatalf("second call should be idempotent: %v", err)
+	}
+}
+
+func TestEnsureSimConfigMap_LatencyOverrides(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	cfg := testConfig()
+	cfg.TimeToFirstToken = "200ms"
+	cfg.InterTokenLatency = "25ms"
+	cfg.TimeToFirstTokenStdDev = "40ms"
+	cfg.InterTokenLatencyStdDev = "4ms"
+	cfg.KVCacheTransferLatency = "8ms"
+	cfg.KVCacheTransferStdDev = "500us"
+	cfg.TimeFactorUnderLoad = "3.0"
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: cfg}
+
+	ownerRef := metav1.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: "falcon-0", UID: "test-uid", Controller: ptr.To(true)}
+	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef); err != nil {
+		t.Fatalf("ensureSimConfigMap: %v", err)
+	}
+
+	cm := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0-config", Namespace: "default"}, cm); err != nil {
+		t.Fatalf("configmap not found: %v", err)
+	}
+	configYAML := cm.Data["config.yaml"]
+	for _, want := range []string{
+		"time-to-first-token: 200ms",
+		"inter-token-latency: 25ms",
+		"time-to-first-token-std-dev: 40ms",
+		"inter-token-latency-std-dev: 4ms",
+		"kv-cache-transfer-latency: 8ms",
+		"kv-cache-transfer-latency-std-dev: 500us",
+		"time-factor-under-load: 3.0",
+	} {
+		if !strings.Contains(configYAML, want) {
+			t.Errorf("missing override %q in config: %s", want, configYAML)
+		}
 	}
 }
