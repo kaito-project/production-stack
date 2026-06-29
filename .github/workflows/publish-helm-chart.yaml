@@ -42,6 +42,17 @@ jobs:
         with:
           version: v3.20.2
 
+      - name: Pin gpu-node-mocker chart to release image
+        # publish-image.yaml has already built and pushed
+        # ghcr.io/kaito-project/gpu-node-mocker:${IMG_TAG}. Bake that
+        # repository and tag into the chart's values.yaml so a default
+        # install pulls the matching release image without requiring
+        # --set image.repository / image.tag.
+        run: |
+          IMG_TAG="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
+          yq -i ".image.repository = \"ghcr.io/kaito-project/gpu-node-mocker\" | .image.tag = \"${IMG_TAG}\"" \
+            charts/gpu-node-mocker/values.yaml
+
       - name: Update productionstack chart dependencies
         # productionstack is an umbrella chart with an OCI subchart
         # (llm-gateway-apikey) pulled from a public registry at
@@ -101,6 +112,14 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login ghcr.io -u '${{ github.actor }}' --password-stdin
 
+      - name: Pin gpu-node-mocker chart to release image
+        # See push-charts-to-ghp for rationale: bake the released image
+        # repository and tag into values.yaml before packaging.
+        run: |
+          IMG_TAG="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
+          yq -i ".image.repository = \"ghcr.io/kaito-project/gpu-node-mocker\" | .image.tag = \"${IMG_TAG}\"" \
+            charts/gpu-node-mocker/values.yaml
+
       - name: Push charts to GHCR
         run: |
           export CHART_REGISTRY='ghcr.io/kaito-project'
@@ -127,6 +146,18 @@ jobs:
         uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
         with:
           version: v3.20.2
+      - name: Setup yq
+        # The 1ES self-hosted pool does not ship yq; install a pinned binary.
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      - name: Pin gpu-node-mocker chart to release image
+        # See push-charts-to-ghp for rationale: bake the released image
+        # repository and tag into values.yaml before packaging.
+        run: |
+          IMG_TAG="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
+          yq -i ".image.repository = \"ghcr.io/kaito-project/gpu-node-mocker\" | .image.tag = \"${IMG_TAG}\"" \
+            charts/gpu-node-mocker/values.yaml
       - name: ACR Login
         run: |
           az login --identity
