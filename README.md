@@ -41,7 +41,7 @@ All three releasable charts are published as OCI artifacts on every release; pic
 
 | Source       | Reference                                                                          |
 | ------------ | ---------------------------------------------------------------------------------- |
-| OCI (GHCR)   | `oci://ghcr.io/kaito-project/{productionstack,modelharness,modeldeployment}`       |
+| OCI (GHCR)   | `oci://ghcr.io/kaito-project/helm/{productionstack,modelharness,modeldeployment}`  |
 | OCI (MCR)    | `oci://mcr.microsoft.com/aks/kaito/helm/{productionstack,modelharness,modeldeployment}` |
 | Helm repo    | `helm repo add production-stack https://kaito-project.github.io/production-stack/charts/kaito-project` |
 | In-tree      | `./charts/{productionstack,modelharness,modeldeployment}`                          |
@@ -56,7 +56,7 @@ Install the `productionstack` umbrella chart, plus any external prerequisites yo
 # keda must already exist (Helm only auto-creates the release namespace).
 kubectl create namespace keda
 
-helm install productionstack oci://ghcr.io/kaito-project/productionstack \
+helm install productionstack oci://ghcr.io/kaito-project/helm/productionstack \
   --version <X.Y.Z> \
   --namespace kaito-system \
   --create-namespace \
@@ -70,7 +70,7 @@ The full list of prerequisites the E2E suite installs alongside the umbrella cha
 One Helm release per workload namespace provisions every per-namespace shared resource: the Istio `Gateway`, the BBR / catch-all 404 / unified-error `EnvoyFilter`s, and — when enabled — the API-key auth artifacts and a Cilium-based East-West network policy.
 
 ```sh
-helm install modelharness oci://ghcr.io/kaito-project/modelharness \
+helm install modelharness oci://ghcr.io/kaito-project/helm/modelharness \
   --version <X.Y.Z> \
   --namespace my-models \
   --create-namespace
@@ -83,7 +83,7 @@ For the rendered resource list, the API-key auth / network-policy toggles, the C
 One Helm release per model deployment, parented to the namespace's `Gateway`. Renders the `InferenceSet`, `InferencePool`, EPP (`llm-d-inference-scheduler`) Deployment / Service / RBAC / ConfigMap, and the `HTTPRoute` that matches `X-Gateway-Model-Name: <name>`.
 
 ```sh
-helm install qwen oci://ghcr.io/kaito-project/modeldeployment \
+helm install qwen oci://ghcr.io/kaito-project/helm/modeldeployment \
   --version <X.Y.Z> \
   --namespace my-models \
   --set name=qwen \
@@ -142,7 +142,7 @@ into one synchronous run. A release publishes:
 - a multi-arch container image at `ghcr.io/kaito-project/gpu-node-mocker:<X.Y.Z>` (no leading `v`);
 - the four Helm charts under [`charts/`](charts/) — `gpu-node-mocker`, `modeldeployment`, `modelharness`, and the `productionstack` umbrella chart — published to **all three** chart distribution channels:
   - the gh-pages Helm repo `https://kaito-project.github.io/production-stack/charts/kaito-project`,
-  - OCI artifacts under `oci://ghcr.io/kaito-project/<chart>`,
+  - OCI artifacts under `oci://ghcr.io/kaito-project/helm/<chart>`,
   - OCI artifacts under `oci://mcr.microsoft.com/aks/kaito/helm/<chart>`;
   the `productionstack` chart has its OCI subchart dependency vendored via `helm dependency update` before packaging.
 - a GitHub Release at the same `vX.Y.Z` tag with auto-generated changelog notes.
