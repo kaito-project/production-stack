@@ -38,13 +38,15 @@ const (
 	presetPhi       = "phi-4-mini-instruct"
 	presetMinistral = "ministral-3-3b-instruct"
 	presetQwen7B    = "qwen2.5-coder-7b-instruct"
-	presetQwen32B   = "qwen2.5-coder-32b-instruct"
-	// presetQwen72B is an ungated HuggingFace model-card path (contains
-	// "/"), so KAITO's IsValidPreset accepts it at runtime without it being
-	// curated in supported_models.yaml. Used by the large case to force a
-	// three-node split on A100 (the ~145GB bf16 model does not fit a single
-	// 80GB NC24ads_A100_v4 node).
-	presetQwen72B = "Qwen/Qwen2.5-72B-Instruct"
+	// presetQwen32B (~32B, ~61GiB bf16 weights, 32k context). The medium
+	// case runs it on a 2-GPU Standard_NC48ads_A100_v4 node (160GB total),
+	// where weights + KV cache + runtime overhead fit on a single node and
+	// KAITO shards it across both GPUs with tensor parallelism (TP=2). The
+	// large case runs the same preset on 1-GPU Standard_NC24ads_A100_v4
+	// nodes (80GB each), where it does not fit one node and KAITO instead
+	// splits it across two nodes — exercising the multi-node distributed
+	// inference path. Curated and ungated, so no HuggingFace token.
+	presetQwen32B = "qwen2.5-coder-32b-instruct"
 )
 
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
@@ -98,21 +100,24 @@ const (
 	CaseKarpenterSmall = "karpenter-small"
 
 	// CaseKarpenterMedium covers the Karpenter nightly medium-model scenario:
-	// a single-node, multi-GPU deployment with tensor parallelism on one
-	// Karpenter-provisioned node.
+	// a single-node, multi-GPU deployment. The ~32B qwen2.5-coder model runs
+	// on one 2-GPU Standard_NC48ads_A100_v4 node (160GB total), so KAITO keeps
+	// it on a single node and shards it across both GPUs with tensor
+	// parallelism (TP=2). Validates GPU-count requests and tensor-parallel
+	// scheduling on a single Karpenter-provisioned node.
 	CaseKarpenterMedium = "karpenter-medium"
 
 	// CaseKarpenterLarge covers the Karpenter nightly large scenario: a
-	// single InferenceSet replica whose model (the public, ungated
-	// Qwen2.5-72B-Instruct) is sharded across multiple GPU nodes using
+	// single InferenceSet replica whose model (the curated, ungated
+	// qwen2.5-coder-32b-instruct) is sharded across multiple GPU nodes using
 	// KAITO's native multi-node support (no LWS, no Ray). KAITO derives the
 	// node count from the preset's total GPU-memory requirement (weights +
 	// KV cache + runtime overhead) divided by the 80GB per-node A100
-	// capacity; for this model that resolves to three NC24ads_A100_v4 nodes.
+	// capacity; for this model that resolves to two NC24ads_A100_v4 nodes.
 	// Validates that Karpenter provisions the GPU nodes and that KAITO +
 	// production-stack schedule the distributed inference workload across
-	// them. The preset is an ungated HuggingFace model-card path, so no
-	// HuggingFace token is required.
+	// them. The preset is curated and ungated, so no HuggingFace token is
+	// required.
 	CaseKarpenterLarge = "karpenter-large"
 
 	// CaseFilterOrder covers filter_order_test.go — verifies the Envoy
@@ -342,18 +347,18 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	},
 	CaseKarpenterMedium: {
 		{
-			Name:         "k-32b",
+			Name:         "k-32b-tp2",
 			Namespace:    "e2e-k-md",
 			Model:        presetQwen32B,
 			Replicas:     1,
-			InstanceType: "Standard_NC24ads_A100_v4",
+			InstanceType: "Standard_NC48ads_A100_v4",
 		},
 	},
 	CaseKarpenterLarge: {
 		{
-			Name:         "k-72b-2n",
+			Name:         "k-32b-2n",
 			Namespace:    "e2e-k-lg",
-			Model:        presetQwen72B,
+			Model:        presetQwen32B,
 			Replicas:     1,
 			InstanceType: "Standard_NC24ads_A100_v4",
 		},
