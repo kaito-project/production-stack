@@ -48,7 +48,7 @@ env:
   RESOURCE_GROUP: "kaito-nightly-rg-${{ github.run_id }}-${{ github.run_attempt }}"
   CLUSTER_NAME: "kaito-nightly-aks-${{ github.run_id }}-${{ github.run_attempt }}"
   ACR_NAME: "kaitonightly${{ github.run_id }}a${{ github.run_attempt }}acr"
-  LOCATION: swedencentral
+  LOCATION: eastus
   NODE_COUNT: '3'
   NODE_VM_SIZE: Standard_D4d_v4
 
