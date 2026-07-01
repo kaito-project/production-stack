@@ -8,6 +8,7 @@ name: E2E tests (nightly, full suite)
 # Nightly specs.
 
 on:
+  pull_request: {}
   schedule:
     # 00:00 Sydney time. GitHub cron is UTC; Sydney is UTC+10 (AEST) for
     # most of the year, so 14:00 UTC == 00:00 AEST next day. During AEDT
