@@ -259,7 +259,22 @@ install_productionstack() {
   kubectl create namespace llm-gateway-auth  --dry-run=client -o yaml | kubectl apply -f -
 
   echo "⏳ Vendoring upstream llm-gateway-apikey OCI dependency..."
-  helm dependency update "${PRODUCTIONSTACK_CHART_DIR}"
+  # The llm-gateway-apikey subchart is pulled from oci://mcr.microsoft.com at
+  # install time; MCR occasionally resets the TCP connection mid-download
+  # ("read: connection reset by peer"), which would otherwise fail the whole
+  # phase. Retry a few times with backoff before giving up.
+  local attempt
+  for attempt in 1 2 3 4 5; do
+    if helm dependency update "${PRODUCTIONSTACK_CHART_DIR}"; then
+      break
+    fi
+    if [[ "${attempt}" -eq 5 ]]; then
+      echo "❌ helm dependency update failed after ${attempt} attempts." >&2
+      return 1
+    fi
+    echo "⚠️  helm dependency update failed (attempt ${attempt}/5); retrying in $((attempt * 5))s..." >&2
+    sleep "$((attempt * 5))"
+  done
 
   echo "=== Installing productionstack umbrella chart ==="
   echo "    body-based-routing → kaito-system (umbrella release namespace)"
