@@ -11,6 +11,8 @@
 #
 # Required env vars (set by caller, e.g. run-e2e-local.sh or CI):
 #   SHADOW_CONTROLLER_IMAGE    — gpu-node-mocker image (default: ghcr.io/kaito-project/gpu-node-mocker:latest)
+#   STATUS_REPORTER_IMAGE      — productionstack-status-reporter image
+#                                (default: ghcr.io/kaito-project/productionstack-status-reporter:latest)
 #   INSTALL_PARALLEL           — set to "0" to disable parallelism (default: 1)
 #
 # llm-gateway-apikey chart version + image tag are pinned by
@@ -23,6 +25,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
+STATUS_REPORTER_IMAGE="${STATUS_REPORTER_IMAGE:-ghcr.io/kaito-project/productionstack-status-reporter:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
 
@@ -96,6 +99,7 @@ echo "  ENABLE_NODE_MOCKER:        ${ENABLE_NODE_MOCKER}"
 echo "  KAITO_NODE_CLASS:          ${KAITO_NODE_CLASS} (${NODE_CLASS_GROUP}/${NODE_CLASS_VERSION} ${NODE_CLASS_KIND})"
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
+echo "  STATUS_REPORTER_IMAGE:     ${STATUS_REPORTER_IMAGE}"
 echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
 echo ""
 
@@ -265,18 +269,40 @@ install_productionstack() {
   echo "    body-based-routing → kaito-system (umbrella release namespace)"
   echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE}"
   echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
+  echo "    productionstack-status-reporter → kaito-system (image: ${STATUS_REPORTER_IMAGE})"
+  # productionstack-status-reporter control-plane overrides: the reporter's
+  # chart defaults target a production AKS topology (aks-istio-system,
+  # kaito-workspace namespace). The E2E cluster installs istiod via istioctl
+  # into `istio-system` and the KAITO workspace controller into `kaito-system`,
+  # so point the reporter's probes at the E2E namespaces. startupGraceSeconds
+  # is shortened so findings surface within the test emit timeouts.
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
     --namespace kaito-system \
     --create-namespace \
     --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}" \
     --set llm-gateway-apikey.enabled=true \
     --set llm-gateway-apikey.namespaceOverride=llm-gateway-auth \
+    --set productionstack-status-reporter.image.repository="${STATUS_REPORTER_IMAGE%:*}" \
+    --set productionstack-status-reporter.image.tag="${STATUS_REPORTER_IMAGE##*:}" \
+    --set productionstack-status-reporter.image.pullPolicy=Always \
+    --set productionstack-status-reporter.startupGraceSeconds=30 \
+    --set productionstack-status-reporter.controlPlane.istioNamespace=istio-system \
+    --set productionstack-status-reporter.controlPlane.istiodDeployment=istiod \
+    --set productionstack-status-reporter.controlPlane.kaitoNamespace=kaito-system \
+    --set productionstack-status-reporter.controlPlane.kaitoDeployment=kaito-workspace \
+    --set productionstack-status-reporter.controlPlane.kedaNamespace="${KEDA_NAMESPACE}" \
+    --set productionstack-status-reporter.controlPlane.kedaScalerNamespace="${KEDA_NAMESPACE}" \
     --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."
   kubectl -n kaito-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
     kubectl -n kaito-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
     echo "⚠️  BBR not ready yet — continuing."
+
+  echo "⏳ Waiting for productionstack-status-reporter..."
+  kubectl -n kaito-system rollout status \
+    deployment -l app.kubernetes.io/name=productionstack-status-reporter --timeout=180s || \
+    echo "⚠️  status-reporter not ready yet — continuing."
 
   echo "⏳ Waiting for keda-kaito-scaler..."
   kubectl -n "${KEDA_NAMESPACE}" rollout status deployment -l app.kubernetes.io/name=keda-kaito-scaler --timeout=180s || true

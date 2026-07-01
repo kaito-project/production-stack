@@ -173,3 +173,22 @@ llm-gateway-apikey:
     # at the chart default to avoid surprising the upstream template.
     extAuthzInsert:
       operation: INSERT_FIRST
+
+# Control-plane status reporter — the single, leader-elected, read-only
+# producer of the end-to-end error-handling reason catalogue as Kubernetes
+# Events in kube-system. In-tree subchart under
+# `charts/productionstack-status-reporter`. Values are passed through by
+# nesting them under the subchart name below; see the subchart's
+# values.yaml for the full reference.
+productionstack-status-reporter:
+  enabled: true
+  # Inherit the umbrella release namespace by default.
+  namespaceOverride: ""
+  # Mirror the umbrella's control-plane install namespaces so the reporter
+  # probes the same Deployments this chart installs. Keep these in sync
+  # with the subchart namespaceOverrides above.
+  controlPlane:
+    bbrNamespace: kaito-system
+    gatewayAuthNamespace: llm-gateway-auth
+    kedaScalerNamespace: keda
+

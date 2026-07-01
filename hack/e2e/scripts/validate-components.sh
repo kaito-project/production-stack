@@ -165,6 +165,19 @@ fi
 kubectl -n llm-gateway-auth get pods -l app.kubernetes.io/component=apikey-authz 2>/dev/null || true
 echo ""
 
+# ── ProductionStack Status Reporter ─────────────────────────────────────
+# Leader-elected control-plane reporter installed by the umbrella chart into
+# kaito-system. It publishes aggregated control-plane Warning Events into
+# kube-system, which the status-reporter e2e specs assert on.
+echo "=== ProductionStack Status Reporter ==="
+if kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=productionstack-status-reporter --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+  pass "productionstack-status-reporter is Running"
+else
+  fail "productionstack-status-reporter is NOT Running"
+fi
+kubectl -n kaito-system get pods -l app.kubernetes.io/name=productionstack-status-reporter 2>/dev/null || true
+echo ""
+
 # ── CRDs ─────────────────────────────────────────────────────────────────
 echo "=== CRDs ==="
 for crd in \
