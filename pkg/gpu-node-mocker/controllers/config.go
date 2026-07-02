@@ -95,7 +95,7 @@ const (
 	// in llm-d-inference-sim/docs/latency-profiles.md). Override per-deployment
 	// to mimic other model/hardware combinations.
 	DefaultTimeToFirstToken  = "100ms"
-	DefaultInterTokenLatency = "30ms"
+	DefaultInterTokenLatency = "12ms"
 
 	// Default*StdDev add jitter so the simulator does not emit flat latencies.
 	// DefaultTimeFactorUnderLoad scales latency as concurrency approaches
@@ -106,6 +106,23 @@ const (
 	DefaultKVCacheTransferLatency  = "2ms"
 	DefaultKVCacheTransferStdDev   = "400us"
 	DefaultTimeFactorUnderLoad     = "2.0"
+
+	// LatencyCalculatorConstant / LatencyCalculatorPerToken are the two
+	// llm-d-inference-sim latency models. "constant" derives TTFT from a fixed
+	// value; "per-token" derives it from prompt length via prefill overhead +
+	// per-token cost. See llm-d-inference-sim/docs/latency-profiles.md.
+	LatencyCalculatorConstant = "constant"
+	LatencyCalculatorPerToken = "per-token"
+	DefaultLatencyCalculator  = LatencyCalculatorConstant
+
+	// Default per-token calculator knobs (Profile 1: 8B/H100). PrefillOverhead
+	// is the fixed prefill cost; PrefillTimePerToken scales with prompt length;
+	// KVCacheTransferTimePerToken is the per-token cache transfer cost.
+	DefaultPrefillOverhead             = "30ms"
+	DefaultPrefillTimePerToken         = "250us"
+	DefaultPrefillTimeStdDev           = "5ms"
+	DefaultKVCacheTransferTimePerToken = "3us"
+	DefaultKVCacheTransferTimeStdDev   = "200us"
 
 	// InferenceSimPort is the default port for the inference simulator.
 	InferenceSimPort = 8001
@@ -198,6 +215,20 @@ type Config struct {
 	KVCacheTransferLatency  string
 	KVCacheTransferStdDev   string
 	TimeFactorUnderLoad     string
+
+	// LatencyCalculator selects the simulator latency model: "constant"
+	// (default) or "per-token". The per-token model derives TTFT from prompt
+	// length and uses the Prefill*/KVCacheTransferTime* knobs below instead of
+	// TimeToFirstToken / KVCacheTransferLatency.
+	LatencyCalculator string
+
+	// Per-token calculator knobs. Used only when LatencyCalculator is
+	// "per-token". See llm-d-inference-sim/docs/latency-profiles.md.
+	PrefillOverhead             string
+	PrefillTimePerToken         string
+	PrefillTimeStdDev           string
+	KVCacheTransferTimePerToken string
+	KVCacheTransferTimeStdDev   string
 
 	// LeaseDurationSec is the Lease.spec.leaseDurationSeconds written to the
 	// kube-node-lease Lease for each fake node.

@@ -476,6 +476,14 @@ func makePodCondition(t corev1.PodConditionType, s corev1.ConditionStatus, reaso
 	}
 }
 
+// valueOrDefault returns v if it is non-empty, otherwise def.
+func valueOrDefault(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
 // ensureSimConfigMap creates the inference simulator ConfigMap if it does not exist.
 // The config enables KV cache but does not set any threshold so cache_threshold
 // is never triggered. The port is set to match the original pod's serving port.
@@ -489,33 +497,52 @@ func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, namespace,
 		return nil
 	}
 
-	ttft := r.Config.TimeToFirstToken
-	if ttft == "" {
-		ttft = DefaultTimeToFirstToken
-	}
 	itl := r.Config.InterTokenLatency
 	if itl == "" {
 		itl = DefaultInterTokenLatency
-	}
-	ttftStdDev := r.Config.TimeToFirstTokenStdDev
-	if ttftStdDev == "" {
-		ttftStdDev = DefaultTimeToFirstTokenStdDev
 	}
 	itlStdDev := r.Config.InterTokenLatencyStdDev
 	if itlStdDev == "" {
 		itlStdDev = DefaultInterTokenLatencyStdDev
 	}
-	kvTransfer := r.Config.KVCacheTransferLatency
-	if kvTransfer == "" {
-		kvTransfer = DefaultKVCacheTransferLatency
-	}
-	kvTransferStdDev := r.Config.KVCacheTransferStdDev
-	if kvTransferStdDev == "" {
-		kvTransferStdDev = DefaultKVCacheTransferStdDev
-	}
 	timeFactor := r.Config.TimeFactorUnderLoad
 	if timeFactor == "" {
 		timeFactor = DefaultTimeFactorUnderLoad
+	}
+	calculator := r.Config.LatencyCalculator
+	if calculator == "" {
+		calculator = DefaultLatencyCalculator
+	}
+
+	// Fields common to both calculators.
+	latencyYAML := fmt.Sprintf(`latency-calculator: %s
+inter-token-latency: %s
+inter-token-latency-std-dev: %s
+time-factor-under-load: %s
+`, calculator, itl, itlStdDev, timeFactor)
+
+	if calculator == LatencyCalculatorPerToken {
+		prefillOverhead := valueOrDefault(r.Config.PrefillOverhead, DefaultPrefillOverhead)
+		prefillPerToken := valueOrDefault(r.Config.PrefillTimePerToken, DefaultPrefillTimePerToken)
+		prefillStdDev := valueOrDefault(r.Config.PrefillTimeStdDev, DefaultPrefillTimeStdDev)
+		kvPerToken := valueOrDefault(r.Config.KVCacheTransferTimePerToken, DefaultKVCacheTransferTimePerToken)
+		kvTimeStdDev := valueOrDefault(r.Config.KVCacheTransferTimeStdDev, DefaultKVCacheTransferTimeStdDev)
+		latencyYAML += fmt.Sprintf(`prefill-overhead: %s
+prefill-time-per-token: %s
+prefill-time-std-dev: %s
+kv-cache-transfer-time-per-token: %s
+kv-cache-transfer-time-std-dev: %s
+`, prefillOverhead, prefillPerToken, prefillStdDev, kvPerToken, kvTimeStdDev)
+	} else {
+		ttft := valueOrDefault(r.Config.TimeToFirstToken, DefaultTimeToFirstToken)
+		ttftStdDev := valueOrDefault(r.Config.TimeToFirstTokenStdDev, DefaultTimeToFirstTokenStdDev)
+		kvTransfer := valueOrDefault(r.Config.KVCacheTransferLatency, DefaultKVCacheTransferLatency)
+		kvTransferStdDev := valueOrDefault(r.Config.KVCacheTransferStdDev, DefaultKVCacheTransferStdDev)
+		latencyYAML += fmt.Sprintf(`time-to-first-token: %s
+time-to-first-token-std-dev: %s
+kv-cache-transfer-latency: %s
+kv-cache-transfer-latency-std-dev: %s
+`, ttft, ttftStdDev, kvTransfer, kvTransferStdDev)
 	}
 
 	configYAML := fmt.Sprintf(`port: %d
@@ -528,14 +555,7 @@ max-model-len: 32768
 enable-kvcache: true
 kv-cache-size: 4096
 block-size: 16
-time-to-first-token: %s
-time-to-first-token-std-dev: %s
-inter-token-latency: %s
-inter-token-latency-std-dev: %s
-kv-cache-transfer-latency: %s
-kv-cache-transfer-latency-std-dev: %s
-time-factor-under-load: %s
-`, port, modelName, servedModelName, ttft, ttftStdDev, itl, itlStdDev, kvTransfer, kvTransferStdDev, timeFactor)
+%s`, port, modelName, servedModelName, latencyYAML)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

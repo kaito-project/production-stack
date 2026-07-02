@@ -906,10 +906,11 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	if strings.Contains(configYAML, "threshold") {
 		t.Errorf("config should not contain threshold: %s", configYAML)
 	}
-	// Empty Config latency fields ⇒ Profile 1 defaults applied.
+	// Empty Config latency fields ⇒ Profile 1 constant-calculator defaults.
 	for _, want := range []string{
+		"latency-calculator: constant",
 		"time-to-first-token: 100ms",
-		"inter-token-latency: 30ms",
+		"inter-token-latency: 12ms",
 		"time-to-first-token-std-dev: 20ms",
 		"inter-token-latency-std-dev: 2ms",
 		"kv-cache-transfer-latency: 2ms",
@@ -919,6 +920,10 @@ func TestEnsureSimConfigMap(t *testing.T) {
 		if !strings.Contains(configYAML, want) {
 			t.Errorf("missing default %q in config: %s", want, configYAML)
 		}
+	}
+	// Constant calculator must not emit per-token-only fields.
+	if strings.Contains(configYAML, "prefill-overhead") {
+		t.Errorf("constant calculator should not emit prefill fields: %s", configYAML)
 	}
 
 	// Idempotent: calling again should not error
@@ -964,6 +969,52 @@ func TestEnsureSimConfigMap_LatencyOverrides(t *testing.T) {
 	} {
 		if !strings.Contains(configYAML, want) {
 			t.Errorf("missing override %q in config: %s", want, configYAML)
+		}
+	}
+}
+
+func TestEnsureSimConfigMap_PerTokenCalculator(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	cfg := testConfig()
+	cfg.LatencyCalculator = LatencyCalculatorPerToken
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: cfg}
+
+	ownerRef := metav1.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: "falcon-0", UID: "test-uid", Controller: ptr.To(true)}
+	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef); err != nil {
+		t.Fatalf("ensureSimConfigMap: %v", err)
+	}
+
+	cm := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0-config", Namespace: "default"}, cm); err != nil {
+		t.Fatalf("configmap not found: %v", err)
+	}
+	configYAML := cm.Data["config.yaml"]
+	// Per-token calculator: common + per-token defaults (Profile 1) applied.
+	for _, want := range []string{
+		"latency-calculator: per-token",
+		"inter-token-latency: 12ms",
+		"prefill-overhead: 30ms",
+		"prefill-time-per-token: 250us",
+		"prefill-time-std-dev: 5ms",
+		"kv-cache-transfer-time-per-token: 3us",
+		"kv-cache-transfer-time-std-dev: 200us",
+		"time-factor-under-load: 2.0",
+	} {
+		if !strings.Contains(configYAML, want) {
+			t.Errorf("missing per-token field %q in config: %s", want, configYAML)
+		}
+	}
+	// Per-token calculator must not emit constant-only fields.
+	for _, unwanted := range []string{
+		"time-to-first-token:",
+		"kv-cache-transfer-latency:",
+	} {
+		if strings.Contains(configYAML, unwanted) {
+			t.Errorf("per-token calculator should not emit %q: %s", unwanted, configYAML)
 		}
 	}
 }

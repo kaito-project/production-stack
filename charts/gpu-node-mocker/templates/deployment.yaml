@@ -34,6 +34,12 @@ spec:
             - --kv-cache-transfer-latency={{ .Values.shadowPod.kvCacheTransferLatency }}
             - --kv-cache-transfer-latency-std-dev={{ .Values.shadowPod.kvCacheTransferLatencyStdDev }}
             - --time-factor-under-load={{ .Values.shadowPod.timeFactorUnderLoad }}
+            - --latency-calculator={{ .Values.shadowPod.latencyCalculator }}
+            - --prefill-overhead={{ .Values.shadowPod.prefillOverhead }}
+            - --prefill-time-per-token={{ .Values.shadowPod.prefillTimePerToken }}
+            - --prefill-time-std-dev={{ .Values.shadowPod.prefillTimeStdDev }}
+            - --kv-cache-transfer-time-per-token={{ .Values.shadowPod.kvCacheTransferTimePerToken }}
+            - --kv-cache-transfer-time-std-dev={{ .Values.shadowPod.kvCacheTransferTimeStdDev }}
             - --lease-duration-seconds={{ .Values.leaseDurationSeconds }}
             - --lease-renew-interval-seconds={{ .Values.leaseRenewIntervalSeconds }}
             - --node-provisioner={{ .Values.nodeProvisioner }}
