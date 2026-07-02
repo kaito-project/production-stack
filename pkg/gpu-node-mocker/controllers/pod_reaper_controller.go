@@ -111,21 +111,16 @@ func (r *FakeNodePodReaper) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, nil
 }
 
-// isTerminatingOnFakeNode reports whether the pod is a KAITO inference pod that
-// is bound to a fake node and has been marked for deletion. It uses the same
-// KAITO-label gate as isPendingOnFakeNode so the reaper only touches pods this
-// controller is responsible for.
+// isTerminatingOnFakeNode reports whether the pod is bound to a fake node
+// (spec.nodeName starts with "fake-") and has been marked for deletion. Any
+// such pod — a KAITO inference pod or an unrelated DaemonSet/Job pod that
+// happened to be scheduled onto a fake node — hangs in Terminating forever
+// because the fake node has no kubelet to finalize deletion. Force-deleting it
+// is exactly the job the absent kubelet would have performed, so no KAITO-label
+// gate is applied here.
 func isTerminatingOnFakeNode(obj client.Object) bool {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
-		return false
-	}
-	// Only process pods created by KAITO. Two provisioning paths exist:
-	//   - InferenceSet (modeldeployment) pods carry `inferenceset.kaito.sh/created-by`.
-	//   - Workspace pods (KAITO StatefulSet) carry `kaito.sh/workspace`.
-	_, hasInferenceSet := pod.Labels[InferenceSetCreatedByLabelKey]
-	_, hasWorkspace := pod.Labels[LabelKaitoWorkspace]
-	if !hasInferenceSet && !hasWorkspace {
 		return false
 	}
 	return pod.DeletionTimestamp != nil &&
