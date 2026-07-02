@@ -59,23 +59,23 @@ func TestIsTerminatingOnFakeNode(t *testing.T) {
 			},
 			Spec: corev1.PodSpec{NodeName: "aks-node1"},
 		}, false},
-		{"no kaito label", &corev1.Pod{
+		{"non-kaito pod on fake node is reaped", &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels:            map[string]string{"app": "nginx"},
 				DeletionTimestamp: &del,
 			},
 			Spec: corev1.PodSpec{NodeName: "fake-ws1"},
-		}, false},
+		}, true},
 		{"no node", &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Labels:            map[string]string{InferenceSetCreatedByLabelKey: "falcon"},
 				DeletionTimestamp: &del,
 			},
 		}, false},
-		{"nil labels", &corev1.Pod{
+		{"nil labels on fake node is reaped", &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{DeletionTimestamp: &del},
 			Spec:       corev1.PodSpec{NodeName: "fake-ws1"},
-		}, false},
+		}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
