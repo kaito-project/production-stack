@@ -39,5 +39,15 @@ func NewControllers(mgr ctrl.Manager, cfg Config, mocker ProvisionerMocker) erro
 		return fmt.Errorf("unable to create ShadowPod controller: %w", err)
 	}
 
+	// FakeNodePodReaper is the deletion-side counterpart of the ShadowPod
+	// controller: it force-deletes KAITO inference pods that are stuck
+	// Terminating on fake nodes (which have no kubelet to finalize deletion),
+	// freeing the fake node's GPU for the replacement pod.
+	if err := (&FakeNodePodReaper{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create FakeNodePodReaper controller: %w", err)
+	}
+
 	return nil
 }

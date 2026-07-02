@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/utils/ptr"
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
@@ -457,6 +458,126 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 							"pod %q should have shadow-pod-ref annotation", pod.Name)
 					}
 				}
+			})
+		})
+
+		Context("Terminating pod reaping", func() {
+			It("should force-delete a KAITO pod stuck Terminating on a fake node", func() {
+				clientset, err := utils.GetK8sClientset()
+				Expect(err).NotTo(HaveOccurred())
+
+				ctx := context.Background()
+
+				// A pod bound to a fake node has no real kubelet to finalize
+				// deletion. A normal delete sets metadata.deletionTimestamp and
+				// then waits forever for the (absent) kubelet, so the pod hangs
+				// in Terminating while still holding the fake node's single
+				// nvidia.com/gpu — blocking the replacement pod (Pending
+				// deadlock). The FakeNodePodReaper stands in for the missing
+				// kubelet: once the grace period elapses it force-deletes the
+				// pod. Reaching NotFound on a fake-node pod is therefore proof
+				// the reaper ran — without it the pod would hang indefinitely.
+				//
+				// Scope the target to a fake node hosting a pod in caseNamespace
+				// so cases running in parallel stay isolated.
+				deploymentName := caseDeployments[0].Name
+				origPods, err := clientset.CoreV1().Pods(caseNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", deploymentName),
+				})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(origPods.Items).NotTo(BeEmpty(),
+					"need at least one original pod in %s for deployment %q", caseNamespace, deploymentName)
+
+				var fakeNodeName string
+				for _, p := range origPods.Items {
+					if strings.HasPrefix(p.Spec.NodeName, "fake-") {
+						fakeNodeName = p.Spec.NodeName
+						break
+					}
+				}
+				Expect(fakeNodeName).NotTo(BeEmpty(),
+					"no original pod for %q is scheduled on a fake- node yet", deploymentName)
+
+				const wsName = "e2e-reaper-terminating"
+				wsPodName := wsName + "-0"
+				gracePeriod := int64(30)
+
+				wsPod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      wsPodName,
+						Namespace: caseNamespace,
+						// KAITO Workspace StatefulSet pods carry this label; the
+						// reaper gates on it (or inferenceset.kaito.sh/created-by).
+						Labels: map[string]string{"kaito.sh/workspace": wsName},
+					},
+					Spec: corev1.PodSpec{
+						// Bind directly to the fake node (no kubelet runs there).
+						NodeName:    fakeNodeName,
+						Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+						Containers: []corev1.Container{{
+							Name:  "model",
+							Image: "mcr.microsoft.com/oss/kubernetes/pause:3.6",
+							Args: []string{
+								"--model", "microsoft/phi-4-mini-instruct",
+								"--served-model-name", "phi-4-mini-instruct",
+							},
+							Ports: []corev1.ContainerPort{{ContainerPort: 5000}},
+						}},
+					},
+				}
+
+				By(fmt.Sprintf("creating synthetic Workspace pod %s/%s bound to fake node %q",
+					caseNamespace, wsPodName, fakeNodeName))
+				_, err = clientset.CoreV1().Pods(caseNamespace).Create(ctx, wsPod, metav1.CreateOptions{})
+				Expect(err).NotTo(HaveOccurred())
+
+				// Safety net if the reaper does not act or an assertion fails
+				// midway: force-remove the pod so it never leaks into other specs.
+				DeferCleanup(func() {
+					_ = clientset.CoreV1().Pods(caseNamespace).Delete(
+						context.Background(), wsPodName,
+						metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))})
+				})
+
+				// Let the ShadowPodReconciler drive the pod to Running, mirroring
+				// a live KAITO inference pod occupying the fake node's GPU.
+				By("waiting for the pod to be patched to Running by the shadow controller")
+				Eventually(func() error {
+					p, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, wsPodName, metav1.GetOptions{})
+					if err != nil {
+						return err
+					}
+					if p.Status.Phase != corev1.PodRunning {
+						return fmt.Errorf("pod %q phase = %s, want Running", wsPodName, p.Status.Phase)
+					}
+					return nil
+				}, 3*time.Minute, 10*time.Second).Should(Succeed(),
+					"synthetic Workspace pod should be patched to Running before deletion")
+
+				By(fmt.Sprintf("deleting the pod with a %ds grace period", gracePeriod))
+				err = clientset.CoreV1().Pods(caseNamespace).Delete(ctx, wsPodName,
+					metav1.DeleteOptions{GracePeriodSeconds: &gracePeriod})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("verifying the pod first hangs in Terminating (deletionTimestamp set, still present)")
+				Eventually(func() error {
+					p, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, wsPodName, metav1.GetOptions{})
+					if err != nil {
+						return fmt.Errorf("pod not yet observed Terminating: %w", err)
+					}
+					if p.DeletionTimestamp == nil {
+						return fmt.Errorf("pod %q has no deletionTimestamp yet", wsPodName)
+					}
+					return nil
+				}, 15*time.Second, 1*time.Second).Should(Succeed(),
+					"pod should enter Terminating on the fake node before the grace period elapses")
+
+				By("waiting for the FakeNodePodReaper to force-delete the pod after the grace period")
+				Eventually(func() bool {
+					_, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, wsPodName, metav1.GetOptions{})
+					return errors.IsNotFound(err)
+				}, 2*time.Minute, 5*time.Second).Should(BeTrue(),
+					"FakeNodePodReaper should force-delete the pod stuck Terminating on fake node %q", fakeNodeName)
 			})
 		})
 	})
