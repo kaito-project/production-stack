@@ -61,17 +61,30 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr           string
-		probeAddr             string
-		shadowPodImage        string
-		udsTokenizerImage     string
-		leaseDurationSec      int
-		leaseRenewIntervalSec int
-		nodeProvisioner       string
-		nodeClassGroup        string
-		nodeClassVersion      string
-		nodeClassKind         string
-		nodeClassResource     string
+		metricsAddr            string
+		probeAddr              string
+		shadowPodImage         string
+		udsTokenizerImage      string
+		timeToFirstToken       string
+		interTokenLatency      string
+		ttftStdDev             string
+		itlStdDev              string
+		kvCacheTransfer        string
+		kvCacheTransferStdDev  string
+		timeFactorUnderLoad    string
+		latencyCalculator      string
+		prefillOverhead        string
+		prefillTimePerToken    string
+		prefillTimeStdDev      string
+		kvTransferTimePerToken string
+		kvTransferTimeStdDev   string
+		leaseDurationSec       int
+		leaseRenewIntervalSec  int
+		nodeProvisioner        string
+		nodeClassGroup         string
+		nodeClassVersion       string
+		nodeClassKind          string
+		nodeClassResource      string
 	)
 
 	defaultNodeClass := controllers.DefaultNodeClassRef()
@@ -82,6 +95,33 @@ func main() {
 		"Container image for the inference simulator running in shadow pods.")
 	flag.StringVar(&udsTokenizerImage, "uds-tokenizer-image", controllers.DefaultUDSTokenizerImage,
 		"Container image for the UDS tokenizer sidecar in shadow pods.")
+	flag.StringVar(&timeToFirstToken, "time-to-first-token", controllers.DefaultTimeToFirstToken,
+		"Inference simulator time-to-first-token latency (e.g. 100ms). See llm-d-inference-sim latency-profiles.md.")
+	flag.StringVar(&interTokenLatency, "inter-token-latency", controllers.DefaultInterTokenLatency,
+		"Inference simulator inter-token latency (e.g. 30ms). See llm-d-inference-sim latency-profiles.md.")
+	flag.StringVar(&ttftStdDev, "time-to-first-token-std-dev", controllers.DefaultTimeToFirstTokenStdDev,
+		"Std-dev jitter for time-to-first-token (e.g. 20ms).")
+	flag.StringVar(&itlStdDev, "inter-token-latency-std-dev", controllers.DefaultInterTokenLatencyStdDev,
+		"Std-dev jitter for inter-token latency (e.g. 2ms).")
+	flag.StringVar(&kvCacheTransfer, "kv-cache-transfer-latency", controllers.DefaultKVCacheTransferLatency,
+		"Constant KV-cache transfer overhead (e.g. 2ms).")
+	flag.StringVar(&kvCacheTransferStdDev, "kv-cache-transfer-latency-std-dev", controllers.DefaultKVCacheTransferStdDev,
+		"Std-dev jitter for KV-cache transfer latency (e.g. 400us).")
+	flag.StringVar(&timeFactorUnderLoad, "time-factor-under-load", controllers.DefaultTimeFactorUnderLoad,
+		"Latency multiplier as concurrency approaches max-num-seqs (e.g. 2.0).")
+	flag.StringVar(&latencyCalculator, "latency-calculator", controllers.DefaultLatencyCalculator,
+		fmt.Sprintf("Inference simulator latency model (%q or %q).",
+			controllers.LatencyCalculatorConstant, controllers.LatencyCalculatorPerToken))
+	flag.StringVar(&prefillOverhead, "prefill-overhead", controllers.DefaultPrefillOverhead,
+		"per-token calculator: fixed prefill overhead (e.g. 30ms).")
+	flag.StringVar(&prefillTimePerToken, "prefill-time-per-token", controllers.DefaultPrefillTimePerToken,
+		"per-token calculator: prefill cost per prompt token (e.g. 250us).")
+	flag.StringVar(&prefillTimeStdDev, "prefill-time-std-dev", controllers.DefaultPrefillTimeStdDev,
+		"per-token calculator: std-dev jitter for prefill time (e.g. 5ms).")
+	flag.StringVar(&kvTransferTimePerToken, "kv-cache-transfer-time-per-token", controllers.DefaultKVCacheTransferTimePerToken,
+		"per-token calculator: KV-cache transfer cost per token (e.g. 3us).")
+	flag.StringVar(&kvTransferTimeStdDev, "kv-cache-transfer-time-std-dev", controllers.DefaultKVCacheTransferTimeStdDev,
+		"per-token calculator: std-dev jitter for KV-cache transfer time (e.g. 200us).")
 	flag.IntVar(&leaseDurationSec, "lease-duration-seconds", 40,
 		"Duration in seconds for fake node lease.")
 	flag.IntVar(&leaseRenewIntervalSec, "lease-renew-interval-seconds", 10,
@@ -111,12 +151,31 @@ func main() {
 		setupLog.Error(nil, "--lease-duration-seconds must be > 0")
 		os.Exit(1)
 	}
+	if latencyCalculator != controllers.LatencyCalculatorConstant &&
+		latencyCalculator != controllers.LatencyCalculatorPerToken {
+		setupLog.Error(nil, "--latency-calculator must be \"constant\" or \"per-token\"",
+			"value", latencyCalculator)
+		os.Exit(1)
+	}
 
 	cfg := controllers.Config{
-		ShadowPodImage:        shadowPodImage,
-		UDSTokenizerImage:     udsTokenizerImage,
-		LeaseDurationSec:      int32(leaseDurationSec),
-		LeaseRenewIntervalSec: leaseRenewIntervalSec,
+		ShadowPodImage:              shadowPodImage,
+		UDSTokenizerImage:           udsTokenizerImage,
+		TimeToFirstToken:            timeToFirstToken,
+		InterTokenLatency:           interTokenLatency,
+		TimeToFirstTokenStdDev:      ttftStdDev,
+		InterTokenLatencyStdDev:     itlStdDev,
+		KVCacheTransferLatency:      kvCacheTransfer,
+		KVCacheTransferStdDev:       kvCacheTransferStdDev,
+		TimeFactorUnderLoad:         timeFactorUnderLoad,
+		LatencyCalculator:           latencyCalculator,
+		PrefillOverhead:             prefillOverhead,
+		PrefillTimePerToken:         prefillTimePerToken,
+		PrefillTimeStdDev:           prefillTimeStdDev,
+		KVCacheTransferTimePerToken: kvTransferTimePerToken,
+		KVCacheTransferTimeStdDev:   kvTransferTimeStdDev,
+		LeaseDurationSec:            int32(leaseDurationSec),
+		LeaseRenewIntervalSec:       leaseRenewIntervalSec,
 		NodeClass: controllers.NodeClassRef{
 			Group:    nodeClassGroup,
 			Version:  nodeClassVersion,
