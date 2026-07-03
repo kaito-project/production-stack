@@ -77,10 +77,18 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
+
+// nodeInstanceTypeLabel is the well-known Kubernetes label carrying the VM
+// SKU on every AKS node. It is used to assert that Karpenter provisioned the
+// exact instance type each scenario requested (e.g. NC48 for Medium, NC24 for
+// Large).
+const nodeInstanceTypeLabel = "node.kubernetes.io/instance-type"
 
 // karpenterScenario holds per-scenario metadata used in assertions.
 type karpenterScenario struct {
@@ -124,9 +132,26 @@ func registerKarpenterScenario(s karpenterScenario) {
 		caseDeployments := CaseDeployments[s.caseName]
 		caseNamespace := CaseNamespace(s.caseName)
 
+		// expectedInstanceTypes is the set of VM SKUs the case's deployments
+		// requested. Every provisioned GPU node must advertise one of them via
+		// the node.kubernetes.io/instance-type label — this is what
+		// distinguishes the Medium (NC48, 2-GPU) scenario from the Large
+		// (NC24, 1-GPU) scenario at the infrastructure level.
+		expectedInstanceTypes := make(map[string]struct{})
+		for _, d := range caseDeployments {
+			if d.InstanceType != "" {
+				expectedInstanceTypes[d.InstanceType] = struct{}{}
+			}
+		}
+
 		var (
 			// gatewayURL is populated in BeforeAll by InstallCase.
 			gatewayURL string
+			// provisionedNodeNames holds the distinct GPU nodes that hosted
+			// the inference pods, captured by the provisioning It block and
+			// reused by the scale-to-zero block to assert the Node objects
+			// themselves are eventually removed.
+			provisionedNodeNames []string
 			// uninstalled tracks whether the scale-to-zero It block
 			// already tore down the case so AfterAll skips the redundant
 			// UninstallCase call.
@@ -145,11 +170,12 @@ func registerKarpenterScenario(s karpenterScenario) {
 
 		// ── 1. Node provisioning ─────────────────────────────────────────────
 		// Verify Karpenter provisioned exactly s.expectedNodes distinct GPU
-		// nodes, each carrying at least s.minGPUsPerNode in
-		// nvidia.com/gpu capacity. By the time BeforeAll completes the
-		// inference pods are already Running (SetupInferenceSetsWithRouting
-		// blocks until pods are Running), so the NodeName field is set.
-		It("should provision the expected number of GPU nodes with sufficient GPU capacity", func() {
+		// nodes, each one Ready, advertising the requested VM SKU, and
+		// carrying at least s.minGPUsPerNode in nvidia.com/gpu capacity. By
+		// the time BeforeAll completes the inference pods are already Running
+		// (SetupInferenceSetsWithRouting blocks until pods are Running), so
+		// the NodeName field is set.
+		It("should provision the expected number of Ready GPU nodes with the requested SKU and GPU capacity", func() {
 			ctx := context.Background()
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
@@ -185,10 +211,33 @@ func registerKarpenterScenario(s karpenterScenario) {
 				"scenario %q: expected %d distinct GPU node(s), got %d: %v",
 				s.caseName, s.expectedNodes, len(sortedNames), sortedNames)
 
-			// Verify that every hosting node exposes enough GPU capacity.
+			// Verify that every hosting node is Ready, advertises the
+			// requested SKU, and exposes enough GPU capacity.
 			for _, nodeName := range sortedNames {
 				node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 				Expect(err).NotTo(HaveOccurred(), "failed to get node %s", nodeName)
+
+				// Node must have joined the cluster and be Ready.
+				nodeReady := false
+				for _, c := range node.Status.Conditions {
+					if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
+						nodeReady = true
+						break
+					}
+				}
+				Expect(nodeReady).To(BeTrue(),
+					"node %s hosting an inference pod is not Ready", nodeName)
+
+				// Node must advertise one of the SKUs the case requested,
+				// proving Karpenter honoured the InferenceSet instanceType.
+				if len(expectedInstanceTypes) > 0 {
+					sku := node.Labels[nodeInstanceTypeLabel]
+					Expect(sku).NotTo(BeEmpty(),
+						"node %s has no %s label", nodeName, nodeInstanceTypeLabel)
+					Expect(expectedInstanceTypes).To(HaveKey(sku),
+						"node %s SKU %q is not one of the requested instance types for scenario %q",
+						nodeName, sku, s.caseName)
+				}
 
 				gpuQty, ok := node.Status.Capacity[corev1.ResourceName("nvidia.com/gpu")]
 				Expect(ok).To(BeTrue(),
@@ -201,9 +250,64 @@ func registerKarpenterScenario(s karpenterScenario) {
 					"node %s: expected >= %d GPUs (scenario %q), got %d",
 					nodeName, s.minGPUsPerNode, s.caseName, gpuCount)
 
-				GinkgoWriter.Printf("[%s] node %s: nvidia.com/gpu capacity = %d\n",
-					s.caseName, nodeName, gpuCount)
+				GinkgoWriter.Printf("[%s] node %s: sku=%s nvidia.com/gpu=%d ready=%t\n",
+					s.caseName, nodeName, node.Labels[nodeInstanceTypeLabel], gpuCount, nodeReady)
 			}
+
+			// Record the hosting nodes so the scale-to-zero block can assert
+			// these exact Node objects are removed after teardown.
+			provisionedNodeNames = sortedNames
+		})
+
+		// ── 1b. NodeClaim readiness ──────────────────────────────────────────
+		// KAITO drives provisioning through Karpenter: each per-replica
+		// Workspace owns a NodePool from which Karpenter carves NodeClaims.
+		// Assert that exactly s.expectedNodes NodeClaims exist for this case
+		// (name-prefixed by the case namespace) and that every one reports a
+		// Ready=True status condition — i.e. the claim launched a VM and
+		// registered its Node, rather than being stuck on quota/capacity.
+		It("should back the provisioned nodes with Ready Karpenter NodeClaims", func() {
+			ctx := context.Background()
+			dynClient, err := utils.GetDynamicClient()
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				ncList, err := dynClient.Resource(utils.NodeClaimGVR).List(ctx, metav1.ListOptions{})
+				g.Expect(err).NotTo(HaveOccurred())
+
+				var caseClaims []unstructured.Unstructured
+				for _, nc := range ncList.Items {
+					if strings.HasPrefix(nc.GetName(), caseNamespace+"-") {
+						caseClaims = append(caseClaims, nc)
+					}
+				}
+				g.Expect(caseClaims).To(HaveLen(s.expectedNodes),
+					"scenario %q: expected %d Karpenter NodeClaim(s) for namespace %s, got %d",
+					s.caseName, s.expectedNodes, caseNamespace, len(caseClaims))
+
+				for _, nc := range caseClaims {
+					conds, found, err := unstructured.NestedSlice(nc.Object, "status", "conditions")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(found).To(BeTrue(),
+						"NodeClaim %s has no status.conditions yet", nc.GetName())
+
+					ready := false
+					for _, c := range conds {
+						cm, ok := c.(map[string]interface{})
+						if !ok {
+							continue
+						}
+						if cm["type"] == "Ready" && cm["status"] == "True" {
+							ready = true
+							break
+						}
+					}
+					g.Expect(ready).To(BeTrue(),
+						"NodeClaim %s is not Ready", nc.GetName())
+				}
+			}, 5*time.Minute, 15*time.Second).Should(Succeed(),
+				"scenario %q: expected %d Ready NodeClaim(s) backing the provisioned nodes",
+				s.caseName, s.expectedNodes)
 		})
 
 		// ── 2. Inference readiness ───────────────────────────────────────────
@@ -296,7 +400,37 @@ func registerKarpenterScenario(s karpenterScenario) {
 				"Karpenter should deprovision all GPU nodes for scenario %q within %s",
 				s.caseName, scaleDownTimeout)
 
-			GinkgoWriter.Printf("[%s] scale-to-zero confirmed: all NodeClaims removed\n", s.caseName)
+			// NodeClaim removal should cascade to the underlying Node objects.
+			// Assert the exact GPU nodes that hosted the inference pods are
+			// gone from the cluster, confirming no orphaned Node registrations
+			// (and thus no lingering billable VMs) survive teardown.
+			if len(provisionedNodeNames) > 0 {
+				clientset, err := utils.GetK8sClientset()
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func() error {
+					var lingering []string
+					for _, nodeName := range provisionedNodeNames {
+						_, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
+						if err == nil {
+							lingering = append(lingering, nodeName)
+							continue
+						}
+						if !apierrors.IsNotFound(err) {
+							return fmt.Errorf("failed to get node %s: %w", nodeName, err)
+						}
+					}
+					if len(lingering) > 0 {
+						return fmt.Errorf("%d GPU node(s) still registered for %s: %v",
+							len(lingering), caseNamespace, lingering)
+					}
+					return nil
+				}, scaleDownTimeout, 30*time.Second).Should(Succeed(),
+					"Karpenter should remove all hosting Node objects for scenario %q within %s",
+					s.caseName, scaleDownTimeout)
+			}
+
+			GinkgoWriter.Printf("[%s] scale-to-zero confirmed: all NodeClaims and Nodes removed\n", s.caseName)
 		})
 	})
 }
