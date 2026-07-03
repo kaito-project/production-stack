@@ -250,6 +250,165 @@ func TestWriteHTML_EmptyFiles(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Results annotation
+// ---------------------------------------------------------------------------
+
+func TestApplyResults_AnnotatesAndCounts(t *testing.T) {
+	data := buildReportData(sampleFiles(), "", "(all)")
+	// sampleFiles has Its: "test 1", "test 2" (alpha), "test A" (beta).
+	applyResults(data, map[string]string{
+		"test 1": StatusPassed,
+		"test 2": StatusFailed,
+		// "test A" has no result → should be counted as skipped.
+	})
+
+	if !data.HasResults {
+		t.Fatal("expected HasResults=true")
+	}
+	if data.TotalPassed != 1 {
+		t.Errorf("expected 1 passed, got %d", data.TotalPassed)
+	}
+	if data.TotalFailed != 1 {
+		t.Errorf("expected 1 failed, got %d", data.TotalFailed)
+	}
+	if data.TotalSkipped != 1 {
+		t.Errorf("expected 1 skipped, got %d", data.TotalSkipped)
+	}
+
+	// Verify per-spec statuses were assigned on the block copies.
+	statuses := map[string]string{}
+	for _, f := range data.Files {
+		for _, b := range f.Blocks {
+			if b.Type == "It" {
+				statuses[b.Title] = b.Status
+			}
+		}
+	}
+	if statuses["test 1"] != StatusPassed {
+		t.Errorf("expected test 1 passed, got %q", statuses["test 1"])
+	}
+	if statuses["test 2"] != StatusFailed {
+		t.Errorf("expected test 2 failed, got %q", statuses["test 2"])
+	}
+	if statuses["test A"] != StatusSkipped {
+		t.Errorf("expected test A skipped, got %q", statuses["test A"])
+	}
+}
+
+func TestApplyResults_EmptyIsNoOp(t *testing.T) {
+	data := buildReportData(sampleFiles(), "", "(all)")
+	applyResults(data, nil)
+
+	if data.HasResults {
+		t.Error("expected HasResults=false when no results supplied")
+	}
+	if data.TotalPassed+data.TotalFailed+data.TotalSkipped != 0 {
+		t.Error("expected zero status tallies when no results supplied")
+	}
+}
+
+func TestWriteMarkdown_WithResults(t *testing.T) {
+	data := buildReportData(sampleFiles(), "E2E tests", "(all)")
+	applyResults(data, map[string]string{
+		"test 1": StatusPassed,
+		"test 2": StatusFailed,
+		"test A": StatusPassed,
+	})
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+	if err := writeMarkdown(data, path); err != nil {
+		t.Fatalf("writeMarkdown: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := string(content)
+
+	checks := []string{
+		"🟢 Passed | **2**",
+		"🔴 Failed | **1**",
+		"🔴 test 2", // failing spec rendered with red icon
+		"🟢 test 1",
+	}
+	for _, want := range checks {
+		if !strings.Contains(md, want) {
+			t.Errorf("markdown missing %q", want)
+		}
+	}
+}
+
+func TestParseResults_MissingFileIsEmpty(t *testing.T) {
+	results, err := parseResults(filepath.Join(t.TempDir(), "does-not-exist.json"))
+	if err != nil {
+		t.Fatalf("expected no error for missing file, got %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected empty results, got %v", results)
+	}
+}
+
+func TestParseResults_EmptyPathIsEmpty(t *testing.T) {
+	results, err := parseResults("")
+	if err != nil {
+		t.Fatalf("expected no error for empty path, got %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected empty results, got %v", results)
+	}
+}
+
+func TestParseResults_ParsesGinkgoJSON(t *testing.T) {
+	// Minimal Ginkgo JSON report. SpecState marshals as a lowercase string
+	// (see github.com/onsi/ginkgo/v2/types.SpecState.MarshalJSON). LeafNodeText
+	// is the matching key; for a duplicate leaf the worst status wins.
+	jsonReport := `[
+      {
+        "SpecReports": [
+          {"LeafNodeText": "spec passes", "State": "passed"},
+          {"LeafNodeText": "spec fails", "State": "failed"},
+          {"LeafNodeText": "spec skipped", "State": "skipped"},
+          {"LeafNodeText": "spec timed out", "State": "timedout"},
+          {"LeafNodeText": "dup", "State": "passed"},
+          {"LeafNodeText": "dup", "State": "failed"},
+          {"LeafNodeText": "", "State": "passed"}
+        ]
+      }
+    ]`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ginkgo-report.json")
+	if err := os.WriteFile(path, []byte(jsonReport), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := parseResults(path)
+	if err != nil {
+		t.Fatalf("parseResults: %v", err)
+	}
+	if results["spec passes"] != StatusPassed {
+		t.Errorf("expected spec passes=passed, got %q", results["spec passes"])
+	}
+	if results["spec fails"] != StatusFailed {
+		t.Errorf("expected spec fails=failed, got %q", results["spec fails"])
+	}
+	if results["spec skipped"] != StatusSkipped {
+		t.Errorf("expected spec skipped=skipped, got %q", results["spec skipped"])
+	}
+	if results["spec timed out"] != StatusFailed {
+		t.Errorf("expected spec timed out=failed, got %q", results["spec timed out"])
+	}
+	// Worst status wins for duplicate leaf text.
+	if results["dup"] != StatusFailed {
+		t.Errorf("expected dup=failed (worst wins), got %q", results["dup"])
+	}
+	// Empty leaf text (setup/teardown nodes) must be ignored.
+	if _, ok := results[""]; ok {
+		t.Error("expected empty leaf text to be ignored")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Label filter evaluation
 // ---------------------------------------------------------------------------
 

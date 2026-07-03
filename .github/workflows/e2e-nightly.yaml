@@ -94,6 +94,7 @@ jobs:
           go run ./hack/e2e/report \
             --label-filter 'Karpenter' \
             --workflow 'E2E tests (nightly, full suite)' \
+            --results ginkgo-report.json \
             --output-md e2e-coverage-report.md \
             --output-html e2e-coverage-report.html
           echo '## Karpenter Nightly Coverage' >> "$GITHUB_STEP_SUMMARY"

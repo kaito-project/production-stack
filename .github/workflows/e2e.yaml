@@ -96,6 +96,7 @@ jobs:
           go run ./hack/e2e/report \
             --label-filter '!Nightly' \
             --workflow 'E2E tests' \
+            --results ginkgo-report.json \
             --output-md e2e-coverage-report.md \
             --output-html e2e-coverage-report.html
           cat e2e-coverage-report.md >> "$GITHUB_STEP_SUMMARY"

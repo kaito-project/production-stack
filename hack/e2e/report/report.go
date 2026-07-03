@@ -40,6 +40,14 @@ type ReportData struct {
 	TotalFiles  int
 	TotalIts    int
 
+	// HasResults is true when a Ginkgo JSON report was supplied, enabling the
+	// pass/fail/skip summary and per-spec status annotations.
+	HasResults   bool
+	TotalPassed  int
+	TotalFailed  int
+	TotalSkipped int
+	TotalPending int
+
 	Files         []TestFile
 	BarChart      []BarEntry
 	ConicGradient string
@@ -321,9 +329,61 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 	return data
 }
 
+// applyResults annotates each It block in data.Files with its recorded
+// outcome and tallies the pass/fail/skip totals. results maps a spec's leaf
+// text (the It title) to its status. When results is empty, data is left
+// unchanged and the report renders as a source-only coverage report.
+func applyResults(data *ReportData, results map[string]string) {
+	if len(results) == 0 {
+		return
+	}
+	data.HasResults = true
+	for fi := range data.Files {
+		for bi := range data.Files[fi].Blocks {
+			b := &data.Files[fi].Blocks[bi]
+			if b.Type != "It" {
+				continue
+			}
+			// Specs that ran but produced no matching result are treated as
+			// skipped rather than silently counted as passing.
+			status, ok := results[b.Title]
+			if !ok {
+				status = StatusSkipped
+			}
+			b.Status = status
+			switch status {
+			case StatusPassed:
+				data.TotalPassed++
+			case StatusFailed:
+				data.TotalFailed++
+			case StatusPending:
+				data.TotalPending++
+			default:
+				data.TotalSkipped++
+			}
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Markdown generation
 // ---------------------------------------------------------------------------
+
+// statusIcon maps a spec outcome to its report emoji. An empty status (no
+// results supplied) falls back to 🟢 so source-only coverage reports render as
+// before.
+func statusIcon(status string) string {
+	switch status {
+	case StatusFailed:
+		return "🔴"
+	case StatusSkipped:
+		return "⚪"
+	case StatusPending:
+		return "🟡"
+	default:
+		return "🟢"
+	}
+}
 
 func writeMarkdown(data *ReportData, path string) error {
 	f, err := os.Create(path)
@@ -348,6 +408,14 @@ func writeMarkdown(data *ReportData, path string) error {
 	p("|--------|------:|")
 	p("| 📄 Test Files | **%d** |", data.TotalFiles)
 	p("| 🧪 Test Cases | **%d** |", data.TotalIts)
+	if data.HasResults {
+		p("| 🟢 Passed | **%d** |", data.TotalPassed)
+		p("| 🔴 Failed | **%d** |", data.TotalFailed)
+		p("| ⚪ Skipped | **%d** |", data.TotalSkipped)
+		if data.TotalPending > 0 {
+			p("| 🟡 Pending | **%d** |", data.TotalPending)
+		}
+	}
 	p("")
 	p("---")
 	p("")
@@ -410,7 +478,7 @@ func writeMarkdown(data *ReportData, path string) error {
 				p("**◦ %s**%s", b.Title, badges)
 				p("")
 			case "It":
-				p("- 🟢 %s%s", b.Title, badges)
+				p("- %s %s%s", statusIcon(b.Status), b.Title, badges)
 			}
 		}
 		p("")
@@ -432,6 +500,18 @@ func writeMarkdown(data *ReportData, path string) error {
 func writeHTML(data *ReportData, path string) error {
 	funcMap := template.FuncMap{
 		"lower": strings.ToLower,
+		"statusColor": func(status string) string {
+			switch status {
+			case StatusFailed:
+				return "var(--rd)"
+			case StatusSkipped:
+				return "var(--mt)"
+			case StatusPending:
+				return "var(--yl)"
+			default:
+				return "var(--gn)"
+			}
+		},
 	}
 	tmpl, err := template.New("report").Funcs(funcMap).Parse(htmlTemplateStr)
 	if err != nil {
