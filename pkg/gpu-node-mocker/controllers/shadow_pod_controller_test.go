@@ -880,7 +880,7 @@ func TestEnsureSimConfigMap(t *testing.T) {
 		Controller: ptr.To(true),
 	}
 
-	err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef)
+	err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, nil, ownerRef)
 	if err != nil {
 		t.Fatalf("ensureSimConfigMap: %v", err)
 	}
@@ -906,28 +906,30 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	if strings.Contains(configYAML, "threshold") {
 		t.Errorf("config should not contain threshold: %s", configYAML)
 	}
-	// Empty Config latency fields ⇒ Profile 1 constant-calculator defaults.
+	// Empty Config + no annotation ⇒ per-token calculator (the default) with
+	// the auto-selected 8B profile (served name "falcon-7b-instruct" ⇒ 7B).
 	for _, want := range []string{
-		"latency-calculator: constant",
-		"time-to-first-token: 100ms",
+		"latency-calculator: per-token",
 		"inter-token-latency: 12ms",
-		"time-to-first-token-std-dev: 20ms",
 		"inter-token-latency-std-dev: 2ms",
-		"kv-cache-transfer-latency: 2ms",
-		"kv-cache-transfer-latency-std-dev: 400us",
 		"time-factor-under-load: 2.0",
+		"prefill-overhead: 30ms",
+		"prefill-time-per-token: 250us",
+		"prefill-time-std-dev: 50us",
+		"kv-cache-transfer-time-per-token: 3us",
+		"kv-cache-transfer-time-std-dev: 600ns",
 	} {
 		if !strings.Contains(configYAML, want) {
 			t.Errorf("missing default %q in config: %s", want, configYAML)
 		}
 	}
-	// Constant calculator must not emit per-token-only fields.
-	if strings.Contains(configYAML, "prefill-overhead") {
-		t.Errorf("constant calculator should not emit prefill fields: %s", configYAML)
+	// Per-token calculator must not emit constant-only fields.
+	if strings.Contains(configYAML, "time-to-first-token:") {
+		t.Errorf("per-token calculator should not emit time-to-first-token: %s", configYAML)
 	}
 
 	// Idempotent: calling again should not error
-	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef); err != nil {
+	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, nil, ownerRef); err != nil {
 		t.Fatalf("second call should be idempotent: %v", err)
 	}
 }
@@ -936,6 +938,9 @@ func TestEnsureSimConfigMap_LatencyOverrides(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme()
 	cfg := testConfig()
+	// Force the constant calculator so the constant-only overrides below are
+	// exercised (per-token is now the default).
+	cfg.LatencyCalculator = LatencyCalculatorConstant
 	cfg.TimeToFirstToken = "200ms"
 	cfg.InterTokenLatency = "25ms"
 	cfg.TimeToFirstTokenStdDev = "40ms"
@@ -949,7 +954,7 @@ func TestEnsureSimConfigMap_LatencyOverrides(t *testing.T) {
 	r := &ShadowPodReconciler{Client: cl, Config: cfg}
 
 	ownerRef := metav1.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: "falcon-0", UID: "test-uid", Controller: ptr.To(true)}
-	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef); err != nil {
+	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, nil, ownerRef); err != nil {
 		t.Fatalf("ensureSimConfigMap: %v", err)
 	}
 
@@ -984,7 +989,7 @@ func TestEnsureSimConfigMap_PerTokenCalculator(t *testing.T) {
 	r := &ShadowPodReconciler{Client: cl, Config: cfg}
 
 	ownerRef := metav1.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: "falcon-0", UID: "test-uid", Controller: ptr.To(true)}
-	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, ownerRef); err != nil {
+	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-falcon-0", "tiiuae/falcon-7b", "falcon-7b-instruct", 5000, nil, ownerRef); err != nil {
 		t.Fatalf("ensureSimConfigMap: %v", err)
 	}
 
@@ -999,9 +1004,9 @@ func TestEnsureSimConfigMap_PerTokenCalculator(t *testing.T) {
 		"inter-token-latency: 12ms",
 		"prefill-overhead: 30ms",
 		"prefill-time-per-token: 250us",
-		"prefill-time-std-dev: 5ms",
+		"prefill-time-std-dev: 50us",
 		"kv-cache-transfer-time-per-token: 3us",
-		"kv-cache-transfer-time-std-dev: 200us",
+		"kv-cache-transfer-time-std-dev: 600ns",
 		"time-factor-under-load: 2.0",
 	} {
 		if !strings.Contains(configYAML, want) {
@@ -1016,5 +1021,113 @@ func TestEnsureSimConfigMap_PerTokenCalculator(t *testing.T) {
 		if strings.Contains(configYAML, unwanted) {
 			t.Errorf("per-token calculator should not emit %q: %s", unwanted, configYAML)
 		}
+	}
+}
+
+// simConfigYAML runs ensureSimConfigMap and returns the rendered config.yaml.
+func simConfigYAML(t *testing.T, cfg Config, modelName, servedModelName string, annotations map[string]string) string {
+	t.Helper()
+	ctx := context.Background()
+	scheme := testScheme()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: cfg}
+	ownerRef := metav1.OwnerReference{APIVersion: "v1", Kind: "Pod", Name: "m-0", UID: "uid", Controller: ptr.To(true)}
+	if err := r.ensureSimConfigMap(ctx, "default", "shadow-default-m-0", modelName, servedModelName, 5000, annotations, ownerRef); err != nil {
+		t.Fatalf("ensureSimConfigMap: %v", err)
+	}
+	cm := &corev1.ConfigMap{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-m-0-config", Namespace: "default"}, cm); err != nil {
+		t.Fatalf("configmap not found: %v", err)
+	}
+	return cm.Data["config.yaml"]
+}
+
+// TestEnsureSimConfigMap_AutoProfileBySize verifies that with no profile
+// annotation, the baseline latency profile is auto-selected from the served
+// model size across all six buckets. The constant calculator is forced so the
+// profile's time-to-first-token is emitted for assertion.
+func TestEnsureSimConfigMap_AutoProfileBySize(t *testing.T) {
+	tests := []struct {
+		name            string
+		servedModelName string
+		wantTTFT        string
+		wantITL         string
+		wantFactor      string
+	}{
+		{"small 3B ⇒ small-l40s", "phi-3b-mini", "time-to-first-token: 110ms", "inter-token-latency: 15ms", "time-factor-under-load: 1.5"},
+		{"8B ⇒ 8b-h100", "llama-3.1-8b-instruct", "time-to-first-token: 100ms", "inter-token-latency: 12ms", "time-factor-under-load: 2.0"},
+		{"13B ⇒ 13b", "llama-2-13b-chat", "time-to-first-token: 180ms", "inter-token-latency: 22ms", "time-factor-under-load: 2.2"},
+		{"34B ⇒ 30b-tp2", "yi-34b-chat", "time-to-first-token: 250ms", "inter-token-latency: 30ms", "time-factor-under-load: 2.5"},
+		{"70B ⇒ 70b-tp8", "llama-3.1-70b-instruct", "time-to-first-token: 200ms", "inter-token-latency: 25ms", "time-factor-under-load: 3.0"},
+		{"405B ⇒ 405b-tp8", "llama-3.1-405b-instruct", "time-to-first-token: 900ms", "inter-token-latency: 80ms", "time-factor-under-load: 3.5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.LatencyCalculator = LatencyCalculatorConstant
+			configYAML := simConfigYAML(t, cfg, "org/"+tt.servedModelName, tt.servedModelName, nil)
+			for _, want := range []string{"latency-calculator: constant", tt.wantTTFT, tt.wantITL, tt.wantFactor} {
+				if !strings.Contains(configYAML, want) {
+					t.Errorf("missing %q in config: %s", want, configYAML)
+				}
+			}
+		})
+	}
+}
+
+// TestEnsureSimConfigMap_DefaultCalculatorPerToken verifies that, with no
+// annotation and an empty Config, the calculator defaults to per-token.
+func TestEnsureSimConfigMap_DefaultCalculatorPerToken(t *testing.T) {
+	configYAML := simConfigYAML(t, testConfig(), "org/falcon-7b", "falcon-7b-instruct", nil)
+	if !strings.Contains(configYAML, "latency-calculator: per-token") {
+		t.Errorf("default calculator should be per-token: %s", configYAML)
+	}
+	if strings.Contains(configYAML, "time-to-first-token:") {
+		t.Errorf("per-token default should not emit constant-only fields: %s", configYAML)
+	}
+}
+
+// TestEnsureSimConfigMap_ProfileAnnotation verifies the latency-profile
+// annotation forces a specific profile regardless of the model size.
+func TestEnsureSimConfigMap_ProfileAnnotation(t *testing.T) {
+	// A 70B model name would auto-select 70b-tp8, but the annotation forces
+	// small-l40s. Force the constant calculator so TTFT is emitted.
+	cfg := testConfig()
+	cfg.LatencyCalculator = LatencyCalculatorConstant
+	annotations := map[string]string{AnnotationLatencyProfile: LatencyProfileSmallL40S}
+	configYAML := simConfigYAML(t, cfg, "org/llama-70b", "llama-70b", annotations)
+	for _, want := range []string{
+		"time-to-first-token: 110ms",
+		"inter-token-latency: 15ms",
+		"time-factor-under-load: 1.5",
+	} {
+		if !strings.Contains(configYAML, want) {
+			t.Errorf("annotation should force small-l40s profile, missing %q: %s", want, configYAML)
+		}
+	}
+}
+
+// TestEnsureSimConfigMap_CalculatorAnnotation verifies the latency-calculator
+// annotation overrides the operator-wide default calculator.
+func TestEnsureSimConfigMap_CalculatorAnnotation(t *testing.T) {
+	// Default is per-token; annotation forces constant.
+	annotations := map[string]string{AnnotationLatencyCalculator: LatencyCalculatorConstant}
+	configYAML := simConfigYAML(t, testConfig(), "org/falcon-7b", "falcon-7b-instruct", annotations)
+	if !strings.Contains(configYAML, "latency-calculator: constant") {
+		t.Errorf("annotation should select constant calculator: %s", configYAML)
+	}
+	if !strings.Contains(configYAML, "time-to-first-token: 100ms") {
+		t.Errorf("constant knobs should be emitted: %s", configYAML)
+	}
+	if strings.Contains(configYAML, "prefill-overhead:") {
+		t.Errorf("constant calculator should not emit per-token-only fields: %s", configYAML)
+	}
+
+	// An unknown annotation value falls back to the operator default (per-token).
+	fallback := simConfigYAML(t, testConfig(), "org/falcon-7b", "falcon-7b-instruct",
+		map[string]string{AnnotationLatencyCalculator: "bogus"})
+	if !strings.Contains(fallback, "latency-calculator: per-token") {
+		t.Errorf("unknown calculator annotation should fall back to per-token: %s", fallback)
 	}
 }

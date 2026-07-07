@@ -95,33 +95,34 @@ func main() {
 		"Container image for the inference simulator running in shadow pods.")
 	flag.StringVar(&udsTokenizerImage, "uds-tokenizer-image", controllers.DefaultUDSTokenizerImage,
 		"Container image for the UDS tokenizer sidecar in shadow pods.")
-	flag.StringVar(&timeToFirstToken, "time-to-first-token", controllers.DefaultTimeToFirstToken,
-		"Inference simulator time-to-first-token latency (e.g. 100ms). See llm-d-inference-sim latency-profiles.md.")
-	flag.StringVar(&interTokenLatency, "inter-token-latency", controllers.DefaultInterTokenLatency,
-		"Inference simulator inter-token latency (e.g. 30ms). See llm-d-inference-sim latency-profiles.md.")
-	flag.StringVar(&ttftStdDev, "time-to-first-token-std-dev", controllers.DefaultTimeToFirstTokenStdDev,
-		"Std-dev jitter for time-to-first-token (e.g. 20ms).")
-	flag.StringVar(&itlStdDev, "inter-token-latency-std-dev", controllers.DefaultInterTokenLatencyStdDev,
-		"Std-dev jitter for inter-token latency (e.g. 2ms).")
-	flag.StringVar(&kvCacheTransfer, "kv-cache-transfer-latency", controllers.DefaultKVCacheTransferLatency,
-		"Constant KV-cache transfer overhead (e.g. 2ms).")
-	flag.StringVar(&kvCacheTransferStdDev, "kv-cache-transfer-latency-std-dev", controllers.DefaultKVCacheTransferStdDev,
-		"Std-dev jitter for KV-cache transfer latency (e.g. 400us).")
-	flag.StringVar(&timeFactorUnderLoad, "time-factor-under-load", controllers.DefaultTimeFactorUnderLoad,
-		"Latency multiplier as concurrency approaches max-num-seqs (e.g. 2.0).")
-	flag.StringVar(&latencyCalculator, "latency-calculator", controllers.DefaultLatencyCalculator,
-		fmt.Sprintf("Inference simulator latency model (%q or %q).",
-			controllers.LatencyCalculatorConstant, controllers.LatencyCalculatorPerToken))
-	flag.StringVar(&prefillOverhead, "prefill-overhead", controllers.DefaultPrefillOverhead,
-		"per-token calculator: fixed prefill overhead (e.g. 30ms).")
-	flag.StringVar(&prefillTimePerToken, "prefill-time-per-token", controllers.DefaultPrefillTimePerToken,
-		"per-token calculator: prefill cost per prompt token (e.g. 250us).")
-	flag.StringVar(&prefillTimeStdDev, "prefill-time-std-dev", controllers.DefaultPrefillTimeStdDev,
-		"per-token calculator: std-dev jitter for prefill time (e.g. 5ms).")
-	flag.StringVar(&kvTransferTimePerToken, "kv-cache-transfer-time-per-token", controllers.DefaultKVCacheTransferTimePerToken,
-		"per-token calculator: KV-cache transfer cost per token (e.g. 3us).")
-	flag.StringVar(&kvTransferTimeStdDev, "kv-cache-transfer-time-std-dev", controllers.DefaultKVCacheTransferTimeStdDev,
-		"per-token calculator: std-dev jitter for KV-cache transfer time (e.g. 200us).")
+	flag.StringVar(&timeToFirstToken, "time-to-first-token", "",
+		"Override the selected latency profile's time-to-first-token (e.g. 100ms). Empty ⇒ use the profile value. See llm-d-inference-sim latency-profiles.md.")
+	flag.StringVar(&interTokenLatency, "inter-token-latency", "",
+		"Override the selected latency profile's inter-token latency (e.g. 30ms). Empty ⇒ use the profile value. See llm-d-inference-sim latency-profiles.md.")
+	flag.StringVar(&ttftStdDev, "time-to-first-token-std-dev", "",
+		"Override the selected latency profile's std-dev jitter for time-to-first-token (e.g. 20ms). Empty ⇒ use the profile value.")
+	flag.StringVar(&itlStdDev, "inter-token-latency-std-dev", "",
+		"Override the selected latency profile's std-dev jitter for inter-token latency (e.g. 2ms). Empty ⇒ use the profile value.")
+	flag.StringVar(&kvCacheTransfer, "kv-cache-transfer-latency", "",
+		"Override the selected latency profile's constant KV-cache transfer overhead (e.g. 2ms). Empty ⇒ use the profile value.")
+	flag.StringVar(&kvCacheTransferStdDev, "kv-cache-transfer-latency-std-dev", "",
+		"Override the selected latency profile's std-dev jitter for KV-cache transfer latency (e.g. 400us). Empty ⇒ use the profile value.")
+	flag.StringVar(&timeFactorUnderLoad, "time-factor-under-load", "",
+		"Override the selected latency profile's latency multiplier as concurrency approaches max-num-seqs (e.g. 2.0). Empty ⇒ use the profile value.")
+	flag.StringVar(&latencyCalculator, "latency-calculator", "",
+		fmt.Sprintf("Operator-wide default latency model (%q or %q) when a pod has no %q annotation. Empty ⇒ %q.",
+			controllers.LatencyCalculatorConstant, controllers.LatencyCalculatorPerToken,
+			controllers.AnnotationLatencyCalculator, controllers.DefaultLatencyCalculator))
+	flag.StringVar(&prefillOverhead, "prefill-overhead", "",
+		"per-token calculator: override the profile's fixed prefill overhead (e.g. 30ms). Empty ⇒ use the profile value.")
+	flag.StringVar(&prefillTimePerToken, "prefill-time-per-token", "",
+		"per-token calculator: override the profile's prefill cost per prompt token (e.g. 250us). Empty ⇒ use the profile value.")
+	flag.StringVar(&prefillTimeStdDev, "prefill-time-std-dev", "",
+		"per-token calculator: override the profile's std-dev jitter for prefill time (e.g. 5ms). Empty ⇒ use the profile value.")
+	flag.StringVar(&kvTransferTimePerToken, "kv-cache-transfer-time-per-token", "",
+		"per-token calculator: override the profile's KV-cache transfer cost per token (e.g. 3us). Empty ⇒ use the profile value.")
+	flag.StringVar(&kvTransferTimeStdDev, "kv-cache-transfer-time-std-dev", "",
+		"per-token calculator: override the profile's std-dev jitter for KV-cache transfer time (e.g. 200us). Empty ⇒ use the profile value.")
 	flag.IntVar(&leaseDurationSec, "lease-duration-seconds", 40,
 		"Duration in seconds for fake node lease.")
 	flag.IntVar(&leaseRenewIntervalSec, "lease-renew-interval-seconds", 10,
@@ -151,9 +152,10 @@ func main() {
 		setupLog.Error(nil, "--lease-duration-seconds must be > 0")
 		os.Exit(1)
 	}
-	if latencyCalculator != controllers.LatencyCalculatorConstant &&
+	if latencyCalculator != "" &&
+		latencyCalculator != controllers.LatencyCalculatorConstant &&
 		latencyCalculator != controllers.LatencyCalculatorPerToken {
-		setupLog.Error(nil, "--latency-calculator must be \"constant\" or \"per-token\"",
+		setupLog.Error(nil, "--latency-calculator must be \"constant\", \"per-token\", or empty",
 			"value", latencyCalculator)
 		os.Exit(1)
 	}

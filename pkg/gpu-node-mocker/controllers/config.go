@@ -59,6 +59,19 @@ const (
 	// which shadow pod mirrors it, enabling idempotent reconciliation.
 	AnnotationShadowPodRef = "kaito.sh/shadow-pod-ref"
 
+	// AnnotationLatencyProfile lets an InferenceSet (via its pod template)
+	// select the llm-d-inference-sim latency profile for its shadow pods.
+	// Recognized values are "auto" (default — pick a profile from the model
+	// size parsed out of the served model name) or one of the named profiles
+	// ("small-l40s", "8b-h100", "13b", "30b-tp2", "70b-tp8", "405b-tp8").
+	// Unknown values fall back to "auto".
+	AnnotationLatencyProfile = "kaito.sh/latency-profile"
+
+	// AnnotationLatencyCalculator lets an InferenceSet select the simulator
+	// latency model per deployment: "per-token" (default) or "constant".
+	// Unknown values fall back to the operator-wide default and are logged.
+	AnnotationLatencyCalculator = "kaito.sh/latency-calculator"
+
 	// FakeProviderIDPrefix is intentionally un-parseable by the Azure CCM so
 	// InstanceExistsByProviderID returns an error and the CCM skips the node
 	// rather than deleting it.
@@ -89,40 +102,17 @@ const (
 	// DefaultUDSTokenizerImage is the default UDS tokenizer sidecar image.
 	DefaultUDSTokenizerImage = "ghcr.io/llm-d/llm-d-uds-tokenizer:v0.6.0"
 
-	// DefaultTimeToFirstToken / DefaultInterTokenLatency are the simulator
-	// latency knobs passed to llm-d-inference-sim's "constant" calculator. The
-	// defaults mirror an 8B-class model on H100 under balanced load (Profile 1
-	// in llm-d-inference-sim/docs/latency-profiles.md). Override per-deployment
-	// to mimic other model/hardware combinations.
-	DefaultTimeToFirstToken  = "100ms"
-	DefaultInterTokenLatency = "12ms"
-
-	// Default*StdDev add jitter so the simulator does not emit flat latencies.
-	// DefaultTimeFactorUnderLoad scales latency as concurrency approaches
-	// max-num-seqs. DefaultKVCacheTransferLatency models the constant
-	// prefill-cache transfer overhead. Values follow Profile 1.
-	DefaultTimeToFirstTokenStdDev  = "20ms"
-	DefaultInterTokenLatencyStdDev = "2ms"
-	DefaultKVCacheTransferLatency  = "2ms"
-	DefaultKVCacheTransferStdDev   = "400us"
-	DefaultTimeFactorUnderLoad     = "2.0"
-
 	// LatencyCalculatorConstant / LatencyCalculatorPerToken are the two
 	// llm-d-inference-sim latency models. "constant" derives TTFT from a fixed
 	// value; "per-token" derives it from prompt length via prefill overhead +
 	// per-token cost. See llm-d-inference-sim/docs/latency-profiles.md.
+	//
+	// Individual latency knob defaults are not defined here: when a Config knob
+	// is empty the value comes from the model-size latency profile selected in
+	// ensureSimConfigMap (see latency_profiles.go).
 	LatencyCalculatorConstant = "constant"
 	LatencyCalculatorPerToken = "per-token"
-	DefaultLatencyCalculator  = LatencyCalculatorConstant
-
-	// Default per-token calculator knobs (Profile 1: 8B/H100). PrefillOverhead
-	// is the fixed prefill cost; PrefillTimePerToken scales with prompt length;
-	// KVCacheTransferTimePerToken is the per-token cache transfer cost.
-	DefaultPrefillOverhead             = "30ms"
-	DefaultPrefillTimePerToken         = "250us"
-	DefaultPrefillTimeStdDev           = "5ms"
-	DefaultKVCacheTransferTimePerToken = "3us"
-	DefaultKVCacheTransferTimeStdDev   = "200us"
+	DefaultLatencyCalculator  = LatencyCalculatorPerToken
 
 	// InferenceSimPort is the default port for the inference simulator.
 	InferenceSimPort = 8001
@@ -216,8 +206,8 @@ type Config struct {
 	KVCacheTransferStdDev   string
 	TimeFactorUnderLoad     string
 
-	// LatencyCalculator selects the simulator latency model: "constant"
-	// (default) or "per-token". The per-token model derives TTFT from prompt
+	// LatencyCalculator selects the simulator latency model: "per-token"
+	// (default) or "constant". The per-token model derives TTFT from prompt
 	// length and uses the Prefill*/KVCacheTransferTime* knobs below instead of
 	// TimeToFirstToken / KVCacheTransferLatency.
 	LatencyCalculator string
