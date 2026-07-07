@@ -119,6 +119,7 @@ docker-buildx: ## Multi-arch build (and optionally push) the gpu-node-mocker ima
 E2E_LABEL ?=
 E2E_PARALLEL ?= 2
 E2E_TIMEOUT  ?= 60m
+E2E_JSON_REPORT ?= ginkgo-report.json
 
 .PHONY: test-e2e
 test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
@@ -127,6 +128,9 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 		--procs=$(E2E_PARALLEL) \
 		--timeout=$(E2E_TIMEOUT) \
 		-v \
+		--output-dir=$(CURDIR) \
+		--json-report=$(E2E_JSON_REPORT) \
+		--keep-going \
 		$(if $(E2E_LABEL),--label-filter="$(E2E_LABEL)",) \
 		./test/e2e/...
 

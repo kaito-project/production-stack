@@ -35,6 +35,7 @@ type Block struct {
 	Title           string
 	Labels          []string // labels declared directly on this block
 	EffectiveLabels []string // Labels plus labels inherited from ancestor Describe/Context blocks
+	Status          string   // It blocks only: "passed", "failed", "skipped", "pending", or "" when unknown
 }
 
 // TestFile collects all parsed blocks from a single *_test.go file.
@@ -49,6 +50,7 @@ func main() {
 	outputMD := flag.String("output-md", "e2e-coverage-report.md", "path for Markdown output")
 	outputHTML := flag.String("output-html", "e2e-coverage-report.html", "path for HTML output")
 	workflow := flag.String("workflow", "", "GitHub Actions workflow name")
+	results := flag.String("results", "", "path to a Ginkgo JSON report (ginkgo --json-report) used to annotate specs with pass/fail status")
 	flag.Parse()
 
 	repoRoot, err := findRepoRoot()
@@ -61,7 +63,14 @@ func main() {
 	labelMap := parseLabelConstants(filepath.Join(e2eDir, "utils", "ginkgo.go"))
 	files := parseTestFiles(e2eDir, labelMap)
 
+	specResults, err := parseResults(*results)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "results: %v\n", err)
+		os.Exit(1)
+	}
+
 	data := buildReportData(files, *workflow, *labelFilter)
+	applyResults(data, specResults)
 
 	if err := writeMarkdown(data, *outputMD); err != nil {
 		fmt.Fprintf(os.Stderr, "markdown: %v\n", err)

@@ -87,6 +87,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 <div class="cr">
   <div class="cd"><div class="ic">📄</div><div class="v">{{.TotalFiles}}</div><div class="l">Test Files</div></div>
   <div class="cd"><div class="ic">🧪</div><div class="v">{{.TotalIts}}</div><div class="l">Test Cases</div></div>
+  {{- if .HasResults}}
+  <div class="cd"><div class="ic">🟢</div><div class="v" style="color:var(--gn)">{{.TotalPassed}}</div><div class="l">Passed</div></div>
+  <div class="cd"><div class="ic">🔴</div><div class="v" style="color:var(--rd)">{{.TotalFailed}}</div><div class="l">Failed</div></div>
+  {{- if .TotalSkipped}}<div class="cd"><div class="ic">⚪</div><div class="v" style="color:var(--mt)">{{.TotalSkipped}}</div><div class="l">Skipped</div></div>{{end}}
+  {{- if .TotalPending}}<div class="cd"><div class="ic">🟡</div><div class="v" style="color:var(--yl)">{{.TotalPending}}</div><div class="l">Pending</div></div>{{end}}
+  {{- end}}
 </div>
 
 <div class="br">
@@ -142,7 +148,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
     {{- range $file.Blocks}}
       {{- if eq .Type "Describe"}}<div class="dh">▸ {{.Title}} {{range .Labels}}<span class="tg t-{{lower .}}">{{.}}</span>{{end}}</div>
       {{- else if eq .Type "Context"}}<div class="cx">◦ {{.Title}} {{range .Labels}}<span class="tg t-{{lower .}}">{{.}}</span>{{end}}</div>
-      {{- else if eq .Type "It"}}<div class="ti"><span class="dt"></span>{{.Title}} {{range .Labels}}<span class="tg t-{{lower .}}">{{.}}</span>{{end}}</div>
+      {{- else if eq .Type "It"}}<div class="ti"><span class="dt" style="background:{{statusColor .Status}}"></span>{{.Title}} {{range .Labels}}<span class="tg t-{{lower .}}">{{.}}</span>{{end}}</div>
       {{- end}}
     {{- end}}
   </div>
