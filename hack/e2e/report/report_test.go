@@ -66,13 +66,16 @@ func TestBuildReportData_Totals(t *testing.T) {
 func TestBuildReportData_BarChart(t *testing.T) {
 	data := buildReportData(sampleFiles(), "", "")
 
-	if len(data.BarChart) != 2 {
-		t.Fatalf("expected 2 bar entries, got %d", len(data.BarChart))
+	// Bars are grouped by label (ordered per orderedLabels): Smoke=2, Infra=2,
+	// Auth=1. Both alpha Its carry Smoke and Infra; the single beta It carries
+	// Auth.
+	if len(data.BarChart) != 3 {
+		t.Fatalf("expected 3 bar entries, got %d", len(data.BarChart))
 	}
 
-	// alpha_test.go has 2 tests (max), so its percent should be 100.
-	if data.BarChart[0].Label != "alpha" {
-		t.Errorf("expected bar[0].Label=alpha, got %q", data.BarChart[0].Label)
+	// Smoke has 2 tests (max), so its percent should be 100.
+	if data.BarChart[0].Label != "Smoke" {
+		t.Errorf("expected bar[0].Label=Smoke, got %q", data.BarChart[0].Label)
 	}
 	if data.BarChart[0].Value != 2 {
 		t.Errorf("expected bar[0].Value=2, got %d", data.BarChart[0].Value)
@@ -81,12 +84,20 @@ func TestBuildReportData_BarChart(t *testing.T) {
 		t.Errorf("expected bar[0].Percent=100, got %d", data.BarChart[0].Percent)
 	}
 
-	// beta_test.go has 1 test → 50%.
-	if data.BarChart[1].Label != "beta" {
-		t.Errorf("expected bar[1].Label=beta, got %q", data.BarChart[1].Label)
+	// Infra also has 2 tests → 100%.
+	if data.BarChart[1].Label != "Infra" {
+		t.Errorf("expected bar[1].Label=Infra, got %q", data.BarChart[1].Label)
 	}
-	if data.BarChart[1].Percent != 50 {
-		t.Errorf("expected bar[1].Percent=50, got %d", data.BarChart[1].Percent)
+	if data.BarChart[1].Value != 2 {
+		t.Errorf("expected bar[1].Value=2, got %d", data.BarChart[1].Value)
+	}
+
+	// Auth has 1 test → 50%.
+	if data.BarChart[2].Label != "Auth" {
+		t.Errorf("expected bar[2].Label=Auth, got %q", data.BarChart[2].Label)
+	}
+	if data.BarChart[2].Percent != 50 {
+		t.Errorf("expected bar[2].Percent=50, got %d", data.BarChart[2].Percent)
 	}
 }
 
@@ -99,8 +110,9 @@ func TestBuildReportData_DonutGradient(t *testing.T) {
 	if !strings.Contains(data.ConicGradient, "deg") {
 		t.Errorf("expected degree values in gradient, got %q", data.ConicGradient)
 	}
-	if len(data.DonutLegend) != 2 {
-		t.Errorf("expected 2 legend entries, got %d", len(data.DonutLegend))
+	// One legend entry per label with matching tests: Smoke, Infra, Auth.
+	if len(data.DonutLegend) != 3 {
+		t.Errorf("expected 3 legend entries, got %d", len(data.DonutLegend))
 	}
 }
 
@@ -173,9 +185,9 @@ func TestWriteMarkdown(t *testing.T) {
 		"🟢 test A",
 		// Mermaid pie chart.
 		"```mermaid",
-		"pie title Tests by File",
-		`"alpha" : 2`,
-		`"beta" : 1`,
+		"pie title Tests by Label",
+		`"Smoke" : 2`,
+		`"Auth" : 1`,
 		// Mermaid bar chart.
 		"xychart-beta horizontal",
 		// Label coverage table.

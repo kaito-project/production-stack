@@ -261,44 +261,78 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 		data.Files = append(data.Files, filtered)
 	}
 
-	// Bar chart data.
+	// Bar chart / donut data — grouped by label rather than by file. Each
+	// running It block contributes to the count of every label it carries, so
+	// a spec with multiple labels is counted once per label.
+	barLabelCounts := make(map[string]int)
+	for _, f := range files {
+		for _, b := range f.Blocks {
+			if b.Type != "It" || !matchesLabelFilter(labelFilter, b.EffectiveLabels) {
+				continue
+			}
+			seen := make(map[string]bool, len(b.EffectiveLabels))
+			for _, lbl := range b.EffectiveLabels {
+				if seen[lbl] {
+					continue
+				}
+				seen[lbl] = true
+				barLabelCounts[lbl]++
+			}
+		}
+	}
+
+	// Preserve the canonical label ordering, keeping only labels that have at
+	// least one matching test under the active filter.
+	var chartLabels []string
+	for _, lbl := range orderedLabels {
+		if barLabelCounts[lbl] > 0 {
+			chartLabels = append(chartLabels, lbl)
+		}
+	}
+
 	maxTests := 0
-	for _, fc := range filteredFiles {
-		if fc.count > maxTests {
-			maxTests = fc.count
+	labelTotal := 0
+	for _, lbl := range chartLabels {
+		labelTotal += barLabelCounts[lbl]
+		if barLabelCounts[lbl] > maxTests {
+			maxTests = barLabelCounts[lbl]
 		}
 	}
 
 	cumulative := 0
 	var gradientParts []string
-	for i, fc := range filteredFiles {
-		f := fc.file
-		color := chartColors[i%len(chartColors)]
+	for i, lbl := range chartLabels {
+		count := barLabelCounts[lbl]
+		color := labelColors[lbl]
+		if color == "" {
+			color = chartColors[i%len(chartColors)]
+		}
 		pct := 0
 		if maxTests > 0 {
-			pct = fc.count * 100 / maxTests
+			pct = count * 100 / maxTests
 		}
-		shortName := strings.TrimSuffix(f.Name, "_test.go")
 
 		data.BarChart = append(data.BarChart, BarEntry{
-			Label:   shortName,
-			Value:   fc.count,
+			Label:   lbl,
+			Value:   count,
 			Percent: pct,
 			Color:   color,
 		})
 
-		// Donut segment.
+		// Donut segment — proportional to each label's share of the summed
+		// per-label counts (which may exceed TotalIts when specs are
+		// multi-labelled).
 		startDeg := 0
-		if data.TotalIts > 0 {
-			startDeg = cumulative * 360 / data.TotalIts
+		if labelTotal > 0 {
+			startDeg = cumulative * 360 / labelTotal
 		}
-		cumulative += fc.count
+		cumulative += count
 		endDeg := 0
-		if data.TotalIts > 0 {
-			endDeg = cumulative * 360 / data.TotalIts
+		if labelTotal > 0 {
+			endDeg = cumulative * 360 / labelTotal
 		}
 		gradientParts = append(gradientParts, fmt.Sprintf("%s %ddeg %ddeg", color, startDeg, endDeg))
-		data.DonutLegend = append(data.DonutLegend, LegendEntry{Label: shortName, Color: color})
+		data.DonutLegend = append(data.DonutLegend, LegendEntry{Label: lbl, Color: color})
 	}
 	if len(gradientParts) > 0 {
 		data.ConicGradient = strings.Join(gradientParts, ", ")
@@ -417,23 +451,23 @@ func writeMarkdown(data *ReportData, path string) error {
 	p("---")
 	p("")
 
-	// Mermaid pie chart — tests per file.
+	// Mermaid pie chart — tests per label.
 	p("### 📈 Test Distribution")
 	p("")
 	p("```mermaid")
-	p("pie title Tests by File")
+	p("pie title Tests by Label")
 	for _, entry := range data.BarChart {
 		p("    %q : %d", entry.Label, entry.Value)
 	}
 	p("```")
 	p("")
 
-	// Mermaid bar chart — tests per file.
-	p("### 📊 Tests per File")
+	// Mermaid bar chart — tests per label.
+	p("### 📊 Tests per Label")
 	p("")
 	p("```mermaid")
 	p("xychart-beta horizontal")
-	p("    title \"Tests per File\"")
+	p("    title \"Tests per Label\"")
 	barLabels := make([]string, len(data.BarChart))
 	barValues := make([]string, len(data.BarChart))
 	for i, entry := range data.BarChart {
