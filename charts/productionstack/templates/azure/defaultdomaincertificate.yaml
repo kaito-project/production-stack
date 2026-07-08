@@ -1,0 +1,29 @@
+{{- if and (eq .Values.cloudprovider "azure") .Values.azure.defaultDomain.enabled }}
+# DefaultDomainCertificate: triggers the AKS App-Routing operator to
+# reconcile `spec.target.secret` in `.Values.azure.defaultDomain.namespace`
+# with an Azure-issued wildcard cert for the cluster's aksapp.io
+# default domain, and to auto-renew it. Rendered outside the
+# productionstack release namespace because the DDC and its Secret
+# are cluster-level shared state — the value defaults to `kube-system`,
+# the natural home and the convention AI Manager RP already uses.
+#
+# Consuming Gateways (rendered by charts/modelharness) cross-namespace-
+# reference the resulting Secret; the corresponding ReferenceGrant is
+# rendered by charts/modelharness itself into `secretRef.namespace`
+# (which MUST match `.Values.azure.defaultDomain.namespace` here), so
+# productionstack stays free of consumer-namespace knowledge.
+apiVersion: approuting.kubernetes.azure.com/v1alpha1
+kind: DefaultDomainCertificate
+metadata:
+  name: {{ .Values.azure.defaultDomain.name | quote }}
+  namespace: {{ .Values.azure.defaultDomain.namespace | quote }}
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    kaito.sh/owned-by: productionstack
+spec:
+  target:
+    secret: {{ .Values.azure.defaultDomain.secretName | quote }}
+{{- else if .Values.azure.defaultDomain.enabled }}
+{{- fail "azure.defaultDomain.enabled=true requires cloudprovider=\"azure\"" }}
+{{- end }}

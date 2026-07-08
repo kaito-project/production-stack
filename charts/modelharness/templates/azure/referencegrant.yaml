@@ -1,0 +1,30 @@
+{{- if eq .Values.cloudprovider "azure" }}
+# ReferenceGrant: authorises THIS workload namespace's Gateway to
+# cross-namespace-reference the shared default-domain TLS Secret in
+# `secretRef.namespace`. Gateway API rejects cross-namespace
+# SecretObjectReferences unless a ReferenceGrant in the referent's
+# namespace explicitly permits the (kind, namespace) pair.
+#
+# Written OUTSIDE this chart's workload namespace — the grant must
+# live in the Secret's namespace, not the consumer Gateway's. Named
+# after the workload namespace so multiple modelharness releases in
+# different namespaces don't collide in the shared referent
+# namespace. Uninstalling this release removes the grant atomically
+# with the Gateway — no orphaned authorisations.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ printf "modelharness-%s-default-domain" (include "modelharness.namespace" .) | quote }}
+  namespace: {{ .Values.azure.defaultDomain.secretRef.namespace | quote }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: {{ include "modelharness.namespace" . | quote }}
+  to:
+    - group: ""
+      kind: Secret
+      name: {{ .Values.azure.defaultDomain.secretRef.name | quote }}
+{{- end }}

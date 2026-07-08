@@ -86,3 +86,44 @@ epp:
   modelServerSelector:
     inferenceset.kaito.sh/created-by: ""   # auto-filled with .Values.name when empty
     apps.kubernetes.io/pod-index: "0"
+
+# cloudprovider selects which cloud provider's integrations render.
+# When `cloudprovider=""` (the default), the non-cloud
+# `templates/httproute.yaml` renders (header-only routing, no
+# hostnames). When `cloudprovider=azure`, `templates/httproute.yaml`
+# renders nothing and `templates/azure/httproute.yaml` renders instead
+# (adds `hostnames: [<namespace>.<zoneName>]` matching the modelharness
+# Gateway's Azure default-domain HTTPS listener).
+#
+# Exactly one variant renders for a given cloudprovider — no inline
+# `{{ if }}` blocks inside spec bodies. The `azure` subtree below is
+# ignored unless `cloudprovider=azure`.
+cloudprovider: ""
+
+# azure groups every Azure-specific value used by templates under
+# `templates/azure/`. Consumed only when `cloudprovider=azure`.
+azure:
+  # defaultDomain drives the `hostnames` field on
+  # templates/azure/httproute.yaml so it attaches to the modelharness
+  # Gateway's HTTPS default-domain listener. The HTTPRoute carries
+  # `hostnames: ["<workload-namespace>.<zoneName>"]` — the SAME
+  # hostname the modelharness Gateway listener uses — so Istio
+  # attaches the route to that listener and requests on the
+  # default-domain hostname reach this InferencePool.
+  #
+  # Header-based routing (X-Gateway-Model-Name matching this
+  # deployment's `name`) still differentiates multiple deployments
+  # sharing the hostname within the namespace.
+  #
+  # `zoneName` MUST match the value used in the corresponding
+  # `modelharness` release's `azure.defaultDomain.zoneName` in the
+  # same namespace.
+  defaultDomain:
+    # zoneName is the cluster's AKS-issued default-domain zone (without
+    # the `*.` prefix). Required when cloudprovider=azure — the template
+    # `fail`s otherwise. Same value as used in the corresponding
+    # modelharness (and productionstack) release. Fetch with:
+    #   az aks show -g $RG -n $CLUSTER \
+    #     --query 'ingressProfile.webAppRouting.defaultDomain.domainName' \
+    #     -o tsv
+    zoneName: ""

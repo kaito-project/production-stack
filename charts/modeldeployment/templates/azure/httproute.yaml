@@ -1,4 +1,19 @@
-{{- if eq .Values.cloudprovider "" }}
+{{- if eq .Values.cloudprovider "azure" }}
+{{- if not .Values.azure.defaultDomain.zoneName }}
+{{- fail "cloudprovider=\"azure\" requires azure.defaultDomain.zoneName. Use the SAME value as the corresponding modelharness release's azure.defaultDomain.zoneName. Fetch with: az aks show -g $RG -n $CLUSTER --query 'ingressProfile.webAppRouting.defaultDomain.domainName' -o tsv" }}
+{{- end }}
+# HTTPRoute with `hostnames` set to match the modelharness Gateway's
+# Azure default-domain HTTPS listener. Rendered only when
+# `cloudprovider=azure`; the non-Azure sibling `templates/httproute.yaml`
+# (no hostnames, header-only routing) renders otherwise.
+#
+# `hostnames` is required so Istio attaches this HTTPRoute to the
+# host-scoped HTTPS listener — without a matching hostname, the
+# Istio Gateway controller rejects the route from that listener even
+# though the parentRef is correct. Header-based routing
+# (X-Gateway-Model-Name matching this deployment's `name`) still
+# differentiates multiple deployments sharing the hostname within
+# the namespace.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -12,6 +27,8 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: {{ include "modeldeployment.gatewayName" . | quote }}
+  hostnames:
+    - {{ printf "%s.%s" (include "modeldeployment.namespace" .) (.Values.azure.defaultDomain.zoneName | trimPrefix ".") | quote }}
   rules:
     - matches:
         # Two match entries are OR'd by the Gateway API spec: a request is
