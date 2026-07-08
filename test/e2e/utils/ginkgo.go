@@ -48,19 +48,11 @@ var (
 	GinkgoLabelNetworkPolicy = g.Label("NetworkPolicy")
 
 	// GinkgoLabelScaling marks tests that verify end-to-end KEDA-driven
-	// scaling of InferenceSet replicas. Nightly-only because KEDA polling
-	// and cooldown windows make these tests take minutes per run.
+	// scaling of InferenceSet replicas, covering the scale-up and
+	// scale-down phases as well as anti-flapping (no oscillation near the
+	// threshold or during cooldown). Nightly-only because KEDA polling and
+	// cooldown windows make these tests take minutes per run.
 	GinkgoLabelScaling = g.Label("Scaling")
-
-	// GinkgoLabelScaleUp marks the scale-up phase of a scaling test.
-	GinkgoLabelScaleUp = g.Label("ScaleUp")
-
-	// GinkgoLabelScaleDown marks the scale-down phase of a scaling test.
-	GinkgoLabelScaleDown = g.Label("ScaleDown")
-
-	// GinkgoLabelAntiFlapping marks anti-flapping tests that verify KEDA
-	// does not oscillate replicas near the threshold or during cooldown.
-	GinkgoLabelAntiFlapping = g.Label("AntiFlapping")
 
 	// GinkgoLabelFilterOrder marks tests that verify the Envoy HTTP
 	// filter chain execution order on the per-namespace Gateway:
@@ -68,26 +60,17 @@ var (
 	// See test/e2e/filter_order_test.go for the test matrix.
 	GinkgoLabelFilterOrder = g.Label("FilterOrder")
 
-	// GinkgoLabelClusterFilterHA marks tests that verify the cluster-wide
-	// BBR ext_proc filter's high availability and single-replica-loss
-	// failover (issue #89). These tests perturb the shared kaito-system
-	// BBR Deployment, so the suite MUST decorate them Serial.
-	// See test/e2e/cluster_filter_ha_test.go.
-	GinkgoLabelClusterFilterHA = g.Label("ClusterFilterHA")
-
-	// GinkgoLabelClusterOutage marks tests that verify the fail-closed
-	// behavior of the cluster-wide filters (BBR ext_proc, llm-gateway-auth
-	// ext_authz) and the unified outage local_reply mapping. These tests
-	// scale cluster-wide singleton Deployments to zero, so they MUST run
-	// Serial and are Nightly-only.
-	GinkgoLabelClusterOutage = g.Label("ClusterOutage")
-
-	// GinkgoLabelDataplaneOutage marks tests that verify the per-namespace
-	// half of the consolidated outage local_reply: the model-serving hops
-	// (EPP ext_proc fail-closed -> epp_unavailable; zero ready inference
-	// endpoints -> model_unavailable). Unlike GinkgoLabelClusterOutage,
-	// these perturb only the case's OWN namespace (its EPP Deployment or
-	// InferenceSet replicas), so they do not need Serial; they are Nightly
-	// because they take an inference pool through an outage + recovery.
-	GinkgoLabelDataplaneOutage = g.Label("DataplaneOutage")
+	// GinkgoLabelOutage marks tests that verify fail-closed / high-availability
+	// behavior when a filter or model-serving component goes down. It spans
+	// two halves:
+	//   - Cluster-wide singletons (BBR ext_proc, llm-gateway-auth ext_authz):
+	//     HA / single-replica-loss failover and scale-to-zero fail-closed
+	//     behavior. These perturb shared kaito-system Deployments, so the
+	//     corresponding suites MUST be decorated Serial.
+	//   - Per-namespace data plane (EPP ext_proc fail-closed -> epp_unavailable;
+	//     zero ready inference endpoints -> model_unavailable). These perturb
+	//     only the case's OWN namespace, so they do not need Serial.
+	// See test/e2e/{bbr,ext_authz,epp}_outage_test.go, model_unavailable_test.go
+	// and cluster_filter_ha_test.go.
+	GinkgoLabelOutage = g.Label("Outage")
 )

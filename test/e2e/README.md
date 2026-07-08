@@ -48,7 +48,11 @@ E2E_LABEL=Smoke make test-e2e
 E2E_PARALLEL=4 make test-e2e
 ```
 
-Labels live in [`utils/ginkgo.go`](utils/ginkgo.go): `GinkgoLabelSmoke`, `GinkgoLabelRouting`, `GinkgoLabelPrefixCache`, `GinkgoLabelInfra`.
+Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into two groups:
+
+- **Cadence** (when a spec runs): `Smoke` (every PR), `Nightly` (long-running, nightly only).
+- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Auth`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
+
 
 ### Bring up a cluster from scratch
 

@@ -59,7 +59,7 @@ import (
 // authenticated request, so this suite must not run concurrently with any
 // other spec.
 var _ = Describe("ext_authz outage (fail-closed cluster filter)",
-	Ordered, Serial, utils.GinkgoLabelClusterOutage, utils.GinkgoLabelAuth, func() {
+	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelAuth, func() {
 
 		const (
 			authNamespace      = "llm-gateway-auth"

@@ -54,7 +54,7 @@ import (
 // the mesh. Scaling it to zero breaks every other in-flight inference
 // request, so this suite must not run concurrently with any other spec.
 var _ = Describe("BBR outage (fail-closed cluster filter)",
-	Ordered, Serial, utils.GinkgoLabelClusterOutage, func() {
+	Ordered, Serial, utils.GinkgoLabelOutage, func() {
 
 		const (
 			bbrNamespace      = "kaito-system"

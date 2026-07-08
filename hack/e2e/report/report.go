@@ -82,42 +82,39 @@ type LabelCard struct {
 // ---------------------------------------------------------------------------
 
 var orderedLabels = []string{
-	"Smoke", "Infra", "Routing", "Auth",
-	"Scaling", "ScaleUp", "ScaleDown", "AntiFlapping",
-	"FilterOrder", "Nightly", "NetworkPolicy",
-	"PrefixCache", "InferenceSet",
+	"Smoke", "Nightly",
+	"Infra", "Routing", "PrefixCache", "Auth", "NetworkPolicy",
+	"Scaling", "InferenceSet", "FilterOrder", "Karpenter", "Outage",
 }
 
 var labelDescriptions = map[string]string{
 	"Smoke":         "Basic sanity checks — every PR",
+	"Nightly":       "Long-running tests (nightly only)",
 	"Infra":         "Infrastructure lifecycle (nodes, pods, GC)",
 	"Routing":       "Gateway / model routing correctness",
-	"Auth":          "API key authentication",
-	"Scaling":       "KEDA-driven scale-up / scale-down",
-	"ScaleUp":       "Scale-up specific assertions",
-	"ScaleDown":     "Scale-down specific assertions",
-	"AntiFlapping":  "Prevents premature re-scaling",
-	"FilterOrder":   "Envoy HTTP filter chain execution order",
-	"Nightly":       "Long-running tests (nightly only)",
-	"NetworkPolicy": "Kubernetes NetworkPolicy enforcement",
 	"PrefixCache":   "Prefix / KV-cache aware routing",
+	"Auth":          "API key authentication",
+	"NetworkPolicy": "Kubernetes NetworkPolicy enforcement",
+	"Scaling":       "KEDA-driven scale-up / scale-down / anti-flapping",
 	"InferenceSet":  "InferenceSet chart lifecycle",
+	"FilterOrder":   "Envoy HTTP filter chain execution order",
+	"Karpenter":     "GPU node provisioning from zero",
+	"Outage":        "Fail-closed / HA outage resilience",
 }
 
 var labelColors = map[string]string{
 	"Smoke":         "#3fb950",
+	"Nightly":       "#d29922",
 	"Infra":         "#bc8cff",
 	"Routing":       "#f0883e",
-	"Auth":          "#f85149",
-	"Scaling":       "#39d353",
-	"ScaleUp":       "#39d353",
-	"ScaleDown":     "#39d353",
-	"AntiFlapping":  "#39d353",
-	"FilterOrder":   "#58a6ff",
-	"Nightly":       "#d29922",
-	"NetworkPolicy": "#bc8cff",
 	"PrefixCache":   "#f0883e",
+	"Auth":          "#f85149",
+	"NetworkPolicy": "#bc8cff",
+	"Scaling":       "#39d353",
 	"InferenceSet":  "#bc8cff",
+	"FilterOrder":   "#58a6ff",
+	"Karpenter":     "#56d364",
+	"Outage":        "#f85149",
 }
 
 var chartColors = []string{
