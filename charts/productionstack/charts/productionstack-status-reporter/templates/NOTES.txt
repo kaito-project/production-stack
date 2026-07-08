@@ -1,0 +1,17 @@
+productionstack-status-reporter has been installed.
+
+It runs {{ .Values.replicas }} replica(s) in namespace
+{{ include "productionstack-status-reporter.namespace" . }} with leader election
+{{ if .Values.leaderElection.enabled }}ENABLED{{ else }}DISABLED{{ end }}; only the
+elected leader emits events.
+
+The reporter is the single producer of control-plane status Events. View the
+current status of the production stack with:
+
+  kubectl get events -n kube-system \
+    --field-selector source=productionstack-status-reporter \
+    --sort-by=.lastTimestamp
+
+Warning events name a misconfigured / not-ready component and (for cluster-layer
+reasons that gate downstream layers) list which downstream reasons are being
+suppressed. Normal "*Ready" events are emitted once on recovery.

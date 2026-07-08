@@ -1,0 +1,80 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# productionstack-status-reporter — values.
+#
+# The reporter is a single, leader-elected, READ-ONLY controller that
+# evaluates the control-plane reason catalogue and emits aggregated
+# Kubernetes Events in kube-system. Run it HA (>= 2 replicas); only the
+# leader emits events.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Inherit the umbrella release namespace by default. Set to install the
+# reporter into its own namespace (which must already exist).
+namespaceOverride: ""
+
+image:
+  repository: ghcr.io/kaito-project/productionstack-status-reporter
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Run HA so a node drain never blanks the status stream. Only the elected
+# leader emits events, so replicas never duplicate the event stream.
+replicas: 2
+
+# How often every reason is re-evaluated.
+resyncSeconds: 60
+
+# Window (seconds) during which transient startup states are not surfaced as
+# Warning events: cluster/harness/EPP/route findings are withheld while the
+# backing resource is younger than this window (or, for findings without a
+# backing object, until the problem has persisted this long). Workspace and
+# model-pod findings bypass it and instead only surface terminal failures.
+# Set to 0 to disable.
+startupGraceSeconds: 60
+
+leaderElection:
+  enabled: true
+  id: productionstack-status-reporter
+
+# Install namespaces of the cluster-layer components the reporter probes.
+# These default to the umbrella chart's own defaults; override to match a
+# customised install.
+controlPlane:
+  istioNamespace: istio-system
+  kaitoNamespace: kaito-workspace
+  kedaNamespace: keda
+  gatewayAuthNamespace: llm-gateway-auth
+  bbrNamespace: kaito-system
+  kedaScalerNamespace: keda
+  # Deployment names probed for cluster-layer readiness. Override to match a
+  # customised install (e.g. a revisioned istiod on the AKS Istio add-on).
+  istiodDeployment: istiod
+  kaitoDeployment: kaito-workspace
+  bbrDeployment: body-based-router
+  kedaScalerDeployment: keda-kaito-scaler
+  gatewayAuthDeployment: apikey-authz
+  # Optional cluster-autoscaler / Karpenter node provisioner Deployment.
+  # Leave name empty to skip the clusterNodeProvisionerNotReady check.
+  nodeProvisioner:
+    name: ""
+    namespace: ""
+  # Sliding-window evaluation for inferencesetWeightDownloadSlow.
+  weightDownload:
+    windowSeconds: 60
+    minMBps: 20
+    metricName: kaito_model_download_speed_bytes_per_second
+    metricPort: 5000
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Soft anti-affinity so HA replicas prefer separate nodes.
+podAntiAffinity: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

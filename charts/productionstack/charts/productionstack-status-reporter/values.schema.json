@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "productionstack-status-reporter values",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "namespaceOverride": { "type": "string" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      },
+      "required": ["repository", "tag", "pullPolicy"]
+    },
+    "replicas": { "type": "integer", "minimum": 1 },
+    "resyncSeconds": { "type": "integer", "minimum": 1 },
+    "startupGraceSeconds": { "type": "integer", "minimum": 0 },
+    "leaderElection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "id": { "type": "string", "minLength": 1 }
+      },
+      "required": ["enabled", "id"]
+    },
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "istioNamespace": { "type": "string" },
+        "kaitoNamespace": { "type": "string" },
+        "kedaNamespace": { "type": "string" },
+        "gatewayAuthNamespace": { "type": "string" },
+        "bbrNamespace": { "type": "string" },
+        "kedaScalerNamespace": { "type": "string" },
+        "istiodDeployment": { "type": "string" },
+        "kaitoDeployment": { "type": "string" },
+        "bbrDeployment": { "type": "string" },
+        "kedaScalerDeployment": { "type": "string" },
+        "gatewayAuthDeployment": { "type": "string" },
+        "nodeProvisioner": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "namespace": { "type": "string" }
+          }
+        },
+        "weightDownload": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "windowSeconds": { "type": "integer", "minimum": 1 },
+            "minMBps": { "type": "number", "minimum": 0 },
+            "metricName": { "type": "string", "minLength": 1 },
+            "metricPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        }
+      }
+    },
+    "resources": { "type": "object" },
+    "podAntiAffinity": { "type": "boolean" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" }
+  },
+  "required": ["image", "replicas"]
+}

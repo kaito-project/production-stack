@@ -172,6 +172,20 @@ const (
 	// namespace (its InferenceSet replicas), so the suite does not need
 	// Serial. Non-auth so only BBR + EPP are in path.
 	CaseModelUnavailable = "model-unavailable"
+
+	// CaseControlPlaneError covers control_plane_error_test.go (per-InferenceSet
+	// inferencesetEPPNotReady / inferencesetRouteNotReady). It owns a dedicated
+	// namespace so the suite can perturb its EPP Deployment and per-case Gateway
+	// in parallel with other Ordered Describes without colliding on the
+	// model-routing case's namespace or reporter Events.
+	CaseControlPlaneError = "control-plane-error"
+
+	// CaseWeightDownloadSlow covers weight_download_slow_test.go (negative
+	// assertion that a healthy deployment never trips
+	// inferencesetWeightDownloadSlow). It owns a dedicated namespace so its
+	// quiet-window negative assertion is not contaminated by another Describe
+	// installing/uninstalling a shared case namespace concurrently.
+	CaseWeightDownloadSlow = "weight-download-slow"
 )
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
@@ -372,6 +386,31 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			// BBR Deployment's HA, not the model pool's.
 			Name:         "cluster-filter-ha-phi",
 			Namespace:    "e2e-cluster-filter-ha",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
+		},
+	},
+	CaseControlPlaneError: {
+		{
+			// Single GPU-mocked InferenceSet so the EPP Deployment and the
+			// per-case Gateway exist for the perturbation specs. One replica
+			// is enough — the specs scale the EPP to zero / delete the Gateway,
+			// independent of the model pool size.
+			Name:         "control-plane-error-phi",
+			Namespace:    "e2e-control-plane-error",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
+		},
+	},
+	CaseWeightDownloadSlow: {
+		{
+			// Single healthy GPU-mocked InferenceSet. The spec only asserts
+			// the absence of a spurious inferencesetWeightDownloadSlow Event,
+			// so one replica suffices.
+			Name:         "weight-download-slow-phi",
+			Namespace:    "e2e-weight-download-slow",
 			Model:        presetPhi,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
