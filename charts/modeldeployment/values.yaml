@@ -42,6 +42,11 @@ maxReplicas: 3
 # scaledobject.kaito.sh/threshold annotation.
 scalingThreshold: 10
 
+# enableBenchmark toggles KAITO benchmark runs for this InferenceSet. When
+# false, the `kaito.sh/disable-benchmark: "true"` annotation is stamped on
+# the InferenceSet so the KAITO controller skips benchmark provisioning.
+enableBenchmark: true
+
 # gatewayName is the Gateway resource the HTTPRoute attaches to. When
 # empty (the default), the chart derives it as "<namespace>-gw" so the
 # rendered HTTPRoute parents the per-namespace Gateway provisioned by
