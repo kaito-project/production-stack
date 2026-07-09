@@ -261,33 +261,48 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 		data.Files = append(data.Files, filtered)
 	}
 
-	// Bar chart / donut data — grouped by label rather than by file. Each
-	// running It block contributes to the count of every label it carries, so
-	// a spec with multiple labels is counted once per label.
+	// Bar chart / donut data — grouped by capability. Each running It block is
+	// attributed to exactly one capability (the first label it carries in the
+	// canonical orderedLabels order) so that the per-capability counts sum to
+	// TotalIts. Specs whose labels are all outside orderedLabels fall into an
+	// "Other" bucket.
+	labelPriority := make(map[string]int, len(orderedLabels))
+	for i, lbl := range orderedLabels {
+		labelPriority[lbl] = i
+	}
+	const otherCapability = "Other"
 	barLabelCounts := make(map[string]int)
 	for _, f := range files {
 		for _, b := range f.Blocks {
 			if b.Type != "It" || !matchesLabelFilter(labelFilter, b.EffectiveLabels) {
 				continue
 			}
-			seen := make(map[string]bool, len(b.EffectiveLabels))
+			primary := ""
+			bestRank := len(orderedLabels)
 			for _, lbl := range b.EffectiveLabels {
-				if seen[lbl] {
-					continue
+				if rank, ok := labelPriority[lbl]; ok && rank < bestRank {
+					bestRank = rank
+					primary = lbl
 				}
-				seen[lbl] = true
-				barLabelCounts[lbl]++
 			}
+			if primary == "" {
+				primary = otherCapability
+			}
+			barLabelCounts[primary]++
 		}
 	}
 
-	// Preserve the canonical label ordering, keeping only labels that have at
-	// least one matching test under the active filter.
+	// Preserve the canonical label ordering, keeping only capabilities that
+	// have at least one matching test under the active filter. The "Other"
+	// bucket, if present, is appended last.
 	var chartLabels []string
 	for _, lbl := range orderedLabels {
 		if barLabelCounts[lbl] > 0 {
 			chartLabels = append(chartLabels, lbl)
 		}
+	}
+	if barLabelCounts[otherCapability] > 0 {
+		chartLabels = append(chartLabels, otherCapability)
 	}
 
 	maxTests := 0
@@ -319,9 +334,9 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 			Color:   color,
 		})
 
-		// Donut segment — proportional to each label's share of the summed
-		// per-label counts (which may exceed TotalIts when specs are
-		// multi-labelled).
+		// Donut segment — proportional to each capability's share of the
+		// total. Because every spec is attributed to exactly one capability,
+		// labelTotal equals TotalIts.
 		startDeg := 0
 		if labelTotal > 0 {
 			startDeg = cumulative * 360 / labelTotal
@@ -451,23 +466,23 @@ func writeMarkdown(data *ReportData, path string) error {
 	p("---")
 	p("")
 
-	// Mermaid pie chart — tests per label.
+	// Mermaid pie chart — tests per dimension.
 	p("### 📈 Test Distribution")
 	p("")
 	p("```mermaid")
-	p("pie title Tests by Label")
+	p("pie title Tests by Dimensions")
 	for _, entry := range data.BarChart {
 		p("    %q : %d", entry.Label, entry.Value)
 	}
 	p("```")
 	p("")
 
-	// Mermaid bar chart — tests per label.
-	p("### 📊 Tests per Label")
+	// Mermaid bar chart — tests per dimension.
+	p("### 📊 Tests per Dimension")
 	p("")
 	p("```mermaid")
 	p("xychart-beta horizontal")
-	p("    title \"Tests per Label\"")
+	p("    title \"Tests per Dimension\"")
 	barLabels := make([]string, len(data.BarChart))
 	barValues := make([]string, len(data.BarChart))
 	for i, entry := range data.BarChart {
@@ -477,16 +492,6 @@ func writeMarkdown(data *ReportData, path string) error {
 	p("    x-axis [%s]", strings.Join(barLabels, ", "))
 	p("    bar [%s]", strings.Join(barValues, ", "))
 	p("```")
-	p("")
-
-	// Label coverage table with counts.
-	p("### 🏷️ Coverage by Label")
-	p("")
-	p("| Label | Blocks | Description |")
-	p("|-------|-------:|-------------|")
-	for _, card := range data.LabelCards {
-		p("| `%s` | **%d** | %s |", card.Name, card.Count, labelDescriptions[card.Name])
-	}
 	p("")
 	p("---")
 	p("")

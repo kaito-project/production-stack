@@ -66,11 +66,12 @@ func TestBuildReportData_Totals(t *testing.T) {
 func TestBuildReportData_BarChart(t *testing.T) {
 	data := buildReportData(sampleFiles(), "", "")
 
-	// Bars are grouped by label (ordered per orderedLabels): Smoke=2, Infra=2,
-	// Auth=1. Both alpha Its carry Smoke and Infra; the single beta It carries
-	// Auth.
-	if len(data.BarChart) != 3 {
-		t.Fatalf("expected 3 bar entries, got %d", len(data.BarChart))
+	// Each spec is attributed to exactly one capability (the first label it
+	// carries in orderedLabels order), so per-capability counts sum to TotalIts.
+	// Both alpha Its carry Smoke and Infra → Smoke wins (ranks first); the single
+	// beta It carries Auth. Result: Smoke=2, Auth=1.
+	if len(data.BarChart) != 2 {
+		t.Fatalf("expected 2 bar entries, got %d", len(data.BarChart))
 	}
 
 	// Smoke has 2 tests (max), so its percent should be 100.
@@ -84,20 +85,24 @@ func TestBuildReportData_BarChart(t *testing.T) {
 		t.Errorf("expected bar[0].Percent=100, got %d", data.BarChart[0].Percent)
 	}
 
-	// Infra also has 2 tests → 100%.
-	if data.BarChart[1].Label != "Infra" {
-		t.Errorf("expected bar[1].Label=Infra, got %q", data.BarChart[1].Label)
+	// Auth has 1 test → 50%.
+	if data.BarChart[1].Label != "Auth" {
+		t.Errorf("expected bar[1].Label=Auth, got %q", data.BarChart[1].Label)
 	}
-	if data.BarChart[1].Value != 2 {
-		t.Errorf("expected bar[1].Value=2, got %d", data.BarChart[1].Value)
+	if data.BarChart[1].Value != 1 {
+		t.Errorf("expected bar[1].Value=1, got %d", data.BarChart[1].Value)
+	}
+	if data.BarChart[1].Percent != 50 {
+		t.Errorf("expected bar[1].Percent=50, got %d", data.BarChart[1].Percent)
 	}
 
-	// Auth has 1 test → 50%.
-	if data.BarChart[2].Label != "Auth" {
-		t.Errorf("expected bar[2].Label=Auth, got %q", data.BarChart[2].Label)
+	// The sum of all capability counts must equal the total test count.
+	sum := 0
+	for _, e := range data.BarChart {
+		sum += e.Value
 	}
-	if data.BarChart[2].Percent != 50 {
-		t.Errorf("expected bar[2].Percent=50, got %d", data.BarChart[2].Percent)
+	if sum != data.TotalIts {
+		t.Errorf("expected capability counts to sum to TotalIts=%d, got %d", data.TotalIts, sum)
 	}
 }
 
@@ -110,9 +115,9 @@ func TestBuildReportData_DonutGradient(t *testing.T) {
 	if !strings.Contains(data.ConicGradient, "deg") {
 		t.Errorf("expected degree values in gradient, got %q", data.ConicGradient)
 	}
-	// One legend entry per label with matching tests: Smoke, Infra, Auth.
-	if len(data.DonutLegend) != 3 {
-		t.Errorf("expected 3 legend entries, got %d", len(data.DonutLegend))
+	// One legend entry per capability with matching tests: Smoke, Auth.
+	if len(data.DonutLegend) != 2 {
+		t.Errorf("expected 2 legend entries, got %d", len(data.DonutLegend))
 	}
 }
 
@@ -185,15 +190,11 @@ func TestWriteMarkdown(t *testing.T) {
 		"🟢 test A",
 		// Mermaid pie chart.
 		"```mermaid",
-		"pie title Tests by Label",
+		"pie title Tests by Dimensions",
 		`"Smoke" : 2`,
 		`"Auth" : 1`,
 		// Mermaid bar chart.
 		"xychart-beta horizontal",
-		// Label coverage table.
-		"Coverage by Label",
-		"| `Smoke` | **2**",
-		"| `Auth` | **2**",
 	}
 
 	for _, want := range checks {

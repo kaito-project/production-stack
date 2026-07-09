@@ -101,7 +101,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 </div>
 
 <div class="charts">
-  <div class="panel"><h3>📊 Tests by Label</h3>
+  <div class="panel"><h3>📊 Tests by Dimensions</h3>
     {{- range .BarChart}}
     <div class="bar-row">
       <span class="bar-label">{{.Label}}</span>
@@ -121,18 +121,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
         {{- end}}
       </div>
     </div>
-  </div>
-</div>
-
-<div class="lbl-section"><h3>🏷️ Coverage by Label</h3>
-  <div class="lbl-grid">
-    {{- range .LabelCards}}
-    <div class="lbl-card">
-      <div style="position:absolute;bottom:0;left:0;right:0;height:3px;background:{{.Color}}"></div>
-      <div class="lc-n" style="color:{{.Color}}">{{.Count}}</div>
-      <div class="lc-l" style="color:{{.Color}}">{{.Name}}</div>
-    </div>
-    {{- end}}
   </div>
 </div>
 
