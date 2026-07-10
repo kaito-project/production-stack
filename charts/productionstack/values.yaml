@@ -173,3 +173,77 @@ llm-gateway-apikey:
     # at the chart default to avoid surprising the upstream template.
     extAuthzInsert:
       operation: INSERT_FIRST
+
+# cloudprovider selects which cloud provider's integrations render.
+# Cloud-specific templates (those living under templates/<provider>/)
+# are gated on this matching their subfolder AND the per-feature
+# `.enabled` toggle. Empty string — the default — keeps the chart
+# provider-agnostic and renders zero cloud-specific resources.
+#
+# Enabling `azure.<feature>.enabled=true` without setting
+# `cloudprovider=azure` is a hard error (template `fail`), not a
+# silent no-op — config drift between the two knobs should be caught
+# at install time.
+cloudprovider: ""
+
+# azure groups every Azure-specific integration under one namespace.
+# Each sub-feature carries its own `.enabled` toggle in addition to
+# the top-level `cloudprovider` gate — opting into Azure doesn't
+# force every Azure feature on.
+azure:
+  # defaultDomain renders the cluster-wide DefaultDomainCertificate CR
+  # that triggers the AKS App-Routing operator to reconcile a TLS Secret
+  # containing an Azure-issued wildcard cert for the cluster's aksapp.io
+  # default domain, and to auto-renew it.
+  #
+  # One DDC per cluster is sufficient — the cert covers the wildcard
+  # host, and every per-namespace Gateway (rendered by charts/modelharness)
+  # cross-namespace-references the reconciled Secret.
+  #
+  # The DDC is pinned to the `kube-system` namespace regardless of the
+  # productionstack release namespace. Rationale: the DDC and its
+  # reconciled Secret are cluster-level shared state; kube-system is the
+  # natural home, matches AI Manager RP conventions (`kubectl apply -n
+  # kube-system` in the reference bootstrap), and gives consuming
+  # Gateways a stable, well-known referent namespace.
+  #
+  # ReferenceGrants authorising each consumer namespace to reference
+  # the Secret are rendered by charts/modelharness (not here) into
+  # kube-system, so productionstack stays free of consumer-namespace
+  # knowledge and each modelharness release brings its own grant.
+  #
+  # AKS cluster prerequisites (all required; enabling only some leaves
+  # the DDC stuck at Available=False):
+  #   - Application Routing add-on          (`--enable-app-routing`)
+  #   - Application Routing Gateway API     (`--enable-app-routing-istio`)
+  #   - Managed Gateway API CRDs installed
+  #
+  # NOTE: `--enable-app-routing-istio` is mutually exclusive with the
+  # Istio service-mesh add-on. Consuming Gateways MUST set
+  # `gatewayClassName: approuting-istio` in charts/modelharness — the
+  # vanilla `istio` GatewayClass will not reconcile default-domain TLS.
+  #
+  # The App-Routing operator's cluster-scoped `default-domain-dns`
+  # ClusterExternalDNS auto-publishes the A record for the aksapp.io
+  # hostname; this chart does NOT render an ExternalDNS.
+  defaultDomain:
+    enabled: false
+
+    # namespace is where the DefaultDomainCertificate CR (and the
+    # reconciled TLS Secret) lives. Defaults to `kube-system` — the
+    # natural home for cluster-level shared state and matches AI Manager
+    # RP conventions. Consumers in charts/modelharness reference the
+    # Secret cross-namespace via `azure.defaultDomain.secretRef.namespace`,
+    # which MUST match this value.
+    namespace: kube-system
+
+    # name is the DefaultDomainCertificate CR name.
+    name: "cert"
+
+    # secretName is the kubernetes.io/tls Secret the App-Routing operator
+    # populates and rotates (in kube-system). Must be a DNS-1123 label
+    # (matches the DefaultDomainCertificate CRD's own validation on
+    # `spec.target.secret`) and <= 63 chars. Consuming Gateways in
+    # charts/modelharness must reference the same name/namespace via
+    # `azure.defaultDomain.secretRef`.
+    secretName: "cert"

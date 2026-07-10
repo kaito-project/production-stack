@@ -171,3 +171,80 @@ networkPolicy:
     - kaito-system
     - kube-system
     - monitoring
+
+# cloudprovider selects which cloud provider's integrations render.
+# When `cloudprovider=""` (the default), the non-cloud
+# `templates/gateway.yaml` renders and cloud-specific templates
+# under `templates/<provider>/` render nothing. When
+# `cloudprovider=azure`, `templates/gateway.yaml` renders nothing
+# and `templates/azure/*.yaml` render the Azure variants instead
+# (Gateway with default-domain HTTPS listener + ReferenceGrant).
+#
+# Exactly one variant renders for a given cloudprovider — no inline
+# `{{ if }}` blocks inside spec bodies. The `azure` subtree below is
+# ignored unless `cloudprovider=azure`.
+cloudprovider: ""
+
+# azure groups every Azure-specific value used by templates under
+# `templates/azure/`. Consumed only when `cloudprovider=azure`.
+azure:
+  # defaultDomain wires THIS namespace's Gateway into the cluster's AKS
+  # Application Routing "default domain". Pure consumer of the
+  # cluster-wide DefaultDomainCertificate rendered by charts/productionstack
+  # — this chart does NOT render its own DDC because one Azure-issued
+  # wildcard cert covers the whole cluster and N per-namespace DDCs
+  # would drive N redundant reconciliation loops against the same
+  # underlying Azure cert.
+  #
+  # The listener hostname is composed as
+  # `<workload-namespace>.<azure-default-domain>`. The namespace prefix
+  # guarantees a unique subdomain per modelharness release on the same
+  # cluster; the App-Routing operator's `default-domain-dns`
+  # ClusterExternalDNS then auto-publishes an A record for that name.
+  #
+  # The chart also renders a ReferenceGrant into `secretRef.namespace`
+  # authorising THIS workload namespace's Gateway to cross-namespace-
+  # reference the shared TLS Secret. Gateway API rejects cross-namespace
+  # certificateRefs without a matching ReferenceGrant in the Secret's
+  # namespace. Each modelharness release brings its own grant so there
+  # is no cross-chart coordination.
+  #
+  # Prerequisites (validated by the caller, not the chart):
+  #   - `gatewayClassName: approuting-istio` above. The Istio
+  #     service-mesh add-on's `istio` class does NOT reconcile
+  #     default-domain TLS.
+  #   - charts/productionstack installed with cloudprovider=azure
+  #     and azure.defaultDomain.enabled=true so the DDC and its
+  #     Secret exist.
+  #   - The Helm caller has RBAC to create/patch/delete
+  #     ReferenceGrants in `secretRef.namespace`.
+  defaultDomain:
+    # zoneName is the cluster's AKS-issued default-domain zone (WITHOUT
+    # the `*.` prefix). Required when cloudprovider=azure — the template
+    # `fail`s otherwise. Fetch with:
+    #   az aks show -g $RG -n $CLUSTER \
+    #     --query 'ingressProfile.webAppRouting.defaultDomain.domainName' \
+    #     -o tsv
+    # Per-cluster constant; use the same value for every modelharness
+    # release on the same cluster.
+    zoneName: ""
+
+    # secretRef points at the TLS Secret reconciled by the App-Routing
+    # operator from the productionstack DDC. Defaults match
+    # productionstack's DDC pinning to kube-system with secretName=cert;
+    # override both together if productionstack was installed with
+    # different values.
+    secretRef:
+      name: "cert"
+      namespace: "kube-system"
+
+    # httpsPort is the HTTPS listener port. AKS App-Routing's managed
+    # LoadBalancer only reconciles 80/443 by default; don't change
+    # without matching load-balancer customisation.
+    httpsPort: 443
+
+    # listenerName is the Gateway listener name. Must be unique within
+    # `spec.listeners`. Kept short and stable so any
+    # `istio-gateway-class-defaults` per-listener overrides key off a
+    # predictable name.
+    listenerName: "https-default"

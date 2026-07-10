@@ -1,0 +1,55 @@
+{{- if eq .Values.cloudprovider "azure" }}
+{{- if not .Values.azure.defaultDomain.zoneName }}
+{{- fail "cloudprovider=\"azure\" requires azure.defaultDomain.zoneName. Fetch with: az aks show -g $RG -n $CLUSTER --query 'ingressProfile.webAppRouting.defaultDomain.domainName' -o tsv" }}
+{{- end }}
+# Gateway with an Azure App-Routing default-domain HTTPS listener
+# alongside the standard HTTP listener. Rendered only when
+# `cloudprovider=azure`; the non-Azure sibling `templates/gateway.yaml`
+# (HTTP only) renders otherwise. Kept as a separate file (rather
+# than an inline conditional in the shared Gateway spec) so the two
+# variants can evolve independently and it's obvious at a glance
+# which cloud a given cluster is running.
+#
+# Hostname on the HTTPS listener is composed as
+# `<workload-namespace>.<zoneName>` so every modelharness release
+# gets a unique subdomain that the App-Routing operator's
+# `default-domain-dns` ClusterExternalDNS auto-publishes into the
+# aksapp.io zone.
+#
+# The cross-namespace `certificateRefs.namespace` is authorised by
+# the ReferenceGrant this chart renders in
+# `templates/azure/referencegrant.yaml` (into `secretRef.namespace`,
+# not this workload namespace).
+#
+# `gatewayClassName` MUST be `approuting-istio` for the HTTPS
+# listener to be reconciled; the Istio service-mesh add-on's
+# `istio` GatewayClass does not integrate with the default-domain
+# controller.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "modelharness.gatewayName" . | quote }}
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ .Values.gatewayClassName }}
+  listeners:
+    - name: http
+      port: {{ .Values.gatewayPort }}
+      protocol: HTTP
+    - name: {{ .Values.azure.defaultDomain.listenerName | quote }}
+      port: {{ .Values.azure.defaultDomain.httpsPort }}
+      protocol: HTTPS
+      hostname: {{ printf "%s.%s" (include "modelharness.namespace" .) (.Values.azure.defaultDomain.zoneName | trimPrefix ".") | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            group: ""
+            name: {{ .Values.azure.defaultDomain.secretRef.name | quote }}
+            namespace: {{ .Values.azure.defaultDomain.secretRef.namespace | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+{{- end }}

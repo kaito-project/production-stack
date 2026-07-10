@@ -85,6 +85,30 @@
           "description": "EPP HTTP metrics port."
         }
       }
+    },
+    "cloudprovider": {
+      "type": "string",
+      "enum": ["", "azure"],
+      "description": "Cloud provider gate. When empty (default), templates/httproute.yaml renders (header-only routing). When \"azure\", templates/httproute.yaml is skipped and templates/azure/httproute.yaml renders instead (adds hostnames: [<namespace>.<zoneName>] matching the modelharness Gateway's Azure default-domain HTTPS listener)."
+    },
+    "azure": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Azure-specific values consumed by templates/azure/*. Ignored unless cloudprovider=\"azure\".",
+      "properties": {
+        "defaultDomain": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Drives the `hostnames` field on templates/azure/httproute.yaml so it attaches to the modelharness Gateway's HTTPS default-domain listener.",
+          "properties": {
+            "zoneName": {
+              "type": "string",
+              "description": "Cluster's AKS-issued default-domain zone (without the '*.' prefix). Required when cloudprovider=azure — template renders `fail` otherwise. MUST match the corresponding modelharness release's azure.defaultDomain.zoneName."
+            }
+          }
+        }
+      },
+      "required": ["defaultDomain"]
     }
   }
 }

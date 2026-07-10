@@ -104,6 +104,55 @@
         }
       },
       "required": ["enabled"]
+    },
+    "cloudprovider": {
+      "type": "string",
+      "enum": ["", "azure"],
+      "description": "Cloud provider gate. When empty (default), templates/gateway.yaml renders and templates/azure/* is skipped. When \"azure\", templates/gateway.yaml is skipped and templates/azure/* render the Azure variants (Gateway with default-domain HTTPS listener + ReferenceGrant)."
+    },
+    "azure": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Azure-specific values consumed by templates/azure/*. Ignored unless cloudprovider=\"azure\".",
+      "properties": {
+        "defaultDomain": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Consumer-side wiring for the cluster-wide AKS App-Routing default-domain TLS Secret rendered by charts/productionstack. When cloudprovider=azure, templates/azure/gateway.yaml adds an HTTPS listener with hostname '<namespace>.<zoneName>' + cross-namespace certificateRefs, and templates/azure/referencegrant.yaml renders a ReferenceGrant into secretRef.namespace authorising the cross-namespace ref.",
+          "properties": {
+            "zoneName": {
+              "type": "string",
+              "description": "Cluster's AKS-issued default-domain zone (without the '*.' prefix). Required when cloudprovider=azure — template renders `fail` otherwise. Fetch from `az aks show ... --query 'ingressProfile.webAppRouting.defaultDomain.domainName'`."
+            },
+            "secretRef": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Cross-namespace reference to the shared TLS Secret. MUST match productionstack's `azure.defaultDomain.secretName` (name) and the DDC's namespace (default: kube-system).",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 63,
+                  "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                },
+                "namespace": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": ["name", "namespace"]
+            },
+            "httpsPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "listenerName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            }
+          }
+        }
+      },
+      "required": ["defaultDomain"]
     }
   }
 }
