@@ -11,7 +11,7 @@
 #   RESOURCE_GROUP        — Azure resource group name  (default: kaito-rg)
 #   CLUSTER_NAME          — AKS cluster name           (default: kaito-aks)
 #   ACR_NAME              — ACR registry name           (default: <cluster_name>acr, sanitized)
-#   LOCATION              — Azure region               (default: australiaeast)
+#   LOCATION              — Azure region               (default: swedencentral)
 #   NODE_COUNT            — Number of worker nodes      (default: 2)
 #   NODE_VM_SIZE          — VM SKU for the node pool    (default: Standard_D8d_v4)
 #   E2E_PROVIDER          — upstream|azure              (default: upstream)
@@ -41,7 +41,7 @@ RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-rg}"
 CLUSTER_NAME="${CLUSTER_NAME:-kaito-aks}"
 # ACR names must be alphanumeric, 5-50 chars. Strip dashes from cluster name.
 ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
-LOCATION="${LOCATION:-australiaeast}"
+LOCATION="${LOCATION:-swedencentral}"
 NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"

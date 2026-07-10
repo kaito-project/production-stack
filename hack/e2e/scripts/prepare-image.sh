@@ -11,7 +11,7 @@
 #   RESOURCE_GROUP   — Azure resource group name (default: kaito-rg)
 #   CLUSTER_NAME     — AKS cluster name          (default: kaito-aks)
 #   ACR_NAME         — ACR registry name         (default: <cluster_name>acr, sanitized)
-#   LOCATION         — Azure region              (default: australiaeast)
+#   LOCATION         — Azure region              (default: swedencentral)
 #   IMG              — Local docker tag for the gpu-node-mocker image
 #                      (default: gpu-node-mocker:latest)
 #
@@ -32,7 +32,7 @@ RESOURCE_GROUP="${RESOURCE_GROUP:-kaito-rg}"
 CLUSTER_NAME="${CLUSTER_NAME:-kaito-aks}"
 # ACR names must be alphanumeric, 5-50 chars. Strip dashes from cluster name.
 ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
-LOCATION="${LOCATION:-australiaeast}"
+LOCATION="${LOCATION:-swedencentral}"
 IMG="${IMG:-gpu-node-mocker:latest}"
 
 # Verify the container tool used by the Makefile (docker/podman) is installed
