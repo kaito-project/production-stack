@@ -18,6 +18,10 @@ spec:
     spec:
       serviceAccountName: {{ include "gpu-node-mocker.fullname" . }}
       terminationGracePeriodSeconds: 30
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: controller
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

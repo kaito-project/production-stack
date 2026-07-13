@@ -36,4 +36,10 @@ resources:
   requests:
     cpu: 200m
     memory: 256Mi
+
+# Additional tolerations applied to the scaler pod, appended to the
+# always-present control-plane tolerations. Empty by default; the caller is
+# expected to pass any required tolerations (e.g. a CriticalAddonsOnly
+# toleration for nodes reserved for critical add-ons).
+tolerations: []
   

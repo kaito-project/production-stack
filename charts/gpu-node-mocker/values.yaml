@@ -64,3 +64,8 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
+
+# tolerations applied to the controller pod. Empty by default; the caller is
+# expected to pass any required tolerations (e.g. a CriticalAddonsOnly
+# toleration for nodes reserved for critical add-ons).
+tolerations: []

@@ -28,6 +28,10 @@ spec:
     spec:
       serviceAccountName: {{ include "modeldeployment.eppServiceName" . }}
       terminationGracePeriodSeconds: 130
+      {{- with .Values.epp.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: epp
           image: "{{ .Values.epp.image.repository }}:{{ .Values.epp.image.tag }}"
