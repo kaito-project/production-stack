@@ -95,7 +95,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 		}
 
 		Describe("Scale-Up → Scale-Down End-to-End",
-			Ordered, utils.GinkgoLabelScaleUp, utils.GinkgoLabelScaleDown, func() {
+			Ordered, func() {
 
 				var (
 					ctx      context.Context
@@ -570,7 +570,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 			},
 		)
 
-		Describe("Anti-Flapping", utils.GinkgoLabelAntiFlapping, func() {
+		Describe("Anti-Flapping", func() {
 
 			var (
 				ctx  context.Context

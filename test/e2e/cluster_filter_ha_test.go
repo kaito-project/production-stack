@@ -59,7 +59,7 @@ import (
 // It is intentionally NOT asserted here; the all-replicas-down case below
 // asserts only that the request fails closed (5xx, never a silent 404).
 var _ = Describe("BBR cluster-filter HA",
-	Ordered, Serial, utils.GinkgoLabelClusterFilterHA, utils.GinkgoLabelSmoke, func() {
+	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelSmoke, func() {
 
 		const (
 			bbrNamespace  = "kaito-system"

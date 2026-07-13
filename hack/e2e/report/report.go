@@ -82,42 +82,39 @@ type LabelCard struct {
 // ---------------------------------------------------------------------------
 
 var orderedLabels = []string{
-	"Smoke", "Infra", "Routing", "Auth",
-	"Scaling", "ScaleUp", "ScaleDown", "AntiFlapping",
-	"FilterOrder", "Nightly", "NetworkPolicy",
-	"PrefixCache", "InferenceSet",
+	"Smoke", "Nightly",
+	"Infra", "Routing", "PrefixCache", "Auth", "NetworkPolicy",
+	"Scaling", "InferenceSet", "FilterOrder", "Karpenter", "Outage",
 }
 
 var labelDescriptions = map[string]string{
 	"Smoke":         "Basic sanity checks — every PR",
+	"Nightly":       "Long-running tests (nightly only)",
 	"Infra":         "Infrastructure lifecycle (nodes, pods, GC)",
 	"Routing":       "Gateway / model routing correctness",
-	"Auth":          "API key authentication",
-	"Scaling":       "KEDA-driven scale-up / scale-down",
-	"ScaleUp":       "Scale-up specific assertions",
-	"ScaleDown":     "Scale-down specific assertions",
-	"AntiFlapping":  "Prevents premature re-scaling",
-	"FilterOrder":   "Envoy HTTP filter chain execution order",
-	"Nightly":       "Long-running tests (nightly only)",
-	"NetworkPolicy": "Kubernetes NetworkPolicy enforcement",
 	"PrefixCache":   "Prefix / KV-cache aware routing",
+	"Auth":          "API key authentication",
+	"NetworkPolicy": "Kubernetes NetworkPolicy enforcement",
+	"Scaling":       "KEDA-driven scale-up / scale-down / anti-flapping",
 	"InferenceSet":  "InferenceSet chart lifecycle",
+	"FilterOrder":   "Envoy HTTP filter chain execution order",
+	"Karpenter":     "GPU node provisioning from zero",
+	"Outage":        "Fail-closed / HA outage resilience",
 }
 
 var labelColors = map[string]string{
 	"Smoke":         "#3fb950",
+	"Nightly":       "#d29922",
 	"Infra":         "#bc8cff",
 	"Routing":       "#f0883e",
-	"Auth":          "#f85149",
-	"Scaling":       "#39d353",
-	"ScaleUp":       "#39d353",
-	"ScaleDown":     "#39d353",
-	"AntiFlapping":  "#39d353",
-	"FilterOrder":   "#58a6ff",
-	"Nightly":       "#d29922",
-	"NetworkPolicy": "#bc8cff",
 	"PrefixCache":   "#f0883e",
+	"Auth":          "#f85149",
+	"NetworkPolicy": "#bc8cff",
+	"Scaling":       "#39d353",
 	"InferenceSet":  "#bc8cff",
+	"FilterOrder":   "#58a6ff",
+	"Karpenter":     "#56d364",
+	"Outage":        "#f85149",
 }
 
 var chartColors = []string{
@@ -264,44 +261,93 @@ func buildReportData(files []TestFile, workflow, labelFilter string) *ReportData
 		data.Files = append(data.Files, filtered)
 	}
 
-	// Bar chart data.
+	// Bar chart / donut data — grouped by capability. Each running It block is
+	// attributed to exactly one capability (the first label it carries in the
+	// canonical orderedLabels order) so that the per-capability counts sum to
+	// TotalIts. Specs whose labels are all outside orderedLabels fall into an
+	// "Other" bucket.
+	labelPriority := make(map[string]int, len(orderedLabels))
+	for i, lbl := range orderedLabels {
+		labelPriority[lbl] = i
+	}
+	const otherCapability = "Other"
+	barLabelCounts := make(map[string]int)
+	for _, f := range files {
+		for _, b := range f.Blocks {
+			if b.Type != "It" || !matchesLabelFilter(labelFilter, b.EffectiveLabels) {
+				continue
+			}
+			primary := ""
+			bestRank := len(orderedLabels)
+			for _, lbl := range b.EffectiveLabels {
+				if rank, ok := labelPriority[lbl]; ok && rank < bestRank {
+					bestRank = rank
+					primary = lbl
+				}
+			}
+			if primary == "" {
+				primary = otherCapability
+			}
+			barLabelCounts[primary]++
+		}
+	}
+
+	// Preserve the canonical label ordering, keeping only capabilities that
+	// have at least one matching test under the active filter. The "Other"
+	// bucket, if present, is appended last.
+	var chartLabels []string
+	for _, lbl := range orderedLabels {
+		if barLabelCounts[lbl] > 0 {
+			chartLabels = append(chartLabels, lbl)
+		}
+	}
+	if barLabelCounts[otherCapability] > 0 {
+		chartLabels = append(chartLabels, otherCapability)
+	}
+
 	maxTests := 0
-	for _, fc := range filteredFiles {
-		if fc.count > maxTests {
-			maxTests = fc.count
+	labelTotal := 0
+	for _, lbl := range chartLabels {
+		labelTotal += barLabelCounts[lbl]
+		if barLabelCounts[lbl] > maxTests {
+			maxTests = barLabelCounts[lbl]
 		}
 	}
 
 	cumulative := 0
 	var gradientParts []string
-	for i, fc := range filteredFiles {
-		f := fc.file
-		color := chartColors[i%len(chartColors)]
+	for i, lbl := range chartLabels {
+		count := barLabelCounts[lbl]
+		color := labelColors[lbl]
+		if color == "" {
+			color = chartColors[i%len(chartColors)]
+		}
 		pct := 0
 		if maxTests > 0 {
-			pct = fc.count * 100 / maxTests
+			pct = count * 100 / maxTests
 		}
-		shortName := strings.TrimSuffix(f.Name, "_test.go")
 
 		data.BarChart = append(data.BarChart, BarEntry{
-			Label:   shortName,
-			Value:   fc.count,
+			Label:   lbl,
+			Value:   count,
 			Percent: pct,
 			Color:   color,
 		})
 
-		// Donut segment.
+		// Donut segment — proportional to each capability's share of the
+		// total. Because every spec is attributed to exactly one capability,
+		// labelTotal equals TotalIts.
 		startDeg := 0
-		if data.TotalIts > 0 {
-			startDeg = cumulative * 360 / data.TotalIts
+		if labelTotal > 0 {
+			startDeg = cumulative * 360 / labelTotal
 		}
-		cumulative += fc.count
+		cumulative += count
 		endDeg := 0
-		if data.TotalIts > 0 {
-			endDeg = cumulative * 360 / data.TotalIts
+		if labelTotal > 0 {
+			endDeg = cumulative * 360 / labelTotal
 		}
 		gradientParts = append(gradientParts, fmt.Sprintf("%s %ddeg %ddeg", color, startDeg, endDeg))
-		data.DonutLegend = append(data.DonutLegend, LegendEntry{Label: shortName, Color: color})
+		data.DonutLegend = append(data.DonutLegend, LegendEntry{Label: lbl, Color: color})
 	}
 	if len(gradientParts) > 0 {
 		data.ConicGradient = strings.Join(gradientParts, ", ")
@@ -420,23 +466,23 @@ func writeMarkdown(data *ReportData, path string) error {
 	p("---")
 	p("")
 
-	// Mermaid pie chart — tests per file.
+	// Mermaid pie chart — tests per dimension.
 	p("### 📈 Test Distribution")
 	p("")
 	p("```mermaid")
-	p("pie title Tests by File")
+	p("pie title Tests by Dimensions")
 	for _, entry := range data.BarChart {
 		p("    %q : %d", entry.Label, entry.Value)
 	}
 	p("```")
 	p("")
 
-	// Mermaid bar chart — tests per file.
-	p("### 📊 Tests per File")
+	// Mermaid bar chart — tests per dimension.
+	p("### 📊 Tests per Dimension")
 	p("")
 	p("```mermaid")
 	p("xychart-beta horizontal")
-	p("    title \"Tests per File\"")
+	p("    title \"Tests per Dimension\"")
 	barLabels := make([]string, len(data.BarChart))
 	barValues := make([]string, len(data.BarChart))
 	for i, entry := range data.BarChart {
@@ -446,16 +492,6 @@ func writeMarkdown(data *ReportData, path string) error {
 	p("    x-axis [%s]", strings.Join(barLabels, ", "))
 	p("    bar [%s]", strings.Join(barValues, ", "))
 	p("```")
-	p("")
-
-	// Label coverage table with counts.
-	p("### 🏷️ Coverage by Label")
-	p("")
-	p("| Label | Blocks | Description |")
-	p("|-------|-------:|-------------|")
-	for _, card := range data.LabelCards {
-		p("| `%s` | **%d** | %s |", card.Name, card.Count, labelDescriptions[card.Name])
-	}
 	p("")
 	p("---")
 	p("")

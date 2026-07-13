@@ -54,7 +54,7 @@ import (
 // own namespace's inference pool, not any cluster-wide singleton, so the
 // suite is safe to run alongside other (non-overlapping) specs.
 var _ = Describe("model_unavailable (zero ready inference endpoints)",
-	Ordered, utils.GinkgoLabelDataplaneOutage, utils.GinkgoLabelNightly, func() {
+	Ordered, utils.GinkgoLabelOutage, utils.GinkgoLabelNightly, func() {
 
 		var (
 			ctx          context.Context
