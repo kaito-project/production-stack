@@ -520,13 +520,7 @@ func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, namespace,
 	itl := valueOrDefault(profile.InterTokenLatency, r.Config.InterTokenLatency)
 	itlStdDev := valueOrDefault(profile.InterTokenLatencyStdDev, r.Config.InterTokenLatencyStdDev)
 	timeFactor := valueOrDefault(profile.TimeFactorUnderLoad, r.Config.TimeFactorUnderLoad)
-	calculator, calcAnnotationInvalid := resolveLatencyCalculator(annotations[AnnotationLatencyCalculator], r.Config.LatencyCalculator)
-	if calcAnnotationInvalid {
-		log.FromContext(ctx).Info("unrecognized latency-calculator annotation; falling back",
-			"annotation", AnnotationLatencyCalculator,
-			"value", annotations[AnnotationLatencyCalculator],
-			"fallback", calculator)
-	}
+	calculator := resolveLatencyCalculator(annotations[AnnotationLatencyCalculator], r.Config.LatencyCalculator)
 
 	// Fields common to both calculators.
 	latencyYAML := fmt.Sprintf(`latency-calculator: %s

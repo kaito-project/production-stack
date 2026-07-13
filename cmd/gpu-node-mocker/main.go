@@ -159,6 +159,9 @@ func main() {
 			"value", latencyCalculator)
 		os.Exit(1)
 	}
+	if latencyCalculator == "" {
+		latencyCalculator = controllers.DefaultLatencyCalculator
+	}
 
 	cfg := controllers.Config{
 		ShadowPodImage:              shadowPodImage,

@@ -38,7 +38,13 @@ type latencyProfile struct {
 	KVCacheTransferLatency string
 	KVCacheTransferStdDev  string
 
-	// per-token calculator.
+	// per-token calculator. NOTE: the pinned sim image (DefaultInferenceSimImage,
+	// llm-d-inference-sim v0.8.1) rejects a config where PrefillTimeStdDev exceeds
+	// 30% of PrefillTimePerToken, or KVCacheTransferTimeStdDev exceeds 30% of
+	// KVCacheTransferTimePerToken (it compares std-dev to the PER-TOKEN base, not
+	// the final prefill time). Keep each *StdDev at ~20% of its per-token base.
+	// Do NOT copy the larger std-devs from upstream MAIN docs — those apply to
+	// the final prefill time and crash this pinned image at startup.
 	PrefillOverhead             string
 	PrefillTimePerToken         string
 	PrefillTimeStdDev           string
@@ -80,9 +86,9 @@ var profile8BH100 = latencyProfile{
 	KVCacheTransferStdDev:       "400us",
 	PrefillOverhead:             "30ms",
 	PrefillTimePerToken:         "250us",
-	PrefillTimeStdDev:           "5ms",
+	PrefillTimeStdDev:           "50us",
 	KVCacheTransferTimePerToken: "3us",
-	KVCacheTransferTimeStdDev:   "200us",
+	KVCacheTransferTimeStdDev:   "600ns",
 }
 
 // profile70BTP8 mirrors upstream 70b-h100-tp8-throughput ("Profile 2: 70B model
@@ -97,9 +103,9 @@ var profile70BTP8 = latencyProfile{
 	KVCacheTransferStdDev:       "400us",
 	PrefillOverhead:             "80ms",
 	PrefillTimePerToken:         "500us",
-	PrefillTimeStdDev:           "15ms",
+	PrefillTimeStdDev:           "100us",
 	KVCacheTransferTimePerToken: "8us",
-	KVCacheTransferTimeStdDev:   "500us",
+	KVCacheTransferTimeStdDev:   "1600ns",
 }
 
 // profileSmallL40S mirrors upstream small-l40s-edge ("Profile 3: Small model
@@ -114,9 +120,9 @@ var profileSmallL40S = latencyProfile{
 	KVCacheTransferStdDev:       "1ms",
 	PrefillOverhead:             "20ms",
 	PrefillTimePerToken:         "350us",
-	PrefillTimeStdDev:           "3ms",
+	PrefillTimeStdDev:           "70us",
 	KVCacheTransferTimePerToken: "12us",
-	KVCacheTransferTimeStdDev:   "500us",
+	KVCacheTransferTimeStdDev:   "2400ns",
 }
 
 // Model-size bucket boundaries (in billions of parameters) used by auto
@@ -188,24 +194,19 @@ func selectLatencyProfile(mode, modelName string) latencyProfile {
 }
 
 // resolveLatencyCalculator picks the simulator latency model. A per-deployment
-// annotation value takes precedence, then the operator-wide Config value, and
-// finally DefaultLatencyCalculator ("per-token"). The second return value is
-// true when the annotation was non-empty but unrecognized, so the caller can
-// log a warning; in that case the resolved value falls back to the Config /
-// default value rather than silently disabling serving.
-func resolveLatencyCalculator(annotation, configValue string) (calculator string, annotationInvalid bool) {
+// annotation value takes precedence; otherwise the operator-wide Config value
+// applies, falling back to DefaultLatencyCalculator ("per-token") when the
+// Config value is empty or unrecognized (main.go normalizes the flag at the
+// boundary, but tests build Config directly).
+func resolveLatencyCalculator(annotation, configValue string) string {
 	switch strings.ToLower(strings.TrimSpace(annotation)) {
 	case LatencyCalculatorConstant:
-		return LatencyCalculatorConstant, false
+		return LatencyCalculatorConstant
 	case LatencyCalculatorPerToken:
-		return LatencyCalculatorPerToken, false
-	case "":
-		// Absent/empty annotation: fall through to the Config/default chain.
-	default:
-		annotationInvalid = true
+		return LatencyCalculatorPerToken
 	}
 	if configValue == LatencyCalculatorConstant || configValue == LatencyCalculatorPerToken {
-		return configValue, annotationInvalid
+		return configValue
 	}
-	return DefaultLatencyCalculator, annotationInvalid
+	return DefaultLatencyCalculator
 }

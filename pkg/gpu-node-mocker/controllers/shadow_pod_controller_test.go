@@ -915,9 +915,9 @@ func TestEnsureSimConfigMap(t *testing.T) {
 		"time-factor-under-load: 2.0",
 		"prefill-overhead: 30ms",
 		"prefill-time-per-token: 250us",
-		"prefill-time-std-dev: 5ms",
+		"prefill-time-std-dev: 50us",
 		"kv-cache-transfer-time-per-token: 3us",
-		"kv-cache-transfer-time-std-dev: 200us",
+		"kv-cache-transfer-time-std-dev: 600ns",
 	} {
 		if !strings.Contains(configYAML, want) {
 			t.Errorf("missing default %q in config: %s", want, configYAML)
@@ -1017,9 +1017,9 @@ func TestEnsureSimConfigMap_PerTokenCalculator(t *testing.T) {
 		"inter-token-latency: 12ms",
 		"prefill-overhead: 30ms",
 		"prefill-time-per-token: 250us",
-		"prefill-time-std-dev: 5ms",
+		"prefill-time-std-dev: 50us",
 		"kv-cache-transfer-time-per-token: 3us",
-		"kv-cache-transfer-time-std-dev: 200us",
+		"kv-cache-transfer-time-std-dev: 600ns",
 		"time-factor-under-load: 2.0",
 	} {
 		if !strings.Contains(configYAML, want) {
