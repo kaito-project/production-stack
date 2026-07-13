@@ -549,6 +549,44 @@ func TestShadowPodReconcile_PatchesWhenShadowRunning(t *testing.T) {
 	}
 }
 
+// TestShadowPodReconcile_RecreatesShadowWhenMissing exercises the self-heal
+// path: an already-adopted pod that we previously patched to Running (its
+// shadow pod was destroyed when the real host node was recreated) must have a
+// fresh shadow pod recreated instead of being skipped as "already Running".
+func TestShadowPodReconcile_RecreatesShadowWhenMissing(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	cfg := testConfig()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	original := newPendingPodOnFakeNode("falcon-0", "default", "fake-ws1")
+	// Simulate the stuck state: adopted + patched Running, pointing at a dead
+	// shadow IP, but no shadow pod exists any more.
+	original.Annotations = map[string]string{
+		AnnotationShadowPodRef: "default/shadow-default-falcon-0",
+	}
+	original.Status.Phase = corev1.PodRunning
+	original.Status.PodIP = "10.244.9.99" // dead IP from the lost shadow pod
+
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, original).WithStatusSubresource(original).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: cfg}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "falcon-0", Namespace: "default"}})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// Shadow pod is Pending (no kubelet in test), so should requeue.
+	if result.RequeueAfter == 0 {
+		t.Error("should requeue while waiting for recreated shadow pod to be Running")
+	}
+
+	// A fresh shadow pod must have been recreated.
+	shadow := &corev1.Pod{}
+	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0", Namespace: "default"}, shadow); err != nil {
+		t.Fatalf("shadow pod was not recreated: %v", err)
+	}
+}
+
 // Test that shadowPodToOriginalPod returns empty for non-pod objects
 func TestShadowPodToOriginalPod_NonPod(t *testing.T) {
 	r := &ShadowPodReconciler{}

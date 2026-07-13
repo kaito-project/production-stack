@@ -63,36 +63,46 @@ type ShadowPodReconciler struct {
 
 // SetupWithManager registers the controller with two watches:
 //
-//  1. Primary watch on Pods (all namespaces) filtered to Pending pods on fake
-//     nodes — these are the "original" pods we need to mirror.
+//  1. Primary watch on Pods (all namespaces) filtered to KAITO pods on fake
+//     nodes — these are the "original" pods we need to mirror. We deliberately
+//     do NOT filter on phase==Pending here: an already-adopted pod that we
+//     previously patched to Running must still be reconciled so we can
+//     self-heal its shadow pod if it disappears (e.g. when the real AKS node
+//     hosting the shadow pod is recreated). Reconcile stays idempotent.
 //  2. Secondary watch on shadow pods — when a shadow pod transitions to Running
-//     we re-queue the original pod so we can apply the status patch immediately.
+//     we re-queue the original pod to apply the status patch immediately, and
+//     when a shadow pod is deleted we re-queue the original pod so a fresh
+//     shadow pod is recreated.
 func (r *ShadowPodReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Predicate: only enqueue pods that are Pending AND assigned to a fake node.
-	pendingOnFakeNode := predicate.Funcs{
-		CreateFunc:  func(e event.CreateEvent) bool { return isPendingOnFakeNode(e.Object) },
-		UpdateFunc:  func(e event.UpdateEvent) bool { return isPendingOnFakeNode(e.ObjectNew) },
+	// Predicate: enqueue KAITO pods assigned to a fake node, regardless of phase.
+	kaitoOnFakeNode := predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return isKaitoPodOnFakeNode(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return isKaitoPodOnFakeNode(e.ObjectNew) },
 		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
 
-	// Predicate: shadow pods — only care about Running transitions.
-	shadowPodRunning := predicate.Funcs{
+	// Predicate: shadow pods — re-queue the original pod when the shadow pod
+	// becomes Running (apply the status patch) or is deleted (recreate it).
+	shadowPodEvents := predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool { return false },
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			pod, ok := e.ObjectNew.(*corev1.Pod)
 			return ok && isShadowPod(pod) && pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != ""
 		},
-		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			pod, ok := e.Object.(*corev1.Pod)
+			return ok && isShadowPod(pod)
+		},
 		GenericFunc: func(e event.GenericEvent) bool { return false },
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Pod{}, builder.WithPredicates(pendingOnFakeNode)).
+		For(&corev1.Pod{}, builder.WithPredicates(kaitoOnFakeNode)).
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.shadowPodToOriginalPod),
-			builder.WithPredicates(shadowPodRunning),
+			builder.WithPredicates(shadowPodEvents),
 		).
 		Complete(r)
 }
@@ -112,14 +122,30 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, fmt.Errorf("get pod: %w", err)
 	}
 
-	if !isPendingOnFakeNode(original) {
-		return ctrl.Result{}, nil
-	}
-	if original.Status.Phase == corev1.PodRunning {
+	if !isKaitoPodOnFakeNode(original) {
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("processing pending pod on fake node", "node", original.Spec.NodeName)
+	// Pods being torn down are handled by FakeNodePodReaper; the GC removes the
+	// shadow pod via its OwnerReference. Never (re)create a shadow pod for them.
+	if original.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
+
+	// Act only when the pod still needs mirroring:
+	//   (a) it is still Pending — the normal Phase-2 flow, or
+	//   (b) it was already adopted by us (shadow-pod-ref annotation present) but
+	//       its shadow pod may have vanished — self-heal by recreating it. This
+	//       covers the real AKS node hosting the shadow pod being recreated,
+	//       which leaves the original pod stuck in a patched-Running state that
+	//       points at a dead pod IP.
+	// A Running pod we never adopted is not ours to touch.
+	adopted := original.Annotations[AnnotationShadowPodRef] != ""
+	if original.Status.Phase != corev1.PodPending && !adopted {
+		return ctrl.Result{}, nil
+	}
+
+	log.Info("processing KAITO pod on fake node", "node", original.Spec.NodeName, "phase", original.Status.Phase)
 
 	shadowName := shadowPodName(original)
 	shadowPod, err := r.ensureShadowPod(ctx, original, shadowName)
@@ -146,11 +172,17 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{RequeueAfter: 5_000_000_000}, nil // 5 s
 	}
 
-	if err := r.patchOriginalPodStatus(ctx, original, shadowPod); err != nil {
-		return ctrl.Result{}, fmt.Errorf("patch original pod status: %w", err)
+	// Patch the original pod's status only when it is stale — either not yet
+	// Running or pointing at a different (dead) shadow IP. This keeps the
+	// reconcile idempotent and avoids a patch→event→reconcile hot loop now that
+	// already-Running pods are also watched.
+	if original.Status.Phase != corev1.PodRunning || original.Status.PodIP != shadowPod.Status.PodIP {
+		if err := r.patchOriginalPodStatus(ctx, original, shadowPod); err != nil {
+			return ctrl.Result{}, fmt.Errorf("patch original pod status: %w", err)
+		}
+		log.Info("original pod patched to Running", "podIP", shadowPod.Status.PodIP)
 	}
 
-	log.Info("original pod patched to Running", "podIP", shadowPod.Status.PodIP)
 	return ctrl.Result{}, nil
 }
 
@@ -434,23 +466,35 @@ func (r *ShadowPodReconciler) shadowPodToOriginalPod(_ context.Context, obj clie
 	}
 }
 
-func isPendingOnFakeNode(obj client.Object) bool {
+// isKaitoPodOnFakeNode reports whether the pod is a KAITO-provisioned pod
+// assigned to a fake node, regardless of its phase. Two provisioning paths
+// exist:
+//   - InferenceSet (modeldeployment) pods carry `inferenceset.kaito.sh/created-by`.
+//   - Workspace pods (KAITO StatefulSet) carry `kaito.sh/workspace`.
+//
+// Both end up on a fake node and need a shadow pod. The phase-agnostic form is
+// used by the watch predicate and Reconcile so that already-adopted pods can be
+// re-reconciled to self-heal a vanished shadow pod.
+func isKaitoPodOnFakeNode(obj client.Object) bool {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
 		return false
 	}
-	// Only process pods created by KAITO. Two provisioning paths exist:
-	//   - InferenceSet (modeldeployment) pods carry `inferenceset.kaito.sh/created-by`.
-	//   - Workspace pods (KAITO StatefulSet) carry `kaito.sh/workspace`.
-	// Both end up Pending on a fake node and need a shadow pod.
 	_, hasInferenceSet := pod.Labels[InferenceSetCreatedByLabelKey]
 	_, hasWorkspace := pod.Labels[LabelKaitoWorkspace]
 	if !hasInferenceSet && !hasWorkspace {
 		return false
 	}
-	return pod.Spec.NodeName != "" &&
-		strings.HasPrefix(pod.Spec.NodeName, "fake-") &&
-		pod.Status.Phase == corev1.PodPending
+	return pod.Spec.NodeName != "" && strings.HasPrefix(pod.Spec.NodeName, "fake-")
+}
+
+// isPendingOnFakeNode is isKaitoPodOnFakeNode narrowed to Pending pods.
+func isPendingOnFakeNode(obj client.Object) bool {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		return false
+	}
+	return isKaitoPodOnFakeNode(pod) && pod.Status.Phase == corev1.PodPending
 }
 
 func isShadowPod(pod *corev1.Pod) bool {

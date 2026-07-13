@@ -431,6 +431,88 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				}, 2*time.Minute, 10*time.Second).Should(Succeed(),
 					"original Workspace pod should be patched to Running with the shadow pod IP")
 			})
+
+			It("should self-heal a shadow pod that is deleted for a Running original pod", func() {
+				clientset, err := utils.GetK8sClientset()
+				Expect(err).NotTo(HaveOccurred())
+
+				ctx := context.Background()
+
+				// Pick an original inference pod already adopted and patched to
+				// Running on a fake node in THIS case's namespace (parallel-
+				// isolation pattern). Deleting its shadow pod faithfully
+				// simulates the real AKS node hosting the shadow pod being
+				// recreated: the shadow pod carries an OwnerReference to the
+				// original pod (not vice-versa), so the original is left stuck
+				// in a patched-Running state pointing at a dead IP.
+				deploymentName := caseDeployments[0].Name
+				origPods, err := clientset.CoreV1().Pods(caseNamespace).List(ctx, metav1.ListOptions{
+					LabelSelector: fmt.Sprintf("inferenceset.kaito.sh/created-by=%s", deploymentName),
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				var origName string
+				for _, p := range origPods.Items {
+					if strings.HasPrefix(p.Spec.NodeName, "fake-") &&
+						p.Status.Phase == corev1.PodRunning &&
+						p.Annotations["kaito.sh/shadow-pod-ref"] != "" {
+						origName = p.Name
+						break
+					}
+				}
+				Expect(origName).NotTo(BeEmpty(),
+					"need an adopted Running original pod on a fake node for %q", deploymentName)
+
+				shadowName := "shadow-" + caseNamespace + "-" + origName
+
+				// Record the current shadow pod's UID so we can prove a *fresh*
+				// one is created rather than the old one lingering.
+				oldShadow, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, shadowName, metav1.GetOptions{})
+				Expect(err).NotTo(HaveOccurred(), "shadow pod %q should exist before deletion", shadowName)
+				oldUID := oldShadow.UID
+
+				By(fmt.Sprintf("deleting shadow pod %q to simulate the real node being recreated", shadowName))
+				err = clientset.CoreV1().Pods(caseNamespace).Delete(ctx, shadowName,
+					metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("waiting for the controller to recreate a fresh Running shadow pod")
+				Eventually(func() error {
+					s, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, shadowName, metav1.GetOptions{})
+					if err != nil {
+						return fmt.Errorf("get shadow pod %q: %w", shadowName, err)
+					}
+					if s.UID == oldUID {
+						return fmt.Errorf("shadow pod %q still has the old UID; not recreated yet", shadowName)
+					}
+					if s.Status.Phase != corev1.PodRunning || s.Status.PodIP == "" {
+						return fmt.Errorf("recreated shadow pod %q not Running yet (phase=%s)", shadowName, s.Status.Phase)
+					}
+					return nil
+				}, 3*time.Minute, 5*time.Second).Should(Succeed(),
+					"a fresh shadow pod should be recreated and become Running")
+
+				By("verifying the original pod is re-patched to the recreated shadow pod IP")
+				Eventually(func() error {
+					newShadow, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, shadowName, metav1.GetOptions{})
+					if err != nil {
+						return err
+					}
+					orig, err := clientset.CoreV1().Pods(caseNamespace).Get(ctx, origName, metav1.GetOptions{})
+					if err != nil {
+						return err
+					}
+					if orig.Status.Phase != corev1.PodRunning {
+						return fmt.Errorf("original pod %q phase = %s, want Running", origName, orig.Status.Phase)
+					}
+					if orig.Status.PodIP != newShadow.Status.PodIP {
+						return fmt.Errorf("original pod %q podIP = %q, want recreated shadow IP %q",
+							origName, orig.Status.PodIP, newShadow.Status.PodIP)
+					}
+					return nil
+				}, 2*time.Minute, 5*time.Second).Should(Succeed(),
+					"original pod should be re-patched to the recreated shadow pod's IP")
+			})
 		})
 
 		Context("Original pod status patching", func() {
