@@ -934,12 +934,14 @@ func TestEnsureSimConfigMap(t *testing.T) {
 	}
 }
 
-func TestEnsureSimConfigMap_LatencyOverrides(t *testing.T) {
+func TestEnsureSimConfigMap_ProfileOverridesConfigDefaults(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme()
 	cfg := testConfig()
-	// Force the constant calculator so the constant-only overrides below are
-	// exercised (per-token is now the default).
+	// Force the constant calculator so the constant-only knobs below are
+	// exercised (per-token is now the default). The Config knobs act as
+	// operator-wide DEFAULTS; the auto-selected 8B profile (served name
+	// "falcon-7b-instruct" ⇒ 7B) must OVERRIDE each of them.
 	cfg.LatencyCalculator = LatencyCalculatorConstant
 	cfg.TimeToFirstToken = "200ms"
 	cfg.InterTokenLatency = "25ms"
@@ -963,17 +965,28 @@ func TestEnsureSimConfigMap_LatencyOverrides(t *testing.T) {
 		t.Fatalf("configmap not found: %v", err)
 	}
 	configYAML := cm.Data["config.yaml"]
+	// The 8B profile values win over the Config defaults.
 	for _, want := range []string{
-		"time-to-first-token: 200ms",
-		"inter-token-latency: 25ms",
-		"time-to-first-token-std-dev: 40ms",
-		"inter-token-latency-std-dev: 4ms",
-		"kv-cache-transfer-latency: 8ms",
-		"kv-cache-transfer-latency-std-dev: 500us",
-		"time-factor-under-load: 3.0",
+		"time-to-first-token: 100ms",
+		"inter-token-latency: 12ms",
+		"time-to-first-token-std-dev: 20ms",
+		"inter-token-latency-std-dev: 2ms",
+		"kv-cache-transfer-latency: 2ms",
+		"kv-cache-transfer-latency-std-dev: 400us",
+		"time-factor-under-load: 2.0",
 	} {
 		if !strings.Contains(configYAML, want) {
-			t.Errorf("missing override %q in config: %s", want, configYAML)
+			t.Errorf("missing profile value %q in config: %s", want, configYAML)
+		}
+	}
+	// The Config defaults must NOT leak through when the profile defines the knob.
+	for _, notWant := range []string{
+		"time-to-first-token: 200ms",
+		"inter-token-latency: 25ms",
+		"time-factor-under-load: 3.0",
+	} {
+		if strings.Contains(configYAML, notWant) {
+			t.Errorf("Config default %q should be overridden by profile: %s", notWant, configYAML)
 		}
 	}
 }

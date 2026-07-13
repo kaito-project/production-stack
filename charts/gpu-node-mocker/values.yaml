@@ -23,9 +23,11 @@ shadowPod:
   #   kaito.sh/latency-profile: auto | small-l40s | 8b-h100 | 13b | 30b-tp2 | 70b-tp8 | 405b-tp8
   #   kaito.sh/latency-calculator: per-token | constant
   #
-  # The values below are OPERATOR-WIDE OVERRIDES: set one to force that knob for
-  # every shadow pod regardless of the selected profile. Leave empty ("") to let
-  # the profile drive the value (recommended).
+  # The values below are OPERATOR-WIDE DEFAULTS: set one to provide the baseline
+  # for that knob. The selected latency profile OVERRIDES a default whenever the
+  # profile defines that knob; a default only applies when the profile leaves it
+  # empty. Leave a value empty ("") to have no default and rely solely on the
+  # profile (recommended).
   timeToFirstToken: ""
   interTokenLatency: ""
   timeToFirstTokenStdDev: ""
