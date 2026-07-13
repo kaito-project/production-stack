@@ -915,9 +915,9 @@ func TestEnsureSimConfigMap(t *testing.T) {
 		"time-factor-under-load: 2.0",
 		"prefill-overhead: 30ms",
 		"prefill-time-per-token: 250us",
-		"prefill-time-std-dev: 50us",
+		"prefill-time-std-dev: 5ms",
 		"kv-cache-transfer-time-per-token: 3us",
-		"kv-cache-transfer-time-std-dev: 600ns",
+		"kv-cache-transfer-time-std-dev: 200us",
 	} {
 		if !strings.Contains(configYAML, want) {
 			t.Errorf("missing default %q in config: %s", want, configYAML)
@@ -1017,9 +1017,9 @@ func TestEnsureSimConfigMap_PerTokenCalculator(t *testing.T) {
 		"inter-token-latency: 12ms",
 		"prefill-overhead: 30ms",
 		"prefill-time-per-token: 250us",
-		"prefill-time-std-dev: 50us",
+		"prefill-time-std-dev: 5ms",
 		"kv-cache-transfer-time-per-token: 3us",
-		"kv-cache-transfer-time-std-dev: 600ns",
+		"kv-cache-transfer-time-std-dev: 200us",
 		"time-factor-under-load: 2.0",
 	} {
 		if !strings.Contains(configYAML, want) {
@@ -1058,7 +1058,7 @@ func simConfigYAML(t *testing.T, cfg Config, modelName, servedModelName string, 
 
 // TestEnsureSimConfigMap_AutoProfileBySize verifies that with no profile
 // annotation, the baseline latency profile is auto-selected from the served
-// model size across all six buckets. The constant calculator is forced so the
+// model size across the three buckets. The constant calculator is forced so the
 // profile's time-to-first-token is emitted for assertion.
 func TestEnsureSimConfigMap_AutoProfileBySize(t *testing.T) {
 	tests := []struct {
@@ -1070,10 +1070,9 @@ func TestEnsureSimConfigMap_AutoProfileBySize(t *testing.T) {
 	}{
 		{"small 3B ⇒ small-l40s", "phi-3b-mini", "time-to-first-token: 110ms", "inter-token-latency: 15ms", "time-factor-under-load: 1.5"},
 		{"8B ⇒ 8b-h100", "llama-3.1-8b-instruct", "time-to-first-token: 100ms", "inter-token-latency: 12ms", "time-factor-under-load: 2.0"},
-		{"13B ⇒ 13b", "llama-2-13b-chat", "time-to-first-token: 180ms", "inter-token-latency: 22ms", "time-factor-under-load: 2.2"},
-		{"34B ⇒ 30b-tp2", "yi-34b-chat", "time-to-first-token: 250ms", "inter-token-latency: 30ms", "time-factor-under-load: 2.5"},
+		{"13B ⇒ 8b-h100 (fallback bucket)", "llama-2-13b-chat", "time-to-first-token: 100ms", "inter-token-latency: 12ms", "time-factor-under-load: 2.0"},
 		{"70B ⇒ 70b-tp8", "llama-3.1-70b-instruct", "time-to-first-token: 200ms", "inter-token-latency: 25ms", "time-factor-under-load: 3.0"},
-		{"405B ⇒ 405b-tp8", "llama-3.1-405b-instruct", "time-to-first-token: 900ms", "inter-token-latency: 80ms", "time-factor-under-load: 3.5"},
+		{"405B ⇒ 70b-tp8", "llama-3.1-405b-instruct", "time-to-first-token: 200ms", "inter-token-latency: 25ms", "time-factor-under-load: 3.0"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

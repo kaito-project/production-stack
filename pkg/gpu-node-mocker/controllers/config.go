@@ -63,8 +63,7 @@ const (
 	// select the llm-d-inference-sim latency profile for its shadow pods.
 	// Recognized values are "auto" (default — pick a profile from the model
 	// size parsed out of the served model name) or one of the named profiles
-	// ("small-l40s", "8b-h100", "13b", "30b-tp2", "70b-tp8", "405b-tp8").
-	// Unknown values fall back to "auto".
+	// ("small-l40s", "8b-h100", "70b-tp8"). Unknown values fall back to "auto".
 	AnnotationLatencyProfile = "kaito.sh/latency-profile"
 
 	// AnnotationLatencyCalculator lets an InferenceSet select the simulator

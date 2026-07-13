@@ -52,23 +52,24 @@ const (
 	// parameters). It is the default.
 	LatencyProfileAuto = "auto"
 
-	// LatencyProfile* are the named profiles from latency-profiles.md and its
-	// reference tables. Set one explicitly to force it regardless of model
-	// size. Buckets are keyed by parameter count: small (1–3B), 8B (7–8B, the
-	// fallback), 13B, 30B (TP=2), 70B (TP=8), and 405B (TP=8).
+	// LatencyProfile* are the three named profiles defined upstream in
+	// llm-d-inference-sim/manifests/latency-profiles. Each profile ships as two
+	// manifests — a constant-calculator and a per-token-calculator variant —
+	// whose knobs differ; latencyProfile below carries both sets and
+	// ensureSimConfigMap emits the subset for the active calculator. Set one
+	// explicitly to force it regardless of model size. Buckets are keyed by
+	// parameter count: small (1–3B), 8B (the fallback), and 70B (TP=8).
 	LatencyProfileSmallL40S = "small-l40s"
 	LatencyProfile8BH100    = "8b-h100"
-	LatencyProfile13B       = "13b"
-	LatencyProfile30BTP2    = "30b-tp2"
 	LatencyProfile70BTP8    = "70b-tp8"
-	LatencyProfile405BTP8   = "405b-tp8"
 
 	// DefaultLatencyProfile is the profile-selection mode used when none is set.
 	DefaultLatencyProfile = LatencyProfileAuto
 )
 
-// profile8BH100 mirrors "Profile 1: 8B-class model on H100, balanced load". It
-// is also the fallback for models whose size cannot be parsed.
+// profile8BH100 mirrors upstream 8b-h100-balanced ("Profile 1: 8B-class model
+// on H100, balanced load"). It is also the fallback for models whose size
+// cannot be parsed.
 var profile8BH100 = latencyProfile{
 	InterTokenLatency:           "12ms",
 	InterTokenLatencyStdDev:     "2ms",
@@ -79,45 +80,13 @@ var profile8BH100 = latencyProfile{
 	KVCacheTransferStdDev:       "400us",
 	PrefillOverhead:             "30ms",
 	PrefillTimePerToken:         "250us",
-	PrefillTimeStdDev:           "50us",
+	PrefillTimeStdDev:           "5ms",
 	KVCacheTransferTimePerToken: "3us",
-	KVCacheTransferTimeStdDev:   "600ns",
+	KVCacheTransferTimeStdDev:   "200us",
 }
 
-// profile13B mirrors the 13B reference row (H100-class, balanced load).
-var profile13B = latencyProfile{
-	InterTokenLatency:           "22ms",
-	InterTokenLatencyStdDev:     "3ms",
-	TimeFactorUnderLoad:         "2.2",
-	TimeToFirstToken:            "180ms",
-	TimeToFirstTokenStdDev:      "30ms",
-	KVCacheTransferLatency:      "2ms",
-	KVCacheTransferStdDev:       "400us",
-	PrefillOverhead:             "45ms",
-	PrefillTimePerToken:         "320us",
-	PrefillTimeStdDev:           "64us",
-	KVCacheTransferTimePerToken: "4us",
-	KVCacheTransferTimeStdDev:   "800ns",
-}
-
-// profile30BTP2 mirrors the 30–34B (TP=2) reference row.
-var profile30BTP2 = latencyProfile{
-	InterTokenLatency:           "30ms",
-	InterTokenLatencyStdDev:     "5ms",
-	TimeFactorUnderLoad:         "2.5",
-	TimeToFirstToken:            "250ms",
-	TimeToFirstTokenStdDev:      "50ms",
-	KVCacheTransferLatency:      "2ms",
-	KVCacheTransferStdDev:       "400us",
-	PrefillOverhead:             "60ms",
-	PrefillTimePerToken:         "400us",
-	PrefillTimeStdDev:           "80us",
-	KVCacheTransferTimePerToken: "6us",
-	KVCacheTransferTimeStdDev:   "1200ns",
-}
-
-// profile70BTP8 mirrors "Profile 2: 70B model on 8×H100 (TP=8),
-// throughput-optimized".
+// profile70BTP8 mirrors upstream 70b-h100-tp8-throughput ("Profile 2: 70B model
+// on 8×H100 (TP=8), throughput-optimized").
 var profile70BTP8 = latencyProfile{
 	InterTokenLatency:           "25ms",
 	InterTokenLatencyStdDev:     "4ms",
@@ -128,29 +97,13 @@ var profile70BTP8 = latencyProfile{
 	KVCacheTransferStdDev:       "400us",
 	PrefillOverhead:             "80ms",
 	PrefillTimePerToken:         "500us",
-	PrefillTimeStdDev:           "100us",
+	PrefillTimeStdDev:           "15ms",
 	KVCacheTransferTimePerToken: "8us",
-	KVCacheTransferTimeStdDev:   "1600ns",
+	KVCacheTransferTimeStdDev:   "500us",
 }
 
-// profile405BTP8 mirrors the 405B (TP=8) reference row.
-var profile405BTP8 = latencyProfile{
-	InterTokenLatency:           "80ms",
-	InterTokenLatencyStdDev:     "12ms",
-	TimeFactorUnderLoad:         "3.5",
-	TimeToFirstToken:            "900ms",
-	TimeToFirstTokenStdDev:      "150ms",
-	KVCacheTransferLatency:      "3ms",
-	KVCacheTransferStdDev:       "600us",
-	PrefillOverhead:             "200ms",
-	PrefillTimePerToken:         "1200us",
-	PrefillTimeStdDev:           "240us",
-	KVCacheTransferTimePerToken: "20us",
-	KVCacheTransferTimeStdDev:   "4us",
-}
-
-// profileSmallL40S mirrors "Profile 3: Small model (1–3B) on L40S,
-// low-latency edge".
+// profileSmallL40S mirrors upstream small-l40s-edge ("Profile 3: Small model
+// (1–3B) on L40S, low-latency edge").
 var profileSmallL40S = latencyProfile{
 	InterTokenLatency:           "15ms",
 	InterTokenLatencyStdDev:     "2ms",
@@ -161,21 +114,18 @@ var profileSmallL40S = latencyProfile{
 	KVCacheTransferStdDev:       "1ms",
 	PrefillOverhead:             "20ms",
 	PrefillTimePerToken:         "350us",
-	PrefillTimeStdDev:           "70us",
+	PrefillTimeStdDev:           "3ms",
 	KVCacheTransferTimePerToken: "12us",
-	KVCacheTransferTimeStdDev:   "2400ns",
+	KVCacheTransferTimeStdDev:   "500us",
 }
 
 // Model-size bucket boundaries (in billions of parameters) used by auto
 // selection. A model with a parsed size falls into the first bucket whose upper
-// bound it is below; models at/above the largest bound use the 405B profile.
+// bound it is below; models at/above the largest bound use the 70B profile.
 // Models whose size cannot be parsed fall back to the 8B profile.
 const (
-	modelSizeSmallMaxB = 5.0   // < 5B      ⇒ small-l40s (1–3B)
-	modelSize8BMaxB    = 10.0  // 5–10B     ⇒ 8b-h100 (7–8B)
-	modelSize13BMaxB   = 20.0  // 10–20B    ⇒ 13b
-	modelSize30BMaxB   = 50.0  // 20–50B    ⇒ 30b-tp2
-	modelSize70BMaxB   = 150.0 // 50–150B   ⇒ 70b-tp8; ≥150B ⇒ 405b-tp8
+	modelSizeSmallMaxB = 5.0  // < 5B    ⇒ small-l40s (1–3B)
+	modelSize8BMaxB    = 25.0 // 5–25B   ⇒ 8b-h100 (fallback); ≥25B ⇒ 70b-tp8
 )
 
 // modelSizeRe matches a parameter count immediately followed by a "b"/"B"
@@ -211,14 +161,8 @@ func profileForModelSize(sizeB float64) latencyProfile {
 		return profileSmallL40S
 	case sizeB < modelSize8BMaxB:
 		return profile8BH100
-	case sizeB < modelSize13BMaxB:
-		return profile13B
-	case sizeB < modelSize30BMaxB:
-		return profile30BTP2
-	case sizeB < modelSize70BMaxB:
-		return profile70BTP8
 	default:
-		return profile405BTP8
+		return profile70BTP8
 	}
 }
 
@@ -233,14 +177,8 @@ func selectLatencyProfile(mode, modelName string) latencyProfile {
 		return profileSmallL40S
 	case LatencyProfile8BH100:
 		return profile8BH100
-	case LatencyProfile13B:
-		return profile13B
-	case LatencyProfile30BTP2:
-		return profile30BTP2
 	case LatencyProfile70BTP8:
 		return profile70BTP8
-	case LatencyProfile405BTP8:
-		return profile405BTP8
 	default: // auto / empty / unknown
 		if sizeB, ok := parseModelSizeB(modelName); ok {
 			return profileForModelSize(sizeB)

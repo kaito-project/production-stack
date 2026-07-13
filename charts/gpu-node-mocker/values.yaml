@@ -16,11 +16,10 @@ shadowPod:
   udsTokenizerImage: ghcr.io/llm-d/llm-d-uds-tokenizer:v0.6.0
   # Latency knobs are resolved per-InferenceSet from a latency profile. By
   # default the profile is auto-selected from the served model size
-  # (<5B ⇒ small-l40s, 7-8B ⇒ 8b-h100, 13B ⇒ 13b, 30-34B ⇒ 30b-tp2,
-  # 70B ⇒ 70b-tp8, ≥150B ⇒ 405b-tp8; see
-  # llm-d-inference-sim/docs/latency-profiles.md). An InferenceSet can override
+  # (<5B ⇒ small-l40s, 5–25B ⇒ 8b-h100, ≥25B ⇒ 70b-tp8; see
+  # llm-d-inference-sim/manifests/latency-profiles). An InferenceSet can override
   # the profile and calculator via pod-template annotations:
-  #   kaito.sh/latency-profile: auto | small-l40s | 8b-h100 | 13b | 30b-tp2 | 70b-tp8 | 405b-tp8
+  #   kaito.sh/latency-profile: auto | small-l40s | 8b-h100 | 70b-tp8
   #   kaito.sh/latency-calculator: per-token | constant
   #
   # The values below are OPERATOR-WIDE DEFAULTS: set one to provide the baseline

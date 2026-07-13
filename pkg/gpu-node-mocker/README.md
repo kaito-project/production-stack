@@ -68,17 +68,15 @@ instantly.
 ### Profiles (selected per InferenceSet)
 
 Each shadow pod's baseline latency comes from a **latency profile** that mirrors
-one of the "Suggested Default Profiles" / reference-table rows in the upstream
-[latency-profiles.md](https://github.com/llm-d/llm-d-inference-sim/blob/main/docs/latency-profiles.md):
+one of the three upstream profiles in
+[manifests/latency-profiles](https://github.com/llm-d/llm-d-inference-sim/tree/main/manifests/latency-profiles)
+(each ships as a separate constant-calculator and per-token-calculator manifest):
 
 | Profile | Mirrors | Selected for (auto) | TTFT / ITL |
 | --- | --- | --- | --- |
 | `small-l40s` | Small model (1–3B) on L40S, low-latency edge | size `< 5B` | 110ms / 15ms |
-| `8b-h100` | 8B-class model on H100, balanced load | `5B ≤ size < 10B` (and fallback when size can't be parsed) | 100ms / 12ms |
-| `13b` | 13B model, H100-class balanced load | `10B ≤ size < 20B` | 180ms / 22ms |
-| `30b-tp2` | 30–34B model on 2×H100 (TP=2) | `20B ≤ size < 50B` | 250ms / 30ms |
-| `70b-tp8` | 70B model on 8×H100 (TP=8), throughput-optimized | `50B ≤ size < 150B` | 200ms / 25ms |
-| `405b-tp8` | 405B model on 8×H100 (TP=8) | size `≥ 150B` | 900ms / 80ms |
+| `8b-h100` | 8B-class model on H100, balanced load | `5B ≤ size < 25B` (and fallback when size can't be parsed) | 100ms / 12ms |
+| `70b-tp8` | 70B model on 8×H100 (TP=8), throughput-optimized | size `≥ 25B` | 200ms / 25ms |
 
 By default the profile is chosen **automatically from the served model size**
 parsed out of the model name (e.g. `...-8B...` ⇒ 8 billion parameters). An
@@ -86,7 +84,7 @@ InferenceSet can override the selection through pod-template annotations:
 
 | Annotation | Values | Default |
 | --- | --- | --- |
-| `kaito.sh/latency-profile` | `auto`, `small-l40s`, `8b-h100`, `13b`, `30b-tp2`, `70b-tp8`, `405b-tp8` | `auto` (pick by model size) |
+| `kaito.sh/latency-profile` | `auto`, `small-l40s`, `8b-h100`, `70b-tp8` | `auto` (pick by model size) |
 | `kaito.sh/latency-calculator` | `per-token`, `constant` | `per-token` |
 
 ```yaml
