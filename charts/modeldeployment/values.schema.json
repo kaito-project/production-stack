@@ -40,7 +40,63 @@
     "scalingThreshold": {
       "type": "integer",
       "minimum": 1,
-      "description": "Queue-depth threshold used by the ScaledObject. Only used when enableScaling is true. MUST be positive."
+      "description": "Deprecated single-metric queue-depth threshold, superseded by scaling.metrics[*].upThreshold/downThreshold. Retained so pre-existing overrides still validate; no longer wired to any annotation."
+    },
+    "scaling": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Composite (multi-metric) autoscaling configuration wired to scaledobject.kaito.sh/* annotations. Consumed only when enableScaling is true; keda-kaito-scaler combines every metric under a conservative AND policy. Misconfiguration here is surfaced as inferencesetScalingMisconfigured.",
+      "properties": {
+        "metrics": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Ordered list of scaling signals. Each entry renders one indexed scaledobject.kaito.sh/<key>/<i> slot. MUST contain at least one entry when enableScaling is true (also enforced by a fail-fast template guard).",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["name", "upThreshold", "downThreshold"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Prometheus metric family name exposed by each inference pod. Wired to scaledobject.kaito.sh/metricName/<i>."
+              },
+              "type": {
+                "type": "string",
+                "enum": ["gauge", "histogram"],
+                "description": "Aggregation applied to the metric: gauge -> per-replica average; histogram -> per-pod quantile. Wired to scaledobject.kaito.sh/metricstype/<i>. Defaults to gauge."
+              },
+              "upThreshold": {
+                "type": ["string", "number"],
+                "description": "Per-replica scale-up threshold (float). REQUIRED when enableScaling is true: empty by default, and a fail-fast template guard rejects the install when it is left unset. MUST be strictly greater than downThreshold (also enforced by the template guard). Wired to scaledobject.kaito.sh/upthreshold/<i>."
+              },
+              "downThreshold": {
+                "type": ["string", "number"],
+                "description": "Per-replica scale-down threshold (float). MUST be strictly less than upThreshold. REQUIRED when enableScaling is true: empty by default, and a fail-fast template guard rejects the install when it is left unset. Wired to scaledobject.kaito.sh/downthreshold/<i>."
+              },
+              "quantile": {
+                "type": ["string", "number"],
+                "description": "Target quantile in (0, 1] for histogram metrics; ignored for gauge. Empty inherits keda-kaito-scaler's 0.95 default. Wired to scaledobject.kaito.sh/quantile/<i>."
+              }
+            }
+          }
+        },
+        "evaluationWindow": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Scale-up stabilization window in seconds. Wired to scaledobject.kaito.sh/evaluationwindow."
+        },
+        "scaleUpCooldown": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum seconds between scale-up steps. Wired to scaledobject.kaito.sh/scaleupcooldown."
+        },
+        "scaleDownCooldown": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum seconds between scale-down steps. Wired to scaledobject.kaito.sh/scaledowncooldown."
+        }
+      }
     },
     "enableBenchmark": {
       "type": "boolean",

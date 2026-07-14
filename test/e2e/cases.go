@@ -326,14 +326,28 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			// the queue drains and clamps to minReplicaCount=1, so the
 			// pool would never return to its starting size and Scale-Down
 			// assertions would fail.
-			Name:             "scaling-phi",
-			Namespace:        "e2e-scaling",
-			Model:            presetPhi,
-			Replicas:         1,
-			InstanceType:     "Standard_NV36ads_A10_v5",
-			EnableScaling:    true,
-			MaxReplicas:      2,
-			ScalingThreshold: 10, // low threshold to trigger scaling during tests
+			Name:          "scaling-phi",
+			Namespace:     "e2e-scaling",
+			Model:         presetPhi,
+			Replicas:      1,
+			InstanceType:  "Standard_NV36ads_A10_v5",
+			EnableScaling: true,
+			MaxReplicas:   2,
+			// Single gauge signal on the vLLM waiting-queue length. The
+			// up-threshold is deliberately low so the pressure workload
+			// (scalingPressureConcurrency) pushes the per-replica queue
+			// above it and scale-up fires; the down-threshold sits below
+			// it so the sub-threshold workload (scalingSubThresholdConcurrency)
+			// drains the queue under it and scale-down converges back to
+			// the baseline. UpThreshold MUST be > DownThreshold (chart guard).
+			ScalingMetrics: []utils.ScalingMetric{
+				{
+					Name:          "vllm:num_requests_waiting",
+					Type:          "gauge",
+					UpThreshold:   "10",
+					DownThreshold: "5",
+				},
+			},
 		},
 	},
 	CaseKarpenterSmall: {

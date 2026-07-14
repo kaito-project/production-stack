@@ -50,15 +50,42 @@ type ModelDeploymentValues struct {
 	// MaxReplicas is the upper bound for autoscaling. Only used when
 	// EnableScaling is true.
 	MaxReplicas int64
-	// ScalingThreshold is the queue depth threshold. Only used when
-	// EnableScaling is true.
-	ScalingThreshold int64
+	// ScalingMetrics is the ordered list of composite scaling signals wired
+	// onto the modeldeployment chart's scaling.metrics[<i>] entries. Only
+	// used when EnableScaling is true; at least one entry is required in
+	// that case (the chart rejects an empty metrics list). Each entry's
+	// UpThreshold MUST be strictly greater than its DownThreshold.
+	ScalingMetrics []ScalingMetric
 	// AuthAPIKeyEnabled signals that this deployment runs behind the
 	// apikey-ext-authz CUSTOM provider. The per-namespace
 	// AuthorizationPolicy and APIKey CR are provisioned by
 	// EnsureNamespace; the warmup loop in SetupInferenceSetsWithRouting
 	// reads the resulting Secret and sends Bearer + Host headers.
 	AuthAPIKeyEnabled bool
+}
+
+// ScalingMetric describes one composite scaling signal, mirroring a single
+// entry of the modeldeployment chart's scaling.metrics list. Each field maps
+// 1:1 to a scaledobject.kaito.sh/<key>/<i> annotation the chart renders.
+type ScalingMetric struct {
+	// Name is the Prometheus metric family name
+	// (scaledobject.kaito.sh/metricName/<i>). Required.
+	Name string
+	// Type is the aggregation applied to the metric: "gauge" (per-replica
+	// average) or "histogram" (per-pod quantile)
+	// (scaledobject.kaito.sh/metricstype/<i>). Empty defaults to gauge.
+	Type string
+	// UpThreshold is the per-replica scale-up threshold
+	// (scaledobject.kaito.sh/upthreshold/<i>). Required; MUST be strictly
+	// greater than DownThreshold.
+	UpThreshold string
+	// DownThreshold is the per-replica scale-down threshold
+	// (scaledobject.kaito.sh/downthreshold/<i>). Required; MUST be strictly
+	// less than UpThreshold.
+	DownThreshold string
+	// Quantile is the target quantile in (0, 1] for histogram metrics
+	// (scaledobject.kaito.sh/quantile/<i>). Optional; ignored for gauge.
+	Quantile string
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a
@@ -98,8 +125,19 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 		if v.MaxReplicas > 0 {
 			args = append(args, "--set", "maxReplicas="+strconv.FormatInt(v.MaxReplicas, 10))
 		}
-		if v.ScalingThreshold > 0 {
-			args = append(args, "--set", "scalingThreshold="+strconv.FormatInt(v.ScalingThreshold, 10))
+		for i, m := range v.ScalingMetrics {
+			prefix := fmt.Sprintf("scaling.metrics[%d].", i)
+			args = append(args, "--set", prefix+"name="+m.Name)
+			if m.Type != "" {
+				args = append(args, "--set", prefix+"type="+m.Type)
+			}
+			args = append(args,
+				"--set", prefix+"upThreshold="+m.UpThreshold,
+				"--set", prefix+"downThreshold="+m.DownThreshold,
+			)
+			if m.Quantile != "" {
+				args = append(args, "--set", prefix+"quantile="+m.Quantile)
+			}
 		}
 	}
 	return args

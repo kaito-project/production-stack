@@ -126,7 +126,7 @@ Set `namespaceOverride: ""` to fall back to the standard Helm
 | `log.level`                | `3`                                      | klog verbosity (`--v`). Bump to `5` for debug logging.                                                        |
 | `image.registry`           | `ghcr.io`                                | Container image registry.                                                                                    |
 | `image.repository`         | `kaito-project/keda-kaito-scaler`        | Container image repository.                                                                                  |
-| `image.tag`                | `0.5.1`                                  | Container image tag.                                                                                         |
+| `image.tag`                | `0.6.0`                                  | Container image tag.                                                                                         |
 | `image.pullSecrets`        | `[]`                                     | `imagePullSecrets` for the pod spec.                                                                         |
 | `ports.grpc`               | `10450`                                  | gRPC `ExternalScaler` port exposed via the Service.                                                          |
 | `ports.metrics`            | `10451`                                  | Prometheus metrics port (`--metrics-port`). Not currently fronted by a Service.                              |

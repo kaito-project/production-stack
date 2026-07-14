@@ -29,18 +29,78 @@ replicas: 1
 
 # enableScaling toggles KAITO ScaledObject auto-provisioning. When false,
 # none of the scaledobject.kaito.sh/* annotations are rendered on the
-# InferenceSet, and `maxReplicas` / `scalingThreshold` are ignored.
+# InferenceSet, and the entire `scaling` block below is ignored.
 enableScaling: false
 
 # maxReplicas is the upper bound for autoscaling. Only used when
 # enableScaling is true. Wired to the scaledobject.kaito.sh/max-replicas
-# annotation.
+# annotation. `replicas` above doubles as the lower bound, wired to
+# scaledobject.kaito.sh/min-replicas.
 maxReplicas: 3
 
-# scalingThreshold is the queue depth threshold used by the ScaledObject.
-# Only used when enableScaling is true. Wired to the
-# scaledobject.kaito.sh/threshold annotation.
-scalingThreshold: 10
+# scaling holds the composite (multi-metric) autoscaling configuration
+# consumed by keda-kaito-scaler. It is read only when enableScaling is
+# true. Every entry in `metrics` becomes one indexed slot of
+# `scaledobject.kaito.sh/<key>/<i>` annotations; keda-kaito-scaler builds a
+# single KEDA ScaledObject whose scalingModifiers formula combines them
+# under a conservative AND policy — scale up by one replica only when EVERY
+# metric is above its upThreshold (and newly added pods are Ready), scale
+# down by one replica only when EVERY metric is below its downThreshold,
+# otherwise hold. Each step is capped at ±1 replica per cooldown to protect
+# expensive GPU capacity. A single metric is fully supported; it simply
+# yields a one-signal formula.
+scaling:
+  # metrics is the ordered list of scaling signals. MUST contain at least
+  # one entry when enableScaling is true.
+  metrics:
+      # name is the Prometheus metric family name exposed by each inference
+      # (model server) pod. Wired to scaledobject.kaito.sh/metricName/<i>.
+    - name: "vllm:num_requests_waiting"
+      # type is the aggregation applied to the metric; it MUST keep the
+      # signal replica-count independent:
+      #   gauge     -> per-replica average across pods
+      #   histogram -> per-pod quantile
+      # Wired to scaledobject.kaito.sh/metricstype/<i>. Defaults to gauge
+      # when empty.
+      type: "gauge"
+      # upThreshold is the per-replica scale-up threshold (float, quoted).
+      # REQUIRED when enableScaling is true — left empty by default so the
+      # caller MUST set it; an empty value rejects the Helm install. Wired
+      # to scaledobject.kaito.sh/upthreshold/<i>.
+      upThreshold: ""
+      # downThreshold is the per-replica scale-down threshold (float,
+      # quoted). MUST be strictly less than upThreshold. REQUIRED when
+      # enableScaling is true — left empty by default so the caller MUST
+      # set it; an empty value rejects the Helm install. Wired to
+      # scaledobject.kaito.sh/downthreshold/<i>.
+      downThreshold: ""
+      # quantile is the target quantile in (0, 1] for histogram metrics;
+      # ignored for gauge. Optional; empty lets keda-kaito-scaler apply its
+      # 0.95 default. Wired to scaledobject.kaito.sh/quantile/<i>.
+      quantile: ""
+      # p95 request queue time (histogram). Combined with the metric above
+      # under the AND policy: scale up only when both are above their
+      # upThresholds, scale down only when both are below their
+      # downThresholds. upThreshold / downThreshold are REQUIRED (empty by
+      # default) and reject the install when unset.
+    - name: "vllm:request_queue_time_seconds"
+      type: "histogram"
+      upThreshold: ""
+      downThreshold: ""
+      quantile: "0.95"
+
+  # evaluationWindow is the scale-up stabilization window in seconds.
+  # Optional; empty lets keda-kaito-scaler apply its 60s default. Wired to
+  # scaledobject.kaito.sh/evaluationwindow.
+  evaluationWindow: 60
+  # scaleUpCooldown is the minimum seconds between scale-up steps.
+  # Optional; empty lets keda-kaito-scaler apply its 300s default. Wired to
+  # scaledobject.kaito.sh/scaleupcooldown.
+  scaleUpCooldown: 300
+  # scaleDownCooldown is the minimum seconds between scale-down steps.
+  # Optional; empty lets keda-kaito-scaler apply its 300s default. Wired to
+  # scaledobject.kaito.sh/scaledowncooldown.
+  scaleDownCooldown: 300
 
 # enableBenchmark toggles KAITO benchmark runs for this InferenceSet. When
 # false, the `kaito.sh/disable-benchmark: "true"` annotation is stamped on
