@@ -16,6 +16,10 @@ spec:
         {{- include "bbr.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "bbr.serviceAccountName" . }}
+      {{- with .Values.bbr.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # Spread BBR replicas across distinct {{ .Values.bbr.podAntiAffinity.topologyKey }}
       # domains so a single node failure cannot take down every replica
       # at once (issue #89: BBR is a cluster-scope SPOF on the request
