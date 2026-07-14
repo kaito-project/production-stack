@@ -31,19 +31,45 @@ spec:
             - --health-probe-bind-address=:8081
             - --shadow-pod-image={{ .Values.shadowPod.image }}
             - --uds-tokenizer-image={{ .Values.shadowPod.udsTokenizerImage }}
-            - --time-to-first-token={{ .Values.shadowPod.timeToFirstToken }}
-            - --inter-token-latency={{ .Values.shadowPod.interTokenLatency }}
-            - --time-to-first-token-std-dev={{ .Values.shadowPod.timeToFirstTokenStdDev }}
-            - --inter-token-latency-std-dev={{ .Values.shadowPod.interTokenLatencyStdDev }}
-            - --kv-cache-transfer-latency={{ .Values.shadowPod.kvCacheTransferLatency }}
-            - --kv-cache-transfer-latency-std-dev={{ .Values.shadowPod.kvCacheTransferLatencyStdDev }}
-            - --time-factor-under-load={{ .Values.shadowPod.timeFactorUnderLoad }}
-            - --latency-calculator={{ .Values.shadowPod.latencyCalculator }}
-            - --prefill-overhead={{ .Values.shadowPod.prefillOverhead }}
-            - --prefill-time-per-token={{ .Values.shadowPod.prefillTimePerToken }}
-            - --prefill-time-std-dev={{ .Values.shadowPod.prefillTimeStdDev }}
-            - --kv-cache-transfer-time-per-token={{ .Values.shadowPod.kvCacheTransferTimePerToken }}
-            - --kv-cache-transfer-time-std-dev={{ .Values.shadowPod.kvCacheTransferTimeStdDev }}
+            {{- with .Values.shadowPod.timeToFirstToken }}
+            - --time-to-first-token={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.interTokenLatency }}
+            - --inter-token-latency={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.timeToFirstTokenStdDev }}
+            - --time-to-first-token-std-dev={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.interTokenLatencyStdDev }}
+            - --inter-token-latency-std-dev={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.kvCacheTransferLatency }}
+            - --kv-cache-transfer-latency={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.kvCacheTransferLatencyStdDev }}
+            - --kv-cache-transfer-latency-std-dev={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.timeFactorUnderLoad }}
+            - --time-factor-under-load={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.latencyCalculator }}
+            - --latency-calculator={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.prefillOverhead }}
+            - --prefill-overhead={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.prefillTimePerToken }}
+            - --prefill-time-per-token={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.prefillTimeStdDev }}
+            - --prefill-time-std-dev={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.kvCacheTransferTimePerToken }}
+            - --kv-cache-transfer-time-per-token={{ . }}
+            {{- end }}
+            {{- with .Values.shadowPod.kvCacheTransferTimeStdDev }}
+            - --kv-cache-transfer-time-std-dev={{ . }}
+            {{- end }}
             - --lease-duration-seconds={{ .Values.leaseDurationSeconds }}
             - --lease-renew-interval-seconds={{ .Values.leaseRenewIntervalSeconds }}
             - --node-provisioner={{ .Values.nodeProvisioner }}

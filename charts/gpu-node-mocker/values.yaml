@@ -14,26 +14,35 @@ image:
 shadowPod:
   image: ghcr.io/llm-d/llm-d-inference-sim:v0.8.1
   udsTokenizerImage: ghcr.io/llm-d/llm-d-uds-tokenizer:v0.6.0
-  # Inference simulator "constant" latency calculator knobs. Defaults mirror
-  # an 8B-class model on H100 under balanced load (Profile 1 in
-  # llm-d-inference-sim/docs/latency-profiles.md). Override to mimic other
-  # model/hardware combinations.
-  timeToFirstToken: 100ms
-  interTokenLatency: 12ms
-  timeToFirstTokenStdDev: 20ms
-  interTokenLatencyStdDev: 2ms
-  kvCacheTransferLatency: 2ms
-  kvCacheTransferLatencyStdDev: 400us
-  timeFactorUnderLoad: "2.0"
-  # latencyCalculator selects the simulator latency model: "constant" (default,
-  # TTFT is a fixed value) or "per-token" (TTFT scales with prompt length via
-  # the prefill* knobs below). The per-token defaults also follow Profile 1.
-  latencyCalculator: constant
-  prefillOverhead: 30ms
-  prefillTimePerToken: 250us
-  prefillTimeStdDev: 5ms
-  kvCacheTransferTimePerToken: 3us
-  kvCacheTransferTimeStdDev: 200us
+  # Latency knobs are resolved per-InferenceSet from a latency profile. By
+  # default the profile is auto-selected from the served model size
+  # (<5B ⇒ small-l40s, 5–25B ⇒ 8b-h100, ≥25B ⇒ 70b-tp8; see
+  # llm-d-inference-sim/manifests/latency-profiles). An InferenceSet can override
+  # the profile and calculator via pod-template annotations:
+  #   kaito.sh/latency-profile: auto | small-l40s | 8b-h100 | 70b-tp8
+  #   kaito.sh/latency-calculator: per-token | constant
+  #
+  # The values below are OPERATOR-WIDE DEFAULTS: set one to provide the baseline
+  # for that knob. The selected latency profile OVERRIDES a default whenever the
+  # profile defines that knob; a default only applies when the profile leaves it
+  # empty. Leave a value empty ("") to have no default and rely solely on the
+  # profile (recommended).
+  timeToFirstToken: ""
+  interTokenLatency: ""
+  timeToFirstTokenStdDev: ""
+  interTokenLatencyStdDev: ""
+  kvCacheTransferLatency: ""
+  kvCacheTransferLatencyStdDev: ""
+  timeFactorUnderLoad: ""
+  # latencyCalculator is the operator-wide default calculator ("per-token" or
+  # "constant") used when a pod has no kaito.sh/latency-calculator annotation.
+  # Empty ⇒ "per-token".
+  latencyCalculator: ""
+  prefillOverhead: ""
+  prefillTimePerToken: ""
+  prefillTimeStdDev: ""
+  kvCacheTransferTimePerToken: ""
+  kvCacheTransferTimeStdDev: ""
 
 # nodeProvisioner selects which KAITO node provisioner to mock.
 # Must match KAITO's --node-provisioner value: azure-gpu-provisioner or karpenter.

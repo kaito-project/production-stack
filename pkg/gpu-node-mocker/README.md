@@ -63,41 +63,92 @@
 
 The shadow pod runs `llm-d-inference-sim`, configured with a latency calculator
 so mocked endpoints behave closer to real vLLM serving instead of responding
-instantly. `shadowPod.latencyCalculator` selects the model — `constant` (default)
-or `per-token` — and the defaults mirror **Profile 1 — 8B-class model on H100,
-balanced load** from the upstream [latency-profiles.md](https://github.com/llm-d/llm-d-inference-sim/blob/main/docs/latency-profiles.md).
+instantly.
+
+### Profiles (selected per InferenceSet)
+
+Each shadow pod's baseline latency comes from a **latency profile** that mirrors
+one of the three upstream profiles in
+[manifests/latency-profiles](https://github.com/llm-d/llm-d-inference-sim/tree/main/manifests/latency-profiles)
+(each ships as a separate constant-calculator and per-token-calculator manifest):
+
+| Profile | Mirrors | Selected for (auto) | TTFT / ITL |
+| --- | --- | --- | --- |
+| `small-l40s` | Small model (1–3B) on L40S, low-latency edge | size `< 5B` | 110ms / 15ms |
+| `8b-h100` | 8B-class model on H100, balanced load | `5B ≤ size < 25B` (and fallback when size can't be parsed) | 100ms / 12ms |
+| `70b-tp8` | 70B model on 8×H100 (TP=8), throughput-optimized | size `≥ 25B` | 200ms / 25ms |
+
+By default the profile is chosen **automatically from the served model size**
+parsed out of the model name (e.g. `...-8B...` ⇒ 8 billion parameters). An
+InferenceSet can override the selection through pod-template annotations:
+
+| Annotation | Values | Default |
+| --- | --- | --- |
+| `kaito.sh/latency-profile` | `auto`, `small-l40s`, `8b-h100`, `70b-tp8` | `auto` (pick by model size) |
+| `kaito.sh/latency-calculator` | `per-token`, `constant` | `per-token` |
+
+```yaml
+# InferenceSet / modeldeployment pod template
+metadata:
+  annotations:
+    kaito.sh/latency-profile: 70b-tp8
+    kaito.sh/latency-calculator: per-token
+```
+
+Unknown annotation values fall back to the default (`auto` /
+`per-token`) and an unrecognized `kaito.sh/latency-calculator` value is logged as
+a warning. `kaito.sh/latency-calculator` selects the model — `per-token`
+(default, TTFT scales with prompt length) or `constant` (TTFT is a fixed value).
+Only the fields for the selected calculator are written into the simulator
+config.
+
+### Operator-wide overrides (Helm values / flags)
+
+The Helm values and CLI flags below are **operator-wide overrides**: each is
+empty by default so the selected profile drives the value. Set one to force that
+knob for every shadow pod regardless of profile. `latencyCalculator` /
+`--latency-calculator` sets the default calculator used when a pod has no
+`kaito.sh/latency-calculator` annotation (empty ⇒ `per-token`).
 
 ### Common settings (both calculators)
 
 | Setting | Helm value (`shadowPod.*`) | Flag | Default |
 | --- | --- | --- | --- |
-| Latency calculator | `latencyCalculator` | `--latency-calculator` | `constant` |
-| Inter-token latency | `interTokenLatency` | `--inter-token-latency` | `12ms` |
-| Inter-token std-dev | `interTokenLatencyStdDev` | `--inter-token-latency-std-dev` | `2ms` |
-| Time factor under load | `timeFactorUnderLoad` | `--time-factor-under-load` | `2.0` |
+| Latency calculator | `latencyCalculator` | `--latency-calculator` | profile / `per-token` |
+| Inter-token latency | `interTokenLatency` | `--inter-token-latency` | profile value |
+| Inter-token std-dev | `interTokenLatencyStdDev` | `--inter-token-latency-std-dev` | profile value |
+| Time factor under load | `timeFactorUnderLoad` | `--time-factor-under-load` | profile value |
 
 ### `constant` calculator (TTFT is a fixed value)
 
 | Setting | Helm value (`shadowPod.*`) | Flag | Default |
 | --- | --- | --- | --- |
-| Time to first token | `timeToFirstToken` | `--time-to-first-token` | `100ms` |
-| TTFT std-dev | `timeToFirstTokenStdDev` | `--time-to-first-token-std-dev` | `20ms` |
-| KV-cache transfer latency | `kvCacheTransferLatency` | `--kv-cache-transfer-latency` | `2ms` |
-| KV-cache transfer std-dev | `kvCacheTransferLatencyStdDev` | `--kv-cache-transfer-latency-std-dev` | `400us` |
+| Time to first token | `timeToFirstToken` | `--time-to-first-token` | profile value |
+| TTFT std-dev | `timeToFirstTokenStdDev` | `--time-to-first-token-std-dev` | profile value |
+| KV-cache transfer latency | `kvCacheTransferLatency` | `--kv-cache-transfer-latency` | profile value |
+| KV-cache transfer std-dev | `kvCacheTransferLatencyStdDev` | `--kv-cache-transfer-latency-std-dev` | profile value |
 
 ### `per-token` calculator (TTFT scales with prompt length)
 
 | Setting | Helm value (`shadowPod.*`) | Flag | Default |
 | --- | --- | --- | --- |
-| Prefill overhead | `prefillOverhead` | `--prefill-overhead` | `30ms` |
-| Prefill time per token | `prefillTimePerToken` | `--prefill-time-per-token` | `250us` |
-| Prefill time std-dev | `prefillTimeStdDev` | `--prefill-time-std-dev` | `5ms` |
-| KV-cache transfer time per token | `kvCacheTransferTimePerToken` | `--kv-cache-transfer-time-per-token` | `3us` |
-| KV-cache transfer time std-dev | `kvCacheTransferTimeStdDev` | `--kv-cache-transfer-time-std-dev` | `200us` |
+| Prefill overhead | `prefillOverhead` | `--prefill-overhead` | profile value |
+| Prefill time per token | `prefillTimePerToken` | `--prefill-time-per-token` | profile value |
+| Prefill time std-dev | `prefillTimeStdDev` | `--prefill-time-std-dev` | profile value |
+| KV-cache transfer time per token | `kvCacheTransferTimePerToken` | `--kv-cache-transfer-time-per-token` | profile value |
+| KV-cache transfer time std-dev | `kvCacheTransferTimeStdDev` | `--kv-cache-transfer-time-std-dev` | profile value |
 
-Only the fields for the selected calculator are written into the simulator
-config. Override per-deployment to mimic other model/hardware combinations, e.g.
-a 70B TP=8 throughput profile on the `constant` calculator:
+Override per-deployment to mimic other model/hardware combinations, e.g. force a
+70B TP=8 throughput profile via annotation:
+
+```yaml
+# InferenceSet pod template
+metadata:
+  annotations:
+    kaito.sh/latency-profile: 70b-tp8
+```
+
+Or pin individual knobs operator-wide (applies to every shadow pod):
 
 ```yaml
 shadowPod:
@@ -105,13 +156,4 @@ shadowPod:
   timeToFirstToken: 200ms
   interTokenLatency: 25ms
   timeFactorUnderLoad: "3.0"
-```
-
-Or switch to the `per-token` calculator so TTFT reflects prompt length:
-
-```yaml
-shadowPod:
-  latencyCalculator: per-token
-  prefillOverhead: 30ms
-  prefillTimePerToken: 250us
 ```

@@ -233,7 +233,7 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 	}
 
 	// Ensure the ConfigMap for the inference simulator exists.
-	if err := r.ensureSimConfigMap(ctx, shadowNS, shadowName, modelName, servedModelName, servingPort, ownerRef); err != nil {
+	if err := r.ensureSimConfigMap(ctx, shadowNS, shadowName, modelName, servedModelName, servingPort, original.Annotations, ownerRef); err != nil {
 		return nil, fmt.Errorf("ensure sim configmap: %w", err)
 	}
 
@@ -532,31 +532,39 @@ func valueOrDefault(v, def string) string {
 // The config enables KV cache but does not set any threshold so cache_threshold
 // is never triggered. The port is set to match the original pod's serving port.
 //
+// The baseline latency knobs default to the operator-wide Config values and
+// are overridden by a latency profile selected via the original pod's
+// annotations: AnnotationLatencyProfile picks the profile ("auto" — the
+// default — chooses one from the served model size, or a named profile), and
+// AnnotationLatencyCalculator picks the calculator ("per-token" — the default
+// — or "constant"). A non-empty profile value overrides the corresponding
+// operator-wide Config default, which applies whenever the profile leaves that
+// knob empty; the --latency-calculator flag provides the calculator default
+// when the annotation is absent.
+//
 // ownerRef is set on the ConfigMap so it is garbage-collected together with
 // the original pod (same namespace, K8s GC cascades the delete).
-func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, namespace, shadowName, modelName, servedModelName string, port int32, ownerRef metav1.OwnerReference) error {
+func (r *ShadowPodReconciler) ensureSimConfigMap(ctx context.Context, namespace, shadowName, modelName, servedModelName string, port int32, annotations map[string]string, ownerRef metav1.OwnerReference) error {
 	cmName := shadowName + "-config"
 	existing := &corev1.ConfigMap{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cmName}, existing); err == nil {
 		return nil
 	}
 
-	itl := r.Config.InterTokenLatency
-	if itl == "" {
-		itl = DefaultInterTokenLatency
+	// Baseline latency knobs default to the operator-wide Config values and are
+	// overridden by the profile selected by annotation (default "auto" ⇒ chosen
+	// from the served model size). A non-empty profile value wins; the Config
+	// default applies whenever the profile leaves that knob empty.
+	profileMode := annotations[AnnotationLatencyProfile]
+	if profileMode == "" {
+		profileMode = DefaultLatencyProfile
 	}
-	itlStdDev := r.Config.InterTokenLatencyStdDev
-	if itlStdDev == "" {
-		itlStdDev = DefaultInterTokenLatencyStdDev
-	}
-	timeFactor := r.Config.TimeFactorUnderLoad
-	if timeFactor == "" {
-		timeFactor = DefaultTimeFactorUnderLoad
-	}
-	calculator := r.Config.LatencyCalculator
-	if calculator == "" {
-		calculator = DefaultLatencyCalculator
-	}
+	profile := selectLatencyProfile(profileMode, servedModelName)
+
+	itl := valueOrDefault(profile.InterTokenLatency, r.Config.InterTokenLatency)
+	itlStdDev := valueOrDefault(profile.InterTokenLatencyStdDev, r.Config.InterTokenLatencyStdDev)
+	timeFactor := valueOrDefault(profile.TimeFactorUnderLoad, r.Config.TimeFactorUnderLoad)
+	calculator := resolveLatencyCalculator(annotations[AnnotationLatencyCalculator], r.Config.LatencyCalculator)
 
 	// Fields common to both calculators.
 	latencyYAML := fmt.Sprintf(`latency-calculator: %s
@@ -566,11 +574,11 @@ time-factor-under-load: %s
 `, calculator, itl, itlStdDev, timeFactor)
 
 	if calculator == LatencyCalculatorPerToken {
-		prefillOverhead := valueOrDefault(r.Config.PrefillOverhead, DefaultPrefillOverhead)
-		prefillPerToken := valueOrDefault(r.Config.PrefillTimePerToken, DefaultPrefillTimePerToken)
-		prefillStdDev := valueOrDefault(r.Config.PrefillTimeStdDev, DefaultPrefillTimeStdDev)
-		kvPerToken := valueOrDefault(r.Config.KVCacheTransferTimePerToken, DefaultKVCacheTransferTimePerToken)
-		kvTimeStdDev := valueOrDefault(r.Config.KVCacheTransferTimeStdDev, DefaultKVCacheTransferTimeStdDev)
+		prefillOverhead := valueOrDefault(profile.PrefillOverhead, r.Config.PrefillOverhead)
+		prefillPerToken := valueOrDefault(profile.PrefillTimePerToken, r.Config.PrefillTimePerToken)
+		prefillStdDev := valueOrDefault(profile.PrefillTimeStdDev, r.Config.PrefillTimeStdDev)
+		kvPerToken := valueOrDefault(profile.KVCacheTransferTimePerToken, r.Config.KVCacheTransferTimePerToken)
+		kvTimeStdDev := valueOrDefault(profile.KVCacheTransferTimeStdDev, r.Config.KVCacheTransferTimeStdDev)
 		latencyYAML += fmt.Sprintf(`prefill-overhead: %s
 prefill-time-per-token: %s
 prefill-time-std-dev: %s
@@ -578,10 +586,10 @@ kv-cache-transfer-time-per-token: %s
 kv-cache-transfer-time-std-dev: %s
 `, prefillOverhead, prefillPerToken, prefillStdDev, kvPerToken, kvTimeStdDev)
 	} else {
-		ttft := valueOrDefault(r.Config.TimeToFirstToken, DefaultTimeToFirstToken)
-		ttftStdDev := valueOrDefault(r.Config.TimeToFirstTokenStdDev, DefaultTimeToFirstTokenStdDev)
-		kvTransfer := valueOrDefault(r.Config.KVCacheTransferLatency, DefaultKVCacheTransferLatency)
-		kvTransferStdDev := valueOrDefault(r.Config.KVCacheTransferStdDev, DefaultKVCacheTransferStdDev)
+		ttft := valueOrDefault(profile.TimeToFirstToken, r.Config.TimeToFirstToken)
+		ttftStdDev := valueOrDefault(profile.TimeToFirstTokenStdDev, r.Config.TimeToFirstTokenStdDev)
+		kvTransfer := valueOrDefault(profile.KVCacheTransferLatency, r.Config.KVCacheTransferLatency)
+		kvTransferStdDev := valueOrDefault(profile.KVCacheTransferStdDev, r.Config.KVCacheTransferStdDev)
 		latencyYAML += fmt.Sprintf(`time-to-first-token: %s
 time-to-first-token-std-dev: %s
 kv-cache-transfer-latency: %s
