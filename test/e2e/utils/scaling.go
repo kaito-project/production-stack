@@ -113,10 +113,12 @@ func GetKEDAParams(ctx context.Context, model, namespace string) (KEDAParams, er
 		}
 	}
 	if p.Threshold == 0 {
-		// Fallback to the annotation on the InferenceSet.
+		// Fallback to the annotation on the InferenceSet. With the
+		// composite (multi-metric) format the per-replica scale-up
+		// threshold for the first metric lives under upthreshold/0.
 		is, err := dynClient.Resource(InferenceSetGVR).Namespace(namespace).Get(ctx, model, metav1.GetOptions{})
 		if err == nil {
-			if v, ok := is.GetAnnotations()["scaledobject.kaito.sh/threshold"]; ok {
+			if v, ok := is.GetAnnotations()["scaledobject.kaito.sh/upthreshold/0"]; ok {
 				if n, err := strconv.Atoi(v); err == nil {
 					p.Threshold = n
 				}

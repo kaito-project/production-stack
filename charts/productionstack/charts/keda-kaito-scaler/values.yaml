@@ -21,7 +21,7 @@ namespaceOverride: ""
 image:
     registry: ghcr.io
     repository: kaito-project/keda-kaito-scaler
-    tag: 0.5.1
+    tag: 0.6.0
     pullSecrets: []
 
 ports:

@@ -17,10 +17,12 @@ identifying labels `kaito.sh/inferenceset: <name>` and
 deployment.
 
 Chart values are validated by `values.schema.json` at install time
-(`model` non-empty, `replicas` / `maxReplicas` / `scalingThreshold`
-positive). The cross-field guard `maxReplicas >= replicas` (not
-expressible in JSON Schema) is enforced by a fail-fast template guard
-when `enableScaling=true`.
+(`model` non-empty, `replicas` / `maxReplicas` positive, and — when
+`enableScaling=true` — at least one `scaling.metrics` entry). The
+cross-field guard `maxReplicas >= replicas` and the non-empty
+`scaling.metrics` requirement (neither expressible in JSON Schema alone)
+are additionally enforced by fail-fast template guards when
+`enableScaling=true`.
 
 The EPP runs the [`llm-d-inference-scheduler`](https://github.com/llm-d/llm-d-inference-scheduler/tree/v0.7.1)
 distribution with `--secure-serving=false`, so the Istio Gateway can reach it
@@ -35,9 +37,17 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `model`                   | required | `""`                                                                 | Preset model name. Used only as `spec.template.inference.preset.name`.                     |
 | `instanceType`            | required | `Standard_NV36ads_A10_v5`                                            | VM instance type for the underlying nodes.                                                 |
 | `replicas`                | required | `1`                                                                  | InferenceSet replicas. Also wired to `scaledobject.kaito.sh/min-replicas`.                 |
-| `enableScaling`           | optional | `false`                                                              | Wired to `scaledobject.kaito.sh/auto-provision`.                                           |
+| `enableScaling`           | optional | `false`                                                              | Wired to `scaledobject.kaito.sh/auto-provision`. Gates the entire `scaling` block.         |
 | `maxReplicas`             | optional | `3`                                                                  | Wired to `scaledobject.kaito.sh/max-replicas` (only when `enableScaling=true`).            |
-| `scalingThreshold`        | optional | `10`                                                                 | Wired to `scaledobject.kaito.sh/threshold` (only when `enableScaling=true`).               |
+| `scaling.metrics`         | optional | `vllm:num_requests_waiting` gauge + `vllm:request_queue_time_seconds` histogram | Ordered list of scaling signals combined under the AND policy; each entry renders one indexed `scaledobject.kaito.sh/<key>/<i>` slot. At least one entry is required when `enableScaling=true`. |
+| `scaling.metrics[].name`  | required | `vllm:num_requests_waiting`                                         | Prometheus metric family name. Wired to `scaledobject.kaito.sh/metricName/<i>`.            |
+| `scaling.metrics[].type`  | optional | `gauge`                                                             | `gauge` (per-replica average) or `histogram` (per-pod quantile). Wired to `scaledobject.kaito.sh/metricstype/<i>`. |
+| `scaling.metrics[].upThreshold`   | required | _empty_                                                    | Per-replica scale-up threshold. Empty by default; a template guard rejects the install when unset (`enableScaling=true`). Wired to `scaledobject.kaito.sh/upthreshold/<i>`. |
+| `scaling.metrics[].downThreshold` | required | _empty_                                                    | Per-replica scale-down threshold (MUST be `< upThreshold`). Empty by default; a template guard rejects the install when unset or `>= upThreshold` (`enableScaling=true`). Wired to `scaledobject.kaito.sh/downthreshold/<i>`. |
+| `scaling.metrics[].quantile`      | optional | _empty_ → `0.95`                                            | Target quantile for `histogram` metrics; ignored for `gauge`. Wired to `scaledobject.kaito.sh/quantile/<i>`. |
+| `scaling.evaluationWindow`| optional | `60`                                                                | Scale-up stabilization window (seconds). Wired to `scaledobject.kaito.sh/evaluationwindow`. |
+| `scaling.scaleUpCooldown` | optional | `300`                                                               | Minimum seconds between scale-up steps. Wired to `scaledobject.kaito.sh/scaleupcooldown`.  |
+| `scaling.scaleDownCooldown` | optional | `300`                                                             | Minimum seconds between scale-down steps. Wired to `scaledobject.kaito.sh/scaledowncooldown`. |
 | `gatewayName`             | optional | _empty_ → `<namespace>-gw`                                          | Gateway the HTTPRoute attaches to. Defaults to the per-namespace Gateway provisioned by `charts/modelharness`. |
 | `epp.image.repository`    | optional | `mcr.microsoft.com/oss/v2/llm-d/llm-d-inference-scheduler`           | EPP container image.                                                                       |
 | `epp.image.tag`           | optional | `v0.7.1`                                                             | EPP image tag.                                                                             |

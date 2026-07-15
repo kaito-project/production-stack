@@ -44,15 +44,16 @@ import (
 
 const (
 	// Concurrency for queue-pressure workloads. The CaseScaling baseline
-	// is 1 replica with KEDA threshold=10 and the inference simulator's
-	// max-num-seqs=5, so the single pod has 5 running slots and any
-	// extra in-flight requests pile into the queue. Setting concurrency
-	// to 40 leaves ~35 requests waiting on that pod — well above the
-	// threshold — guaranteeing scale-up fires.
+	// is 1 replica with the gauge up-threshold=10 and the inference
+	// simulator's max-num-seqs=5, so the single pod has 5 running slots
+	// and any extra in-flight requests pile into the queue. Setting
+	// concurrency to 40 leaves ~35 requests waiting on that pod — well
+	// above the up-threshold — guaranteeing scale-up fires.
 	scalingPressureConcurrency = 40
 
 	// Concurrency for below-threshold workload. Chosen so the queue settles
-	// strictly below threshold=10 even with the scheduler's load spread.
+	// strictly below the gauge down-threshold=5 even with the scheduler's
+	// load spread, so scale-down converges back to the baseline.
 	scalingSubThresholdConcurrency = 4
 
 	// Rate of the background low-rate stream used for "no 5xx during scale-down".

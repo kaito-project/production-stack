@@ -2,6 +2,9 @@
 {{- if lt ((.Values.maxReplicas | int)) ((.Values.replicas | int)) }}
 {{- fail (printf "modeldeployment: maxReplicas (%d) must be >= replicas (%d) when enableScaling is true" (.Values.maxReplicas | int) (.Values.replicas | int)) }}
 {{- end }}
+{{- if not (.Values.scaling).metrics }}
+{{- fail "modeldeployment: scaling.metrics must contain at least one entry when enableScaling is true" }}
+{{- end }}
 {{- end }}
 apiVersion: kaito.sh/v1alpha1
 kind: InferenceSet
@@ -13,9 +16,39 @@ metadata:
   {{- if .Values.enableScaling }}
   annotations:
     scaledobject.kaito.sh/auto-provision: "true"
-    scaledobject.kaito.sh/threshold: {{ .Values.scalingThreshold | quote }}
     scaledobject.kaito.sh/min-replicas: {{ .Values.replicas | quote }}
     scaledobject.kaito.sh/max-replicas: {{ .Values.maxReplicas | quote }}
+    {{- range $i, $m := .Values.scaling.metrics }}
+    {{- if not $m.name }}
+    {{- fail (printf "modeldeployment: scaling.metrics[%d].name is required when enableScaling is true" $i) }}
+    {{- end }}
+    {{- if not $m.upThreshold }}
+    {{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold is required when enableScaling is true" $i) }}
+    {{- end }}
+    {{- if not $m.downThreshold }}
+    {{- fail (printf "modeldeployment: scaling.metrics[%d].downThreshold is required when enableScaling is true" $i) }}
+    {{- end }}
+    {{- if not (gt (subf $m.upThreshold $m.downThreshold) 0.0) }}
+    {{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold (%v) must be greater than downThreshold (%v) when enableScaling is true" $i $m.upThreshold $m.downThreshold) }}
+    {{- end }}
+    {{- $type := default "gauge" $m.type }}
+    scaledobject.kaito.sh/metricName/{{ $i }}: {{ $m.name | quote }}
+    scaledobject.kaito.sh/metricstype/{{ $i }}: {{ $type | quote }}
+    scaledobject.kaito.sh/upthreshold/{{ $i }}: {{ $m.upThreshold | quote }}
+    scaledobject.kaito.sh/downthreshold/{{ $i }}: {{ $m.downThreshold | quote }}
+    {{- if and (eq $type "histogram") $m.quantile }}
+    scaledobject.kaito.sh/quantile/{{ $i }}: {{ $m.quantile | quote }}
+    {{- end }}
+    {{- end }}
+    {{- with (.Values.scaling).evaluationWindow }}
+    scaledobject.kaito.sh/evaluationwindow: {{ . | quote }}
+    {{- end }}
+    {{- with (.Values.scaling).scaleUpCooldown }}
+    scaledobject.kaito.sh/scaleupcooldown: {{ . | quote }}
+    {{- end }}
+    {{- with (.Values.scaling).scaleDownCooldown }}
+    scaledobject.kaito.sh/scaledowncooldown: {{ . | quote }}
+    {{- end }}
   {{- end }}
 spec:
   replicas: {{ .Values.replicas }}
