@@ -102,6 +102,11 @@
       "type": "boolean",
       "description": "Toggles KAITO benchmark runs for this InferenceSet. When false, the kaito.sh/disable-benchmark annotation is stamped on the InferenceSet."
     },
+    "performanceMode": {
+      "type": "string",
+      "enum": ["", "balanced", "interactivity", "throughput"],
+      "description": "When non-empty, stamps kaito.sh/performance-mode: <value> on the InferenceSet template so the KAITO controller applies the corresponding vLLM profile. Empty (default) omits the annotation and the controller falls back to its own default (balanced). Allowed values: interactivity (low per-request latency), balanced (trade-off), throughput (maximize aggregate tokens/sec)."
+    },
     "gatewayName": {
       "type": "string",
       "description": "Gateway the HTTPRoute attaches to. Empty derives '<namespace>-gw'."

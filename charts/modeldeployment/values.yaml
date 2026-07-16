@@ -107,6 +107,18 @@ scaling:
 # the InferenceSet so the KAITO controller skips benchmark provisioning.
 enableBenchmark: true
 
+# performanceMode, when set, stamps the `kaito.sh/performance-mode: <value>`
+# annotation on the InferenceSet template so the KAITO controller applies
+# the corresponding performance profile. Empty (the default) omits the
+# annotation and the controller falls back to its own default ("balanced").
+# Valid values are "balanced" (default), "interactivity", and "throughput":
+#   - "interactivity": optimizes for low per-request latency (fine-grained
+#     CUDA graphs, latency-oriented kernels, smaller batch sizes).
+#   - "balanced": sensible trade-off between latency and throughput.
+#   - "throughput": maximizes aggregate tokens/sec (larger CUDA graphs, more
+#     aggressive batching, throughput-oriented kernels).
+performanceMode: ""
+
 # gatewayName is the Gateway resource the HTTPRoute attaches to. When
 # empty (the default), the chart derives it as "<namespace>-gw" so the
 # rendered HTTPRoute parents the per-namespace Gateway provisioned by

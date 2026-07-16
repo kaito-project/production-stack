@@ -69,9 +69,14 @@ spec:
         cross-namespace ingress to them would silently succeed.
         */}}
         {{- include "modeldeployment.ownerLabel" . | nindent 8 }}
-      {{- if not .Values.enableBenchmark }}
+      {{- if or (not .Values.enableBenchmark) .Values.performanceMode }}
       annotations:
+        {{- if not .Values.enableBenchmark }}
         kaito.sh/disable-benchmark: "true"
+        {{- end }}
+        {{- with .Values.performanceMode }}
+        kaito.sh/performance-mode: {{ . | quote }}
+        {{- end }}
       {{- end }}
     resource:
       instanceType: {{ .Values.instanceType | quote }}
