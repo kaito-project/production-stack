@@ -40,12 +40,12 @@ maxReplicas: 3
 
 # scaling holds the composite (multi-metric) autoscaling configuration
 # consumed by keda-kaito-scaler. It is read only when enableScaling is
-# true. Every entry in `metrics` becomes one indexed slot of
-# `scaledobject.kaito.sh/<key>/<i>` annotations; keda-kaito-scaler builds a
-# single KEDA ScaledObject whose scalingModifiers formula combines them
-# under a conservative AND policy — scale up by one replica only when EVERY
-# metric is above its upThreshold (and newly added pods are Ready), scale
-# down by one replica only when EVERY metric is below its downThreshold,
+# true. The `metrics` list is rendered as a single
+# `scaledobject.kaito.sh/metrics` annotation (a YAML list); keda-kaito-scaler
+# builds a single KEDA ScaledObject whose scalingModifiers formula combines
+# them under a conservative AND policy — scale up by one replica only when
+# EVERY metric is above its upThreshold (and newly added pods are Ready),
+# scale down by one replica only when EVERY metric is below its downThreshold,
 # otherwise hold. Each step is capped at ±1 replica per cooldown to protect
 # expensive GPU capacity. A single metric is fully supported; it simply
 # yields a one-signal formula.
@@ -54,29 +54,32 @@ scaling:
   # one entry when enableScaling is true.
   metrics:
       # name is the Prometheus metric family name exposed by each inference
-      # (model server) pod. Wired to scaledobject.kaito.sh/metricName/<i>.
+      # (model server) pod. Rendered as the `name` field of a
+      # scaledobject.kaito.sh/metrics entry.
     - name: "vllm:num_requests_waiting"
       # type is the aggregation applied to the metric; it MUST keep the
       # signal replica-count independent:
       #   gauge     -> per-replica average across pods
       #   histogram -> per-pod quantile
-      # Wired to scaledobject.kaito.sh/metricstype/<i>. Defaults to gauge
-      # when empty.
+      # Rendered as the `type` field of a scaledobject.kaito.sh/metrics
+      # entry. Defaults to gauge when empty.
       type: "gauge"
       # upThreshold is the per-replica scale-up threshold (float, quoted).
       # REQUIRED when enableScaling is true — left empty by default so the
-      # caller MUST set it; an empty value rejects the Helm install. Wired
-      # to scaledobject.kaito.sh/upthreshold/<i>.
+      # caller MUST set it; an empty value rejects the Helm install.
+      # Rendered as the `upthreshold` field of a scaledobject.kaito.sh/metrics
+      # entry.
       upThreshold: ""
       # downThreshold is the per-replica scale-down threshold (float,
       # quoted). MUST be strictly less than upThreshold. REQUIRED when
       # enableScaling is true — left empty by default so the caller MUST
-      # set it; an empty value rejects the Helm install. Wired to
-      # scaledobject.kaito.sh/downthreshold/<i>.
+      # set it; an empty value rejects the Helm install. Rendered as the
+      # `downthreshold` field of a scaledobject.kaito.sh/metrics entry.
       downThreshold: ""
       # quantile is the target quantile in (0, 1] for histogram metrics;
       # ignored for gauge. Optional; empty lets keda-kaito-scaler apply its
-      # 0.95 default. Wired to scaledobject.kaito.sh/quantile/<i>.
+      # 0.95 default. Rendered as the `quantile` field of a
+      # scaledobject.kaito.sh/metrics entry.
       quantile: ""
       # p95 request queue time (histogram). Combined with the metric above
       # under the AND policy: scale up only when both are above their
