@@ -66,25 +66,24 @@ type ModelDeploymentValues struct {
 
 // ScalingMetric describes one composite scaling signal, mirroring a single
 // entry of the modeldeployment chart's scaling.metrics list. Each field maps
-// 1:1 to a scaledobject.kaito.sh/<key>/<i> annotation the chart renders.
+// 1:1 to a field of an entry in the scaledobject.kaito.sh/metrics YAML list
+// annotation the chart renders (keda-kaito-scaler v0.6.1+).
 type ScalingMetric struct {
-	// Name is the Prometheus metric family name
-	// (scaledobject.kaito.sh/metricName/<i>). Required.
+	// Name is the Prometheus metric family name (metrics entry `name`).
+	// Required.
 	Name string
 	// Type is the aggregation applied to the metric: "gauge" (per-replica
-	// average) or "histogram" (per-pod quantile)
-	// (scaledobject.kaito.sh/metricstype/<i>). Empty defaults to gauge.
+	// average) or "histogram" (per-pod quantile) (metrics entry `type`).
+	// Empty defaults to gauge.
 	Type string
-	// UpThreshold is the per-replica scale-up threshold
-	// (scaledobject.kaito.sh/upthreshold/<i>). Required; MUST be strictly
-	// greater than DownThreshold.
+	// UpThreshold is the per-replica scale-up threshold (metrics entry
+	// `upthreshold`). Required; MUST be strictly greater than DownThreshold.
 	UpThreshold string
-	// DownThreshold is the per-replica scale-down threshold
-	// (scaledobject.kaito.sh/downthreshold/<i>). Required; MUST be strictly
-	// less than UpThreshold.
+	// DownThreshold is the per-replica scale-down threshold (metrics entry
+	// `downthreshold`). Required; MUST be strictly less than UpThreshold.
 	DownThreshold string
 	// Quantile is the target quantile in (0, 1] for histogram metrics
-	// (scaledobject.kaito.sh/quantile/<i>). Optional; ignored for gauge.
+	// (metrics entry `quantile`). Optional; ignored for gauge.
 	Quantile string
 }
 

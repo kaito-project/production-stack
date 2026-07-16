@@ -18,6 +18,7 @@ metadata:
     scaledobject.kaito.sh/auto-provision: "true"
     scaledobject.kaito.sh/min-replicas: {{ .Values.replicas | quote }}
     scaledobject.kaito.sh/max-replicas: {{ .Values.maxReplicas | quote }}
+    {{- $lines := list }}
     {{- range $i, $m := .Values.scaling.metrics }}
     {{- if not $m.name }}
     {{- fail (printf "modeldeployment: scaling.metrics[%d].name is required when enableScaling is true" $i) }}
@@ -32,14 +33,16 @@ metadata:
     {{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold (%v) must be greater than downThreshold (%v) when enableScaling is true" $i $m.upThreshold $m.downThreshold) }}
     {{- end }}
     {{- $type := default "gauge" $m.type }}
-    scaledobject.kaito.sh/metricName/{{ $i }}: {{ $m.name | quote }}
-    scaledobject.kaito.sh/metricstype/{{ $i }}: {{ $type | quote }}
-    scaledobject.kaito.sh/upthreshold/{{ $i }}: {{ $m.upThreshold | quote }}
-    scaledobject.kaito.sh/downthreshold/{{ $i }}: {{ $m.downThreshold | quote }}
+    {{- $lines = append $lines (printf "- name: %s" ($m.name | quote)) }}
+    {{- $lines = append $lines (printf "  type: %s" ($type | quote)) }}
+    {{- $lines = append $lines (printf "  upthreshold: %v" $m.upThreshold) }}
+    {{- $lines = append $lines (printf "  downthreshold: %v" $m.downThreshold) }}
     {{- if and (eq $type "histogram") $m.quantile }}
-    scaledobject.kaito.sh/quantile/{{ $i }}: {{ $m.quantile | quote }}
+    {{- $lines = append $lines (printf "  quantile: %v" $m.quantile) }}
     {{- end }}
     {{- end }}
+    scaledobject.kaito.sh/metrics: |-
+      {{- (join "\n" $lines) | nindent 6 }}
     {{- with (.Values.scaling).evaluationWindow }}
     scaledobject.kaito.sh/evaluationwindow: {{ . | quote }}
     {{- end }}

@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/yaml"
 )
 
 // KEDA default parameters (applied when the ScaledObject leaves them unset).
@@ -113,14 +114,20 @@ func GetKEDAParams(ctx context.Context, model, namespace string) (KEDAParams, er
 		}
 	}
 	if p.Threshold == 0 {
-		// Fallback to the annotation on the InferenceSet. With the
-		// composite (multi-metric) format the per-replica scale-up
-		// threshold for the first metric lives under upthreshold/0.
+		// Fallback to the annotation on the InferenceSet. Since
+		// keda-kaito-scaler v0.6.1 the composite (multi-metric) config is
+		// carried in a single scaledobject.kaito.sh/metrics YAML list
+		// annotation; the per-replica scale-up threshold for the first
+		// metric lives under that list's first entry `upthreshold`.
 		is, err := dynClient.Resource(InferenceSetGVR).Namespace(namespace).Get(ctx, model, metav1.GetOptions{})
 		if err == nil {
-			if v, ok := is.GetAnnotations()["scaledobject.kaito.sh/upthreshold/0"]; ok {
-				if n, err := strconv.Atoi(v); err == nil {
-					p.Threshold = n
+			if v, ok := is.GetAnnotations()["scaledobject.kaito.sh/metrics"]; ok {
+				var metrics []struct {
+					UpThreshold *float64 `json:"upthreshold"`
+				}
+				if err := yaml.Unmarshal([]byte(v), &metrics); err == nil &&
+					len(metrics) > 0 && metrics[0].UpThreshold != nil {
+					p.Threshold = int(*metrics[0].UpThreshold)
 				}
 			}
 		}
