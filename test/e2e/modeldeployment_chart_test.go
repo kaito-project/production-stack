@@ -222,4 +222,65 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 			}, 30*time.Second, utils.PollInterval).Should(BeTrue(), "HTTPRoute should be deleted")
 		})
 	})
+
+	Context("modeldeployment chart with autoUpgrade enabled", func() {
+		// Reuse the same base deployment values as the install/uninstall
+		// context, but opt into KAITO automatic base image upgrades with a
+		// maintenance window. Each It installs into a fresh random namespace
+		// (BeforeEach) and recycles it in AfterEach.
+		baseValues := CaseDeployments[CaseModelDeploymentChart][0]
+		deploymentName := baseValues.Name
+
+		var namespace string
+
+		BeforeEach(func() {
+			namespace = generateNamespace("e2e-autoupgrade")
+			createNamespace(ctx, namespace)
+
+			values := baseValues
+			values.Namespace = namespace
+			values.AutoUpgrade = utils.AutoUpgrade{
+				Enabled:                   true,
+				MaintenanceWindowSchedule: "0 2 * * 6",
+				MaintenanceWindowDuration: "4h",
+			}
+			By("Installing modeldeployment chart with autoUpgrade enabled")
+			err := utils.CreateInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, values)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		AfterEach(func() {
+			By("Uninstalling modeldeployment chart")
+			if err := utils.CleanupInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, deploymentName, namespace); err != nil {
+				GinkgoWriter.Printf("Cleanup warning: %v\n", err)
+			}
+			deleteNamespace(ctx, namespace)
+		})
+
+		It("should render InferenceSet with spec.autoUpgrade and a maintenance window", func() {
+			cl := utils.TestingCluster.KubeClient
+
+			By("Verifying InferenceSet carries spec.autoUpgrade")
+			is := &unstructured.Unstructured{}
+			is.SetGroupVersionKind(schema.GroupVersionKind{
+				Group:   "kaito.sh",
+				Version: "v1alpha1",
+				Kind:    "InferenceSet",
+			})
+			err := cl.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, is)
+			Expect(err).NotTo(HaveOccurred())
+
+			enabled, found, _ := unstructured.NestedBool(is.Object, "spec", "autoUpgrade", "enabled")
+			Expect(found).To(BeTrue(), "spec.autoUpgrade.enabled should be present")
+			Expect(enabled).To(BeTrue())
+
+			schedule, found, _ := unstructured.NestedString(is.Object, "spec", "autoUpgrade", "maintenanceWindow", "schedule")
+			Expect(found).To(BeTrue(), "spec.autoUpgrade.maintenanceWindow.schedule should be present")
+			Expect(schedule).To(Equal("0 2 * * 6"))
+
+			duration, found, _ := unstructured.NestedString(is.Object, "spec", "autoUpgrade", "maintenanceWindow", "duration")
+			Expect(found).To(BeTrue(), "spec.autoUpgrade.maintenanceWindow.duration should be present")
+			Expect(duration).To(Equal("4h"))
+		})
+	})
 })

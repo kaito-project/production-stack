@@ -161,6 +161,7 @@ install_kaito() {
     --create-namespace \
     --set featureGates.enableInferenceSetController=true \
     --set featureGates.gatewayAPIInferenceExtension=false \
+    --set featureGates.enableBaseImageAutoUpgrade=true \
     --set nodeProvisioner="${NODE_PROVISIONER}" \
     "${KAITO_NODE_CLASS_ARGS[@]+"${KAITO_NODE_CLASS_ARGS[@]}"}" \
     --set image.repository=ghcr.io/kaito-project/kaito/workspace \

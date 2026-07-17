@@ -62,6 +62,25 @@ type ModelDeploymentValues struct {
 	// EnsureNamespace; the warmup loop in SetupInferenceSetsWithRouting
 	// reads the resulting Secret and sends Bearer + Host headers.
 	AuthAPIKeyEnabled bool
+	// AutoUpgrade opts the InferenceSet into KAITO automatic base image
+	// upgrades, wired onto the modeldeployment chart's autoUpgrade.* values
+	// (rendered as spec.autoUpgrade). Only rendered when Enabled is true.
+	AutoUpgrade AutoUpgrade
+}
+
+// AutoUpgrade mirrors the modeldeployment chart's autoUpgrade values, wired
+// onto the InferenceSet's spec.autoUpgrade. Consumed only when Enabled is true.
+type AutoUpgrade struct {
+	// Enabled toggles autoUpgrade.enabled (spec.autoUpgrade.enabled).
+	Enabled bool
+	// MaintenanceWindowSchedule is the 5-field cron (UTC) marking when
+	// rollouts may begin (autoUpgrade.maintenanceWindow.schedule). Empty
+	// omits the maintenanceWindow block entirely.
+	MaintenanceWindowSchedule string
+	// MaintenanceWindowDuration is how long the window stays open, e.g. "4h"
+	// (autoUpgrade.maintenanceWindow.duration). Ignored when
+	// MaintenanceWindowSchedule is empty.
+	MaintenanceWindowDuration string
 }
 
 // ScalingMetric describes one composite scaling signal, mirroring a single
@@ -136,6 +155,19 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 			)
 			if m.Quantile != "" {
 				args = append(args, "--set", prefix+"quantile="+m.Quantile)
+			}
+		}
+	}
+	if v.AutoUpgrade.Enabled {
+		args = append(args, "--set", "autoUpgrade.enabled=true")
+		if v.AutoUpgrade.MaintenanceWindowSchedule != "" {
+			// Use --set-string: the cron schedule contains spaces and
+			// asterisks that must be passed through verbatim.
+			args = append(args, "--set-string",
+				"autoUpgrade.maintenanceWindow.schedule="+v.AutoUpgrade.MaintenanceWindowSchedule)
+			if v.AutoUpgrade.MaintenanceWindowDuration != "" {
+				args = append(args, "--set-string",
+					"autoUpgrade.maintenanceWindow.duration="+v.AutoUpgrade.MaintenanceWindowDuration)
 			}
 		}
 	}
