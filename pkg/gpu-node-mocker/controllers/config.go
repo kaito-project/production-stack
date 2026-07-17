@@ -79,6 +79,12 @@ const (
 	// ShadowPodLabelKey marks shadow pods so we can watch only those.
 	ShadowPodLabelKey = "kaito.sh/shadow-pod-for"
 
+	// ShadowPodInferenceSetLabelKey records the InferenceSet (modeldeployment)
+	// that the shadow pod mirrors. Intentionally distinct from the upstream
+	// `inferenceset.kaito.sh/created-by` label to avoid the InferencePool
+	// selector accidentally treating shadow pods as real inference endpoints.
+	ShadowPodInferenceSetLabelKey = "kaito.sh/shadow-pod-inferenceset"
+
 	// InferenceSetCreatedByLabelKey is the upstream KAITO label that the
 	// InferenceSet controller stamps on its child pods. The Phase-2 pod
 	// predicate reads it to recognize InferenceSet (modeldeployment) pods.
