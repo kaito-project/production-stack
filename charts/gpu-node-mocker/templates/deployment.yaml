@@ -30,7 +30,6 @@ spec:
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
             - --shadow-pod-image={{ .Values.shadowPod.image }}
-            - --uds-tokenizer-image={{ .Values.shadowPod.udsTokenizerImage }}
             {{- with .Values.shadowPod.timeToFirstToken }}
             - --time-to-first-token={{ . }}
             {{- end }}

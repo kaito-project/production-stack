@@ -271,10 +271,12 @@ var _ = Describe("InferenceSet Scaling — Infra",
 						g.Expect(pod.Status.PodIP).NotTo(BeEmpty(),
 							"shadow pod %s must have a CNI PodIP", newShadowPod)
 
-						// uds-tokenizer runs as a native sidecar (init container with
-						// restartPolicy=Always), llm-d-inference-sim runs as a regular
-						// container. Aggregate readiness from both Spec.Containers and
-						// Spec.InitContainers, then map names to their *Status entries.
+						// llm-d-inference-sim runs as a regular container and is the
+						// only container in the shadow pod (the UDS tokenizer sidecar
+						// was removed — the sim forces its built-in dummy tokenizer).
+						// Aggregate readiness from both Spec.Containers and
+						// Spec.InitContainers defensively, then map names to their
+						// *Status entries.
 						containers := map[string]bool{}
 						for _, c := range pod.Spec.Containers {
 							containers[c.Name] = false
@@ -289,7 +291,6 @@ var _ = Describe("InferenceSet Scaling — Infra",
 							containers[cs.Name] = cs.Ready
 						}
 						g.Expect(containers).To(HaveKey("llm-d-inference-sim"))
-						g.Expect(containers).To(HaveKey("uds-tokenizer"))
 						for name, ready := range containers {
 							g.Expect(ready).To(BeTrue(),
 								"container %s of shadow pod %s should be ready", name, newShadowPod)

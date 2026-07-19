@@ -51,7 +51,6 @@ func testScheme() *runtime.Scheme {
 func testConfig() Config {
 	return Config{
 		ShadowPodImage:        DefaultInferenceSimImage,
-		UDSTokenizerImage:     DefaultUDSTokenizerImage,
 		LeaseDurationSec:      40,
 		LeaseRenewIntervalSec: 10,
 		NodeClass:             DefaultNodeClassRef(),
