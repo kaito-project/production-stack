@@ -102,10 +102,7 @@ const (
 	OwnedByLabelValue = "modeldeployment"
 
 	// DefaultInferenceSimImage is the default llm-d inference simulator image.
-	DefaultInferenceSimImage = "ghcr.io/llm-d/llm-d-inference-sim:v0.8.1"
-
-	// DefaultUDSTokenizerImage is the default UDS tokenizer sidecar image.
-	DefaultUDSTokenizerImage = "ghcr.io/llm-d/llm-d-uds-tokenizer:v0.6.0"
+	DefaultInferenceSimImage = "ghcr.io/llm-d/llm-d-inference-sim:v0.10.2"
 
 	// LatencyCalculatorConstant / LatencyCalculatorPerToken are the two
 	// llm-d-inference-sim latency models. "constant" derives TTFT from a fixed
@@ -121,9 +118,6 @@ const (
 
 	// InferenceSimPort is the default port for the inference simulator.
 	InferenceSimPort = 8001
-
-	// UDSTokenizerProbePort is the health probe port for the UDS tokenizer.
-	UDSTokenizerProbePort = 8082
 
 	// DefaultModelName is used when model name cannot be extracted from the original pod.
 	DefaultModelName = "default-model"
@@ -191,9 +185,6 @@ func (n NodeClassRef) GVK() schema.GroupVersionKind {
 type Config struct {
 	// ShadowPodImage is the inference simulator container image.
 	ShadowPodImage string
-
-	// UDSTokenizerImage is the UDS tokenizer sidecar image.
-	UDSTokenizerImage string
 
 	// TimeToFirstToken / InterTokenLatency tune the llm-d-inference-sim
 	// "constant" latency calculator (values include a unit suffix, e.g.

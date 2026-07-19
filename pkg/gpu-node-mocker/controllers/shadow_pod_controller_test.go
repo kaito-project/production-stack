@@ -179,29 +179,20 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if mainContainer.LivenessProbe == nil || mainContainer.LivenessProbe.HTTPGet.Path != "/health" {
 		t.Error("missing or wrong liveness probe")
 	}
-	// Should have config and uds-socket volume mounts
-	if len(mainContainer.VolumeMounts) != 2 {
-		t.Fatalf("expected 2 volume mounts, got %d", len(mainContainer.VolumeMounts))
+	// Should have only the config volume mount (no tokenizer sidecar)
+	if len(mainContainer.VolumeMounts) != 1 {
+		t.Fatalf("expected 1 volume mount, got %d", len(mainContainer.VolumeMounts))
 	}
 
-	// Init container should be uds-tokenizer (native sidecar)
-	if len(shadow.Spec.InitContainers) != 1 {
-		t.Fatalf("expected 1 init container, got %d", len(shadow.Spec.InitContainers))
-	}
-	udsContainer := shadow.Spec.InitContainers[0]
-	if udsContainer.Name != "uds-tokenizer" {
-		t.Errorf("init container name = %q", udsContainer.Name)
-	}
-	if udsContainer.Image != DefaultUDSTokenizerImage {
-		t.Errorf("uds tokenizer image = %q", udsContainer.Image)
-	}
-	if udsContainer.RestartPolicy == nil || *udsContainer.RestartPolicy != corev1.ContainerRestartPolicyAlways {
-		t.Error("uds-tokenizer should have restartPolicy=Always (native sidecar)")
+	// No init container: the sim uses its built-in (dummy) tokenizer, so the
+	// UDS tokenizer sidecar was removed.
+	if len(shadow.Spec.InitContainers) != 0 {
+		t.Fatalf("expected 0 init containers, got %d", len(shadow.Spec.InitContainers))
 	}
 
-	// Should have 2 volumes: config (ConfigMap) + uds-socket (emptyDir)
-	if len(shadow.Spec.Volumes) != 2 {
-		t.Fatalf("expected 2 volumes, got %d", len(shadow.Spec.Volumes))
+	// Should have exactly 1 volume: config (ConfigMap)
+	if len(shadow.Spec.Volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(shadow.Spec.Volumes))
 	}
 
 	if shadow.Labels[LabelManagedBy] != ControllerName {
@@ -252,6 +243,9 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	}
 	if !strings.Contains(configYAML, "enable-kvcache: true") {
 		t.Errorf("config.yaml should enable kv cache, got: %s", configYAML)
+	}
+	if !strings.Contains(configYAML, "force-dummy-tokenizer: true") {
+		t.Errorf("config.yaml should force the dummy tokenizer, got: %s", configYAML)
 	}
 	// Should NOT contain threshold
 	if strings.Contains(configYAML, "threshold") {

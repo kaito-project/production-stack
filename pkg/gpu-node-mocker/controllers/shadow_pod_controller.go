@@ -189,15 +189,17 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // ensureShadowPod creates the shadow pod if it does not yet exist, or returns
 // the existing one.
 //
-// The shadow pod runs the llm-d inference simulator (ghcr.io/llm-d/llm-d-inference-sim)
-// with a UDS tokenizer sidecar, matching the manifest structure from the
-// llm-d-inference-sim helm chart:
-//   - Init sidecar: uds-tokenizer (native sidecar with restartPolicy=Always)
+// The shadow pod runs the llm-d inference simulator (ghcr.io/llm-d/llm-d-inference-sim):
 //   - Main container: llm-d-inference-sim with --config /config/config.yaml
-//   - ConfigMap volume for config.yaml + emptyDir for UDS socket
+//   - ConfigMap volume for config.yaml
 //   - Node anti-affinity to avoid fake nodes
 //   - Model name extracted from the original pod's args/command
 //   - KV cache enabled, no threshold set
+//
+// The config forces the simulator's built-in (dummy) tokenizer via
+// force-dummy-tokenizer, so no external tokenizer/render sidecar is needed.
+// (llm-d-inference-sim replaced the deprecated UDS tokenizer with an HTTP vLLM
+// renderer, so the old uds-tokenizer sidecar no longer applies.)
 func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *corev1.Pod, shadowName string) (*corev1.Pod, error) {
 	// Create the shadow pod in the same namespace as the original pod so that
 	// Kubernetes NetworkPolicies applied to the model namespace also govern
@@ -261,11 +263,6 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		labels[ShadowPodInferenceSetLabelKey] = v
 	}
 
-	udsTokenizerImage := r.Config.UDSTokenizerImage
-	if udsTokenizerImage == "" {
-		udsTokenizerImage = DefaultUDSTokenizerImage
-	}
-
 	shadow := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            shadowName,
@@ -290,45 +287,6 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 				},
 			},
 			RestartPolicy: corev1.RestartPolicyAlways,
-			// UDS tokenizer runs as a native sidecar (init container with restartPolicy=Always).
-			InitContainers: []corev1.Container{
-				{
-					Name:            "uds-tokenizer",
-					Image:           udsTokenizerImage,
-					ImagePullPolicy: corev1.PullIfNotPresent,
-					RestartPolicy:   ptr.To(corev1.ContainerRestartPolicyAlways),
-					Env: []corev1.EnvVar{
-						{Name: "LOG_LEVEL", Value: "INFO"},
-						{Name: "PROBE_PORT", Value: fmt.Sprintf("%d", UDSTokenizerProbePort)},
-					},
-					Ports: []corev1.ContainerPort{
-						{Name: "health", ContainerPort: UDSTokenizerProbePort},
-					},
-					LivenessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/health",
-								Port: intstr.FromInt32(UDSTokenizerProbePort),
-							},
-						},
-						InitialDelaySeconds: 10,
-						PeriodSeconds:       10,
-					},
-					ReadinessProbe: &corev1.Probe{
-						ProbeHandler: corev1.ProbeHandler{
-							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/health",
-								Port: intstr.FromInt32(UDSTokenizerProbePort),
-							},
-						},
-						InitialDelaySeconds: 5,
-						PeriodSeconds:       5,
-					},
-					VolumeMounts: []corev1.VolumeMount{
-						{Name: "uds-socket", MountPath: "/tmp/tokenizer"},
-					},
-				},
-			},
 			Containers: []corev1.Container{
 				{
 					Name:            "llm-d-inference-sim",
@@ -367,7 +325,6 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "config", MountPath: "/config"},
-						{Name: "uds-socket", MountPath: "/tmp/tokenizer"},
 					},
 				},
 			},
@@ -380,12 +337,6 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 								Name: shadowName + "-config",
 							},
 						},
-					},
-				},
-				{
-					Name: "uds-socket",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
 					},
 				},
 			},
@@ -611,6 +562,7 @@ max-model-len: 32768
 enable-kvcache: true
 kv-cache-size: 4096
 block-size: 16
+force-dummy-tokenizer: true
 %s`, port, modelName, servedModelName, latencyYAML)
 
 	cm := &corev1.ConfigMap{

@@ -273,7 +273,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					"running shadow pods should exist in %s", caseNamespace)
 			})
 
-			It("should have shadow pods with both llm-d-inference-sim and tokenizer containers", func() {
+			It("should have shadow pods with the llm-d-inference-sim container and no tokenizer sidecar", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
@@ -295,8 +295,11 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					}
 					Expect(containerNames).To(ContainElement("llm-d-inference-sim"),
 						"shadow pod %q should have llm-d-inference-sim container", pod.Name)
-					Expect(containerNames).To(ContainElement("uds-tokenizer"),
-						"shadow pod %q should have uds-tokenizer container", pod.Name)
+					// The UDS tokenizer sidecar was removed: llm-d-inference-sim
+					// forces its built-in (dummy) tokenizer via
+					// force-dummy-tokenizer, so no external tokenizer container exists.
+					Expect(containerNames).NotTo(ContainElement("uds-tokenizer"),
+						"shadow pod %q should not have a uds-tokenizer sidecar", pod.Name)
 				}
 			})
 
