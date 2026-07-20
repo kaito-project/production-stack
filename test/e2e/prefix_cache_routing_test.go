@@ -159,8 +159,26 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 				"vllm:prefix_cache_queries should increment on the sticky pod")
 			// prefix_cache_hits may stay 0 if the simulator doesn't implement
 			// real prefix caching (mode=random). Log for visibility.
-			if cacheHitsDiff[stickyPod] == 0 {
+			simulatorHasPrefixCache := cacheHitsDiff[stickyPod] > 0
+			if !simulatorHasPrefixCache {
 				GinkgoWriter.Printf("[INFO] vllm:prefix_cache_hits is 0 on %s \u2014 simulator may not implement real prefix caching\n", stickyPod)
+			}
+
+			By("verifying EPP prefix indexer metrics show non-trivial prefix matching")
+			hitRatio, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
+				"inference_extension_prefix_indexer_hit_ratio", nil)
+			Expect(err).NotTo(HaveOccurred())
+			hitBytes, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
+				"inference_extension_prefix_indexer_hit_bytes", nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			if simulatorHasPrefixCache {
+				Expect(hitRatio).To(BeNumerically(">", 0),
+					"inference_extension_prefix_indexer_hit_ratio should be > 0 after repeated identical prompts")
+				Expect(hitBytes).To(BeNumerically(">", 0),
+					"inference_extension_prefix_indexer_hit_bytes should be > 0 after repeated identical prompts")
+			} else {
+				GinkgoWriter.Printf("[INFO] EPP prefix indexer hit_ratio=%.4f hit_bytes=%.0f \u2014 skipping strict assertion (simulator lacks real prefix caching)\n", hitRatio, hitBytes)
 			}
 		})
 	})
@@ -253,6 +271,15 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			if cacheHitsDiff[podA] == 0 || cacheHitsDiff[podB] == 0 {
 				GinkgoWriter.Printf("[INFO] vllm:prefix_cache_hits is 0 \u2014 simulator may not implement real prefix caching\n")
 			}
+
+			By("verifying per-pod request counts match per-category expectations")
+			// diffA/diffB are vllm:request_success_total deltas, which serve
+			// as a proxy for prefix_cache_queries routing verification: each
+			// sticky pod must have received exactly the per-category count.
+			Expect(diffA[podA]).To(BeNumerically("==", float64(numPerCategory)),
+				"category A sticky pod %s should have received exactly %d requests", podA, numPerCategory)
+			Expect(diffB[podB]).To(BeNumerically("==", float64(numPerCategory)),
+				"category B sticky pod %s should have received exactly %d requests", podB, numPerCategory)
 		})
 	})
 
@@ -344,6 +371,19 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			Expect(servingPod).NotTo(BeEmpty(), "a pod should have served the request")
 			Expect(servingPod).NotTo(Equal(stickyPod),
 				"request should have been served by a different pod after deletion")
+
+			By("verifying EPP scheduler success count incremented and failure count did not")
+			afterSchedSuccess, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
+				"inference_extension_scheduler_attempts_total", map[string]string{"status": "success"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(afterSchedSuccess).To(BeNumerically(">", 0),
+				"inference_extension_scheduler_attempts_total{status=success} should be > 0 after re-routing")
+
+			afterSchedFailure, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
+				"inference_extension_scheduler_attempts_total", map[string]string{"status": "failure"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(afterSchedFailure).To(BeNumerically("==", 0),
+				"inference_extension_scheduler_attempts_total{status=failure} should not increment after graceful re-route")
 		})
 	})
 })
