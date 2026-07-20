@@ -280,7 +280,12 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 
 			duration, found, _ := unstructured.NestedString(is.Object, "spec", "autoUpgrade", "maintenanceWindow", "duration")
 			Expect(found).To(BeTrue(), "spec.autoUpgrade.maintenanceWindow.duration should be present")
-			Expect(duration).To(Equal("4h"))
+			// The InferenceSet CRD canonicalizes the metav1.Duration, so the
+			// stored value is Go's normalized form ("4h0m0s"), not the literal
+			// "4h" we set. Compare parsed durations to stay normalization-agnostic.
+			parsedDuration, parseErr := time.ParseDuration(duration)
+			Expect(parseErr).NotTo(HaveOccurred(), "spec.autoUpgrade.maintenanceWindow.duration %q should be a valid duration", duration)
+			Expect(parsedDuration).To(Equal(4 * time.Hour))
 		})
 	})
 })
