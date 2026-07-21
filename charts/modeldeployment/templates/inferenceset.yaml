@@ -86,3 +86,16 @@ spec:
     inference:
       preset:
         name: {{ .Values.model | quote }}
+  {{- if (.Values.autoUpgrade).enabled }}
+  autoUpgrade:
+    enabled: true
+    {{- with (.Values.autoUpgrade).maintenanceWindow }}
+    {{- if .schedule }}
+    maintenanceWindow:
+      schedule: {{ .schedule | quote }}
+      {{- with .duration }}
+      duration: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+  {{- end }}

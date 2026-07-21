@@ -122,6 +122,41 @@ enableBenchmark: true
 #     aggressive batching, throughput-oriented kernels).
 performanceMode: ""
 
+# autoUpgrade configures KAITO's automatic base image upgrades for this
+# InferenceSet, rendered as spec.autoUpgrade. KAITO ships the vLLM base
+# image embedded in the controller; when the controller is upgraded to a
+# release bundling a newer base image, existing replicas keep running the
+# old image until recreated. With auto-upgrade enabled, the controller
+# detects the version drift and rolls replicas onto the new image one at a
+# time — waiting for each replica to become Ready before moving to the
+# next — keeping the service available throughout the rollout.
+#
+# NOTE: auto-upgrade ALSO requires the `enableBaseImageAutoUpgrade` feature
+# gate to be enabled on the KAITO controller (off by default). This chart
+# value only opts the individual InferenceSet in; without the feature gate
+# the controller ignores spec.autoUpgrade.
+autoUpgrade:
+  # enabled toggles spec.autoUpgrade.enabled. When false (the default),
+  # the entire spec.autoUpgrade block is omitted and replicas stay pinned
+  # to the base image they were created with until manually recreated.
+  enabled: false
+  # maintenanceWindow optionally restricts when rollouts may begin. When
+  # `schedule` is empty (the default), upgrades may start at any time.
+  # When set, the controller only starts upgrading replicas while the
+  # current time is inside the window; an upgrade already in progress is
+  # allowed to finish even if the window closes, and the next replica
+  # waits for the following window. Consumed only when enabled is true.
+  maintenanceWindow:
+    # schedule is a 5-field cron expression (UTC) marking the start of
+    # each maintenance window, e.g. "0 2 * * 6" (every Saturday at 02:00
+    # UTC). Empty (the default) lets upgrades start at any time; the
+    # maintenanceWindow block is omitted entirely.
+    schedule: ""
+    # duration is how long the window stays open once it opens, e.g.
+    # "4h". Empty lets the KAITO controller apply its 4h default. Ignored
+    # when `schedule` is empty.
+    duration: ""
+
 # gatewayName is the Gateway resource the HTTPRoute attaches to. When
 # empty (the default), the chart derives it as "<namespace>-gw" so the
 # rendered HTTPRoute parents the per-namespace Gateway provisioned by

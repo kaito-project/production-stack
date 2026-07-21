@@ -48,6 +48,9 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `scaling.evaluationWindow`| optional | `60`                                                                | Scale-up stabilization window (seconds). Wired to `scaledobject.kaito.sh/evaluationwindow`. |
 | `scaling.scaleUpCooldown` | optional | `300`                                                               | Minimum seconds between scale-up steps. Wired to `scaledobject.kaito.sh/scaleupcooldown`.  |
 | `scaling.scaleDownCooldown` | optional | `300`                                                             | Minimum seconds between scale-down steps. Wired to `scaledobject.kaito.sh/scaledowncooldown`. |
+| `autoUpgrade.enabled`     | optional | `false`                                                             | Opts this InferenceSet into KAITO automatic base image upgrades. Renders `spec.autoUpgrade.enabled: true`. Also requires the `enableBaseImageAutoUpgrade` feature gate on the KAITO controller. |
+| `autoUpgrade.maintenanceWindow.schedule` | optional | _empty_                                             | 5-field cron (UTC) marking when rollouts may begin, e.g. `"0 2 * * 6"`. Empty lets upgrades start at any time (the `maintenanceWindow` block is omitted). Consumed only when `autoUpgrade.enabled=true`. |
+| `autoUpgrade.maintenanceWindow.duration` | optional | _empty_ → `4h`                                      | How long the window stays open once it opens, e.g. `"4h"`. Empty inherits the KAITO controller's `4h` default. Ignored when `schedule` is empty. |
 | `gatewayName`             | optional | _empty_ → `<namespace>-gw`                                          | Gateway the HTTPRoute attaches to. Defaults to the per-namespace Gateway provisioned by `charts/modelharness`. |
 | `epp.image.repository`    | optional | `mcr.microsoft.com/oss/v2/llm-d/llm-d-inference-scheduler`           | EPP container image.                                                                       |
 | `epp.image.tag`           | optional | `v0.7.1`                                                             | EPP image tag.                                                                             |
@@ -87,6 +90,36 @@ helm install qwen ./charts/modeldeployment \
 The rendered `HTTPRoute` parents into the `my-models-gw` `Gateway`
 because `gatewayName` is left empty. Override `--set gatewayName=...`
 only when attaching to a Gateway with a business-specific name.
+
+## Automatic base image upgrades
+
+KAITO embeds the version of its base serving image in its controller.
+When the controller is upgraded to a release bundling a newer base image, 
+existing `InferenceSet` replicas keep running the old image until
+they are recreated. Setting `autoUpgrade.enabled=true` renders
+`spec.autoUpgrade.enabled: true` on the InferenceSet so the KAITO
+controller detects the version drift and rolls the replicas onto the new
+image one at a time — waiting for each replica to become Ready before
+moving to the next — without recreating the InferenceSet. See the
+[KAITO docs](https://kaito-project.github.io/kaito/docs/inference#automatic-base-image-upgrades).
+
+Optionally restrict when rollouts may begin with a maintenance window
+(`schedule` is a 5-field cron in UTC; `duration` defaults to `4h`):
+
+```sh
+helm install qwen ./charts/modeldeployment \
+  --namespace my-models \
+  --set name=qwen \
+  --set model=qwen2-5-coder-7b-instruct \
+  --set autoUpgrade.enabled=true \
+  --set autoUpgrade.maintenanceWindow.schedule="0 2 * * 6" \
+  --set autoUpgrade.maintenanceWindow.duration="4h"
+```
+
+> **Note:** auto-upgrade ALSO requires the `enableBaseImageAutoUpgrade`
+> feature gate to be enabled on the KAITO controller (off by default).
+> This chart value only opts the individual InferenceSet in; without the
+> feature gate the controller ignores `spec.autoUpgrade`.
 
 ## Compatibility note
 

@@ -469,14 +469,42 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				bbrNS := "kaito-system"
-				bbrPod, err := firstRunningPod(ctx, bbrNS,
-					"app.kubernetes.io/name=body-based-routing")
-				Expect(err).NotTo(HaveOccurred())
+				const bbrNS = "kaito-system"
+				const bbrSelector = "app.kubernetes.io/name=body-based-routing"
 
-				before, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
+				// BBR runs as an HA Deployment (>= 2 replicas) and the gateway
+				// load-balances the ext_proc call across every replica, so a
+				// single request may be handled by ANY replica. Snapshotting
+				// one pod's log (firstRunningPod) is therefore racy: the
+				// request can land on a different replica, leaving the observed
+				// pod's log unchanged (the flake this replaces, where
+				// before == after exactly). Aggregate the log length across all
+				// running BBR replicas so we observe growth regardless of which
+				// replica served the request.
+				totalBBRLogLen := func() (int, error) {
+					pods, err := clientset.CoreV1().Pods(bbrNS).List(ctx, metav1.ListOptions{
+						LabelSelector: bbrSelector,
+						FieldSelector: "status.phase=Running",
+					})
+					if err != nil {
+						return 0, err
+					}
+					if len(pods.Items) == 0 {
+						return 0, fmt.Errorf("no Running BBR pods match %q", bbrSelector)
+					}
+					total := 0
+					for i := range pods.Items {
+						logs, err := utils.GetPodLogs(clientset, bbrNS, pods.Items[i].Name, "bbr")
+						if err != nil {
+							return 0, err
+						}
+						total += len(logs)
+					}
+					return total, nil
+				}
+
+				beforeLen, err := totalBBRLogLen()
 				Expect(err).NotTo(HaveOccurred())
-				beforeLen := len(before)
 
 				resp, err := sendAuth("d3-unknown-model", apiKey)
 				Expect(err).NotTo(HaveOccurred())
@@ -484,12 +512,12 @@ var _ = Describe("Filter execution order",
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
 					"unknown model with valid auth should hit catch-all 404")
 
-				time.Sleep(3 * time.Second)
-
-				after, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(after)).To(BeNumerically(">", beforeLen),
-					"BBR log must grow even for catch-all paths (proves BBR runs before router on every request)")
+				// Poll (rather than a fixed sleep) for the aggregated BBR log to
+				// grow, tolerating log-flush latency on whichever replica served
+				// the request.
+				Eventually(totalBBRLogLen, 30*time.Second, 2*time.Second).
+					Should(BeNumerically(">", beforeLen),
+						"BBR log must grow even for catch-all paths (proves BBR runs before router on every request)")
 			})
 
 			// E2 — Non-JSON Content-Type. BBR's body-field-to-header plugin

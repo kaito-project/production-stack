@@ -111,6 +111,32 @@
       "type": "string",
       "description": "Gateway the HTTPRoute attaches to. Empty derives '<namespace>-gw'."
     },
+    "autoUpgrade": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "KAITO automatic base image upgrade configuration, rendered as spec.autoUpgrade. When enabled, the controller rolls replicas onto a newer embedded base image one at a time after a controller upgrade. Requires the enableBaseImageAutoUpgrade feature gate on the KAITO controller (off by default); this value only opts the InferenceSet in.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Toggles spec.autoUpgrade.enabled. When false (default), the spec.autoUpgrade block is omitted and replicas stay pinned to their creation-time base image."
+        },
+        "maintenanceWindow": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optionally restricts when rollouts may begin. Consumed only when enabled is true. Omitted entirely when schedule is empty.",
+          "properties": {
+            "schedule": {
+              "type": "string",
+              "description": "5-field cron expression (UTC) marking the start of each maintenance window, e.g. '0 2 * * 6'. Empty (default) lets upgrades start at any time."
+            },
+            "duration": {
+              "type": "string",
+              "description": "How long the window stays open once it opens, e.g. '4h'. Empty inherits the KAITO controller's 4h default. Ignored when schedule is empty."
+            }
+          }
+        }
+      }
+    },
     "epp": {
       "type": "object",
       "additionalProperties": true,
