@@ -107,6 +107,33 @@
       "enum": ["", "balanced", "interactivity", "throughput"],
       "description": "When non-empty, stamps kaito.sh/performance-mode: <value> on the InferenceSet template so the KAITO controller applies the corresponding vLLM profile. Empty (default) omits the annotation and the controller falls back to its own default (balanced). Allowed values: interactivity (low per-request latency), balanced (trade-off), throughput (maximize aggregate tokens/sec)."
     },
+    "streaming": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "KAITO model-streaming annotations stamped onto spec.template.metadata.annotations of the InferenceSet (propagated to child Workspaces). Every value is delivered as a STRING; gate keys are typed 'string' (not boolean).",
+      "properties": {
+        "disabled": {
+          "type": "string",
+          "description": "When 'true', stamps kaito.sh/model-streaming: 'disabled' to force KAITO's download-at-runtime path. Any other value keeps streaming enabled. Mutually exclusive with staticModelMirror."
+        },
+        "staticModelMirror": {
+          "type": "string",
+          "description": "When 'true', the gate that activates the SAS direct-stream path; stamps inference.kaito.sh/static-model-mirror and requires datarefsUrl, identityClientId, and sourceType."
+        },
+        "datarefsUrl": {
+          "type": "string",
+          "description": "SAS-mint endpoint URL, stamped verbatim as inference.kaito.sh/stream-datarefs-url. Consumed only when staticModelMirror is 'true'."
+        },
+        "identityClientId": {
+          "type": "string",
+          "description": "UAMI client-id GUID, stamped as inference.kaito.sh/stream-identity-client-id. Must match modelharness serviceAccount.workloadIdentityClientId. Consumed only when staticModelMirror is 'true'."
+        },
+        "sourceType": {
+          "type": "string",
+          "description": "Selects KAITO's URL-derivation rule / token audience, stamped as inference.kaito.sh/stream-source-type. The value can only be 'public' or 'byo'. Consumed only when staticModelMirror is 'true'."
+        }
+      }
+    },
     "gatewayName": {
       "type": "string",
       "description": "Gateway the HTTPRoute attaches to. Empty derives '<namespace>-gw'."

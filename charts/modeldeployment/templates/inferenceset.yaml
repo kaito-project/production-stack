@@ -72,13 +72,30 @@ spec:
         cross-namespace ingress to them would silently succeed.
         */}}
         {{- include "modeldeployment.ownerLabel" . | nindent 8 }}
-      {{- if or (not .Values.enableBenchmark) .Values.performanceMode }}
+      {{/*
+      Streaming annotations are stamped here on spec.template.metadata.annotations
+      */}}
+      {{- $disabled := eq (.Values.streaming.disabled | toString) "true" }}
+      {{- $sas := eq (.Values.streaming.staticModelMirror | toString) "true" }}
+      {{- if and $disabled $sas }}
+      {{- fail "modeldeployment: streaming.disabled and streaming.staticModelMirror are mutually exclusive" }}
+      {{- end }}
+      {{- if or (not .Values.enableBenchmark) .Values.performanceMode $disabled $sas }}
       annotations:
         {{- if not .Values.enableBenchmark }}
         kaito.sh/disable-benchmark: "true"
         {{- end }}
         {{- with .Values.performanceMode }}
         kaito.sh/performance-mode: {{ . | quote }}
+        {{- end }}
+        {{- if $disabled }}
+        kaito.sh/model-streaming: "disabled"
+        {{- end }}
+        {{- if $sas }}
+        inference.kaito.sh/static-model-mirror: "true"
+        inference.kaito.sh/stream-datarefs-url: {{ .Values.streaming.datarefsUrl | quote }}
+        inference.kaito.sh/stream-identity-client-id: {{ .Values.streaming.identityClientId | quote }}
+        inference.kaito.sh/stream-source-type: {{ .Values.streaming.sourceType | quote }}
         {{- end }}
       {{- end }}
     resource:
