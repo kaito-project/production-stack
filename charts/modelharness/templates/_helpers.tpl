@@ -17,6 +17,14 @@ Gateway name distinct from the namespace name.
 {{- end }}
 
 {{/*
+Streaming ServiceAccount name. PINNED to the constant "kaito-model-streamer"
+and intentionally NOT exposed as a tunable value.
+*/}}
+{{- define "modelharness.streamingServiceAccountName" -}}
+kaito-model-streamer
+{{- end }}
+
+{{/*
 Common labels applied to every harness-owned resource.
 
 `kaito.sh/owned-by: modelharness` is the stable ownership label the

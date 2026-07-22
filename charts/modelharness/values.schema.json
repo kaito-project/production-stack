@@ -22,6 +22,17 @@
       "minLength": 1,
       "description": "GatewayClass the per-namespace Gateway binds to. MUST be non-empty."
     },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Streaming ServiceAccount configuration for KAITO model-streaming pods. Rendered only when workloadIdentityClientId is non-empty.",
+      "properties": {
+        "workloadIdentityClientId": {
+          "type": "string",
+          "description": "User-assigned managed identity (UAMI) client-id GUID. Non-empty renders the streaming ServiceAccount annotated with azure.workload.identity/client-id. Empty (default) renders no ServiceAccount."
+        }
+      }
+    },
     "gatewayPort": {
       "type": "integer",
       "minimum": 1,

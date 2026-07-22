@@ -122,6 +122,33 @@ enableBenchmark: true
 #     aggressive batching, throughput-oriented kernels).
 performanceMode: ""
 
+# streaming groups the KAITO model-streaming annotations stamped onto
+# spec.template.metadata.annotations of the InferenceSet (which the KAITO
+# InferenceSet controller clones onto every child Workspace, where the
+# streaming logic reads them).
+streaming:
+  # disabled, when "true", stamps `kaito.sh/model-streaming: "disabled"` to
+  # force KAITO's normal download-at-runtime path (no SAS, no az://). Any
+  # other value (or empty) leaves streaming enabled. Mutually exclusive with
+  # staticModelMirror.
+  disabled: ""
+  # staticModelMirror, when "true", is the gate that activates the SAS
+  # direct-stream path; it stamps `inference.kaito.sh/static-model-mirror:
+  # "true"` and requires datarefsUrl, identityClientId, and sourceType below.
+  staticModelMirror: ""
+  # datarefsUrl is the SAS-mint endpoint URL. Consumed only when
+  # staticModelMirror is "true".
+  datarefsUrl: ""
+  # identityClientId is the UAMI client-id GUID, stamped as
+  # `inference.kaito.sh/stream-identity-client-id`. Must match the value sent
+  # to modelharness's serviceAccount.workloadIdentityClientId. Consumed only
+  # when staticModelMirror is "true".
+  identityClientId: ""
+  # sourceType selects the KAITO URL-derivation rule / token audience,
+  # stamped as `inference.kaito.sh/stream-source-type`. The value can only be
+  # "public" or "byo". Consumed only when staticModelMirror is "true".
+  sourceType: ""
+
 # autoUpgrade configures KAITO's automatic base image upgrades for this
 # InferenceSet, rendered as spec.autoUpgrade. KAITO ships the vLLM base
 # image embedded in the controller; when the controller is upgraded to a

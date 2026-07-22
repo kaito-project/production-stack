@@ -18,6 +18,17 @@ manageNamespace: true
 # Istio's "istio" GatewayClass.
 gatewayClassName: istio
 
+# serviceAccount configures the streaming ServiceAccount used by KAITO's
+# model-streaming pods (both the default Workload-Identity mirror+stream
+# path and the SAS direct-stream path).
+serviceAccount:
+  # workloadIdentityClientId is the user-assigned managed identity (UAMI)
+  # client-id GUID. When non-empty, the chart
+  # renders the streaming ServiceAccount annotated with
+  # `azure.workload.identity/client-id: <value>`. Empty (the default) renders
+  # no ServiceAccount.
+  workloadIdentityClientId: ""
+
 # gatewayName is the per-namespace Istio Gateway resource name. When
 # empty (the default), the chart derives "<namespace>-gw" so the Gateway
 # name self-identifies the workload namespace it serves while staying
