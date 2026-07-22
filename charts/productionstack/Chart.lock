@@ -10,6 +10,6 @@ dependencies:
   version: 0.3.1
 - name: llm-gateway-apikey
   repository: oci://mcr.microsoft.com/aks/kaito/helm
-  version: 0.0.13-alpha
-digest: sha256:a5b170f8df8a7f426cc2beb3c4ced1c04b627fc9be53a6eecbf5824c800263ca
-generated: "2026-07-17T12:13:58.84452+10:00"
+  version: 0.0.14-alpha
+digest: sha256:c52e969b581edb4a8e0059256d7beacb99ea5f94648699ea5c26619fd846bb2f
+generated: "2026-07-22T14:43:02.078854+10:00"
