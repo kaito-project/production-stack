@@ -1,0 +1,53 @@
+{{- if and (eq .Values.cloudprovider "azure") .Values.modelMirror.storageAccount }}
+{{/*
+Model-mirror StorageClass for KAITO's model-mirror download Job.
+
+KAITO's model-mirror download Job writes model weights into an Azure blob
+container and inference pods read them back. KAITO creates a PVC referencing
+this StorageClass; the Blob CSI driver (`blob.csi.azure.com`) dynamically
+creates a container and mounts it. The mount uses Azure Workload Identity.
+
+KAITO's workspace controller validates two fields at reconcile time and
+rejects the workspace otherwise, so both are FIXED constants:
+  - metadata.name MUST equal the controller's
+    --default-model-mirror-storage-class (the fixed `kaito-model-mirror`).
+  - provisioner MUST be `blob.csi.azure.com`.
+
+Rendered ONLY when `modelMirror.storageAccount` is non-empty.
+The mounting workload runs under the streaming ServiceAccount
+(`kaito-model-streamer`, rendered by charts/modelharness), federated to the
+same identity as `clientID`.
+*/}}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: kaito-model-mirror
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    kaito.sh/owned-by: productionstack
+provisioner: blob.csi.azure.com
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  storageAccount: {{ .Values.modelMirror.storageAccount | quote }}
+  resourceGroup: {{ .Values.modelMirror.resourceGroup | quote }}
+  protocol: fuse2
+  skuName: Premium_LRS
+  # Keyless mount auth — shared-key access is disabled on the account.
+  clientID: {{ .Values.modelMirror.clientID | quote }}
+  mountWithWorkloadIdentityToken: "true"
+mountOptions:
+  - -o allow_other
+  - -o attr_timeout=120
+  - -o entry_timeout=120
+  - -o negative_timeout=120
+  - --cancel-list-on-mount-seconds=10
+  - --use-attr-cache=true
+  - --block-cache
+  - --block-cache-block-size=16
+  - --block-cache-pool-size=8192
+  - --block-cache-prefetch=11
+{{- else if .Values.modelMirror.storageAccount }}
+{{- fail "modelMirror.storageAccount is set but requires cloudprovider=\"azure\"" }}
+{{- end }}
