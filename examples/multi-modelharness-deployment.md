@@ -137,8 +137,8 @@ has **KAITO autoscaling enabled** (`enableScaling=true`): the `keda-kaito-scaler
 provisions a `ScaledObject` that scales each `InferenceSet` between its
 `replicas` baseline and `maxReplicas`. Scaling is driven by the chart's composite
 `scaling.metrics` list — the two chart defaults, per-replica queue depth
-(`vllm:num_requests_waiting`, gauge) and p95 request-queue time
-(`vllm:request_queue_time_seconds`, histogram) — that `keda-kaito-scaler` v0.6.1
+(`vllm:num_requests_waiting`, gauge) and windowed-average request-queue time
+(`vllm:request_queue_time_seconds`, histogram) — that `keda-kaito-scaler` v0.6.2
 combines under a conservative **AND** policy: it scales up by one replica only
 when *both* signals exceed their `upThreshold`, and scales down only when *both*
 fall below their `downThreshold`.
@@ -266,15 +266,6 @@ helm upgrade --install chat-phi charts/modeldeployment \
   --set enableScaling=true \
   --set maxReplicas=4 \
   --set enableBenchmark=false \
-  --set scaling.metrics[0].name=vllm:num_requests_waiting \
-  --set scaling.metrics[0].type=gauge \
-  --set scaling.metrics[0].upThreshold=5 \
-  --set scaling.metrics[0].downThreshold=2 \
-  --set scaling.metrics[1].name=vllm:request_queue_time_seconds \
-  --set scaling.metrics[1].type=histogram \
-  --set scaling.metrics[1].upThreshold=2 \
-  --set scaling.metrics[1].downThreshold=0.5 \
-  --set scaling.metrics[1].quantile=0.95 \
   --set instanceType=Standard_NV36ads_A10_v5 \
   --wait --timeout=10m
 
@@ -288,15 +279,6 @@ helm upgrade --install code-ministral charts/modeldeployment \
   --set enableScaling=true \
   --set maxReplicas=3 \
   --set enableBenchmark=false \
-  --set scaling.metrics[0].name=vllm:num_requests_waiting \
-  --set scaling.metrics[0].type=gauge \
-  --set scaling.metrics[0].upThreshold=5 \
-  --set scaling.metrics[0].downThreshold=2 \
-  --set scaling.metrics[1].name=vllm:request_queue_time_seconds \
-  --set scaling.metrics[1].type=histogram \
-  --set scaling.metrics[1].upThreshold=2 \
-  --set scaling.metrics[1].downThreshold=0.5 \
-  --set scaling.metrics[1].quantile=0.95 \
   --set instanceType=Standard_NV36ads_A10_v5 \
   --wait --timeout=10m
 ```
@@ -324,15 +306,6 @@ helm upgrade --install assistant-phi charts/modeldeployment \
   --set enableScaling=true \
   --set maxReplicas=4 \
   --set enableBenchmark=false \
-  --set scaling.metrics[0].name=vllm:num_requests_waiting \
-  --set scaling.metrics[0].type=gauge \
-  --set scaling.metrics[0].upThreshold=5 \
-  --set scaling.metrics[0].downThreshold=2 \
-  --set scaling.metrics[1].name=vllm:request_queue_time_seconds \
-  --set scaling.metrics[1].type=histogram \
-  --set scaling.metrics[1].upThreshold=2 \
-  --set scaling.metrics[1].downThreshold=0.5 \
-  --set scaling.metrics[1].quantile=0.95 \
   --set instanceType=Standard_NV36ads_A10_v5 \
   --wait --timeout=10m
 
@@ -346,15 +319,6 @@ helm upgrade --install summarizer-ministral charts/modeldeployment \
   --set enableScaling=true \
   --set maxReplicas=3 \
   --set enableBenchmark=false \
-  --set scaling.metrics[0].name=vllm:num_requests_waiting \
-  --set scaling.metrics[0].type=gauge \
-  --set scaling.metrics[0].upThreshold=5 \
-  --set scaling.metrics[0].downThreshold=2 \
-  --set scaling.metrics[1].name=vllm:request_queue_time_seconds \
-  --set scaling.metrics[1].type=histogram \
-  --set scaling.metrics[1].upThreshold=2 \
-  --set scaling.metrics[1].downThreshold=0.5 \
-  --set scaling.metrics[1].quantile=0.95 \
   --set instanceType=Standard_NV36ads_A10_v5 \
   --wait --timeout=10m
 ```

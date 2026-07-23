@@ -37,8 +37,8 @@ metadata:
     {{- $lines = append $lines (printf "  type: %s" ($type | quote)) }}
     {{- $lines = append $lines (printf "  upthreshold: %v" $m.upThreshold) }}
     {{- $lines = append $lines (printf "  downthreshold: %v" $m.downThreshold) }}
-    {{- if and (eq $type "histogram") $m.quantile }}
-    {{- $lines = append $lines (printf "  quantile: %v" $m.quantile) }}
+    {{- if and (eq $type "histogram") $m.metricCacheWindow }}
+    {{- $lines = append $lines (printf "  metriccachewindow: %v" $m.metricCacheWindow) }}
     {{- end }}
     {{- end }}
     scaledobject.kaito.sh/metrics: |-
