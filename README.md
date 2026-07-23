@@ -90,16 +90,7 @@ helm install qwen oci://ghcr.io/kaito-project/helm/modeldeployment \
   --set model=qwen2-5-coder-7b-instruct \
   --set replicas=2 \
   --set maxReplicas=5 \
-  --set enableScaling=true \
-  --set scaling.metrics[0].name=vllm:num_requests_waiting \
-  --set scaling.metrics[0].type=gauge \
-  --set scaling.metrics[0].upThreshold=10 \
-  --set scaling.metrics[0].downThreshold=3 \
-  --set scaling.metrics[1].name=vllm:request_queue_time_seconds \
-  --set scaling.metrics[1].type=histogram \
-  --set scaling.metrics[1].upThreshold=2 \
-  --set scaling.metrics[1].downThreshold=0.5 \
-  --set scaling.metrics[1].quantile=0.95
+  --set enableScaling=true
 ```
 
 For the full value schema (EPP image / ports / resources, scaling knobs, naming conventions, KAITO `FeatureFlagGatewayAPIInferenceExtension` compatibility note), see [`charts/modeldeployment/README.md`](charts/modeldeployment/README.md).

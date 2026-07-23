@@ -86,14 +86,14 @@ type AutoUpgrade struct {
 // ScalingMetric describes one composite scaling signal, mirroring a single
 // entry of the modeldeployment chart's scaling.metrics list. Each field maps
 // 1:1 to a field of an entry in the scaledobject.kaito.sh/metrics YAML list
-// annotation the chart renders (keda-kaito-scaler v0.6.1+).
+// annotation the chart renders (keda-kaito-scaler v0.6.2+).
 type ScalingMetric struct {
 	// Name is the Prometheus metric family name (metrics entry `name`).
 	// Required.
 	Name string
 	// Type is the aggregation applied to the metric: "gauge" (per-replica
-	// average) or "histogram" (per-pod quantile) (metrics entry `type`).
-	// Empty defaults to gauge.
+	// average) or "histogram" (per-pod windowed average) (metrics entry
+	// `type`). Empty defaults to gauge.
 	Type string
 	// UpThreshold is the per-replica scale-up threshold (metrics entry
 	// `upthreshold`). Required; MUST be strictly greater than DownThreshold.
@@ -101,9 +101,9 @@ type ScalingMetric struct {
 	// DownThreshold is the per-replica scale-down threshold (metrics entry
 	// `downthreshold`). Required; MUST be strictly less than UpThreshold.
 	DownThreshold string
-	// Quantile is the target quantile in (0, 1] for histogram metrics
-	// (metrics entry `quantile`). Optional; ignored for gauge.
-	Quantile string
+	// MetricCacheWindow is the rolling cache window in seconds for histogram
+	// metrics (metrics entry `metriccachewindow`). Optional; ignored for gauge.
+	MetricCacheWindow string
 }
 
 // DefaultModelDeploymentValues returns a populated ModelDeploymentValues for a
@@ -153,8 +153,8 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 				"--set", prefix+"upThreshold="+m.UpThreshold,
 				"--set", prefix+"downThreshold="+m.DownThreshold,
 			)
-			if m.Quantile != "" {
-				args = append(args, "--set", prefix+"quantile="+m.Quantile)
+			if m.MetricCacheWindow != "" {
+				args = append(args, "--set", prefix+"metricCacheWindow="+m.MetricCacheWindow)
 			}
 		}
 	}

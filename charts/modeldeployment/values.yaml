@@ -60,37 +60,39 @@ scaling:
       # type is the aggregation applied to the metric; it MUST keep the
       # signal replica-count independent:
       #   gauge     -> per-replica average across pods
-      #   histogram -> per-pod quantile
+      #   histogram -> per-pod windowed average (rolling _sum/_count delta)
       # Rendered as the `type` field of a scaledobject.kaito.sh/metrics
       # entry. Defaults to gauge when empty.
       type: "gauge"
       # upThreshold is the per-replica scale-up threshold (float, quoted).
-      # REQUIRED when enableScaling is true — left empty by default so the
-      # caller MUST set it; an empty value rejects the Helm install.
+      # REQUIRED when enableScaling is true — an empty value rejects the Helm
+      # install. Defaults to "10"; MUST be strictly greater than downThreshold.
       # Rendered as the `upthreshold` field of a scaledobject.kaito.sh/metrics
       # entry.
-      upThreshold: ""
+      upThreshold: "10"
       # downThreshold is the per-replica scale-down threshold (float,
       # quoted). MUST be strictly less than upThreshold. REQUIRED when
-      # enableScaling is true — left empty by default so the caller MUST
-      # set it; an empty value rejects the Helm install. Rendered as the
+      # enableScaling is true — an empty value rejects the Helm install.
+      # Defaults to "1". Rendered as the
       # `downthreshold` field of a scaledobject.kaito.sh/metrics entry.
-      downThreshold: ""
-      # quantile is the target quantile in (0, 1] for histogram metrics;
-      # ignored for gauge. Optional; empty lets keda-kaito-scaler apply its
-      # 0.95 default. Rendered as the `quantile` field of a
-      # scaledobject.kaito.sh/metrics entry.
-      quantile: ""
-      # p95 request queue time (histogram). Combined with the metric above
+      downThreshold: "1"
+      # metricCacheWindow is the rolling cache window in seconds over which
+      # keda-kaito-scaler averages a histogram metric's _sum/_count deltas
+      # (windowed-avg aggregation) to produce a per-pod value; ignored for
+      # gauge. Optional; empty lets keda-kaito-scaler apply its 300s default.
+      # Must be a positive number of seconds. Rendered as the
+      # `metriccachewindow` field of a scaledobject.kaito.sh/metrics entry.
+      metricCacheWindow: ""
+      # request queue time (histogram). Combined with the metric above
       # under the AND policy: scale up only when both are above their
       # upThresholds, scale down only when both are below their
-      # downThresholds. upThreshold / downThreshold are REQUIRED (empty by
-      # default) and reject the install when unset.
+      # downThresholds. upThreshold / downThreshold are REQUIRED (defaulted
+      # to "30" / "1") and reject the install when set empty.
     - name: "vllm:request_queue_time_seconds"
       type: "histogram"
-      upThreshold: ""
-      downThreshold: ""
-      quantile: "0.95"
+      upThreshold: "30"
+      downThreshold: "1"
+      metricCacheWindow: "300"
 
   # evaluationWindow is the scale-up stabilization window in seconds.
   # Optional; empty lets keda-kaito-scaler apply its 60s default. Wired to
