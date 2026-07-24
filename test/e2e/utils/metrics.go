@@ -383,26 +383,30 @@ func MinSnapshot(s PodMetricSnapshot) float64 {
 	return min
 }
 
-// ScrapeModelMetricPresence reports how many of the model's shadow pods export
-// the named metric with a matching model_name label. Unlike ScrapeModelMetric,
-// which coerces a missing metric to 0, this distinguishes "absent" from
-// "present and zero", so callers can assert a metric pipeline genuinely exists
-// (e.g. that the kv-cache-utilization-scorer and queue-scorer have signal to
-// read) without requiring a positive value under synthetic load.
-func ScrapeModelMetricPresence(ctx context.Context, clientset *kubernetes.Clientset, namespace, model, metricName string) (present, total int, err error) {
+// ScrapeModelMetricWithPresence scrapes a named model metric from all shadow
+// pods in a single pass, returning both the per-pod snapshot and how many pods
+// actually export it (found=true). Unlike ScrapeModelMetric, which coerces a
+// missing metric to 0, the present count distinguishes "absent" from "present
+// and zero", so callers can assert a metric pipeline genuinely exists (e.g.
+// that the kv-cache-utilization-scorer and queue-scorer have signal to read)
+// without requiring a positive value under synthetic load.
+func ScrapeModelMetricWithPresence(ctx context.Context, clientset *kubernetes.Clientset, namespace, model, metricName string) (snapshot PodMetricSnapshot, present int, err error) {
 	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
 	if err != nil {
-		return 0, 0, err
+		return nil, 0, err
 	}
+	snapshot = make(PodMetricSnapshot, len(pods))
 	for _, pod := range pods {
 		port := inferenceSimPort(pod)
 		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, port)
 		if err != nil {
-			return 0, 0, fmt.Errorf("scraping %s: %w", pod.Name, err)
+			return nil, 0, fmt.Errorf("scraping %s: %w", pod.Name, err)
 		}
-		if _, found := ParseMetricValue(raw, metricName, map[string]string{"model_name": model}); found {
+		val, found := ParseMetricValue(raw, metricName, map[string]string{"model_name": model})
+		if found {
 			present++
 		}
+		snapshot[pod.Name] = val
 	}
-	return present, len(pods), nil
+	return snapshot, present, nil
 }

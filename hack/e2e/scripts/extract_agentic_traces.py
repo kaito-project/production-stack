@@ -41,7 +41,7 @@ regenerating locally for a heavy run rather than committing multi-MB fixtures.
 import argparse
 import json
 import sys
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,8 +79,6 @@ def main() -> int:
     # Group rows by session_id, preserving row order (== turn order).
     by_session: "OrderedDict[str, list]" = OrderedDict()
     wanted_sources = set(args.sources)
-    per_source_count: "defaultdict[str, int]" = defaultdict(int)
-    per_source_cap = max(1, args.num_sessions // max(1, len(args.sources)))
 
     for row in ds:
         sid = row.get("session_id")
@@ -90,13 +88,10 @@ def main() -> int:
         if wanted_sources and src not in wanted_sources:
             continue
         if sid not in by_session:
-            # Cap sessions per source so the fixture stays balanced/small.
-            if per_source_count[src] >= per_source_cap and len(by_session) >= args.num_sessions:
-                continue
-            if len(by_session) >= args.num_sessions and sid not in by_session:
+            # Keep the first --num-sessions distinct sessions (stream order).
+            if len(by_session) >= args.num_sessions:
                 continue
             by_session[sid] = []
-            per_source_count[src] += 1
         by_session[sid].append(row)
         if len(by_session) >= args.num_sessions and all(len(v) >= args.max_turns for v in by_session.values()):
             break

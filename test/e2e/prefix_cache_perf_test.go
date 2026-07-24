@@ -31,7 +31,7 @@ import (
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
-// Prefix-cache routing PERFORMANCE / LOAD spec (issue #109).
+// Prefix-cache routing PERFORMANCE / LOAD spec.
 //
 // This extends prefix_cache_routing_test.go (which verifies functional
 // stickiness with a few sequential requests) into a sustained CONCURRENT load
@@ -41,11 +41,12 @@ import (
 //
 // It runs on the gpu-node-mocker path (llm-d-inference-sim shadow pods, no
 // real GPU), so it needs no A100 capacity. The simulator is configured with
-// enable-kvcache + a real tokenizer, so it computes real 16-token block hashes
-// and tracks real prefix-cache hits/queries — the cache-hit ratio and
-// sticky-routing behaviour are genuine. Only throughput/latency are synthetic
+// enable-kvcache + block-size 16 and the sim's built-in (dummy) tokenizer,
+// which still produces deterministic per-block hashes, so it tracks real
+// prefix-cache hits/queries — the cache-hit ratio and sticky-routing
+// behaviour are genuine. Only throughput/latency are synthetic
 // (the sim sleeps per a latency profile instead of doing GPU compute), which
-// issue #109 already scopes out. The spec asserts, under load:
+// is out of scope for this spec. The spec asserts, under load:
 //
 //   - Error-rate stability: zero 5xx and bounded non-2xx while saturated.
 //   - Prefix-cache effectiveness: aggregate hit ratio (Δvllm:prefix_cache_hits /
@@ -61,7 +62,7 @@ import (
 
 const (
 	// prefixCacheHitRatioTarget is the minimum aggregate prefix-cache hit
-	// ratio expected once the shared prefixes are warm (issue #109: "should
+	// ratio expected once the shared prefixes are warm (target: "should
 	// be over 80%").
 	prefixCacheHitRatioTarget = 0.80
 
@@ -78,7 +79,7 @@ const (
 	// requests that must land on one backend pod. It is deliberately below
 	// 1.0: under concurrency the queue-scorer and kv-cache-utilization-scorer
 	// can legitimately spill some requests to other pods, so we assert
-	// concentration ("mostly sticky"), not 100% stickiness (issue #109).
+	// concentration ("mostly sticky"), not 100% stickiness.
 	perfStickyConcentrationTarget = 0.70
 )
 
@@ -245,13 +246,11 @@ var _ = Describe("Prefix Cache Routing Perf",
 				ratio, prefixCacheHitRatioTarget, hitsDelta, queriesDelta)
 
 			By("asserting KV-cache utilization is exported and a valid ratio")
-			kvPresent, kvTotal, err := utils.ScrapeModelMetricPresence(ctx, clientset, caseNamespace, model, "vllm:kv_cache_usage_perc")
+			kvUsage, kvPresent, err := utils.ScrapeModelMetricWithPresence(ctx, clientset, caseNamespace, model, "vllm:kv_cache_usage_perc")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(kvPresent).To(BeNumerically(">=", 1),
 				"vllm:kv_cache_usage_perc must be exported by >=1 pod so the kv-cache-utilization-scorer has signal (present=%d/%d)",
-				kvPresent, kvTotal)
-			kvUsage, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:kv_cache_usage_perc")
-			Expect(err).NotTo(HaveOccurred())
+				kvPresent, len(kvUsage))
 			// The sim frees KV blocks as requests complete, so usage can settle
 			// back to 0 once load drains; assert the invariant (a valid [0,1]
 			// ratio) rather than a positive value, which would be flaky.
@@ -262,13 +261,11 @@ var _ = Describe("Prefix Cache Routing Perf",
 			GinkgoWriter.Printf("[perf] vllm:kv_cache_usage_perc max across pods = %.4f\n", utils.MaxSnapshot(kvUsage))
 
 			By("asserting queue depth is exported and non-negative")
-			waitPresent, waitTotal, err := utils.ScrapeModelMetricPresence(ctx, clientset, caseNamespace, model, "vllm:num_requests_waiting")
+			waiting, waitPresent, err := utils.ScrapeModelMetricWithPresence(ctx, clientset, caseNamespace, model, "vllm:num_requests_waiting")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(waitPresent).To(BeNumerically(">=", 1),
 				"vllm:num_requests_waiting must be exported by >=1 pod so the queue-scorer has signal (present=%d/%d)",
-				waitPresent, waitTotal)
-			waiting, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:num_requests_waiting")
-			Expect(err).NotTo(HaveOccurred())
+				waitPresent, len(waiting))
 			Expect(utils.MinSnapshot(waiting)).To(BeNumerically(">=", 0),
 				"num_requests_waiting is a non-negative gauge: %+v", waiting)
 			GinkgoWriter.Printf("[perf] vllm:num_requests_waiting max across pods = %.0f\n", utils.MaxSnapshot(waiting))

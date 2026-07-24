@@ -78,7 +78,7 @@ type ReplayStats struct {
 // BlockSizeTokens mirrors the simulator's prefix-cache block size (the shadow
 // pod config sets block-size: 16). A prompt shorter than one full block yields
 // zero prefix hashes, so the prefix-cache-scorer can neither index nor match it
-// — such turns are dropped at load time (issue #109 block-size floor).
+// — such turns are dropped at load time (block-size floor).
 const BlockSizeTokens = 16
 
 // estimateTokens approximates the token count of a messages array closely
@@ -127,7 +127,7 @@ func LoadTraceSessions(path string) ([]ReplaySession, error) {
 		if row.SessionID == "" || len(row.Input) == 0 {
 			continue
 		}
-		// Block-size floor (issue #109): a prompt shorter than one 16-token
+		// Block-size floor: a prompt shorter than one 16-token
 		// block produces no prefix hashes, so the prefix-cache-scorer can't
 		// act on it. Drop such turns. Because every turn is a prefix-superset
 		// of the previous one, dropping short (necessarily leading) turns

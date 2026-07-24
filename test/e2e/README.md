@@ -81,7 +81,7 @@ Step-by-step targets exist as well: `e2e-setup`, `docker-build`, `e2e-push-image
 
 ## Prefix-cache perf / load test
 
-[`prefix_cache_perf_test.go`](prefix_cache_perf_test.go) (labels `Perf` + `PrefixCache`, case `CasePrefixCachePerf`) drives **sustained concurrent load** through the gateway → EPP → backend chain and asserts on the EPP prefix-cache-scorer signals (hit ratio ≥ 80%, zero 5xx, bounded 429/503, KV-cache / queue metrics exported). It runs on the **gpu-node-mocker** path (`llm-d-inference-sim` shadow pods, no real GPU), and the simulator is configured with `enable-kvcache` + a real tokenizer so `vllm:prefix_cache_hits/_queries` and sticky routing are genuine — only throughput/latency are synthetic.
+[`prefix_cache_perf_test.go`](prefix_cache_perf_test.go) (labels `Perf` + `PrefixCache`, case `CasePrefixCachePerf`) drives **sustained concurrent load** through the gateway → EPP → backend chain and asserts on the EPP prefix-cache-scorer signals (hit ratio ≥ 80%, zero 5xx, bounded 429/503, KV-cache / queue metrics exported). It runs on the **gpu-node-mocker** path (`llm-d-inference-sim` shadow pods, no real GPU), and the simulator is configured with `enable-kvcache` + `block-size 16` using the sim's built-in (dummy) tokenizer, which still yields deterministic per-block hashes so `vllm:prefix_cache_hits/_queries` and sticky routing are genuine — only throughput/latency are synthetic.
 
 The spec has three `It`s:
 
