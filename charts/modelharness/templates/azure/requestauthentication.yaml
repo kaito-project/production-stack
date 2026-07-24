@@ -1,0 +1,56 @@
+{{- if and .Values.auth.enabled (eq .Values.cloudprovider "azure") -}}
+{{- $mode := default "azure" .Values.auth.mode -}}
+{{- if or (eq $mode "azure") (eq $mode "hybrid") -}}
+{{- if not .Values.azure.entra.audiences -}}
+  {{- fail "azure.entra.audiences must not be empty when auth.mode is azure or hybrid (e.g. [\"https://management.core.windows.net/\"])" -}}
+{{- end -}}
+{{- $ep := .Values.azure.entra.jwtEndpoints -}}
+{{- if or (and $ep.issuer (not $ep.jwksUri)) (and $ep.jwksUri (not $ep.issuer)) -}}
+  {{- fail "azure.entra.jwtEndpoints.issuer and jwksUri must be set together (or both left empty to use the v1.0 public-cloud defaults derived from tenantId)" -}}
+{{- end -}}
+{{- $issuer := include "modelharness.azure.entra.jwt.issuer" . -}}
+{{- $jwks   := include "modelharness.azure.entra.jwt.jwksUri" . -}}
+{{/*
+Per-namespace RequestAuthentication.
+
+Tells Istio's envoy.filters.http.jwt_authn filter how to validate inbound
+Azure Entra ID JWTs on THIS namespace's Gateway pod (`<namespace>-gw`).
+Validated claims are exposed to downstream HTTP filters (notably
+templates/azure/envoyfilter-ext-authz.yaml's `ext_authz.azure`) under the
+`envoy.filters.http.jwt_authn` metadata namespace.
+
+Adapted from the upstream `llm-gateway-azureauth` chart's
+templates/istio/requestauthentication.yaml — same JWT rule shape, but
+per-workload-namespace and always targeting the gateway rendered by
+modelharness (`<namespace>-gw`) rather than a chart-level
+gatewaySelector. Matches the per-namespace ownership model this chart
+already uses for its EnvoyFilters.
+
+`forwardOriginalToken` is hard-coded false: the bearer is stripped at
+the gateway; ext_authz.azure still receives validated claims (incl. OID)
+via jwt_authn's filter metadata regardless, and downstream services
+(BBR, EPP, inference backends) never receive the credential.
+
+Rendered only when `cloudprovider=azure` and `auth.enabled=true` and
+`auth.mode` is `azure` or `hybrid`.
+*/}}
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: entra-jwt
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: {{ include "modelharness.gatewayName" . | quote }}
+  jwtRules:
+    - issuer: {{ $issuer | quote }}
+      jwksUri: {{ $jwks | quote }}
+      audiences:
+        {{- toYaml .Values.azure.entra.audiences | nindent 8 }}
+      forwardOriginalToken: false
+{{- end -}}
+{{- end -}}
+
