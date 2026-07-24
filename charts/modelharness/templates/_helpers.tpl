@@ -58,10 +58,10 @@ otherwise derives the v1.0 public-cloud default from
 azure.entra.tenantId (matches `az account get-access-token`).
 */}}
 {{- define "modelharness.azure.entra.jwt.issuer" -}}
-{{- $tenant := required "azure.entra.tenantId is required when auth.mode is azure or hybrid" .Values.azure.entra.tenantId -}}
 {{- with .Values.azure.entra.jwtEndpoints.issuer -}}
 {{- . -}}
 {{- else -}}
+{{- $tenant := required "azure.entra.tenantId is required when jwtEndpoints.issuer is not set" .Values.azure.entra.tenantId -}}
 {{- printf "https://sts.windows.net/%s/" $tenant -}}
 {{- end -}}
 {{- end }}
@@ -72,10 +72,10 @@ otherwise derives the v1.0 public-cloud default from
 azure.entra.tenantId.
 */}}
 {{- define "modelharness.azure.entra.jwt.jwksUri" -}}
-{{- $tenant := required "azure.entra.tenantId is required when auth.mode is azure or hybrid" .Values.azure.entra.tenantId -}}
 {{- with .Values.azure.entra.jwtEndpoints.jwksUri -}}
 {{- . -}}
 {{- else -}}
+{{- $tenant := required "azure.entra.tenantId is required when jwtEndpoints.jwksUri is not set" .Values.azure.entra.tenantId -}}
 {{- printf "https://login.microsoftonline.com/%s/discovery/keys" $tenant -}}
 {{- end -}}
 {{- end }}
