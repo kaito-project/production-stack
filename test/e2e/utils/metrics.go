@@ -349,3 +349,64 @@ func ScrapeEPPMetric(ctx context.Context, clientset *kubernetes.Clientset, deplo
 	}
 	return total, nil
 }
+
+// SumSnapshot returns the sum of all values in a snapshot.
+func SumSnapshot(s PodMetricSnapshot) float64 {
+	var total float64
+	for _, v := range s {
+		total += v
+	}
+	return total
+}
+
+// MaxSnapshot returns the largest value in a snapshot (0 for an empty map).
+func MaxSnapshot(s PodMetricSnapshot) float64 {
+	var max float64
+	for _, v := range s {
+		if v > max {
+			max = v
+		}
+	}
+	return max
+}
+
+// MinSnapshot returns the smallest value in a snapshot (0 for an empty map).
+func MinSnapshot(s PodMetricSnapshot) float64 {
+	first := true
+	var min float64
+	for _, v := range s {
+		if first || v < min {
+			min = v
+			first = false
+		}
+	}
+	return min
+}
+
+// ScrapeModelMetricWithPresence scrapes a named model metric from all shadow
+// pods in a single pass, returning both the per-pod snapshot and how many pods
+// actually export it (found=true). Unlike ScrapeModelMetric, which coerces a
+// missing metric to 0, the present count distinguishes "absent" from "present
+// and zero", so callers can assert a metric pipeline genuinely exists (e.g.
+// that the kv-cache-utilization-scorer and queue-scorer have signal to read)
+// without requiring a positive value under synthetic load.
+func ScrapeModelMetricWithPresence(ctx context.Context, clientset *kubernetes.Clientset, namespace, model, metricName string) (snapshot PodMetricSnapshot, present int, err error) {
+	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
+	if err != nil {
+		return nil, 0, err
+	}
+	snapshot = make(PodMetricSnapshot, len(pods))
+	for _, pod := range pods {
+		port := inferenceSimPort(pod)
+		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, port)
+		if err != nil {
+			return nil, 0, fmt.Errorf("scraping %s: %w", pod.Name, err)
+		}
+		val, found := ParseMetricValue(raw, metricName, map[string]string{"model_name": model})
+		if found {
+			present++
+		}
+		snapshot[pod.Name] = val
+	}
+	return snapshot, present, nil
+}

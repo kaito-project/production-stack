@@ -137,6 +137,10 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 .PHONY: test-e2e-karpenter
 test-e2e-karpenter: ## Run the Karpenter nightly scale-from-zero scenarios with safe swedencentral defaults.
 	$(MAKE) test-e2e E2E_LABEL='Karpenter' E2E_PARALLEL=1 E2E_TIMEOUT=180m
+
+.PHONY: test-e2e-perf
+test-e2e-perf: ## Run the prefix-cache perf/load replay spec (serial). Override the trace fixture with E2E_TRACE_FIXTURE=/path/to.jsonl.
+	$(MAKE) test-e2e E2E_LABEL='Perf' E2E_PARALLEL=1 E2E_TIMEOUT=90m
 ## --------------------------------------
 ## E2E Targets
 ##

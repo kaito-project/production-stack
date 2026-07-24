@@ -37,6 +37,13 @@ var (
 	// GinkgoLabelNightly marks tests that are destructive or slow and only run in nightly CI.
 	GinkgoLabelNightly = g.Label("Nightly")
 
+	// GinkgoLabelPerf marks prefix-cache load/perf specs that replay real
+	// agentic traces against a real vLLM backend on the nightly Karpenter
+	// path. Gated separately from the rest of the nightly suite so it can be
+	// run or skipped independently (it provisions real GPU nodes and drives
+	// sustained concurrent load).
+	GinkgoLabelPerf = g.Label("Perf")
+
 	// GinkgoLabelKarpenter marks tests that exercise AKS NAP / Karpenter-driven
 	// GPU node provisioning from zero and back to zero.
 	GinkgoLabelKarpenter = g.Label("Karpenter")

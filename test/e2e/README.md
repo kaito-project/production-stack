@@ -11,6 +11,7 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 | `CaseGPUMocker` | `gpu_mocker_test.go` | `e2e-gpu-mocker` | `e2e-gpu-mocker-gw` | `gpu-mocker-phi` | `BeforeAll` / `AfterAll` |
 | `CaseModelRouting` | `model_routing_test.go` | `e2e-model-routing` | `e2e-model-routing-gw` | `routing-phi`, `routing-ministral` | `BeforeAll` / `AfterAll` |
 | `CasePrefixCache` | `prefix_cache_routing_test.go` | `e2e-prefix-cache` | `e2e-prefix-cache-gw` | `prefix-cache-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
+| `CasePrefixCachePerf` | `prefix_cache_perf_test.go` | `e2e-pc-perf` | `e2e-pc-perf-gw` | `pc-perf-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
 | `CaseModelDeploymentChart` | `modeldeployment_chart_test.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
 
 `Name` is unique cluster-wide and is the value matched by `X-Gateway-Model-Name` (i.e. the `model` field clients send in OpenAI-compatible requests). `Model` is the KAITO preset only — multiple deployments may share a preset under different `Name`s.
@@ -51,7 +52,7 @@ E2E_PARALLEL=4 make test-e2e
 Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into two groups:
 
 - **Cadence** (when a spec runs): `Smoke` (every PR), `Nightly` (long-running, nightly only).
-- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Auth`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
+- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
 
 
 ### Bring up a cluster from scratch
@@ -77,6 +78,68 @@ Step-by-step targets exist as well: `e2e-setup`, `docker-build`, `e2e-push-image
 | `E2E_PARALLEL` | Ginkgo `--procs` | `2` |
 | `NODE_COUNT` | AKS node count | `2` |
 | `MODELDEPLOYMENT_CHART` | Override chart path | _(repo root)_ |
+
+## Prefix-cache perf / load test
+
+[`prefix_cache_perf_test.go`](prefix_cache_perf_test.go) (labels `Perf` + `PrefixCache`, case `CasePrefixCachePerf`) drives **sustained concurrent load** through the gateway → EPP → backend chain and asserts on the EPP prefix-cache-scorer signals (hit ratio ≥ 80%, zero 5xx, bounded 429/503, KV-cache / queue metrics exported). It runs on the **gpu-node-mocker** path (`llm-d-inference-sim` shadow pods, no real GPU), and the simulator is configured with `enable-kvcache` + `block-size 16` using the sim's built-in (dummy) tokenizer, which still yields deterministic per-block hashes so `vllm:prefix_cache_hits/_queries` and sticky routing are genuine — only throughput/latency are synthetic.
+
+The spec has three `It`s:
+
+1. **Load + cache effectiveness** — replays the fixture under concurrency and asserts hit ratio ≥ 80%, zero 5xx / transport errors, ≤ 10% 429/503, and that `vllm:kv_cache_usage_perc` / `vllm:num_requests_waiting` are exported and in-bounds.
+2. **A/B benefit** — shared-prefix load must yield a higher cache-hit ratio than genuinely unique-prefix load (per-request nonce at block 0).
+3. **Sticky routing concentration** — replays each prefix in isolation (after a concurrent priming pass) and asserts one pod serves ≥ 70% of that prefix's requests (`perfStickyConcentrationTarget`). The threshold is below 100% because the queue / kv-cache scorers can legitimately spill some requests under load.
+
+```bash
+# Convenience target (serial, 90m timeout):
+make test-e2e-perf
+
+# Equivalent explicit invocation:
+E2E_LABEL='Perf' E2E_PARALLEL=1 make test-e2e
+```
+
+### How the load generator works
+
+Load is a **replay of real multi-turn agentic sessions**, not a synthetic prompt loop. The driver lives in [`utils/traces.go`](utils/traces.go):
+
+1. **Fixture → sessions.** `LoadTraceSessions` reads a JSONL fixture (one row per LLM iteration) and groups rows by `session_id` into ordered `ReplaySession`s. Each turn's `input` is the full cumulative OpenAI messages array, so turn *N* is a prefix-superset of turn *N-1* — exactly the shared-prefix pattern the prefix-cache-scorer exploits. Turns shorter than one 16-token block (`BlockSizeTokens`) are dropped at load time, since they produce no prefix hashes.
+2. **Concurrent replay.** `ReplaySessionsConcurrent` distributes sessions across a worker pool (`perfConcurrency`, default 8). Turns **within** a session are sent sequentially by one worker (so the shared prefix accumulates in the KV cache); **sessions** run in parallel (to saturate serving and fill the queue). All requests target the deployment name (`X-Gateway-Model-Name`), overriding the model recorded in the trace.
+3. **Warm-up + measurement.** A warm-up pass (`perfWarmUpRounds`) primes the cache; then the fixture is replayed `perfMeasuredRounds` times while prefix-cache / success / error counters are snapshotted before and after. `repeatSessions` concatenates the fixture N times so a small fixture still generates sustained load.
+4. **A/B check.** Shared-prefix load (repeated sessions) is compared against genuinely unique-prefix load (a per-request nonce prepended at block 0, single-turn) to prove cache-hit growth is real.
+
+Total requests ≈ `sessions × turns × (warmUp + measured) rounds`, spread across `perfConcurrency` workers. The load constants are in [`prefix_cache_perf_test.go`](prefix_cache_perf_test.go): `perfConcurrency`, `perfMeasuredRounds`, `perfWarmUpRounds`, and the `prefixCacheHitRatioTarget` threshold.
+
+### The trace fixture (and pulling down more)
+
+The committed fixture [`testdata/agentic-traces.jsonl`](testdata/agentic-traces.jsonl) is only a **small trimmed slice** of the HuggingFace dataset [`sammshen/lmcache-agentic-traces`](https://huggingface.co/datasets/sammshen/lmcache-agentic-traces) (~2.36 GB). The full dataset is **never fetched at test time** — the test reads a local file only, keeping CI hermetic and network-independent.
+
+To pull down more, regenerate the fixture **offline** with [`hack/e2e/scripts/extract_agentic_traces.py`](../../hack/e2e/scripts/extract_agentic_traces.py). It uses `datasets` streaming, so it downloads only what it needs and stops early:
+
+```bash
+pip install datasets
+python hack/e2e/scripts/extract_agentic_traces.py \
+  --num-sessions 40 \
+  --max-turns 12 \
+  --sources swebench gaia wildclaw \
+  --output /tmp/agentic-traces-big.jsonl
+```
+
+| Flag | Effect | Default |
+| --- | --- | --- |
+| `--num-sessions` | distinct sessions kept (⇒ more prefix groups / parallelism) | `6` |
+| `--max-turns` | earliest N turns kept per session (⇒ deeper shared prefix) | `4` |
+| `--sources` | `session_id` prefixes to include, balanced round-robin | `swebench gaia wildclaw` |
+| `--output` | JSONL output path | `test/e2e/testdata/agentic-traces.jsonl` |
+| `--dataset` / `--split` | source dataset / split | the HF dataset / `train` |
+
+Point the test at any fixture via the **`E2E_TRACE_FIXTURE`** env override — no recompile:
+
+```bash
+E2E_TRACE_FIXTURE=/tmp/agentic-traces-big.jsonl make test-e2e-perf
+```
+
+A bigger fixture raises the load automatically (more distinct sessions and deeper prefixes); increase `perfConcurrency` / `perfMeasuredRounds` to drive it harder still.
+
+> **Goal: run against the full ~2.36 GB corpus.** The two-stage design (offline extract → local replay) is intended to scale up to the entire dataset. Because real sessions have a median ~21K input tokens, committing a full-size fixture would bloat the repo, so the path to "all traces" is: generate a large (or complete) fixture to a scratch path, then drive the perf spec at it via `E2E_TRACE_FIXTURE` (e.g. in a dedicated nightly/manual job) rather than checking the corpus into git. Raise `--num-sessions` / `--max-turns` toward the dataset's full session/turn counts, and scale `perfConcurrency` to keep the backend saturated.
 
 ## Adding a new e2e test
 
@@ -182,7 +245,10 @@ test/e2e/
 ├── gpu_mocker_test.go                # CaseGPUMocker
 ├── model_routing_test.go             # CaseModelRouting
 ├── prefix_cache_routing_test.go      # CasePrefixCache
+├── prefix_cache_perf_test.go         # CasePrefixCachePerf (Perf load/replay)
 ├── modeldeployment_chart_test.go     # CaseModelDeploymentChart (per-It ns)
+├── testdata/
+│   └── agentic-traces.jsonl          # trimmed replay fixture (see extract script)
 ├── production-stack-E2E-test-scenarios.md
 ├── README.md
 └── utils/
@@ -193,6 +259,7 @@ test/e2e/
     ├── http.go                       # Gateway port-forward + chat helpers
     ├── inference.go                  # InferenceSet readiness + snapshot/diff
     ├── metrics.go                    # EPP metrics scraping
+    ├── traces.go                     # agentic-trace load generator (perf test)
     ├── setup.go                      # Namespace + per-case resource lifecycle
     └── utils.go                      # Misc helpers (env, logs, polling)
 ```
