@@ -190,10 +190,6 @@ modelMirror:
   # dynamically-created container.
   storageAccount: ""
   # resourceGroup is the resource group holding the storage account.
-  # REQUIRED — the account lives in RP's managed resource group, which is
-  # NOT the cluster's resource group, so the Blob CSI driver cannot derive
-  # it from cluster context; an empty value makes the mount look in the
-  # wrong RG and fail.
   resourceGroup: ""
   # clientID is the user-assigned managed identity (UAMI) client-id GUID used
   # for the keyless Workload-Identity mount. Same GUID as the streaming
