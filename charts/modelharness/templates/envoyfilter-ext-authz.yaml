@@ -1,8 +1,14 @@
-{{- if .Values.auth.enabled }}
+{{- if and .Values.auth.enabled (or (not .Values.auth.mode) (eq .Values.auth.mode "apikey")) }}
 {{- $svc := printf "%s.%s.svc.cluster.local" .Values.auth.extAuthz.serviceName .Values.auth.extAuthz.serviceNamespace -}}
 {{- $cluster := printf "outbound|%d||%s" (int .Values.auth.extAuthz.grpcPort) $svc -}}
 {{/*
-Per-namespace ext_authz EnvoyFilter.
+Per-namespace API-key ext_authz EnvoyFilter (upstream / non-cloud path).
+
+Renders when `auth.enabled=true` and `auth.mode` is `apikey` (or unset,
+for back-compat with pre-hybrid callers). The cloud-specific variants
+that add Azure Entra ID JWT validation and hybrid classification
+live under templates/azure/envoyfilter-ext-authz.yaml and are selected
+via `cloudprovider=azure` + `auth.mode ∈ {azure, hybrid}`.
 
 API-key enforcement is scoped to the workload namespace: each `modelharness`
 release renders its own EnvoyFilter that splices
