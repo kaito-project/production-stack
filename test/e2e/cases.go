@@ -120,6 +120,17 @@ const (
 	// required.
 	CaseKarpenterLarge = "karpenter-large"
 
+	// CasePrefixCachePerf covers prefix_cache_perf_test.go — a prefix-cache
+	// load/perf spec (issue #109) that replays real multi-turn agent sessions
+	// from the sammshen/lmcache-agentic-traces dataset (committed fixture under
+	// test/e2e/testdata) under concurrent load. It runs on the gpu-node-mocker
+	// path (llm-d-inference-sim shadow pods, no real GPU): the sim's
+	// enable-kvcache + real tokenizer make the prefix-cache hit ratio and
+	// sticky routing genuinely testable on CPU (only throughput/latency are
+	// synthetic). Uses >=2 replicas so the EPP prefix-cache scorer has
+	// multiple pods to route stickily between.
+	CasePrefixCachePerf = "prefix-cache-perf"
+
 	// CaseFilterOrder covers filter_order_test.go — verifies the Envoy
 	// HTTP filter chain execution order on a per-namespace Gateway:
 	//   ext_authz  →  ext_proc.bbr  →  ext_proc (InferencePool/EPP)  →  router
@@ -375,6 +386,22 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:        presetQwen32B,
 			Replicas:     1,
 			InstanceType: "Standard_NC24ads_A100_v4",
+		},
+	},
+	CasePrefixCachePerf: {
+		{
+			// GPU-mocked prefix-cache perf case (issue #109). Runs on the
+			// gpu-node-mocker path (fake nodes + llm-d-inference-sim shadow
+			// pods, no real GPU), so it needs no A100 capacity. The sim runs
+			// with enable-kvcache + a real tokenizer, so prefix_cache_hits /
+			// _queries and sticky routing are exercised for real; only
+			// throughput/latency are synthetic. 2 replicas so the EPP
+			// prefix-cache scorer has >=2 pods to route stickily between.
+			Name:         "pc-perf-phi",
+			Namespace:    "e2e-pc-perf",
+			Model:        presetPhi,
+			Replicas:     2,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseClusterFilterHA: {

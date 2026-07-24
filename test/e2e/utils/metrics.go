@@ -349,3 +349,60 @@ func ScrapeEPPMetric(ctx context.Context, clientset *kubernetes.Clientset, deplo
 	}
 	return total, nil
 }
+
+// SumSnapshot returns the sum of all values in a snapshot.
+func SumSnapshot(s PodMetricSnapshot) float64 {
+	var total float64
+	for _, v := range s {
+		total += v
+	}
+	return total
+}
+
+// MaxSnapshot returns the largest value in a snapshot (0 for an empty map).
+func MaxSnapshot(s PodMetricSnapshot) float64 {
+	var max float64
+	for _, v := range s {
+		if v > max {
+			max = v
+		}
+	}
+	return max
+}
+
+// MinSnapshot returns the smallest value in a snapshot (0 for an empty map).
+func MinSnapshot(s PodMetricSnapshot) float64 {
+	first := true
+	var min float64
+	for _, v := range s {
+		if first || v < min {
+			min = v
+			first = false
+		}
+	}
+	return min
+}
+
+// ScrapeModelMetricPresence reports how many of the model's shadow pods export
+// the named metric with a matching model_name label. Unlike ScrapeModelMetric,
+// which coerces a missing metric to 0, this distinguishes "absent" from
+// "present and zero", so callers can assert a metric pipeline genuinely exists
+// (e.g. that the kv-cache-utilization-scorer and queue-scorer have signal to
+// read) without requiring a positive value under synthetic load.
+func ScrapeModelMetricPresence(ctx context.Context, clientset *kubernetes.Clientset, namespace, model, metricName string) (present, total int, err error) {
+	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, pod := range pods {
+		port := inferenceSimPort(pod)
+		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, port)
+		if err != nil {
+			return 0, 0, fmt.Errorf("scraping %s: %w", pod.Name, err)
+		}
+		if _, found := ParseMetricValue(raw, metricName, map[string]string{"model_name": model}); found {
+			present++
+		}
+	}
+	return present, len(pods), nil
+}

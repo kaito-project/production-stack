@@ -137,6 +137,10 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 .PHONY: test-e2e-karpenter
 test-e2e-karpenter: ## Run the Karpenter nightly scale-from-zero scenarios with safe swedencentral defaults.
 	$(MAKE) test-e2e E2E_LABEL='Karpenter' E2E_PARALLEL=1 E2E_TIMEOUT=180m
+
+.PHONY: test-e2e-perf
+test-e2e-perf: ## Run the prefix-cache perf/load replay spec (serial). Override the trace fixture with E2E_TRACE_FIXTURE=/path/to.jsonl.
+	$(MAKE) test-e2e E2E_LABEL='Perf' E2E_PARALLEL=1 E2E_TIMEOUT=90m
 ## --------------------------------------
 ## E2E Targets
 ##
@@ -269,7 +273,7 @@ azure-karpenter-helm: ## Install Azure Karpenter Helm chart (run karpenter-azure
 .PHONY: e2e-up-karpenter
 e2e-up-karpenter: ## One command to set up full local E2E env using real Karpenter (AKS NAP, no gpu-node-mocker).
 	@set -e; \
-	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) LOCATION=eastus KAITO_NODE_PROVISIONER=karpenter KAITO_NODE_CLASS=azure ENABLE_NODE_MOCKER=false; \
+	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) LOCATION=swedencentral KAITO_NODE_PROVISIONER=karpenter KAITO_NODE_CLASS=azure ENABLE_NODE_MOCKER=false; \
 	hack/e2e/scripts/prepare-image.sh; \
 	hack/e2e/scripts/run-e2e-local.sh setup; \
 	$(MAKE) karpenter-azure-identity AZURE_CLUSTER_NAME=$(E2E_CLUSTER_NAME) AZURE_RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \
