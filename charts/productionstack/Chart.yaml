@@ -80,3 +80,19 @@ dependencies:
     tags:
       - gateway
       - auth
+  # Upstream Azure Entra ID (RBAC) ext_authz chart, pulled from the
+  # kaito-project OCI registry at `helm dependency update` time (no
+  # in-tree fork), same source and release train as `llm-gateway-apikey`.
+  # Values are passed through under the upstream chart name
+  # `llm-gateway-azureauth` in values.yaml.
+  #
+  # Gated behind `llm-gateway-azureauth.enabled` because it requires
+  # tenant-specific configuration (`azure.tenantId`, `azure.jwt.audiences`)
+  # and has no sensible default.
+  - name: llm-gateway-azureauth
+    version: 0.0.14-alpha
+    repository: oci://mcr.microsoft.com/aks/kaito/helm
+    condition: llm-gateway-azureauth.enabled
+    tags:
+      - gateway
+      - auth

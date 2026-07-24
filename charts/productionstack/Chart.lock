@@ -11,5 +11,8 @@ dependencies:
 - name: llm-gateway-apikey
   repository: oci://mcr.microsoft.com/aks/kaito/helm
   version: 0.0.14-alpha
-digest: sha256:aa8475dfb0cffe71dc12d9724c4fa8f2b249e8cf7a33c80315387098871239b5
-generated: "2026-07-23T12:19:43.562733+10:00"
+- name: llm-gateway-azureauth
+  repository: oci://mcr.microsoft.com/aks/kaito/helm
+  version: 0.0.14-alpha
+digest: sha256:9660cc186a97fec0a2ab26d2d0650ce67b625e9efeb9c469e4652340c2a8513f
+generated: "2026-07-24T10:04:59.639851+10:00"

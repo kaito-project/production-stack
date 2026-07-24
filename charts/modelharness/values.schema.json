@@ -47,6 +47,11 @@
           "type": "boolean",
           "description": "Toggles the per-namespace API-key authentication artifacts (APIKey CR + ext_authz EnvoyFilter)."
         },
+        "mode": {
+          "type": "string",
+          "enum": ["apikey", "azure", "hybrid"],
+          "description": "Selects the ext_authz wiring shape. `apikey` (default when cloudprovider is unset) renders the non-cloud template templates/envoyfilter-ext-authz.yaml — single apikey-authz backend, no JWT validation. When cloudprovider=azure use `azure` (single azure-authz backend, INSERT_AFTER jwt_authn) or `hybrid` (Lua classifier + apikey and azure backends gated by auth_mode dynamic metadata) — both render templates/azure/envoyfilter-ext-authz.yaml + templates/azure/requestauthentication.yaml."
+        },
         "apiKeyName": {
           "type": "string",
           "minLength": 1,
@@ -86,6 +91,42 @@
             "metadataContextNamespaces": {
               "type": "array",
               "description": "Envoy filter metadata namespaces forwarded to the ext_authz server.",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "extAuthzAzure": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Wiring for the cluster-wide azure-authz ext_authz gRPC service. Consumed by auth.mode = azure and hybrid.",
+          "properties": {
+            "serviceName": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Name of the azure-authz gRPC Service."
+            },
+            "serviceNamespace": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Namespace the azure-authz gRPC Service runs in."
+            },
+            "grpcPort": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "gRPC port of the azure-authz Service."
+            },
+            "timeout": {
+              "type": "string",
+              "minLength": 1,
+              "description": "gRPC call timeout for the ext_authz check (e.g. '5s')."
+            },
+            "metadataContextNamespaces": {
+              "type": "array",
+              "description": "Envoy filter metadata namespaces forwarded to the ext_authz server. The template hard-codes envoy.filters.http.jwt_authn regardless — kept for parity with extAuthz.",
               "items": {
                 "type": "string",
                 "minLength": 1
@@ -159,6 +200,40 @@
               "minLength": 1,
               "maxLength": 63,
               "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+            }
+          }
+        },
+        "entra": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Azure Entra ID JWT validation config consumed by templates/azure/requestauthentication.yaml. Rendered only when auth.enabled=true and auth.mode is azure or hybrid. Defaults target v1.0 ARM tokens (matches `az account get-access-token`); override via jwtEndpoints for v2.0 or sovereign clouds.",
+          "properties": {
+            "tenantId": {
+              "type": "string",
+              "description": "Microsoft Entra tenant ID (GUID). REQUIRED. Used to derive the v1.0 public-cloud issuer + JWKS URI unless jwtEndpoints overrides them."
+            },
+            "audiences": {
+              "type": "array",
+              "description": "Accepted `aud` claim values. REQUIRED. Example (default ARM tokens): [\"https://management.core.windows.net/\"].",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "jwtEndpoints": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Escape hatch for non-v1 / non-public-cloud tenants. Both keys must be set together (validated by the template) — leaving both empty uses the v1.0 public-cloud defaults derived from tenantId.",
+              "properties": {
+                "issuer": {
+                  "type": "string",
+                  "description": "JWT issuer URL override. e.g. https://login.microsoftonline.com/<tenantId>/v2.0 for v2.0 tokens, or a sovereign-cloud authority."
+                },
+                "jwksUri": {
+                  "type": "string",
+                  "description": "JWKS URI override. e.g. https://login.microsoftonline.com/<tenantId>/discovery/v2.0/keys for v2.0 tokens, or a sovereign-cloud authority."
+                }
+              }
             }
           }
         }

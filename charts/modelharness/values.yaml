@@ -129,10 +129,33 @@ bbr:
 #     that needs API-key enforcement.
 auth:
   enabled: false
+  # mode selects which ext_authz backend(s) the per-namespace EnvoyFilter
+  # wires into the Gateway pod.
+  #   apikey  — single ext_authz to apikey-authz. Renders the non-cloud
+  #             template templates/envoyfilter-ext-authz.yaml. Default
+  #             for callers that are not Azure-specific. Also works
+  #             alongside cloudprovider=azure when you want API-key auth
+  #             on the Azure default-domain Gateway without Entra JWT
+  #             validation (templates/azure/{envoyfilter-ext-authz,
+  #             requestauthentication}.yaml stay skipped).
+  #   azure   — single ext_authz to azure-authz. Requires a
+  #             RequestAuthentication on the Gateway (rendered by
+  #             templates/azure/requestauthentication.yaml) — the filter
+  #             is INSERT_AFTER jwt_authn so the azure-authz server
+  #             reads validated Entra claims from jwt_authn's filter
+  #             metadata. Only consumed when cloudprovider=azure.
+  #   hybrid  — Lua classifier at head of chain inspects the Authorization
+  #             header: tokens starting `sk-` route to apikey-authz;
+  #             everything else routes to azure-authz. A strip-authz-header
+  #             Lua removes the Authorization header on the apikey path
+  #             so jwt_authn does not see the API key and reject it as a
+  #             malformed JWT. Only consumed when cloudprovider=azure.
+  mode: apikey
   # apiKeyName is the name of the APIKey CR rendered when auth.enabled.
   apiKeyName: "default"
   # Cluster-wide apikey-authz gRPC Service the per-namespace EnvoyFilter
-  # targets. Defaults match the `llm-gateway-apikey` subchart.
+  # targets. Defaults match the `llm-gateway-apikey` subchart. Consumed
+  # by auth.mode = apikey and hybrid.
   extAuthz:
     serviceName: apikey-authz
     serviceNamespace: llm-gateway-auth
@@ -150,11 +173,28 @@ auth:
     #                  the ext_authz request metadata. Use when a
     #                  RequestAuthentication is configured on this
     #                  Gateway.
+    # Ignored when auth.mode = hybrid (hybrid pins its own ordering: Lua
+    # first, apikey INSERT_FIRST, azure INSERT_AFTER jwt_authn).
     operation: INSERT_FIRST
     # Envoy filter metadata namespaces forwarded to the ext_authz
     # server. Set to ["envoy.filters.http.jwt_authn"] when
     # operation=INSERT_AFTER to forward JWT claims to apikey-authz.
     metadataContextNamespaces: []
+  # Cluster-wide azure-authz gRPC Service the per-namespace EnvoyFilter
+  # targets. Defaults match the `llm-gateway-azureauth` subchart.
+  # Consumed by auth.mode = azure and hybrid.
+  extAuthzAzure:
+    serviceName: azure-authz
+    serviceNamespace: llm-gateway-auth
+    grpcPort: 9001
+    timeout: 5s
+    # azure-authz always reads validated Entra ID claims from jwt_authn's
+    # filter metadata, so metadata_context_namespaces MUST include
+    # envoy.filters.http.jwt_authn — the chart hard-codes this on the
+    # rendered filter regardless of the value below (kept for parity
+    # with extAuthz.metadataContextNamespaces).
+    metadataContextNamespaces:
+      - envoy.filters.http.jwt_authn
 
 # networkPolicy toggles the per-namespace CiliumNetworkPolicy that
 # locks down East-West ingress to inference workloads (EPP,
@@ -259,3 +299,55 @@ azure:
     # `istio-gateway-class-defaults` per-listener overrides key off a
     # predictable name.
     listenerName: "https-default"
+
+  # entra wires an Istio RequestAuthentication onto THIS namespace's
+  # Gateway so envoy.filters.http.jwt_authn validates inbound Azure
+  # Entra ID JWTs and exposes the claims to the ext_authz.azure filter
+  # (rendered by templates/azure/envoyfilter-ext-authz.yaml when
+  # auth.mode is `azure` or `hybrid`).
+  #
+  # Rendered only when `cloudprovider=azure` and `auth.enabled=true`
+  # and `auth.mode` is `azure` or `hybrid`. Adapted from the upstream
+  # `llm-gateway-azureauth` chart's templates/istio/requestauthentication.yaml
+  # — same shape, but per-workload-namespace and always targeting
+  # `<namespace>-gw` instead of a chart-level gatewaySelector, matching
+  # the per-namespace ownership model the modelharness chart already
+  # uses for its EnvoyFilters.
+  #
+  # Defaults target v1.0 ARM tokens (the shape `az account get-access-token`
+  # mints by default): issuer = https://sts.windows.net/<tenantId>/,
+  # jwksUri = https://login.microsoftonline.com/<tenantId>/discovery/keys.
+  # `forwardOriginalToken` is hard-coded false in the template so the
+  # bearer is stripped at the gateway; ext_authz.azure still receives
+  # the validated claims (incl. OID) via jwt_authn filter metadata.
+  entra:
+    # tenantId is the Microsoft Entra tenant ID (GUID). REQUIRED.
+    # Single-tenant only. Used to derive the JWT issuer and JWKS URI
+    # unless `jwtEndpoints` is set.
+    tenantId: ""
+
+    # audiences is the list of accepted `aud` claim values. REQUIRED.
+    # Example (default `az account get-access-token` / ARM tokens):
+    #   ["https://management.core.windows.net/"]
+    audiences: []
+
+    # jwtEndpoints is the escape hatch for non-v1 / non-public-cloud
+    # tenants. Both keys must be set together (validated by the
+    # template) — leaving both empty uses the v1.0 public-cloud
+    # defaults derived from tenantId. Common overrides:
+    #   * v2.0 tokens (custom app registrations with
+    #     `accessTokenAcceptedVersion: 2`):
+    #       issuer:  https://login.microsoftonline.com/<tenantId>/v2.0
+    #       jwksUri: https://login.microsoftonline.com/<tenantId>/discovery/v2.0/keys
+    #   * Azure US Gov:
+    #       issuer:  https://sts.windows.us/<tenantId>/
+    #       jwksUri: https://login.microsoftonline.us/<tenantId>/discovery/keys
+    #   * Azure China (Mooncake):
+    #       issuer:  https://sts.chinacloudapi.cn/<tenantId>/
+    #       jwksUri: https://login.chinacloudapi.cn/<tenantId>/discovery/keys
+    # Confirm the authoritative values for any tenant with:
+    #   curl -s https://<authority>/<tenantId>/.well-known/openid-configuration \
+    #     | jq '{issuer, jwks_uri}'
+    jwtEndpoints:
+      issuer: ""
+      jwksUri: ""
