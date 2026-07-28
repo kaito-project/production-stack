@@ -552,18 +552,33 @@ kv-cache-transfer-latency-std-dev: %s
 `, ttft, ttftStdDev, kvTransfer, kvTransferStdDev)
 	}
 
+	// Simulator capacity limits. kv-cache-size (in blocks) MUST be large
+	// enough to hold max-num-seqs sequences at max-model-len simultaneously;
+	// otherwise the sim admits more concurrent sequences than its KV pool can
+	// back and rejects the overflow with HTTP 500 "kv cache does not have
+	// sufficient capacity to store this request". Derive it from the other
+	// limits so the three can never drift out of sync — a fixed literal
+	// silently under-provisions the moment max-num-seqs or max-model-len change
+	// (the previous fixed 4096 held only 2 max-length sequences, not 5).
+	const (
+		simMaxNumSeqs  = 5
+		simMaxModelLen = 32768
+		simBlockSize   = 16
+	)
+	simKVCacheSize := simMaxNumSeqs * (simMaxModelLen / simBlockSize) // blocks
+
 	configYAML := fmt.Sprintf(`port: %d
 model: "%s"
 served-model-name:
 - "%s"
 mode: "random"
-max-num-seqs: 5
-max-model-len: 32768
+max-num-seqs: %d
+max-model-len: %d
 enable-kvcache: true
-kv-cache-size: 4096
-block-size: 16
+kv-cache-size: %d
+block-size: %d
 force-dummy-tokenizer: true
-%s`, port, modelName, servedModelName, latencyYAML)
+%s`, port, modelName, servedModelName, simMaxNumSeqs, simMaxModelLen, simKVCacheSize, simBlockSize, latencyYAML)
 
 	cm := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

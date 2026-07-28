@@ -244,6 +244,12 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if !strings.Contains(configYAML, "enable-kvcache: true") {
 		t.Errorf("config.yaml should enable kv cache, got: %s", configYAML)
 	}
+	// kv-cache-size must hold max-num-seqs (5) sequences at max-model-len
+	// (32768) / block-size (16) = 5 * 2048 = 10240 blocks, so the sim never
+	// admits more sequences than its KV pool can back (else HTTP 500).
+	if !strings.Contains(configYAML, "kv-cache-size: 10240") {
+		t.Errorf("config.yaml kv-cache-size should be 10240 (max-num-seqs*max-model-len/block-size), got: %s", configYAML)
+	}
 	if !strings.Contains(configYAML, "force-dummy-tokenizer: true") {
 		t.Errorf("config.yaml should force the dummy tokenizer, got: %s", configYAML)
 	}

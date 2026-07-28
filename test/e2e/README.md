@@ -101,7 +101,7 @@ E2E_LABEL='Perf' E2E_PARALLEL=1 make test-e2e
 
 Load is a **replay of real multi-turn agentic sessions**, not a synthetic prompt loop. The driver lives in [`utils/traces.go`](utils/traces.go):
 
-1. **Fixture → sessions.** `LoadTraceSessions` reads a JSONL fixture (one row per LLM iteration) and groups rows by `session_id` into ordered `ReplaySession`s. Each turn's `input` is the full cumulative OpenAI messages array, so turn *N* is a prefix-superset of turn *N-1* — exactly the shared-prefix pattern the prefix-cache-scorer exploits. Turns shorter than one 16-token block (`BlockSizeTokens`) are dropped at load time, since they produce no prefix hashes.
+1. **Fixture → sessions.** `LoadTraceSessions` reads a JSONL fixture (one row per LLM iteration) and groups rows by `session_id` into ordered `ReplaySession`s. Each turn's `input` is the full cumulative OpenAI messages array, so turn *N* is a prefix-superset of turn *N-1* — exactly the shared-prefix pattern the prefix-cache-scorer exploits. Turns are dropped at load time if they fall below one 16-token block (`BlockSizeTokens` floor — no prefix hashes) or exceed the model context window (`MaxModelLenTokens` = 32768 ceiling — unservable, the backend would 400). Because turns grow monotonically, the ceiling truncates a session at its first over-length turn, preserving the shared-prefix chain of what remains.
 2. **Concurrent replay.** `ReplaySessionsConcurrent` distributes sessions across a worker pool (`perfConcurrency`, default 8). Turns **within** a session are sent sequentially by one worker (so the shared prefix accumulates in the KV cache); **sessions** run in parallel (to saturate serving and fill the queue). All requests target the deployment name (`X-Gateway-Model-Name`), overriding the model recorded in the trace.
 3. **Warm-up + measurement.** A warm-up pass (`perfWarmUpRounds`) primes the cache; then the fixture is replayed `perfMeasuredRounds` times while prefix-cache / success / error counters are snapshotted before and after. `repeatSessions` concatenates the fixture N times so a small fixture still generates sustained load.
 4. **A/B check.** Shared-prefix load (repeated sessions) is compared against genuinely unique-prefix load (a per-request nonce prepended at block 0, single-turn) to prove cache-hit growth is real.
@@ -140,6 +140,59 @@ E2E_TRACE_FIXTURE=/tmp/agentic-traces-big.jsonl make test-e2e-perf
 A bigger fixture raises the load automatically (more distinct sessions and deeper prefixes); increase `perfConcurrency` / `perfMeasuredRounds` to drive it harder still.
 
 > **Goal: run against the full ~2.36 GB corpus.** The two-stage design (offline extract → local replay) is intended to scale up to the entire dataset. Because real sessions have a median ~21K input tokens, committing a full-size fixture would bloat the repo, so the path to "all traces" is: generate a large (or complete) fixture to a scratch path, then drive the perf spec at it via `E2E_TRACE_FIXTURE` (e.g. in a dedicated nightly/manual job) rather than checking the corpus into git. Raise `--num-sessions` / `--max-turns` toward the dataset's full session/turn counts, and scale `perfConcurrency` to keep the backend saturated.
+
+### Running the perf test against real dataset shards
+
+The three specs above use `LoadTraceSessions`, which reads a fixture selected by `E2E_TRACE_FIXTURE` (default: the committed trimmed fixture) — a single JSONL file, a directory of shards, or a glob. To exercise the perf spec against **real** agentic data at scale, partition the HuggingFace corpus into shard files and point the spec at one (or a directory/glob of several).
+
+**1. Partition the corpus into shards (offline, streaming):**
+
+```bash
+pip install datasets
+python hack/e2e/scripts/extract_agentic_traces.py \
+  --shards 8 \
+  --shard-dir /tmp/pc-shards \
+  --max-sessions 40          # cap + stop streaming early; 0 = all sessions
+```
+
+This streams the whole dataset (never holding it in memory) and assigns each **whole session** to `shard-<i>.jsonl` in **round-robin** order (session _k_ → shard _k mod shards_). So a shard boundary never falls inside a session — every file holds only whole, distinct sessions — and the session count stays **balanced** across shards. That balance is what makes each shard file independently runnable (e.g. **one container per shard**): the perf spec needs ≥2 distinct sessions per file for cross-pod routing, so keep `--shards` ≤ half your session count.
+
+| Flag | Effect | Default |
+| --- | --- | --- |
+| `--shards` | number of shard files to partition into (`0` = single-fixture mode) | `0` |
+| `--shard-dir` | output directory for `shard-<i>.jsonl` | `test/e2e/testdata/shards` |
+| `--max-sessions` | cap distinct sessions **and stop streaming** once reached (`0` = unlimited) | `0` |
+| `--input` | shard a **local** JSONL file instead of downloading (offline; skips source filter) | _(none)_ |
+
+**2. Run the perf spec against a shard.** The spec reads one fixture via `E2E_TRACE_FIXTURE`, which may be a single file, a **directory** of shards, or a **glob** — a directory/glob merges every shard's sessions into one corpus (grouped by `session_id`). Prefer this over a single shard: any one shard may hold fewer than the 2 distinct sessions the spec needs for cross-pod routing, in which case the spec **skips** with guidance rather than failing.
+
+```bash
+# a whole directory of shards (merged)
+E2E_TRACE_FIXTURE=/tmp/pc-shards make test-e2e-perf
+
+# or a glob of shards (merged)
+E2E_TRACE_FIXTURE='/tmp/pc-shards/shard-*.jsonl' make test-e2e-perf
+
+# one shard (only if it has >=2 sessions, else the spec skips)
+E2E_TRACE_FIXTURE=/tmp/pc-shards/shard-0.jsonl make test-e2e-perf
+
+# or concatenate shards into one file (shards are session-grouped, so `cat` preserves grouping)
+cat /tmp/pc-shards/shard-*.jsonl > /tmp/pc-all.jsonl
+E2E_TRACE_FIXTURE=/tmp/pc-all.jsonl make test-e2e-perf
+```
+
+#### Small-scale / offline options
+
+You do **not** need the whole 2.36 GB:
+
+- **Fully offline** — shard the committed fixture, no network at all:
+  ```bash
+  python hack/e2e/scripts/extract_agentic_traces.py \
+    --shards 4 --input testdata/agentic-traces.jsonl --shard-dir /tmp/pc-shards
+  ```
+- **Small real sample** — `--max-sessions 40` streams ~40 sessions then stops, so you pull a few MB, not 2.36 GB, while still producing real multi-shard data.
+
+> **Follow-up.** Memory-bounded *streaming* replay of the full corpus (and a per-shard container fan-out) is planned for a later PR. Today `LoadTraceSessions` materializes the selected shard/fixture in memory, which is fine for a single shard.
 
 ## Adding a new e2e test
 
