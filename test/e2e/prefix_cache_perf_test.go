@@ -70,7 +70,6 @@ const (
 	// shard's fixed first-touch cold misses; perfMeasuredRounds is set high
 	// enough that those are diluted below this target.
 	prefixCacheHitRatioTarget = 0.80
-
 	// perfMeasuredRounds replays each shard's sessions repeatedly under load and
 	// measures the hit ratio and error counters across ALL rounds. The first
 	// round absorbs that shard's one-off first-touch cold misses; the remaining
