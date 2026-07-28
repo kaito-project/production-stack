@@ -110,15 +110,15 @@
     "streaming": {
       "type": "object",
       "additionalProperties": true,
-      "description": "KAITO model-streaming annotations stamped onto spec.template.metadata.annotations of the InferenceSet (propagated to child Workspaces). Every value is delivered as a STRING; gate keys are typed 'string' (not boolean).",
+      "description": "KAITO model-streaming annotations stamped onto spec.template.metadata.annotations of the InferenceSet (propagated to child Workspaces).",
       "properties": {
         "disabled": {
-          "type": "string",
-          "description": "When 'true', stamps kaito.sh/model-streaming: 'disabled' to force KAITO's download-at-runtime path. Any other value keeps streaming enabled. Mutually exclusive with staticModelMirror."
+          "type": ["string", "boolean"],
+          "description": "When 'true', stamps kaito.sh/model-streaming: 'disabled' to force KAITO's download-at-runtime path. Any other value keeps streaming enabled. Mutually exclusive with staticModelMirror. Typed string|boolean because `helm --set` coerces the RP-sent string to a boolean."
         },
         "staticModelMirror": {
-          "type": "string",
-          "description": "When 'true', the gate that activates the SAS direct-stream path; stamps inference.kaito.sh/static-model-mirror and requires datarefsUrl, identityClientId, and sourceType."
+          "type": ["string", "boolean"],
+          "description": "When 'true', the gate that activates the SAS direct-stream path; stamps inference.kaito.sh/static-model-mirror and requires datarefsUrl, identityClientId, and sourceType. Typed string|boolean because `helm --set` coerces the RP-sent string to a boolean."
         },
         "datarefsUrl": {
           "type": "string",
