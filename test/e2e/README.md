@@ -143,7 +143,7 @@ A bigger fixture raises the load automatically (more distinct sessions and deepe
 
 ### Running the perf test against real dataset shards
 
-The three specs above use `LoadTraceSessions`, which reads a fixture selected by `E2E_TRACE_FIXTURE` (default: the committed trimmed fixture) — a single JSONL file, a directory of shards, or a glob. To exercise the perf spec against **real** agentic data at scale, partition the HuggingFace corpus into shard files and point the spec at one (or a directory/glob of several).
+The three specs above stream a fixture selected by `E2E_TRACE_FIXTURE` (default: the committed trimmed fixture) — a single JSONL file, a directory of shards, or a glob. Each shard is warmed and measured **on its own** and the results are aggregated (Σhits/Σqueries), so the spec can replay the **whole corpus** while only ever holding **one shard in memory at a time** (peak RAM ≈ the largest shard, not the sum of all shards). To exercise the perf spec against **real** agentic data at scale, partition the HuggingFace corpus into shard files and point the spec at the directory (whole corpus) or one file (single-shard dev run).
 
 **1. Partition the corpus into shards (offline, streaming):**
 
@@ -164,16 +164,19 @@ This streams the whole dataset (never holding it in memory) and assigns each **w
 | `--max-sessions` | cap distinct sessions **and stop streaming** once reached (`0` = unlimited) | `0` |
 | `--input` | shard a **local** JSONL file instead of downloading (offline; skips source filter) | _(none)_ |
 
-**2. Run the perf spec against a shard.** The spec reads one fixture via `E2E_TRACE_FIXTURE`, which may be a single file, a **directory** of shards, or a **glob** — a directory/glob merges every shard's sessions into one corpus (grouped by `session_id`). Prefer this over a single shard: any one shard may hold fewer than the 2 distinct sessions the spec needs for cross-pod routing, in which case the spec **skips** with guidance rather than failing.
+**2. Run the perf spec against shards.** The spec reads one fixture via `E2E_TRACE_FIXTURE`, which may be a single file, a **directory** of shards, or a **glob**. A directory/glob streams the shards one at a time — replaying the **whole corpus** with bounded memory — while a single file replays that one shard (handy for dev). Each shard needs ≥2 distinct sessions for cross-pod routing; shards with fewer are skipped, and if **no** shard qualifies the spec **skips** with guidance rather than failing.
 
 ```bash
-# a whole directory of shards (merged)
+# a whole directory: takes ALL *.jsonl files in it (streamed one at a time = whole corpus)
 E2E_TRACE_FIXTURE=/tmp/pc-shards make test-e2e-perf
 
-# or a glob of shards (merged)
+# a glob: same, but you pick WHICH files — quote it so the shell doesn't expand it.
+# e.g. every shard...
 E2E_TRACE_FIXTURE='/tmp/pc-shards/shard-*.jsonl' make test-e2e-perf
+# ...or just a subset (here shard-0 + shard-1)
+E2E_TRACE_FIXTURE='/tmp/pc-shards/shard-[01].jsonl' make test-e2e-perf
 
-# one shard (only if it has >=2 sessions, else the spec skips)
+# one shard for a quick dev run (only if it has >=2 sessions, else the spec skips)
 E2E_TRACE_FIXTURE=/tmp/pc-shards/shard-0.jsonl make test-e2e-perf
 
 # or concatenate shards into one file (shards are session-grouped, so `cat` preserves grouping)

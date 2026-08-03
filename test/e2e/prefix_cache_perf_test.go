@@ -51,7 +51,9 @@ import (
 //
 //   - Error-rate stability: zero 5xx and bounded non-2xx while saturated.
 //   - Prefix-cache effectiveness: aggregate hit ratio (Δvllm:prefix_cache_hits /
-//     Δvllm:prefix_cache_queries) >= 0.80 once shared prefixes are warm.
+//     Δvllm:prefix_cache_queries) >= 0.80 once shared prefixes are warm,
+//     cross-checked against EPP's own inference_extension_prefix_indexer_hit_ratio
+//     (an independent, router-side view of the same property).
 //   - KV-cache / queue signal: vllm:kv_cache_usage_perc and
 //     vllm:num_requests_waiting are asserted to be exported (so the
 //     kv-cache-utilization-scorer and queue-scorer have signal) and within
@@ -89,10 +91,12 @@ const (
 
 // resolveTraceFixture locates the committed agentic-trace fixture, honoring the
 // E2E_TRACE_FIXTURE override and tolerating both the repo-root and test/e2e
-// working directories. The override may be a single JSONL file, a directory of
-// shard files, or a glob — LoadTraceSessions merges them (see traces.go) so a
-// directory of shards can supply enough distinct sessions for cross-pod
-// routing even when any single shard is too small.
+// working directories. The override may be a single JSONL file (dev: one shard,
+// replayed in isolation), or a directory of shard files / a glob (a real run:
+// the whole corpus, streamed one shard at a time by StreamTraceShards so peak
+// memory stays bounded to the largest shard — see traces.go). Either way each
+// shard is warmed and measured on its own and the results are aggregated, so
+// the same code path serves both single-shard dev and whole-corpus runs.
 func resolveTraceFixture() string {
 	if p := os.Getenv("E2E_TRACE_FIXTURE"); p != "" {
 		return p
@@ -172,32 +176,64 @@ var _ = Describe("Prefix Cache Routing Perf",
 		var (
 			ctx        context.Context
 			gatewayURL string
-			sessions   []utils.ReplaySession
+			fixture    string
 		)
+
+		// forEachUsableShard streams the fixture shard-by-shard (one shard
+		// resident at a time, bounding memory to the largest shard) and calls
+		// fn with each shard that has >=2 sessions — the minimum to exercise
+		// cross-pod prefix routing. Shards with fewer are logged and skipped. A
+		// hard load error fails the spec. BeforeAll has already guaranteed at
+		// least one usable shard exists, so fn runs at least once.
+		forEachUsableShard := func(fn func(sessions []utils.ReplaySession)) {
+			err := utils.StreamTraceShards(fixture, func(sh utils.TraceShard) error {
+				if len(sh.Sessions) < 2 {
+					GinkgoWriter.Printf("[perf] skipping shard %s: %d session(s) < 2, cannot exercise cross-pod routing\n",
+						filepath.Base(sh.Path), len(sh.Sessions))
+					return nil
+				}
+				By(fmt.Sprintf("shard %s: %d sessions", filepath.Base(sh.Path), len(sh.Sessions)))
+				fn(sh.Sessions)
+				return nil
+			})
+			Expect(err).NotTo(HaveOccurred(), "streaming trace shards from %s", fixture)
+		}
 
 		BeforeAll(func() {
 			ctx = context.Background()
 
-			fixture := resolveTraceFixture()
-			var err error
-			sessions, err = utils.LoadTraceSessions(fixture)
-			// Cross-pod prefix routing needs >=2 distinct sessions (prefixes).
-			// A shard from the extract script's --shards mode can hold too few
-			// (an empty shard yields ErrNoUsableSessions; a single-session shard
-			// yields len 1). Both are fixture-availability limitations, not
-			// regressions — Skip (don't Fail) with actionable guidance so the
-			// suite stays green. A genuinely broken path (missing file, parse
-			// error) is still a hard failure.
+			fixture = resolveTraceFixture()
+
+			// Validate by streaming the shards once (one resident at a time, so
+			// this stays memory-bounded even for a whole-corpus directory).
+			// Skip — don't Fail — when no shard can exercise cross-pod routing:
+			// an empty fixture (ErrNoUsableSessions) or one whose every shard
+			// holds <2 distinct sessions is a fixture-availability limitation,
+			// not a regression, so the suite stays green with actionable
+			// guidance. A genuinely broken path (missing file, parse error) is
+			// still a hard failure.
+			var totalShards, usableShards, totalSessions int
+			err := utils.StreamTraceShards(fixture, func(sh utils.TraceShard) error {
+				totalShards++
+				totalSessions += len(sh.Sessions)
+				if len(sh.Sessions) >= 2 {
+					usableShards++
+				}
+				return nil
+			})
 			if errors.Is(err, utils.ErrNoUsableSessions) {
-				Skip(fmt.Sprintf("trace fixture %s yielded 0 usable sessions; the prefix-cache perf spec needs >=2 distinct "+
-					"sessions to exercise cross-pod prefix routing. Point E2E_TRACE_FIXTURE at a directory or glob of shards "+
-					"(e.g. a shard dir), or `cat` several shards into one fixture.", fixture))
+				Skip(fmt.Sprintf("trace fixture %s yielded 0 usable sessions; the prefix-cache perf spec needs a shard with "+
+					">=2 distinct sessions to exercise cross-pod prefix routing. Point E2E_TRACE_FIXTURE at a directory or "+
+					"glob of shards, or a single richer fixture.", fixture))
 			}
 			Expect(err).NotTo(HaveOccurred(), "failed to load trace fixture %s", fixture)
-			if len(sessions) < 2 {
-				Skip(fmt.Sprintf("trace fixture %s yielded %d session(s); the prefix-cache perf spec needs >=2 distinct "+
-					"sessions to exercise cross-pod prefix routing. Point E2E_TRACE_FIXTURE at a directory or glob of shards "+
-					"(e.g. a shard dir), or `cat` several shards into one fixture.", fixture, len(sessions)))
+			GinkgoWriter.Printf("[perf] fixture %s: %d shard(s), %d with >=2 sessions, %d sessions total\n",
+				fixture, totalShards, usableShards, totalSessions)
+			if usableShards == 0 {
+				Skip(fmt.Sprintf("trace fixture %s: no shard has >=2 distinct sessions (across %d shard(s), %d session(s) "+
+					"total); the prefix-cache perf spec needs >=2 sessions within a shard to exercise cross-pod routing. "+
+					"Point E2E_TRACE_FIXTURE at a richer shard or a directory/glob of shards.",
+					fixture, totalShards, totalSessions))
 			}
 
 			gatewayURL = InstallCase(CasePrefixCachePerf)
@@ -217,60 +253,95 @@ var _ = Describe("Prefix Cache Routing Perf",
 			Expect(len(baseline)).To(BeNumerically(">=", 2),
 				"prefix-cache routing needs >=2 shadow pods")
 
-			By("warming the KV cache with an initial pass of every session")
-			warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(sessions, perfWarmUpRounds), perfConcurrency, false)
-			Expect(warm.Errors5xx).To(BeNumerically("==", 0),
-				"warm-up produced 5xx responses: %+v", warm)
+			// Per-shard warm+measure, then aggregate. Each shard is warmed and
+			// measured while ITS prefixes are hot, so the hit ratio reflects
+			// routing quality rather than KV eviction across shards — which
+			// keeps the >=0.80 target meaningful for a corpus far larger than
+			// the sim's KV pool. Deltas are summed across shards; the final
+			// ratio is Σhits/Σqueries.
+			var (
+				totalReqs          int64
+				total5xx           int64
+				totalTransport     int64
+				totalLoadShed      int64
+				hitsDeltaSum       float64
+				queriesDeltaSum    float64
+				maxIndexerHitRatio float64
+			)
 
-			By("snapshotting prefix-cache and success counters before the measured load")
-			hitsBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
-			Expect(err).NotTo(HaveOccurred())
-			queriesBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
-			Expect(err).NotTo(HaveOccurred())
-			successBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:request_success_total")
-			Expect(err).NotTo(HaveOccurred())
+			forEachUsableShard(func(sessions []utils.ReplaySession) {
+				By("warming the KV cache with an initial pass of this shard's sessions")
+				warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(sessions, perfWarmUpRounds), perfConcurrency, false)
+				Expect(warm.Errors5xx).To(BeNumerically("==", 0),
+					"warm-up produced 5xx responses: %+v", warm)
 
-			By(fmt.Sprintf("replaying %d sessions x %d rounds at concurrency %d", len(sessions), perfMeasuredRounds, perfConcurrency))
-			stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(sessions, perfMeasuredRounds), perfConcurrency, false)
-			GinkgoWriter.Printf("[perf] replay stats: %+v\n", stats)
+				hitsBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
+				Expect(err).NotTo(HaveOccurred())
+				queriesBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
+				Expect(err).NotTo(HaveOccurred())
 
-			By("asserting error-rate stability under saturation")
-			Expect(stats.Total).To(BeNumerically(">", 0))
-			Expect(stats.Errors5xx).To(BeNumerically("==", 0),
-				"gateway->EPP->backend chain must stay 5xx-free under load: %+v", stats)
-			Expect(stats.TransportErr).To(BeNumerically("==", 0),
-				"replay hit transport errors: %+v", stats)
-			// Bounded backpressure: at most 10% of requests may be load-shed
-			// (429 Too Many Requests / 503 Service Unavailable). 400s (e.g. a
-			// turn exceeding max-model-len) are content errors, not overload, and
-			// are excluded — the load generator drops over-length turns at load
-			// time, so they should not occur here.
-			loadShed := stats.StatusCounts[429] + stats.StatusCounts[503]
-			Expect(float64(loadShed)).To(BeNumerically("<=", 0.10*float64(stats.Total)),
-				"too many 429/503 (load-shed) under load: %+v", stats)
+				By(fmt.Sprintf("replaying %d sessions x %d rounds at concurrency %d", len(sessions), perfMeasuredRounds, perfConcurrency))
+				stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(sessions, perfMeasuredRounds), perfConcurrency, false)
+				GinkgoWriter.Printf("[perf] shard replay stats: %+v\n", stats)
 
-			By("snapshotting prefix-cache and success counters after the measured load")
-			hitsAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
-			Expect(err).NotTo(HaveOccurred())
-			queriesAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
-			Expect(err).NotTo(HaveOccurred())
-			successAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:request_success_total")
-			Expect(err).NotTo(HaveOccurred())
+				hitsAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
+				Expect(err).NotTo(HaveOccurred())
+				queriesAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
+				Expect(err).NotTo(HaveOccurred())
 
-			hitsDelta := utils.SumSnapshot(utils.DiffSnapshots(hitsBefore, hitsAfter))
-			queriesDelta := utils.SumSnapshot(utils.DiffSnapshots(queriesBefore, queriesAfter))
-			successDelta := utils.SumSnapshot(utils.DiffSnapshots(successBefore, successAfter))
-			GinkgoWriter.Printf("[perf] prefix_cache hits Δ=%.0f queries Δ=%.0f request_success Δ=%.0f\n",
-				hitsDelta, queriesDelta, successDelta)
+				hitsDeltaSum += utils.SumSnapshot(utils.DiffSnapshots(hitsBefore, hitsAfter))
+				queriesDeltaSum += utils.SumSnapshot(utils.DiffSnapshots(queriesBefore, queriesAfter))
 
-			Expect(queriesDelta).To(BeNumerically(">", 0),
+				// EPP-side cross-check: the prefix indexer's own hit ratio. It is
+				// computed independently of the sim's vllm counters — from the
+				// router's longest-prefix-match decisions — so agreement between
+				// the two confirms EPP believed it routed to a warm pod AND the
+				// backend confirms the block was resident. Keep the best value
+				// observed across shards (each shard is measured while hot).
+				indexerRatio, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
+					"inference_extension_prefix_indexer_hit_ratio", nil)
+				Expect(err).NotTo(HaveOccurred())
+				if indexerRatio > maxIndexerHitRatio {
+					maxIndexerHitRatio = indexerRatio
+				}
+
+				totalReqs += stats.Total
+				total5xx += stats.Errors5xx
+				totalTransport += stats.TransportErr
+				// Bounded backpressure: at most 10% of requests may be load-shed
+				// (429 Too Many Requests / 503 Service Unavailable). 400s (e.g.
+				// a turn exceeding max-model-len) are content errors, not
+				// overload, and are excluded — the load generator drops
+				// over-length turns at load time, so they should not occur here.
+				totalLoadShed += stats.StatusCounts[429] + stats.StatusCounts[503]
+			})
+
+			By("asserting aggregate error-rate stability under saturation")
+			Expect(totalReqs).To(BeNumerically(">", 0))
+			Expect(total5xx).To(BeNumerically("==", 0),
+				"gateway->EPP->backend chain must stay 5xx-free under load (aggregate 5xx=%d)", total5xx)
+			Expect(totalTransport).To(BeNumerically("==", 0),
+				"replay hit transport errors (aggregate=%d)", totalTransport)
+			Expect(float64(totalLoadShed)).To(BeNumerically("<=", 0.10*float64(totalReqs)),
+				"too many 429/503 (load-shed) under load: %d / %d", totalLoadShed, totalReqs)
+
+			GinkgoWriter.Printf("[perf] aggregate prefix_cache hits Δ=%.0f queries Δ=%.0f over %d requests\n",
+				hitsDeltaSum, queriesDeltaSum, totalReqs)
+			Expect(queriesDeltaSum).To(BeNumerically(">", 0),
 				"vllm:prefix_cache_queries did not advance — backend did not exercise the prefix cache")
 
-			ratio := hitsDelta / queriesDelta
-			By(fmt.Sprintf("asserting prefix-cache hit ratio %.3f >= %.2f", ratio, prefixCacheHitRatioTarget))
+			ratio := hitsDeltaSum / queriesDeltaSum
+			By(fmt.Sprintf("asserting aggregate prefix-cache hit ratio %.3f >= %.2f", ratio, prefixCacheHitRatioTarget))
 			Expect(ratio).To(BeNumerically(">=", prefixCacheHitRatioTarget),
 				"prefix-cache hit ratio %.3f below target %.2f (hitsΔ=%.0f queriesΔ=%.0f)",
-				ratio, prefixCacheHitRatioTarget, hitsDelta, queriesDelta)
+				ratio, prefixCacheHitRatioTarget, hitsDeltaSum, queriesDeltaSum)
+
+			By("cross-checking EPP's own prefix-indexer hit ratio (independent of the vllm counters)")
+			GinkgoWriter.Printf("[perf] inference_extension_prefix_indexer_hit_ratio (max across shards) = %.4f\n", maxIndexerHitRatio)
+			Expect(maxIndexerHitRatio).To(BeNumerically(">", 0),
+				"EPP's inference_extension_prefix_indexer_hit_ratio stayed 0 under shared-prefix load — the prefix-cache-scorer's "+
+					"indexer registered no prefix matches (or the metric is not exported by this EPP build); the vllm-side ratio was %.3f",
+				ratio)
 
 			By("asserting KV-cache utilization is exported and a valid ratio")
 			kvUsage, kvPresent, err := utils.ScrapeModelMetricWithPresence(ctx, clientset, caseNamespace, model, "vllm:kv_cache_usage_perc")
@@ -302,7 +373,11 @@ var _ = Describe("Prefix Cache Routing Perf",
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
-			measureRatio := func(runSessions []utils.ReplaySession) float64 {
+			// measure runs one load and returns the (hits, queries) deltas it
+			// produced, so callers can accumulate across shards before taking a
+			// ratio (Σhits/Σqueries) — the same shard-by-shard aggregation the
+			// main spec uses, keeping peak memory at one shard.
+			measure := func(runSessions []utils.ReplaySession) (hits, queries float64) {
 				hb, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 				Expect(err).NotTo(HaveOccurred())
 				qb, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
@@ -316,20 +391,32 @@ var _ = Describe("Prefix Cache Routing Perf",
 				qa, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
 				Expect(err).NotTo(HaveOccurred())
 
-				qd := utils.SumSnapshot(utils.DiffSnapshots(qb, qa))
-				if qd <= 0 {
-					return 0
-				}
-				return utils.SumSnapshot(utils.DiffSnapshots(hb, ha)) / qd
+				return utils.SumSnapshot(utils.DiffSnapshots(hb, ha)), utils.SumSnapshot(utils.DiffSnapshots(qb, qa))
 			}
 
-			By("running shared-prefix load (repeated identical sessions)")
-			sharedRatio := measureRatio(repeatSessions(sessions, perfMeasuredRounds))
+			var sharedHits, sharedQueries, uniqueHits, uniqueQueries float64
+			forEachUsableShard(func(sessions []utils.ReplaySession) {
+				By("running shared-prefix load (repeated identical sessions)")
+				h, q := measure(repeatSessions(sessions, perfMeasuredRounds))
+				sharedHits += h
+				sharedQueries += q
 
-			By("running unique-prefix load (per-request unique nonce, no shared prefix)")
-			uniqueRatio := measureRatio(uniquePrefixSessions(sessions))
+				By("running unique-prefix load (per-request unique nonce, no shared prefix)")
+				h, q = measure(uniquePrefixSessions(sessions))
+				uniqueHits += h
+				uniqueQueries += q
+			})
 
-			GinkgoWriter.Printf("[perf] shared-prefix hit ratio=%.3f unique-prefix hit ratio=%.3f\n", sharedRatio, uniqueRatio)
+			ratio := func(hits, queries float64) float64 {
+				if queries <= 0 {
+					return 0
+				}
+				return hits / queries
+			}
+			sharedRatio := ratio(sharedHits, sharedQueries)
+			uniqueRatio := ratio(uniqueHits, uniqueQueries)
+
+			GinkgoWriter.Printf("[perf] aggregate shared-prefix hit ratio=%.3f unique-prefix hit ratio=%.3f\n", sharedRatio, uniqueRatio)
 			Expect(sharedRatio).To(BeNumerically(">", uniqueRatio),
 				"shared-prefix load should yield a higher cache-hit ratio than unique-prefix load (shared=%.3f unique=%.3f)",
 				sharedRatio, uniqueRatio)
@@ -339,39 +426,42 @@ var _ = Describe("Prefix Cache Routing Perf",
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
-			// Prime every prefix once under concurrent load so the sticky pod
-			// for each is established (and first-touch cold misses don't count
-			// against the concentration measurement below).
-			warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, sessions, perfConcurrency, false)
-			Expect(warm.Errors5xx).To(BeNumerically("==", 0), "priming produced 5xx: %+v", warm)
+			forEachUsableShard(func(sessions []utils.ReplaySession) {
+				// Prime every prefix in this shard once under concurrent load so
+				// the sticky pod for each is established (and first-touch cold
+				// misses don't count against the concentration measurement
+				// below).
+				warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, sessions, perfConcurrency, false)
+				Expect(warm.Errors5xx).To(BeNumerically("==", 0), "priming produced 5xx: %+v", warm)
 
-			for _, s := range sessions {
-				By(fmt.Sprintf("measuring routing concentration for session %s", s.SessionID))
+				for _, s := range sessions {
+					By(fmt.Sprintf("measuring routing concentration for session %s", s.SessionID))
 
-				before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
-				Expect(err).NotTo(HaveOccurred())
+					before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
+					Expect(err).NotTo(HaveOccurred())
 
-				// Replay this one prefix in isolation and sequentially, so the
-				// per-pod request delta reflects the routing *decision* for a
-				// single warm prefix rather than worker interleaving.
-				single := []utils.ReplaySession{s}
-				stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(single, perfMeasuredRounds), 1, false)
-				Expect(stats.Errors5xx).To(BeNumerically("==", 0), "sticky run produced 5xx: %+v", stats)
+					// Replay this one prefix in isolation and sequentially, so
+					// the per-pod request delta reflects the routing *decision*
+					// for a single warm prefix rather than worker interleaving.
+					single := []utils.ReplaySession{s}
+					stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(single, perfMeasuredRounds), 1, false)
+					Expect(stats.Errors5xx).To(BeNumerically("==", 0), "sticky run produced 5xx: %+v", stats)
 
-				after, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
-				Expect(err).NotTo(HaveOccurred())
+					after, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
+					Expect(err).NotTo(HaveOccurred())
 
-				delta := utils.DiffSnapshots(before, after)
-				served := utils.SumSnapshot(delta)
-				Expect(served).To(BeNumerically(">", 0),
-					"no successful requests recorded for session %s (per-pod deltas=%+v)", s.SessionID, delta)
+					delta := utils.DiffSnapshots(before, after)
+					served := utils.SumSnapshot(delta)
+					Expect(served).To(BeNumerically(">", 0),
+						"no successful requests recorded for session %s (per-pod deltas=%+v)", s.SessionID, delta)
 
-				concentration := utils.MaxSnapshot(delta) / served
-				GinkgoWriter.Printf("[perf] session %s concentration=%.3f served=%.0f deltas=%+v\n",
-					s.SessionID, concentration, served, delta)
-				Expect(concentration).To(BeNumerically(">=", perfStickyConcentrationTarget),
-					"prefix %s should concentrate >=%.0f%% of its requests on one pod, got %.1f%% (per-pod deltas=%+v)",
-					s.SessionID, perfStickyConcentrationTarget*100, concentration*100, delta)
-			}
+					concentration := utils.MaxSnapshot(delta) / served
+					GinkgoWriter.Printf("[perf] session %s concentration=%.3f served=%.0f deltas=%+v\n",
+						s.SessionID, concentration, served, delta)
+					Expect(concentration).To(BeNumerically(">=", perfStickyConcentrationTarget),
+						"prefix %s should concentrate >=%.0f%% of its requests on one pod, got %.1f%% (per-pod deltas=%+v)",
+						s.SessionID, perfStickyConcentrationTarget*100, concentration*100, delta)
+				}
+			})
 		})
 	})

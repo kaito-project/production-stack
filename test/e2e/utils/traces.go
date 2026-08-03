@@ -273,6 +273,54 @@ func appendTraceSessions(path string, idx map[string]int, sessions *[]ReplaySess
 	return nil
 }
 
+// TraceShard is one shard's worth of sessions, loaded from a single fixture
+// file. Path is the source file (for diagnostics).
+type TraceShard struct {
+	Path     string
+	Sessions []ReplaySession
+}
+
+// StreamTraceShards resolves a fixture path (single file, directory, or glob)
+// into its concrete shard files and calls fn once per non-empty shard, with
+// that shard's sessions loaded into memory. Crucially, only ONE shard is
+// resident at a time: fn is invoked, then the slice goes out of scope and is
+// freed before the next file is read, so peak memory is bounded by the largest
+// single shard rather than the whole corpus. This is what lets the perf spec
+// replay a whole directory of shards against a small box without OOM (contrast
+// LoadTraceSessions, which materializes every shard at once).
+//
+// Grouping is PER FILE here (unlike LoadTraceSessions' global grouping): each
+// file is an independent shard. The extract script's round-robin --shards mode
+// keeps every session's rows whole within one file, so per-file grouping loses
+// nothing. Empty / fully-filtered shards are skipped (fn is not called for
+// them). If NO file yields any usable session, ErrNoUsableSessions is returned.
+func StreamTraceShards(path string, fn func(TraceShard) error) error {
+	files, err := resolveFixtureFiles(path)
+	if err != nil {
+		return err
+	}
+	usable := false
+	for _, file := range files {
+		// Fresh accumulators each iteration so the previous shard is GC'd.
+		idx := make(map[string]int)
+		var sessions []ReplaySession
+		if err := appendTraceSessions(file, idx, &sessions); err != nil {
+			return err
+		}
+		if len(sessions) == 0 {
+			continue
+		}
+		usable = true
+		if err := fn(TraceShard{Path: file, Sessions: sessions}); err != nil {
+			return err
+		}
+	}
+	if !usable {
+		return fmt.Errorf("trace fixture %q: %w", path, ErrNoUsableSessions)
+	}
+	return nil
+}
+
 // replayFromChannel is the shared worker-pool core. It drains sessions from
 // `in` across `concurrency` workers; the turns of any one session are always
 // sent sequentially by a single worker. When honorTiming is true the recorded
