@@ -65,19 +65,19 @@ import (
 
 const (
 	// prefixCacheHitRatioTarget is the minimum aggregate prefix-cache hit
-	// ratio expected once the shared prefixes are warm (target: "should
-	// be over 80%").
+	// ratio expected across a shard's replay (target: "should be over 80%").
+	// There is no separate warm-up pass, so the measured window includes each
+	// shard's fixed first-touch cold misses; perfMeasuredRounds is set high
+	// enough that those are diluted below this target.
 	prefixCacheHitRatioTarget = 0.80
 
-	// perfWarmUpRounds primes the KV cache so first-touch misses don't skew
-	// the measured hit ratio. Two rounds (rather than one) ensure the cache is
-	// fully primed under concurrency before measurement — a single pass can
-	// leave measured round 1 still catching cold blocks, diluting the
-	// aggregate hit ratio below target.
-	perfWarmUpRounds = 2
-	// perfMeasuredRounds replays the warm sessions repeatedly under load; the
-	// hit ratio and error counters are measured across these rounds.
-	perfMeasuredRounds = 3
+	// perfMeasuredRounds replays each shard's sessions repeatedly under load and
+	// measures the hit ratio and error counters across ALL rounds. The first
+	// round absorbs that shard's one-off first-touch cold misses; the remaining
+	// rounds run hot. Enough rounds keeps the aggregate ratio above
+	// prefixCacheHitRatioTarget without a dedicated warm-up phase (worst-case
+	// floor (R-1)/R, plus intra-round prefix sharing lifts it further).
+	perfMeasuredRounds = 6
 	// perfConcurrency is the number of sessions replayed in parallel.
 	perfConcurrency = 8
 
@@ -92,11 +92,11 @@ const (
 // resolveTraceFixture locates the committed agentic-trace fixture, honoring the
 // E2E_TRACE_FIXTURE override and tolerating both the repo-root and test/e2e
 // working directories. The override may be a single JSONL file (dev: one shard,
-// replayed in isolation), or a directory of shard files / a glob (a real run:
+// replayed in isolation), or a directory of shard files (a real run:
 // the whole corpus, streamed one shard at a time by StreamTraceShards so peak
 // memory stays bounded to the largest shard — see traces.go). Either way each
-// shard is warmed and measured on its own and the results are aggregated, so
-// the same code path serves both single-shard dev and whole-corpus runs.
+// shard is measured on its own and the results are aggregated, so the same
+// code path serves both single-shard dev and whole-corpus runs.
 func resolveTraceFixture() string {
 	if p := os.Getenv("E2E_TRACE_FIXTURE"); p != "" {
 		return p
@@ -223,8 +223,8 @@ var _ = Describe("Prefix Cache Routing Perf",
 			})
 			if errors.Is(err, utils.ErrNoUsableSessions) {
 				Skip(fmt.Sprintf("trace fixture %s yielded 0 usable sessions; the prefix-cache perf spec needs a shard with "+
-					">=2 distinct sessions to exercise cross-pod prefix routing. Point E2E_TRACE_FIXTURE at a directory or "+
-					"glob of shards, or a single richer fixture.", fixture))
+					">=2 distinct sessions to exercise cross-pod prefix routing. Point E2E_TRACE_FIXTURE at a directory of "+
+					"shards or a single richer fixture.", fixture))
 			}
 			Expect(err).NotTo(HaveOccurred(), "failed to load trace fixture %s", fixture)
 			GinkgoWriter.Printf("[perf] fixture %s: %d shard(s), %d with >=2 sessions, %d sessions total\n",
@@ -232,7 +232,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 			if usableShards == 0 {
 				Skip(fmt.Sprintf("trace fixture %s: no shard has >=2 distinct sessions (across %d shard(s), %d session(s) "+
 					"total); the prefix-cache perf spec needs >=2 sessions within a shard to exercise cross-pod routing. "+
-					"Point E2E_TRACE_FIXTURE at a richer shard or a directory/glob of shards.",
+					"Point E2E_TRACE_FIXTURE at a richer shard or a directory of shards.",
 					fixture, totalShards, totalSessions))
 			}
 
@@ -253,12 +253,13 @@ var _ = Describe("Prefix Cache Routing Perf",
 			Expect(len(baseline)).To(BeNumerically(">=", 2),
 				"prefix-cache routing needs >=2 shadow pods")
 
-			// Per-shard warm+measure, then aggregate. Each shard is warmed and
-			// measured while ITS prefixes are hot, so the hit ratio reflects
-			// routing quality rather than KV eviction across shards — which
-			// keeps the >=0.80 target meaningful for a corpus far larger than
-			// the sim's KV pool. Deltas are summed across shards; the final
-			// ratio is Σhits/Σqueries.
+			// Per-shard measure, then aggregate. Each shard is measured on its
+			// own — the first replay round absorbs that shard's first-touch cold
+			// misses and the rest run hot — so the hit ratio reflects routing
+			// quality rather than KV eviction across shards, which keeps the
+			// >=0.80 target meaningful for a corpus far larger than the sim's KV
+			// pool. Deltas are summed across shards; the final ratio is
+			// Σhits/Σqueries.
 			var (
 				totalReqs          int64
 				total5xx           int64
@@ -270,11 +271,6 @@ var _ = Describe("Prefix Cache Routing Perf",
 			)
 
 			forEachUsableShard(func(sessions []utils.ReplaySession) {
-				By("warming the KV cache with an initial pass of this shard's sessions")
-				warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(sessions, perfWarmUpRounds), perfConcurrency, false)
-				Expect(warm.Errors5xx).To(BeNumerically("==", 0),
-					"warm-up produced 5xx responses: %+v", warm)
-
 				hitsBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 				Expect(err).NotTo(HaveOccurred())
 				queriesBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
@@ -297,7 +293,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 				// router's longest-prefix-match decisions — so agreement between
 				// the two confirms EPP believed it routed to a warm pod AND the
 				// backend confirms the block was resident. Keep the best value
-				// observed across shards (each shard is measured while hot).
+				// observed across shards (measured over each shard's warm rounds).
 				indexerRatio, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
 					"inference_extension_prefix_indexer_hit_ratio", nil)
 				Expect(err).NotTo(HaveOccurred())

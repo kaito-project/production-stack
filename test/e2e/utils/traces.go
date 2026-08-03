@@ -175,10 +175,10 @@ func decodeTraceLine(text string) (row traceRow, ok bool, err error) {
 // committed fixture and for callers that need random access (the A/B and
 // sticky specs).
 //
-// The path may be a single JSONL file, a directory (all *.jsonl children are
-// read in sorted order), or a glob pattern. This is what lets the perf spec
-// point E2E_TRACE_FIXTURE at a whole directory of shards (or a glob) so their
-// sessions merge into one corpus — a single shard produced by the extract
+// The path may be a single JSONL file or a directory (all *.jsonl children are
+// read in sorted order). This is what lets the perf spec point
+// E2E_TRACE_FIXTURE at a whole directory of shards so their sessions merge
+// into one corpus — a single shard produced by the extract
 // script's --shards mode may hold too few distinct sessions to exercise
 // cross-pod prefix routing. Rows are grouped by session_id across all files, so
 // merging shards is safe even if a session's rows were somehow split across
@@ -205,8 +205,7 @@ func LoadTraceSessions(path string) ([]ReplaySession, error) {
 
 // resolveFixtureFiles expands a fixture path into the concrete JSONL files to
 // read. A plain file yields itself; a directory yields its *.jsonl children
-// (sorted, so shard order is stable and reproducible); an otherwise-unresolved
-// path is tried as a glob pattern.
+// sorted so shard order is stable and reproducible.
 func resolveFixtureFiles(path string) ([]string, error) {
 	info, statErr := os.Stat(path)
 	if statErr == nil && info.IsDir() {
@@ -223,13 +222,6 @@ func resolveFixtureFiles(path string) ([]string, error) {
 	if statErr == nil {
 		return []string{path}, nil
 	}
-	// Not a stat-able path: try treating it as a glob pattern (e.g.
-	// /tmp/pc-shards/shard-*.jsonl).
-	if matches, err := filepath.Glob(path); err == nil && len(matches) > 0 {
-		sort.Strings(matches)
-		return matches, nil
-	}
-	// Surface the original stat error for a clear "not found" message.
 	return nil, fmt.Errorf("resolving trace fixture %q: %w", path, statErr)
 }
 
@@ -280,7 +272,7 @@ type TraceShard struct {
 	Sessions []ReplaySession
 }
 
-// StreamTraceShards resolves a fixture path (single file, directory, or glob)
+// StreamTraceShards resolves a fixture path (single file or directory)
 // into its concrete shard files and calls fn once per non-empty shard, with
 // that shard's sessions loaded into memory. Crucially, only ONE shard is
 // resident at a time: fn is invoked, then the slice goes out of scope and is
