@@ -104,6 +104,30 @@ spec:
               timeout: {{ .Values.auth.extAuthzAzure.timeout | quote }}
             metadata_context_namespaces:
               - envoy.filters.http.jwt_authn
+    # Emit the workload namespace to azure-authz via context_extensions so the
+    # authz server does not need to derive it from the client-supplied Host
+    # header. Host is set by the caller and is therefore forgeable by any
+    # client that can reach the Gateway; context_extensions are populated from
+    # the data-plane configuration at proxy-startup time and cannot be
+    # influenced by the request sender. Rendered unconditionally: the namespace
+    # is unambiguous in this per-workload-namespace chart, an opt-in flag would
+    # default to off in most deployments (negating the security benefit), and a
+    # flag reintroduces config divergence between environments. The consuming
+    # server-side change that prefers context_extensions["gateway-namespace"]
+    # over Host (with Host as a backward-compatible fallback) lives in the
+    # llm-gateway-auth repo.
+    - applyTo: VIRTUAL_HOST
+      match:
+        context: GATEWAY
+      patch:
+        operation: MERGE
+        value:
+          typed_per_filter_config:
+            envoy.filters.http.ext_authz:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+              check_settings:
+                context_extensions:
+                  gateway-namespace: {{ include "modelharness.namespace" . | quote }}
     {{- else }}
     {{/* ── hybrid mode ───────────────────────────────────────────────────
          INSERT_FIRST reverses insertion order. Final chain order:
@@ -273,6 +297,28 @@ spec:
                   handle:streamInfo():dynamicMetadata():set(
                     "envoy.filters.http.lua", "auth_mode", mode)
                 end
+    # Emit the workload namespace to both ext_authz backends via
+    # context_extensions (see azure-mode comment above for security rationale).
+    # typed_per_filter_config is keyed by the filter's chain name; an absent key
+    # silently no-ops for that filter branch, so BOTH ext_authz.azure and
+    # ext_authz.apikey must have entries to cover the full hybrid request path.
+    - applyTo: VIRTUAL_HOST
+      match:
+        context: GATEWAY
+      patch:
+        operation: MERGE
+        value:
+          typed_per_filter_config:
+            ext_authz.azure:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+              check_settings:
+                context_extensions:
+                  gateway-namespace: {{ include "modelharness.namespace" . | quote }}
+            ext_authz.apikey:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+              check_settings:
+                context_extensions:
+                  gateway-namespace: {{ include "modelharness.namespace" . | quote }}
     {{- end }}
 {{- end }}
 {{- end }}
