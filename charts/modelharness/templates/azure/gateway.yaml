@@ -2,13 +2,20 @@
 {{- if not .Values.azure.defaultDomain.zoneName }}
 {{- fail "cloudprovider=\"azure\" requires azure.defaultDomain.zoneName. Fetch with: az aks show -g $RG -n $CLUSTER --query 'ingressProfile.webAppRouting.defaultDomain.domainName' -o tsv" }}
 {{- end }}
-# Gateway with an Azure App-Routing default-domain HTTPS listener
-# alongside the standard HTTP listener. Rendered only when
-# `cloudprovider=azure`; the non-Azure sibling `templates/gateway.yaml`
-# (HTTP only) renders otherwise. Kept as a separate file (rather
-# than an inline conditional in the shared Gateway spec) so the two
-# variants can evolve independently and it's obvious at a glance
-# which cloud a given cluster is running.
+# Gateway with an Azure App-Routing default-domain HTTPS listener.
+# Rendered only when `cloudprovider=azure`; the non-Azure sibling
+# `templates/gateway.yaml` (HTTP only) renders otherwise. Kept as a
+# separate file (rather than an inline conditional in the shared
+# Gateway spec) so the two variants can evolve independently and it's
+# obvious at a glance which cloud a given cluster is running.
+#
+# HTTPS-only by design: the Azure Gateway is fronted by a public
+# LoadBalancer, and `auth.enabled` makes every request carry a bearer
+# credential (an Entra ID token under `auth.mode` azure/hybrid, or an
+# `sk-` API key under apikey/hybrid). A plaintext listener on a public
+# address would expose those credentials in transit, so no HTTP
+# listener is rendered here and `gatewayPort` applies to the non-cloud
+# variant only.
 #
 # Hostname on the HTTPS listener is composed as
 # `<workload-namespace>.<zoneName>` so every modelharness release
@@ -35,9 +42,6 @@ metadata:
 spec:
   gatewayClassName: {{ .Values.gatewayClassName }}
   listeners:
-    - name: http
-      port: {{ .Values.gatewayPort }}
-      protocol: HTTP
     - name: {{ .Values.azure.defaultDomain.listenerName | quote }}
       port: {{ .Values.azure.defaultDomain.httpsPort }}
       protocol: HTTPS

@@ -39,7 +39,9 @@ serviceAccount:
 # follows Istio's "<gatewayName>-istio" convention.
 gatewayName: ""
 
-# gatewayPort is the HTTP listener port on the Gateway.
+# gatewayPort is the HTTP listener port on the Gateway. Applies to the
+# non-cloud Gateway only: under `cloudprovider=azure` the Gateway is
+# HTTPS-only (see templates/azure/gateway.yaml) and this value is unused.
 gatewayPort: 80
 
 # gatewayClassName is the GatewayClass the per-namespace Gateway binds
