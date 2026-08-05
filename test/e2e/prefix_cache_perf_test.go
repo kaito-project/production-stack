@@ -53,7 +53,8 @@ import (
 //   - Prefix-cache effectiveness: aggregate hit ratio (Δvllm:prefix_cache_hits /
 //     Δvllm:prefix_cache_queries) >= 0.80 once shared prefixes are warm,
 //     cross-checked against EPP's own inference_extension_prefix_indexer_hit_ratio
-//     (an independent, router-side view of the same property).
+//     when the EPP build exports it (an independent, router-side view of the
+//     same property).
 //   - KV-cache / queue signal: vllm:kv_cache_usage_perc and
 //     vllm:num_requests_waiting are asserted to be exported (so the
 //     kv-cache-utilization-scorer and queue-scorer have signal) and within
@@ -80,6 +81,11 @@ const (
 	perfMeasuredRounds = 6
 	// perfConcurrency is the number of sessions replayed in parallel.
 	perfConcurrency = 8
+
+	// perfStickyMeasuredRequests is the number of identical requests used to
+	// measure one prefix. Ten samples let the 70% target map exactly to 7/10;
+	// reusing perfMeasuredRounds=6 would accidentally require 5/6 (83.3%).
+	perfStickyMeasuredRequests = 10
 
 	// perfStickyConcentrationTarget is the minimum share of a single prefix's
 	// requests that must land on one backend pod. It is deliberately below
@@ -268,6 +274,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 				hitsDeltaSum       float64
 				queriesDeltaSum    float64
 				maxIndexerHitRatio float64
+				indexerMetricPods  int
 			)
 
 			forEachUsableShard(func(sessions []utils.ReplaySession) {
@@ -294,9 +301,10 @@ var _ = Describe("Prefix Cache Routing Perf",
 				// the two confirms EPP believed it routed to a warm pod AND the
 				// backend confirms the block was resident. Keep the best value
 				// observed across shards (measured over each shard's warm rounds).
-				indexerRatio, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
+				indexerRatio, present, err := utils.ScrapeEPPMetricWithPresence(ctx, clientset, model, caseNamespace,
 					"inference_extension_prefix_indexer_hit_ratio", nil)
 				Expect(err).NotTo(HaveOccurred())
+				indexerMetricPods += present
 				if indexerRatio > maxIndexerHitRatio {
 					maxIndexerHitRatio = indexerRatio
 				}
@@ -333,11 +341,14 @@ var _ = Describe("Prefix Cache Routing Perf",
 				ratio, prefixCacheHitRatioTarget, hitsDeltaSum, queriesDeltaSum)
 
 			By("cross-checking EPP's own prefix-indexer hit ratio (independent of the vllm counters)")
-			GinkgoWriter.Printf("[perf] inference_extension_prefix_indexer_hit_ratio (max across shards) = %.4f\n", maxIndexerHitRatio)
-			Expect(maxIndexerHitRatio).To(BeNumerically(">", 0),
-				"EPP's inference_extension_prefix_indexer_hit_ratio stayed 0 under shared-prefix load — the prefix-cache-scorer's "+
-					"indexer registered no prefix matches (or the metric is not exported by this EPP build); the vllm-side ratio was %.3f",
-				ratio)
+			if indexerMetricPods == 0 {
+				GinkgoWriter.Printf("[perf] EPP does not export inference_extension_prefix_indexer_hit_ratio; skipping router-side cross-check\n")
+			} else {
+				GinkgoWriter.Printf("[perf] inference_extension_prefix_indexer_hit_ratio (max across shards) = %.4f\n", maxIndexerHitRatio)
+				Expect(maxIndexerHitRatio).To(BeNumerically(">", 0),
+					"EPP's inference_extension_prefix_indexer_hit_ratio stayed 0 under shared-prefix load — the prefix-cache-scorer's "+
+						"indexer registered no prefix matches; the vllm-side ratio was %.3f", ratio)
+			}
 
 			By("asserting KV-cache utilization is exported and a valid ratio")
 			kvUsage, kvPresent, err := utils.ScrapeModelMetricWithPresence(ctx, clientset, caseNamespace, model, "vllm:kv_cache_usage_perc")
@@ -423,14 +434,29 @@ var _ = Describe("Prefix Cache Routing Perf",
 			Expect(err).NotTo(HaveOccurred())
 
 			forEachUsableShard(func(sessions []utils.ReplaySession) {
-				// Prime every prefix in this shard once under concurrent load so
-				// the sticky pod for each is established (and first-touch cold
-				// misses don't count against the concentration measurement
-				// below).
-				warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, sessions, perfConcurrency, false)
+				// Measure one exact prompt per session. Replaying a whole multi-turn
+				// session would aggregate several distinct cumulative prompts and
+				// could look evenly distributed even when each prompt is sticky.
+				// Use the first loader-approved turn because it is above the cache
+				// block floor and avoids later turns near the context limit.
+				prefixes := make([]utils.ReplaySession, 0, len(sessions))
+				for _, session := range sessions {
+					if len(session.Turns) == 0 {
+						continue
+					}
+					prefixes = append(prefixes, utils.ReplaySession{
+						SessionID: session.SessionID,
+						Turns:     [][]utils.ChatMessage{session.Turns[0]},
+						PreGaps:   []float64{0},
+					})
+				}
+
+				// Prime every selected prefix once under concurrent load so the
+				// sticky pod for each is established.
+				warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, prefixes, perfConcurrency, false)
 				Expect(warm.Errors5xx).To(BeNumerically("==", 0), "priming produced 5xx: %+v", warm)
 
-				for _, s := range sessions {
+				for _, s := range prefixes {
 					By(fmt.Sprintf("measuring routing concentration for session %s", s.SessionID))
 
 					before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
@@ -440,7 +466,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 					// the per-pod request delta reflects the routing *decision*
 					// for a single warm prefix rather than worker interleaving.
 					single := []utils.ReplaySession{s}
-					stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(single, perfMeasuredRounds), 1, false)
+					stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(single, perfStickyMeasuredRequests), 1, false)
 					Expect(stats.Errors5xx).To(BeNumerically("==", 0), "sticky run produced 5xx: %+v", stats)
 
 					after, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)

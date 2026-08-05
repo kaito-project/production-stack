@@ -87,7 +87,7 @@ The spec has three `It`s:
 
 1. **Load + cache effectiveness** — replays the fixture under concurrency and asserts hit ratio ≥ 80%, zero 5xx / transport errors, ≤ 10% 429/503, and that `vllm:kv_cache_usage_perc` / `vllm:num_requests_waiting` are exported and in-bounds.
 2. **A/B benefit** — shared-prefix load must yield a higher cache-hit ratio than genuinely unique-prefix load (per-request nonce at block 0).
-3. **Sticky routing concentration** — replays each prefix in isolation (after a concurrent priming pass) and asserts one pod serves ≥ 70% of that prefix's requests (`perfStickyConcentrationTarget`). The threshold is below 100% because the queue / kv-cache scorers can legitimately spill some requests under load.
+3. **Sticky routing concentration** — selects one exact, loader-approved turn per session, primes those prefixes concurrently, then repeats each identical turn in isolation and asserts one pod serves ≥ 70% of its requests (`perfStickyConcentrationTarget`). The threshold is below 100% because the queue / kv-cache scorers can legitimately spill some requests under load.
 
 ```bash
 # Convenience target (serial, 90m timeout):
@@ -126,7 +126,7 @@ The spec scrapes Prometheus metrics from every shadow pod (backend) and from the
 
 | Metric | Used for | Assertion |
 | --- | --- | --- |
-| `inference_extension_prefix_indexer_hit_ratio` | independent cross-check of the prefix indexer's hit ratio (from EPP's longest-prefix-match decisions, not the vLLM counters) | max across shards `> 0` |
+| `inference_extension_prefix_indexer_hit_ratio` | independent cross-check of the prefix indexer's hit ratio (from EPP's longest-prefix-match decisions, not the vLLM counters) | when exported by the EPP build, max across shards `> 0`; otherwise the cross-check is skipped and logged |
 
 The replay also buckets **HTTP response codes** (outcome tallies, not Prometheus metrics): 2xx are successes, aggregate **5xx must be 0**, and **429/503** load-shed responses must stay `≤ 10%` of total requests. 400s (e.g. context overflow) are content errors excluded from the load-shed budget — over-length turns are already dropped at load time.
 
