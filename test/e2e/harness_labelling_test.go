@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -41,7 +42,7 @@ import (
 // These assertions run against the live objects the modelharness Helm
 // chart renders, so a regression in the labels helper (or an object
 // added without the common labels) is caught immediately.
-var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func() {
+var _ = Describe("ModelHarness Labelling", harness.GinkgoLabelInferenceSet, func() {
 	var (
 		ctx       context.Context
 		namespace string
@@ -56,12 +57,12 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 		// EnsureNamespace stamps the discovery label on the workload
 		// namespace and installs the harness with auth enabled, so this
 		// case exercises the ext-authz EnvoyFilter + APIKey objects too.
-		Expect(utils.EnsureNamespace(ctx, namespace, true)).To(Succeed())
+		Expect(harness.EnsureNamespace(ctx, namespace, true)).To(Succeed())
 	})
 
 	AfterEach(func() {
 		By("Uninstalling modelharness chart")
-		if err := utils.DeleteNamespace(ctx, namespace); err != nil {
+		if err := harness.DeleteNamespace(ctx, namespace); err != nil {
 			GinkgoWriter.Printf("Cleanup warning: %v\n", err)
 		}
 	})

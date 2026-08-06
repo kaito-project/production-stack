@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -63,7 +64,7 @@ const (
 	probeConnectTimeout = "5s"
 )
 
-var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func() {
+var _ = Describe("Network Policy", harness.GinkgoLabelNetworkPolicy, Ordered, func() {
 	var (
 		ctx          context.Context
 		clientset    *kubernetes.Clientset

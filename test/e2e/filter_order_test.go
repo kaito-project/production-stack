@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -59,7 +60,7 @@ import (
 //	auth-enabled so a single namespace exercises every filter in the
 //	chain.
 var _ = Describe("Filter execution order",
-	Ordered, utils.GinkgoLabelFilterOrder, utils.GinkgoLabelSmoke, func() {
+	Ordered, harness.GinkgoLabelFilterOrder, harness.GinkgoLabelSmoke, func() {
 
 		var (
 			ctx          context.Context

@@ -81,6 +81,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -126,7 +127,7 @@ var karpenterScenarios = []karpenterScenario{
 }
 
 func registerKarpenterScenario(s karpenterScenario) {
-	Describe("Karpenter GPU Provisioning "+s.description, utils.GinkgoLabelKarpenter, utils.GinkgoLabelNightly, utils.GinkgoLabelRouting, Ordered, func() {
+	Describe("Karpenter GPU Provisioning "+s.description, harness.GinkgoLabelKarpenter, harness.GinkgoLabelNightly, harness.GinkgoLabelRouting, Ordered, func() {
 		// caseDeployments and caseNamespace are derived from the static
 		// CaseDeployments table — safe to evaluate at tree-build time.
 		caseDeployments := CaseDeployments[s.caseName]

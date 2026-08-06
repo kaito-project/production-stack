@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -56,7 +57,7 @@ import (
 // namespace's request path, not any cluster-wide singleton, so the suite
 // is safe to run alongside other (non-overlapping) specs.
 var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
-	Ordered, utils.GinkgoLabelOutage, utils.GinkgoLabelNightly, func() {
+	Ordered, harness.GinkgoLabelOutage, harness.GinkgoLabelNightly, func() {
 
 		var (
 			ctx           context.Context

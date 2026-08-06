@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -50,7 +51,7 @@ import (
 //   - Catch-all `model-not-found-direct` EnvoyFilter (Envoy
 //     direct_response, rendered per-namespace by charts/modelharness)
 
-var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func() {
+var _ = Describe("Model-Based Routing", Ordered, harness.GinkgoLabelRouting, func() {
 	// Per-case deployments owned by model_routing_test.go (see cases.go).
 	// Installed in a dedicated namespace by BeforeAll so this case can run
 	// in parallel with other Ordered Describes.

@@ -28,6 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -157,7 +158,7 @@ func uniquePrefixSessions(sessions []utils.ReplaySession) []utils.ReplaySession 
 }
 
 var _ = Describe("Prefix Cache Routing Perf",
-	utils.GinkgoLabelPerf, utils.GinkgoLabelPrefixCache, Ordered, func() {
+	harness.GinkgoLabelPerf, harness.GinkgoLabelPrefixCache, Ordered, func() {
 
 		model := CaseDeployments[CasePrefixCachePerf][0].Name
 		caseNamespace := CaseNamespace(CasePrefixCachePerf)
@@ -271,7 +272,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 			GinkgoWriter.Printf("[perf] vllm:num_requests_waiting max across pods = %.0f\n", utils.MaxSnapshot(waiting))
 		})
 
-		It("shows shared-prefix load yields a higher cache-hit ratio than unique-prefix load", utils.GinkgoLabelPerf, func() {
+		It("shows shared-prefix load yields a higher cache-hit ratio than unique-prefix load", harness.GinkgoLabelPerf, func() {
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -308,7 +309,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 				sharedRatio, uniqueRatio)
 		})
 
-		It("concentrates each prefix's requests on a single pod (sticky routing under load)", utils.GinkgoLabelPerf, func() {
+		It("concentrates each prefix's requests on a single pod (sticky routing under load)", harness.GinkgoLabelPerf, func() {
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 

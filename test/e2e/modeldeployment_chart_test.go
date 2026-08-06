@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -66,7 +67,7 @@ func deleteNamespace(ctx context.Context, name string) {
 	}
 }
 
-var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() {
+var _ = Describe("ModelDeployment Chart", harness.GinkgoLabelInferenceSet, func() {
 	var ctx context.Context
 
 	BeforeEach(func() {

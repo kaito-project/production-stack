@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -61,15 +62,15 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 		UninstallCase(CaseGPUMocker)
 	})
 
-	Context("GPU Node Mocker", utils.GinkgoLabelSmoke, func() {
+	Context("GPU Node Mocker", harness.GinkgoLabelSmoke, func() {
 
-		Context("Framework validation", utils.GinkgoLabelSmoke, func() {
+		Context("Framework validation", harness.GinkgoLabelSmoke, func() {
 			It("should have the test framework properly initialised", func() {
 				Expect(true).To(BeTrue(), "framework sanity check")
 			})
 		})
 
-		Context("Gateway connectivity", utils.GinkgoLabelSmoke, func() {
+		Context("Gateway connectivity", harness.GinkgoLabelSmoke, func() {
 			It("should be reachable and return a response", func() {
 				// Retry with backoff — BBR/EPP ext_proc filters may need time
 				// to establish gRPC connections after cluster setup.
@@ -90,7 +91,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 		})
 	})
 
-	Context("InferenceSet and InferencePool lifecycle", utils.GinkgoLabelInfra, func() {
+	Context("InferenceSet and InferencePool lifecycle", harness.GinkgoLabelInfra, func() {
 
 		Context("InferenceSet lifecycle", func() {
 			It("should have EPP pods running for each InferencePool", func() {
@@ -201,7 +202,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 		})
 	})
 
-	Context("Fake node and shadow pod lifecycle", utils.GinkgoLabelInfra, func() {
+	Context("Fake node and shadow pod lifecycle", harness.GinkgoLabelInfra, func() {
 
 		Context("Fake nodes", func() {
 			It("should have fake nodes with correct labels", func() {
@@ -667,7 +668,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 		})
 	})
 
-	Context("Garbage collection", utils.GinkgoLabelInfra, func() {
+	Context("Garbage collection", harness.GinkgoLabelInfra, func() {
 
 		Context("Fake node GC", func() {
 			It("should delete orphaned fake nodes and leases when the NodeClaim is removed", func() {
@@ -837,7 +838,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 		})
 	})
 
-	Context("Unknown model handling", utils.GinkgoLabelRouting, func() {
+	Context("Unknown model handling", harness.GinkgoLabelRouting, func() {
 
 		Context("Non-existent model request", func() {
 			It("should return 404 with an OpenAI-compatible error for an unknown model", func() {

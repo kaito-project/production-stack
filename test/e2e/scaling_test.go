@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -65,7 +66,7 @@ const (
 )
 
 var _ = Describe("InferenceSet Scaling — Infra",
-	Ordered, utils.GinkgoLabelScaling, utils.GinkgoLabelNightly, func() {
+	Ordered, harness.GinkgoLabelScaling, harness.GinkgoLabelNightly, func() {
 
 		// Per-case deployment owned by scaling_test.go (see cases.go).
 		// Resolved as Describe-local values so the table lookup happens

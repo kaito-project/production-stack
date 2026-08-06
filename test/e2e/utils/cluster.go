@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -51,16 +50,22 @@ func NewCluster(s *runtime.Scheme) *Cluster {
 
 // GetClusterClient initialises the cluster KubeClient from the current
 // kubeconfig (in-cluster or ~/.kube/config).
-func GetClusterClient(cluster *Cluster) {
+func GetClusterClient(cluster *Cluster) error {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(corev1.AddToScheme(scheme))
 
-	restConfig := config.GetConfigOrDie()
+	restConfig, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load kubeconfig: %w", err)
+	}
 
 	k8sClient, err := client.New(restConfig, client.Options{Scheme: cluster.Scheme})
-	gomega.Expect(err).Should(gomega.Succeed(), "Failed to set up Kube Client")
+	if err != nil {
+		return fmt.Errorf("failed to set up Kube Client: %w", err)
+	}
 
 	cluster.KubeClient = k8sClient
+	return nil
 }
 
 // ScaleDeployment sets the named Deployment's replica count via the scale

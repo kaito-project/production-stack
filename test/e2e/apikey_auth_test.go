@@ -25,10 +25,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
-var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils.GinkgoLabelSmoke, func() {
+var _ = Describe("API Key Authentication", Ordered, harness.GinkgoLabelAuth, harness.GinkgoLabelSmoke, func() {
 	// CaseAuth deployment — AuthAPIKeyEnabled=true causes EnsureNamespace
 	// to provision the per-namespace AuthorizationPolicy and APIKey CR
 	// (the cluster-wide MeshConfig provider is installed once by the

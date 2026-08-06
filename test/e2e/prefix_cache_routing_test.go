@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -60,7 +61,7 @@ import (
 //   - KAITO InferenceSet with 2+ replicas (shadow pods running llm-d-inference-sim)
 //   - llm-d-inference-sim configured with enable-kvcache: true
 
-var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixCache, func() {
+var _ = Describe("Prefix Cache Aware Routing", Ordered, harness.GinkgoLabelPrefixCache, func() {
 	// Per-case deployment owned by prefix_cache_routing_test.go (see cases.go).
 	// A single deployment with replicas≥2 is sufficient for prefix-cache tests.
 	// Installed in a dedicated namespace by BeforeAll so this case can run in
@@ -256,7 +257,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 		})
 	})
 
-	Context("Pod deletion fallback", utils.GinkgoLabelNightly, func() {
+	Context("Pod deletion fallback", harness.GinkgoLabelNightly, func() {
 		// ~590 chars ≈ ~9 full 16-token blocks; see file-level comment for
 		// the prompt-length rationale.
 		const prompt = "Outline the major scientific revolutions of the twentieth century in chronological order. " +

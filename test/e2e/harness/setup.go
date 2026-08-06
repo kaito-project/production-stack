@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package utils
+package harness
 
 import (
 	"context"
@@ -25,6 +25,8 @@ import (
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/kaito-project/production-stack/test/e2e/utils"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -51,8 +53,10 @@ import (
 // Safe to call repeatedly; the underlying `helm upgrade --install` and
 // namespace Create are both idempotent.
 func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
-	GetClusterClient(TestingCluster)
-	cl := TestingCluster.KubeClient
+	if err := utils.GetClusterClient(utils.TestingCluster); err != nil {
+		return err
+	}
+	cl := utils.TestingCluster.KubeClient
 	// Stamp the namespace-discovery label the productionstack-status-reporter
 	// selects on. modelharness is installed directly into the workload
 	// namespace (release namespace == workload namespace), so Helm owns the
@@ -72,7 +76,7 @@ func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
 		return fmt.Errorf("create namespace %s: %w", name, err)
 	}
 
-	if err := InstallModelHarness(name, authEnabled); err != nil {
+	if err := utils.InstallModelHarness(name, authEnabled); err != nil {
 		return fmt.Errorf("install modelharness in %s: %w", name, err)
 	}
 
@@ -87,10 +91,12 @@ func DeleteNamespace(ctx context.Context, name string) error {
 	// before the namespace is gone, so subsequent EnsurePortForwards()
 	// healthchecks don't try to restart a forward against a vanished
 	// namespace (which surfaces as a 90s readiness timeout).
-	RemovePortForwardsForNamespace(name)
-	GetClusterClient(TestingCluster)
-	cl := TestingCluster.KubeClient
-	if err := UninstallModelHarness(name); err != nil {
+	utils.RemovePortForwardsForNamespace(name)
+	if err := utils.GetClusterClient(utils.TestingCluster); err != nil {
+		return err
+	}
+	cl := utils.TestingCluster.KubeClient
+	if err := utils.UninstallModelHarness(name); err != nil {
 		return fmt.Errorf("uninstall modelharness from %s: %w", name, err)
 	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
@@ -109,16 +115,18 @@ func DeleteNamespace(ctx context.Context, name string) error {
 // with no Ready endpoints hangs until those endpoints appear, which
 // causes the 30s port-forward readiness probe to time out.
 func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, timeout time.Duration) error {
-	GetClusterClient(TestingCluster)
-	cl := TestingCluster.KubeClient
-	clientset, err := GetK8sClientset()
+	if err := utils.GetClusterClient(utils.TestingCluster); err != nil {
+		return err
+	}
+	cl := utils.TestingCluster.KubeClient
+	clientset, err := utils.GetK8sClientset()
 	if err != nil {
 		return fmt.Errorf("init clientset: %w", err)
 	}
 
 	deadline := time.Now().Add(timeout)
 	svc := &corev1.Service{}
-	svcKey := types.NamespacedName{Namespace: namespace, Name: IstioGatewayServiceName(gatewayName)}
+	svcKey := types.NamespacedName{Namespace: namespace, Name: utils.IstioGatewayServiceName(gatewayName)}
 	podSelector := fmt.Sprintf("gateway.networking.k8s.io/gateway-name=%s", gatewayName)
 
 	for time.Now().Before(deadline) {
@@ -164,14 +172,14 @@ func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, t
 //   - namespace: target namespace for entries whose Namespace is unset.
 //   - gatewayURL: if non-empty, performs a warm-up request loop per
 //     deployment to wait for the BBR → EPP ext_proc pipeline to be ready.
-func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespace, gatewayURL string) {
+func SetupInferenceSetsWithRouting(deployments []utils.ModelDeploymentValues, namespace, gatewayURL string) {
 	ctx := context.Background()
-	GetClusterClient(TestingCluster)
+	Expect(utils.GetClusterClient(utils.TestingCluster)).To(Succeed())
 
-	cl := TestingCluster.KubeClient
+	cl := utils.TestingCluster.KubeClient
 
 	// Apply namespace default eagerly so subsequent waits use the correct ns.
-	resolved := make([]ModelDeploymentValues, len(deployments))
+	resolved := make([]utils.ModelDeploymentValues, len(deployments))
 	for i, d := range deployments {
 		if d.Namespace == "" {
 			d.Namespace = namespace
@@ -181,22 +189,22 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 
 	for _, d := range resolved {
 		By(fmt.Sprintf("Installing modeldeployment chart %s (model=%s) in %s", d.Name, d.Model, d.Namespace))
-		Expect(InstallModelDeployment(d)).To(Succeed(),
+		Expect(utils.InstallModelDeployment(d)).To(Succeed(),
 			"failed to install modeldeployment chart for %s", d.Name)
 
 		By(fmt.Sprintf("Waiting for InferencePool for %s", d.Name))
-		Expect(WaitForInferenceSetReady(ctx, cl, d.Name, d.Namespace, InferenceSetReadyTimeout)).
+		Expect(utils.WaitForInferenceSetReady(ctx, cl, d.Name, d.Namespace, utils.InferenceSetReadyTimeout)).
 			To(Succeed(), "InferenceSet %s not ready", d.Name)
 	}
 
 	// Wait for KAITO + the chart-rendered EPP Deployment to fully reconcile:
 	// EPP pods, fake nodes, shadow pods, and original pod status patching
 	// must all complete before the gateway can route traffic.
-	clientset, err := GetK8sClientset()
+	clientset, err := utils.GetK8sClientset()
 	Expect(err).NotTo(HaveOccurred())
 
 	for _, d := range resolved {
-		eppName := EPPServiceName(d.Name)
+		eppName := utils.EPPServiceName(d.Name)
 		By(fmt.Sprintf("Waiting for EPP pods for %s to be Running", d.Name))
 		Eventually(func() error {
 			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
@@ -246,7 +254,7 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 				}
 			}
 			return nil
-		}, InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),
+		}, utils.InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),
 			"inference pods for %s should be Running with PodIPs", d.Name)
 	}
 
@@ -272,10 +280,10 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 			if d.AuthAPIKeyEnabled {
 				By(fmt.Sprintf("Waiting for API key Secret in %s for deployment %s", d.Namespace, d.Name))
 				Eventually(func() (string, error) {
-					return GetAPIKeyFromSecret(ctx, d.Namespace)
+					return utils.GetAPIKeyFromSecret(ctx, d.Namespace)
 				}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
 					"API key Secret should be created in %s", d.Namespace)
-				key, err := GetAPIKeyFromSecret(ctx, d.Namespace)
+				key, err := utils.GetAPIKeyFromSecret(ctx, d.Namespace)
 				Expect(err).NotTo(HaveOccurred())
 				bearerToken = key
 				hostHeader = d.Namespace + ".gw.example.com"
@@ -303,26 +311,26 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 					// rotated (the operator regenerates the Secret if its
 					// KEYID drifts from the APIKey CR — see operator
 					// "Secret not found, will regenerate" reconciles).
-					freshKey, kerr := GetAPIKeyFromSecret(ctx, d.Namespace)
+					freshKey, kerr := utils.GetAPIKeyFromSecret(ctx, d.Namespace)
 					if kerr != nil {
 						return fmt.Errorf("re-read API key for %s: %w", d.Namespace, kerr)
 					}
 					bearerToken = freshKey
-					resp, err = SendChatCompletionWithAuth(gatewayURL, d.Name, "hello", bearerToken, hostHeader)
+					resp, err = utils.SendChatCompletionWithAuth(gatewayURL, d.Name, "hello", bearerToken, hostHeader)
 				} else {
-					resp, err = SendChatCompletion(gatewayURL, d.Name)
+					resp, err = utils.SendChatCompletion(gatewayURL, d.Name)
 				}
 				if err != nil {
 					return fmt.Errorf("request failed: %w", err)
 				}
 				defer resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {
-					body, _ := ReadResponseBody(resp)
+					body, _ := utils.ReadResponseBody(resp)
 					return fmt.Errorf("expected 200, got %d (ns=%s deployment=%s host=%q authEnabled=%v): %s",
 						resp.StatusCode, d.Namespace, d.Name, hostHeader, d.AuthAPIKeyEnabled, string(body))
 				}
 				return nil
-			}, InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),
+			}, utils.InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),
 				"gateway should route to deployment %s successfully", d.Name)
 		}
 	}
@@ -332,14 +340,14 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 // releases for every deployment, removing the InferenceSets, InferencePools,
 // EPP artifacts, and HTTPRoutes. Entries with an empty Namespace fall back
 // to the supplied namespace argument.
-func TeardownInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespace string) {
+func TeardownInferenceSetsWithRouting(deployments []utils.ModelDeploymentValues, namespace string) {
 	for _, d := range deployments {
 		ns := d.Namespace
 		if ns == "" {
 			ns = namespace
 		}
 		By(fmt.Sprintf("Uninstalling modeldeployment chart for %s in %s", d.Name, ns))
-		if err := UninstallModelDeployment(d.Name, ns); err != nil {
+		if err := utils.UninstallModelDeployment(d.Name, ns); err != nil {
 			GinkgoWriter.Printf("Cleanup warning for %s: %v\n", d.Name, err)
 		}
 	}

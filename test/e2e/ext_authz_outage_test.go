@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -59,7 +60,7 @@ import (
 // authenticated request, so this suite must not run concurrently with any
 // other spec.
 var _ = Describe("ext_authz outage (fail-closed cluster filter)",
-	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelAuth, func() {
+	Ordered, Serial, harness.GinkgoLabelOutage, harness.GinkgoLabelAuth, func() {
 
 		const (
 			authNamespace      = "llm-gateway-auth"

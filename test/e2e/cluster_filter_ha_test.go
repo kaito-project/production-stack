@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -59,7 +60,7 @@ import (
 // It is intentionally NOT asserted here; the all-replicas-down case below
 // asserts only that the request fails closed (5xx, never a silent 404).
 var _ = Describe("BBR cluster-filter HA",
-	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelSmoke, func() {
+	Ordered, Serial, harness.GinkgoLabelOutage, harness.GinkgoLabelSmoke, func() {
 
 		const (
 			bbrNamespace  = "kaito-system"

@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -460,16 +461,16 @@ func InstallCase(caseName string) string {
 
 	ctx := context.Background()
 	first := CaseDeployments[caseName][0]
-	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled)).To(Succeed(),
+	Expect(harness.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled)).To(Succeed(),
 		"failed to ensure namespace %s for case %s", ns, caseName)
 
-	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
+	Expect(harness.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
 		To(Succeed(), "gateway service for %s did not appear", caseName)
 
 	gatewayURL, err := utils.GetGatewayURLFor(ns, gatewayName)
 	Expect(err).NotTo(HaveOccurred(), "failed to resolve gateway URL for case %s", caseName)
 
-	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gatewayURL)
+	harness.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gatewayURL)
 	return gatewayURL
 }
 
@@ -483,8 +484,8 @@ func UninstallCase(caseName string) {
 		return
 	}
 	ns := deployments[0].Namespace
-	utils.TeardownInferenceSetsWithRouting(deployments, ns)
-	if err := utils.DeleteNamespace(context.Background(), ns); err != nil {
+	harness.TeardownInferenceSetsWithRouting(deployments, ns)
+	if err := harness.DeleteNamespace(context.Background(), ns); err != nil {
 		GinkgoWriter.Printf("Cleanup warning: %v\n", err)
 	}
 }

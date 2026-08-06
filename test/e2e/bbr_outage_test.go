@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/harness"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -54,7 +55,7 @@ import (
 // the mesh. Scaling it to zero breaks every other in-flight inference
 // request, so this suite must not run concurrently with any other spec.
 var _ = Describe("BBR outage (fail-closed cluster filter)",
-	Ordered, Serial, utils.GinkgoLabelOutage, func() {
+	Ordered, Serial, harness.GinkgoLabelOutage, func() {
 
 		const (
 			bbrNamespace      = "kaito-system"
