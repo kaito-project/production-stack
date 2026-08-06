@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kaito-project/kaito/pkg/sku"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -98,19 +99,54 @@ func TestControllerName(t *testing.T) {
 }
 
 func TestNodeCapacity(t *testing.T) {
-	cap := nodeCapacity()
-	if cap.Cpu().Cmp(resource.MustParse("4")) != 0 {
-		t.Errorf("CPU = %s, want 4", cap.Cpu().String())
+	azure := sku.NewAzureSKUHandler()
+	aws := sku.NewAwsSKUHandler()
+	tests := []struct {
+		name         string
+		handler      sku.CloudSKUHandler
+		instanceType string
+		wantGPU      string
+	}{
+		{name: "nil handler falls back to 1 GPU", handler: nil, instanceType: "Standard_NC48ads_A100_v4", wantGPU: "1"},
+		{name: "azure: empty SKU falls back to 1 GPU", handler: azure, instanceType: "", wantGPU: "1"},
+		{name: "azure: unknown SKU falls back to 1 GPU", handler: azure, instanceType: "p4d.24xlarge", wantGPU: "1"},
+		{name: "azure: single-GPU A100 SKU", handler: azure, instanceType: "Standard_NC24ads_A100_v4", wantGPU: "1"},
+		{name: "azure: 2-GPU A100 SKU", handler: azure, instanceType: "Standard_NC48ads_A100_v4", wantGPU: "2"},
+		{name: "azure: 4-GPU A100 SKU", handler: azure, instanceType: "Standard_NC96ads_A100_v4", wantGPU: "4"},
+		{name: "azure: 8-GPU H100 SKU", handler: azure, instanceType: "Standard_ND96isr_H100_v5", wantGPU: "8"},
+		{name: "aws: 8-GPU A100 SKU", handler: aws, instanceType: "p4d.24xlarge", wantGPU: "8"},
+		{name: "aws: rejects Azure SKU", handler: aws, instanceType: "Standard_NC48ads_A100_v4", wantGPU: "1"},
 	}
-	if cap.Memory().Cmp(resource.MustParse("16Gi")) != 0 {
-		t.Errorf("Mem = %s, want 16Gi", cap.Memory().String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cap := nodeCapacity(tt.handler, tt.instanceType)
+			if cap.Cpu().Cmp(resource.MustParse("4")) != 0 {
+				t.Errorf("CPU = %s, want 4", cap.Cpu().String())
+			}
+			if cap.Memory().Cmp(resource.MustParse("16Gi")) != 0 {
+				t.Errorf("Mem = %s, want 16Gi", cap.Memory().String())
+			}
+			if cap.Pods().Cmp(resource.MustParse("110")) != 0 {
+				t.Errorf("Pods = %s, want 110", cap.Pods().String())
+			}
+			gpuVal := cap[corev1.ResourceName("nvidia.com/gpu")]
+			if gpuVal.Cmp(resource.MustParse(tt.wantGPU)) != 0 {
+				t.Errorf("GPU = %s, want %s", gpuVal.String(), tt.wantGPU)
+			}
+		})
 	}
-	gpuVal := cap[corev1.ResourceName("nvidia.com/gpu")]
-	if gpuVal.Cmp(resource.MustParse("1")) != 0 {
-		t.Errorf("GPU = %s, want 1", gpuVal.String())
+}
+
+func TestInstanceTypeFromNodeClaim(t *testing.T) {
+	nc := &karpenterv1.NodeClaim{}
+	if got := instanceTypeFromNodeClaim(nc); got != "" {
+		t.Errorf("empty requirements: got %q, want \"\"", got)
 	}
-	if cap.Pods().Cmp(resource.MustParse("110")) != 0 {
-		t.Errorf("Pods = %s, want 110", cap.Pods().String())
+	nc.Spec.Requirements = []karpenterv1.NodeSelectorRequirementWithMinValues{
+		{Key: "node.kubernetes.io/instance-type", Operator: "In", Values: []string{"Standard_NC48ads_A100_v4"}},
+	}
+	if got := instanceTypeFromNodeClaim(nc); got != "Standard_NC48ads_A100_v4" {
+		t.Errorf("got %q", got)
 	}
 }
 

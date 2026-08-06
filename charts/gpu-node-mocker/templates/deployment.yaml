@@ -76,6 +76,7 @@ spec:
             - --node-class-version={{ .Values.nodeClass.version }}
             - --node-class-kind={{ .Values.nodeClass.kind }}
             - --node-class-resource={{ .Values.nodeClass.resource }}
+            - --cloud-provider={{ .Values.cloudProvider }}
           ports:
             - name: metrics
               containerPort: 8080

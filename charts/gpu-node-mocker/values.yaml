@@ -47,6 +47,12 @@ shadowPod:
 # Must match KAITO's --node-provisioner value: azure-gpu-provisioner or karpenter.
 nodeProvisioner: karpenter
 
+# cloudProvider selects the KAITO SKU catalog used to size each fake node's
+# nvidia.com/gpu capacity. Valid values: "azure", "aws", "arc". Set to "" to
+# disable the lookup and advertise 1 GPU on every fake node regardless of the
+# NodeClaim's node.kubernetes.io/instance-type requirement.
+cloudProvider: azure
+
 # nodeClass selects the karpenter NodeClass kind the mocker reconciles (and
 # discovery-checks at startup) in karpenter mode. The default mock node class
 # lives in the karpenter.kaito.sh group, which a real Karpenter provider does

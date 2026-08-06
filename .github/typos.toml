@@ -3,6 +3,9 @@ Ded = "Ded"
 rsource = "rsource"
 AKS = "AKS"
 stopp = "stopp"
+# "ND" is the Azure GPU VM family prefix (ND96isr, ND96asr, ND96amsr, …)
+# and is otherwise corrected to "AND" by the default typos dictionary.
+ND = "ND"
 
 [default.extend-identifiers]
 ObjectCreater = "ObjectCreater"
