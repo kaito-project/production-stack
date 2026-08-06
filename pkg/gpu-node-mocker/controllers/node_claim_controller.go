@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/awslabs/operatorpkg/status"
+	"github.com/kaito-project/kaito/pkg/sku"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -69,6 +70,11 @@ type NodeClaimReconciler struct {
 	// (used by the azure-gpu-provisioner mode where no other provisioner runs).
 	NodeClassFilter *NodeClassRef
 
+	// SKUHandler is the KAITO cloud SKU catalog used by nodeCapacity to size
+	// the fake node's nvidia.com/gpu. Resolved from Config.CloudProvider in
+	// SetupWithManager; nil means "no lookup, every fake node gets 1 GPU".
+	SKUHandler sku.CloudSKUHandler
+
 	// mu protects cancelFuncs.
 	mu          sync.Mutex
 	cancelFuncs map[string]context.CancelFunc // key = node name
@@ -77,6 +83,14 @@ type NodeClaimReconciler struct {
 // SetupWithManager registers the controller and initialises internal state.
 func (r *NodeClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.cancelFuncs = make(map[string]context.CancelFunc)
+	if r.SKUHandler == nil && r.Config.CloudProvider != "" {
+		h := sku.GetCloudSKUHandler(r.Config.CloudProvider)
+		if h == nil {
+			return fmt.Errorf("unsupported cloud provider %q; valid values: %q, %q, %q",
+				r.Config.CloudProvider, CloudProviderAzure, CloudProviderAWS, CloudProviderArc)
+		}
+		r.SKUHandler = h
+	}
 	b := ctrl.NewControllerManagedBy(mgr)
 	if r.NodeClassFilter != nil {
 		nodeClassPred := predicate.NewPredicateFuncs(func(obj client.Object) bool {
@@ -246,12 +260,10 @@ func (r *NodeClaimReconciler) ensureFakeNode(ctx context.Context, nc *karpenterv
 	}
 	// Get instance type from NodeClaim requirements so KAITO's
 	// node readiness check can match the workspace instanceType.
-	for _, req := range nc.Spec.Requirements {
-		if req.Key == "node.kubernetes.io/instance-type" && len(req.Values) > 0 {
-			labels["node.kubernetes.io/instance-type"] = req.Values[0]
-			labels["beta.kubernetes.io/instance-type"] = req.Values[0]
-			break
-		}
+	instanceType := instanceTypeFromNodeClaim(nc)
+	if instanceType != "" {
+		labels["node.kubernetes.io/instance-type"] = instanceType
+		labels["beta.kubernetes.io/instance-type"] = instanceType
 	}
 	for k, v := range nc.Labels {
 		labels[k] = v
@@ -302,7 +314,7 @@ func (r *NodeClaimReconciler) ensureNodeReady(ctx context.Context, node *corev1.
 	}
 
 	now := metav1.Now()
-	capacity := nodeCapacity()
+	capacity := nodeCapacity(r.SKUHandler, instanceTypeFromNodeClaim(nc))
 
 	patch := client.MergeFrom(node.DeepCopy())
 	node.Status = corev1.NodeStatus{
@@ -351,7 +363,7 @@ func (r *NodeClaimReconciler) ensureNodeClaimReady(ctx context.Context, nc *karp
 	}
 
 	now := metav1.Now()
-	capacity := nodeCapacity()
+	capacity := nodeCapacity(r.SKUHandler, instanceTypeFromNodeClaim(nc))
 
 	patch := client.MergeFrom(nc.DeepCopy())
 	nc.Status.NodeName = nodeName
@@ -545,18 +557,36 @@ func controllerName(nodeName string) string {
 	return ControllerName + "/" + nodeName
 }
 
-// nodeCapacity returns a fixed ResourceList with enough capacity for the
-// scheduler to place KAITO inference pods on the fake node.
-// The exact values don't matter — no real workload runs here
-// Phase 2 redirects pods to shadow pods on real nodes.
-// KAITO only populates spec.resources.requests with storage so CPU/memory/GPU are hardcoded.
-func nodeCapacity() corev1.ResourceList {
+// nodeCapacity returns a ResourceList sized to place KAITO inference pods on
+// the fake node. CPU/memory/pods are fixed (KAITO only populates
+// spec.resources.requests with storage), while nvidia.com/gpu is derived from
+// the instance-type SKU via the supplied KAITO catalog so a 2- or 8-GPU SKU
+// advertises its real GPU count. A nil handler or unknown SKU falls back to
+// 1 GPU.
+func nodeCapacity(skuHandler sku.CloudSKUHandler, instanceType string) corev1.ResourceList {
+	gpuCount := int64(1)
+	if skuHandler != nil && instanceType != "" {
+		if cfg := skuHandler.GetGPUConfigBySKU(instanceType); cfg != nil && cfg.GPUCount > 0 {
+			gpuCount = int64(cfg.GPUCount)
+		}
+	}
 	return corev1.ResourceList{
 		corev1.ResourceCPU:                    resource.MustParse("4"),
 		corev1.ResourceMemory:                 resource.MustParse("16Gi"),
 		corev1.ResourcePods:                   resource.MustParse("110"),
-		corev1.ResourceName("nvidia.com/gpu"): resource.MustParse("1"),
+		corev1.ResourceName("nvidia.com/gpu"): *resource.NewQuantity(gpuCount, resource.DecimalSI),
 	}
+}
+
+// instanceTypeFromNodeClaim returns the SKU string from the NodeClaim's
+// node.kubernetes.io/instance-type requirement, or "" if not set.
+func instanceTypeFromNodeClaim(nc *karpenterv1.NodeClaim) string {
+	for _, req := range nc.Spec.Requirements {
+		if req.Key == "node.kubernetes.io/instance-type" && len(req.Values) > 0 {
+			return req.Values[0]
+		}
+	}
+	return ""
 }
 
 // makeCondition constructs a NodeCondition with the given parameters.
