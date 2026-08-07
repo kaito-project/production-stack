@@ -38,20 +38,20 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 	// Per-case deployments owned by gpu_mocker_test.go (see cases.go).
 	// Installed in a dedicated namespace by BeforeAll so this case can
 	// run in parallel with other Ordered Describes.
+	//
+	// NOTE: the Smoke-labeled framework-init + gateway-connectivity
+	// checks that used to live here now run against their own dedicated
+	// (smaller) deployment in gpu_smoke_test.go / CaseGPUSmoke, backed by
+	// the reusable test/e2e/scenarios library — so `E2E_LABEL=Smoke`
+	// doesn't pay for this case's larger Infra/Routing setup, and this
+	// Describe's BeforeAll/AfterAll are untouched.
 	caseDeployments := CaseDeployments[CaseGPUMocker]
 	caseNamespace := CaseNamespace(CaseGPUMocker)
 	suiteDeployments := caseDeployments
-	falconModel := caseDeployments[0].Name
 
 	// caseGatewayURL is the URL routing into this case's dedicated
 	// Gateway. Resolved in BeforeAll.
 	var caseGatewayURL string
-
-	// sendChat forwards to the non-auth helper — the gpu-mocker case
-	// no longer enables the API-key AuthorizationPolicy (see cases.go).
-	sendChat := func(url, model string) (*http.Response, error) {
-		return utils.SendChatCompletion(url, model)
-	}
 
 	BeforeAll(func() {
 		caseGatewayURL = InstallCase(CaseGPUMocker)
@@ -59,35 +59,6 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 	AfterAll(func() {
 		UninstallCase(CaseGPUMocker)
-	})
-
-	Context("GPU Node Mocker", utils.GinkgoLabelSmoke, func() {
-
-		Context("Framework validation", utils.GinkgoLabelSmoke, func() {
-			It("should have the test framework properly initialised", func() {
-				Expect(true).To(BeTrue(), "framework sanity check")
-			})
-		})
-
-		Context("Gateway connectivity", utils.GinkgoLabelSmoke, func() {
-			It("should be reachable and return a response", func() {
-				// Retry with backoff — BBR/EPP ext_proc filters may need time
-				// to establish gRPC connections after cluster setup.
-				Eventually(func() error {
-					resp, err := sendChat(caseGatewayURL, falconModel)
-					if err != nil {
-						return fmt.Errorf("request failed: %w", err)
-					}
-					defer resp.Body.Close()
-					if resp.StatusCode != http.StatusOK {
-						body, _ := utils.ReadResponseBody(resp)
-						return fmt.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
-					}
-					return nil
-				}, 5*time.Minute, 10*time.Second).Should(Succeed(),
-					"case gateway should be reachable and return 200")
-			})
-		})
 	})
 
 	Context("InferenceSet and InferencePool lifecycle", utils.GinkgoLabelInfra, func() {
@@ -683,7 +654,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// label alone (kaito.sh/fake-node=true) can target a node that
 				// belongs to a different test case running in parallel — the
 				// subsequent NodeClaim deletion would then disrupt that case's
-				// pods (e.g. evicting a routing-phi inference pod) and surface
+				// pods (e.g. evicting a routing-gemma inference pod) and surface
 				// as flaky failures in unrelated specs (load distribution,
 				// shadow pod GC). Scoping the target to a node that hosts a
 				// pod in caseNamespace guarantees isolation between cases.

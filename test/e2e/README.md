@@ -8,15 +8,41 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 
 | Case key | Test file | Namespace | Gateway | Deployments | Lifecycle |
 | --- | --- | --- | --- | --- | --- |
-| `CaseGPUMocker` | `gpu_mocker_test.go` | `e2e-gpu-mocker` | `e2e-gpu-mocker-gw` | `gpu-mocker-phi` | `BeforeAll` / `AfterAll` |
-| `CaseModelRouting` | `model_routing_test.go` | `e2e-model-routing` | `e2e-model-routing-gw` | `routing-phi`, `routing-ministral` | `BeforeAll` / `AfterAll` |
-| `CasePrefixCache` | `prefix_cache_routing_test.go` | `e2e-prefix-cache` | `e2e-prefix-cache-gw` | `prefix-cache-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
-| `CasePrefixCachePerf` | `prefix_cache_perf_test.go` | `e2e-pc-perf` | `e2e-pc-perf-gw` | `pc-perf-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
-| `CaseModelDeploymentChart` | `modeldeployment_chart_test.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
+| `CaseGPUMocker` | `gpu_mocker_test.go` | `e2e-gpu-mocker` | `e2e-gpu-mocker-gw` | `gpu-mocker-gemma` | `BeforeAll` / `AfterAll` |
+| `CaseGPUSmoke` | `gpu_smoke_test.go` | `e2e-gpu-smoke` | `e2e-gpu-smoke-gw` | `gpu-smoke-gemma` | `scenarios.GPUSmokeSetup` / `scenarios.Cleanup` |
+| `CaseModelRouting` | `model_routing_test.go` | `e2e-model-routing` | `e2e-model-routing-gw` | `routing-gemma`, `routing-ministral` | `BeforeAll` / `AfterAll` |
+| `CasePrefixCache` | `prefix_cache_routing_test.go` | `e2e-prefix-cache` | `e2e-prefix-cache-gw` | `prefix-cache-gemma` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
+| `CasePrefixCachePerf` | `prefix_cache_perf_test.go` | `e2e-pc-perf` | `e2e-pc-perf-gw` | `pc-perf-gemma` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
+| `CaseModelDeploymentChart` | `modeldeployment_chart_test.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-gemma` | Per-`It`; namespace recycled in `AfterEach` |
+| `CaseAuth` | `apikey_auth_test.go` | `e2e-auth` | `e2e-auth-gw` | `auth-gemma` | `scenarios.APIKeyAuthSetup` / `scenarios.Cleanup` |
+| `CaseFilterOrder` | `filter_order_test.go` | `e2e-filter-order` | `e2e-filter-order-gw` | `filter-order-gemma` | `scenarios.FilterOrderSetup` / `scenarios.Cleanup` |
+| `CaseClusterFilterHA` | `cluster_filter_ha_test.go` | `e2e-cluster-filter-ha` | `e2e-cluster-filter-ha-gw` | `cluster-filter-ha-gemma` | `scenarios.ClusterFilterHASetup` / `scenarios.Cleanup` |
 
-`Name` is unique cluster-wide and is the value matched by `X-Gateway-Model-Name` (i.e. the `model` field clients send in OpenAI-compatible requests). `Model` is the KAITO preset only — multiple deployments may share a preset under different `Name`s.
+`Name` is unique cluster-wide and is the value matched by `X-Gateway-Model-Name` (i.e. the `model` field clients send in OpenAI-compatible requests). `Model` is the KAITO preset only — multiple deployments may share a preset under different `Name`s. The shared "small model" preset used across most cases is `google/gemma-4-E2B-it` (`presetGemma` in `cases.go`); `ministral-3-3b-instruct` and the two `qwen2.5-coder-*` presets are unchanged and pinned separately for cross-model / Karpenter scenarios.
 
 Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets its own Gateway, catch-all `model-not-found-direct` EnvoyFilter (Envoy `direct_response` 404), and (when enabled) API-key auth artifacts via the [`charts/modelharness`](../../charts/modelharness) chart installed by `EnsureNamespace`.
+
+## Reusable scenario library (test/e2e/scenarios)
+
+Four of the cases above — `CaseGPUSmoke`, `CaseAuth`, `CaseFilterOrder`, and `CaseClusterFilterHA` — are backed by [`scenarios/`](scenarios/), an **ordinary Go package with no Ginkgo/Gomega import** (setup, named assertions, and cleanup are plain functions returning `error`). The Ginkgo files above are thin adapters: each `It` calls exactly one named `scenarios.AssertXxx` function, so CI still reports pass/fail per check, but the actual scenario logic — HTTP requests, Kubernetes lookups, retries, and the pass/fail decision — lives in `scenarios/` and is unit-tested there with fakes (no live cluster required).
+
+Each scenario group follows the same shape:
+
+- **Setup** (`scenarios.XxxSetup`) provisions the group's namespace(s) and ModelDeployment(s) through an injected `Lifecycle`, and resolves per-namespace dataplane access (`NamespaceAccess`: Gateway URL + optional API key) — see `lifecycle.go`.
+- **Named assertions** (`scenarios.AssertXxx`) each own their internal polling/retry (`Eventually`-equivalent hand-rolled loops); there is no whole-case retry wrapper. Errors name what failed.
+- **Cleanup** (`scenarios.Cleanup`) deletes ModelDeployments before Namespaces on success; on failure it leaves children in place, invokes an injected bounded `Diagnostics` hook, and returns the original failure unchanged.
+
+**Lifecycle modes.** `Lifecycle` (in `lifecycle.go`) is the narrow interface each group uses for namespace/deployment ensure-and-delete and for resolving `NamespaceAccess`. This repo implements it once, as `utils.HelmLifecycle` (`utils/lifecycle_helm.go`) — a thin wrapper around the pre-existing `EnsureNamespace` / `InstallModelDeployment` / `SetupInferenceSetsWithRouting` helpers, so `make test-e2e` is behavior-compatible with before this library existed. In Helm mode, a deployment only gets an API key when its `AuthAPIKeyEnabled` is set (preserving today's per-case auth settings — `CaseGPUSmoke`/`CaseClusterFilterHA` stay non-auth, `CaseAuth`/`CaseFilterOrder` stay auth-enabled). A downstream AIManager-backed `Lifecycle` implementation can instead always return an API key regardless of `AuthAPIKeyEnabled`, since `NamespaceAccess.AuthEnabled` tells assertions what actually happened either way. `utils.ChatClientHelm`, `utils.KubeOpsHelm`, `utils.DiagnosticsHelm`, and `utils.GinkgoLogger` are the matching Helm-backed adapters for `scenarios.ChatClient`, `scenarios.KubeOps`, `scenarios.Diagnostics`, and `scenarios.Logger`.
+
+**Suffixing.** Every physical Namespace/ModelDeployment name a scenario group creates is resolved through `scenarios.Suffix` (`names.go`). An empty suffix (what the Ginkgo adapters in this repo pass) leaves names unchanged, so existing Helm-suite namespaces/releases are untouched; a caller-provided suffix (e.g. per-PR or per-run) is applied consistently to every resource the group creates, so concurrent runs never collide.
+
+**Secret-safe logging.** `scenarios.Logger` is a single-method interface; any secret (API key, bearer token) MUST be passed through `scenarios.Redact` before being logged — see `logger.go`. `utils.GinkgoLogger` writes to `GinkgoWriter`.
+
+Run the library's own unit tests (fakes only, no live cluster) with:
+
+```bash
+go test ./test/e2e/scenarios/...
+```
 
 ## Helpers
 
@@ -27,6 +53,7 @@ Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets
 - [`helm.go`](utils/helm.go) — `InstallModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`.
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).
+- `lifecycle_helm.go`, `chatclient_helm.go`, `kubeops_helm.go`, `diagnostics_helm.go`, `logger_helm.go` — Helm-backed adapters wiring the `scenarios/` library (above) into this suite's existing Kubernetes/HTTP/Helm helpers.
 
 `cases.go`:
 
@@ -219,7 +246,7 @@ The suite enforces **one `Ordered` Describe per test file**, with deployments de
 
 ### 1. Decide whether you need a new case
 
-- **Reuse an existing case** if your assertions only need an already-deployed model (e.g. another routing scenario over `routing-phi` / `routing-ministral`). Add a new `It` to the matching test file and skip to step 4.
+- **Reuse an existing case** if your assertions only need an already-deployed model (e.g. another routing scenario over `routing-gemma` / `routing-ministral`). Add a new `It` to the matching test file and skip to step 4.
 - **Add a new case** if you need an isolated namespace, distinct preset combinations, or different replica counts. Continue with step 2.
 
 ### 2. Register the case in [`cases.go`](cases.go)
@@ -231,9 +258,9 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
     // ...existing entries...
     CaseMyFeature: {
         {
-            Name:         "myfeature-phi",        // unique cluster-wide
+            Name:         "myfeature-gemma",      // unique cluster-wide
             Namespace:    "e2e-my-feature",       // dedicated per-case namespace
-            Model:        presetPhi,
+            Model:        presetGemma,
             Replicas:     2,
             InstanceType: "Standard_NV36ads_A10_v5",
         },
@@ -314,7 +341,11 @@ E2E_LABEL=MyFeature make test-e2e
 test/e2e/
 ├── e2e_test.go                       # Suite entry point, BeforeSuite/AfterSuite
 ├── cases.go                          # CaseDeployments + Install/UninstallCase
-├── gpu_mocker_test.go                # CaseGPUMocker
+├── gpu_mocker_test.go                # CaseGPUMocker (Infra/Routing; framework/gateway Smoke moved out)
+├── gpu_smoke_test.go                 # CaseGPUSmoke — scenarios library adapter
+├── apikey_auth_test.go               # CaseAuth — scenarios library adapter
+├── filter_order_test.go              # CaseFilterOrder — scenarios library adapter
+├── cluster_filter_ha_test.go         # CaseClusterFilterHA — scenarios library adapter
 ├── model_routing_test.go             # CaseModelRouting
 ├── prefix_cache_routing_test.go      # CasePrefixCache
 ├── prefix_cache_perf_test.go         # CasePrefixCachePerf (Perf load/replay)
@@ -323,6 +354,19 @@ test/e2e/
 │   └── agentic-traces.jsonl          # trimmed replay fixture (see extract script)
 ├── production-stack-E2E-test-scenarios.md
 ├── README.md
+├── scenarios/                        # Reusable, ordinary-Go (no Ginkgo/Gomega) scenario library
+│   ├── lifecycle.go                  # Lifecycle interface, DeploymentSpec, NamespaceAccess
+│   ├── names.go                      # Suffix (consistent Namespace/ModelDeployment naming)
+│   ├── logger.go                     # Logger interface + Redact (secret-safe logging)
+│   ├── chat.go                       # ChatClient/ChatRequest/ChatResponse
+│   ├── kubeops.go                    # KubeOps interface + MetricSnapshot
+│   ├── assertion.go                  # Assertion + RunAll (named checks)
+│   ├── group.go                      # GroupResources, Diagnostics, Cleanup
+│   ├── gpu_smoke.go                  # GPU/framework smoke group
+│   ├── apikey_auth.go                # API-key authentication group
+│   ├── filter_order.go               # Filter execution order group
+│   ├── cluster_filter_ha.go          # BBR cluster-filter HA group
+│   └── *_test.go                     # Unit tests with fakes (no live cluster)
 └── utils/
     ├── cluster.go                    # K8s + dynamic client init
     ├── dynamic.go                    # GVK constants
@@ -333,5 +377,10 @@ test/e2e/
     ├── metrics.go                    # EPP metrics scraping
     ├── traces.go                     # agentic-trace load generator (perf test)
     ├── setup.go                      # Namespace + per-case resource lifecycle
-    └── utils.go                      # Misc helpers (env, logs, polling)
+    ├── utils.go                      # Misc helpers (env, logs, polling)
+    ├── lifecycle_helm.go             # scenarios.Lifecycle Helm-backed adapter
+    ├── chatclient_helm.go            # scenarios.ChatClient Helm-backed adapter
+    ├── kubeops_helm.go               # scenarios.KubeOps Helm-backed adapter
+    ├── diagnostics_helm.go           # scenarios.Diagnostics Helm-backed adapter
+    └── logger_helm.go                # scenarios.Logger Helm-backed adapter (GinkgoWriter)
 ```

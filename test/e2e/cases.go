@@ -35,7 +35,7 @@ import (
 // list — always cross-check `presets/workspace/models/model_catalog.yaml`
 // in kaito-project/kaito@main when picking presets here.
 const (
-	presetPhi       = "phi-4-mini-instruct"
+	presetGemma     = "google/gemma-4-E2B-it"
 	presetMinistral = "ministral-3-3b-instruct"
 	presetQwen7B    = "qwen2.5-coder-7b-instruct"
 	// presetQwen32B (~32B, ~61GiB bf16 weights, 32k context). The medium
@@ -54,10 +54,20 @@ const (
 // their deployments via the Ordered Describe's BeforeAll / AfterAll;
 // lifecycle cases install per-test in their own random namespace.
 const (
-	// CaseGPUMocker covers gpu_mocker_test.go (framework smoke, gateway
-	// connectivity, InferenceSet/EPP/HTTPRoute observability, fake-node and
-	// shadow-pod lifecycle, status patching, unknown-model 404).
+	// CaseGPUMocker covers gpu_mocker_test.go (InferenceSet/EPP/HTTPRoute
+	// observability, fake-node and shadow-pod lifecycle, status patching,
+	// unknown-model 404). The framework-init + gateway-connectivity Smoke
+	// checks previously here now live in gpu_smoke_test.go / CaseGPUSmoke,
+	// backed by the reusable test/e2e/scenarios library.
 	CaseGPUMocker = "gpu-mocker"
+
+	// CaseGPUSmoke covers gpu_smoke_test.go — the GPU / framework smoke
+	// group of the test/e2e/scenarios library: a trivial framework-init
+	// sanity check plus a gateway-reachability check against a small,
+	// dedicated (non-auth) deployment. Deliberately separate from
+	// CaseGPUMocker so `E2E_LABEL=Smoke` does not pay for the larger
+	// Infra/Routing-labeled case's fake-node and shadow-pod setup.
+	CaseGPUSmoke = "gpu-smoke"
 
 	// CaseModelRouting covers model_routing_test.go (single-model echo,
 	// cross-model isolation, EPP metrics, load distribution, debug-filter
@@ -207,18 +217,27 @@ const (
 var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	CaseGPUMocker: {
 		{
-			Name:         "gpu-mocker-phi",
+			Name:         "gpu-mocker-gemma",
 			Namespace:    "e2e-gpu-mocker",
-			Model:        presetPhi,
+			Model:        presetGemma,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
+		},
+	},
+	CaseGPUSmoke: {
+		{
+			Name:         "gpu-smoke-gemma",
+			Namespace:    "e2e-gpu-smoke",
+			Model:        presetGemma,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseModelRouting: {
 		{
-			Name:         "routing-phi",
+			Name:         "routing-gemma",
 			Namespace:    "e2e-model-routing",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     2,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
@@ -232,27 +251,27 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	},
 	CasePrefixCache: {
 		{
-			Name:         "prefix-cache-phi",
+			Name:         "prefix-cache-gemma",
 			Namespace:    "e2e-prefix-cache",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     2, // prefix-cache tests require ≥2 shadow pods.
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseModelDeploymentChart: {
 		{
-			Name:         "mdchart-phi",
+			Name:         "mdchart-gemma",
 			Namespace:    "e2e-mdchart",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseAuth: {
 		{
-			Name:              "auth-phi",
+			Name:              "auth-gemma",
 			Namespace:         "e2e-auth",
-			Model:             presetPhi,
+			Model:             presetGemma,
 			Replicas:          2,
 			InstanceType:      "Standard_NV36ads_A10_v5",
 			AuthAPIKeyEnabled: true,
@@ -262,7 +281,7 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 		{
 			Name:         "netpol-a",
 			Namespace:    "e2e-netpol-a",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
@@ -271,7 +290,7 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 		{
 			Name:         "netpol-b",
 			Namespace:    "e2e-netpol-b",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
@@ -284,9 +303,9 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			// replicas let the load / endpoint-picker assertions in
 			// filter_order_test.go observe non-trivial routing
 			// decisions across more than one shadow pod.
-			Name:              "filter-order-phi",
+			Name:              "filter-order-gemma",
 			Namespace:         "e2e-filter-order",
-			Model:             presetPhi,
+			Model:             presetGemma,
 			Replicas:          2,
 			InstanceType:      "Standard_NV36ads_A10_v5",
 			AuthAPIKeyEnabled: true,
@@ -294,18 +313,18 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	},
 	CaseBBROutage: {
 		{
-			Name:         "bbr-outage-phi",
+			Name:         "bbr-outage-gemma",
 			Namespace:    "e2e-bbr-outage",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseExtAuthzOutage: {
 		{
-			Name:              "ext-authz-outage-phi",
+			Name:              "ext-authz-outage-gemma",
 			Namespace:         "e2e-ext-authz-outage",
-			Model:             presetPhi,
+			Model:             presetGemma,
 			Replicas:          1,
 			InstanceType:      "Standard_NV36ads_A10_v5",
 			AuthAPIKeyEnabled: true,
@@ -313,18 +332,18 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 	},
 	CaseEPPOutage: {
 		{
-			Name:         "epp-outage-phi",
+			Name:         "epp-outage-gemma",
 			Namespace:    "e2e-epp-outage",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseModelUnavailable: {
 		{
-			Name:         "model-unavailable-phi",
+			Name:         "model-unavailable-gemma",
 			Namespace:    "e2e-model-unavailable",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
@@ -337,9 +356,9 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			// the queue drains and clamps to minReplicaCount=1, so the
 			// pool would never return to its starting size and Scale-Down
 			// assertions would fail.
-			Name:          "scaling-phi",
+			Name:          "scaling-gemma",
 			Namespace:     "e2e-scaling",
-			Model:         presetPhi,
+			Model:         presetGemma,
 			Replicas:      1,
 			InstanceType:  "Standard_NV36ads_A10_v5",
 			EnableScaling: true,
@@ -398,9 +417,9 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			// prefix_cache_hits / _queries and sticky routing are exercised for
 			// real; only throughput/latency are synthetic. 2 replicas so the EPP
 			// prefix-cache scorer has >=2 pods to route stickily between.
-			Name:         "pc-perf-phi",
+			Name:         "pc-perf-gemma",
 			Namespace:    "e2e-pc-perf",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     2,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
@@ -412,9 +431,9 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			// the BBR → EPP request path returns 200 without a real GPU.
 			// One replica is enough — this case exercises the cluster-wide
 			// BBR Deployment's HA, not the model pool's.
-			Name:         "cluster-filter-ha-phi",
+			Name:         "cluster-filter-ha-gemma",
 			Namespace:    "e2e-cluster-filter-ha",
-			Model:        presetPhi,
+			Model:        presetGemma,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},

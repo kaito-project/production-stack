@@ -63,6 +63,32 @@ func GetClusterClient(cluster *Cluster) {
 	cluster.KubeClient = k8sClient
 }
 
+// EnsureClusterClient initialises cluster.KubeClient from the current
+// kubeconfig if it has not been initialised yet, returning an error
+// instead of failing a Gomega assertion. Unlike GetClusterClient, this is
+// safe to call from code that must not depend on a registered Gomega
+// fail handler (e.g. the scenarios.Lifecycle Helm adapter, which is
+// plain Go under test/e2e/scenarios' contract even though it happens to
+// live in this Ginkgo-heavy package).
+func EnsureClusterClient(cluster *Cluster) error {
+	if cluster.KubeClient != nil {
+		return nil
+	}
+	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+	utilruntime.Must(corev1.AddToScheme(scheme))
+
+	restConfig, err := config.GetConfig()
+	if err != nil {
+		return fmt.Errorf("get kubeconfig: %w", err)
+	}
+	k8sClient, err := client.New(restConfig, client.Options{Scheme: cluster.Scheme})
+	if err != nil {
+		return fmt.Errorf("create controller-runtime client: %w", err)
+	}
+	cluster.KubeClient = k8sClient
+	return nil
+}
+
 // ScaleDeployment sets the named Deployment's replica count via the scale
 // subresource. It updates spec only and does NOT wait for the rollout to
 // converge — use WaitForDeploymentReplicas for that.

@@ -26,29 +26,29 @@ import (
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
-// API-key authentication is one of the four Smoke groups backed by the
+// GPU / framework smoke is one of the four Smoke groups backed by the
 // reusable, ordinary-Go test/e2e/scenarios library (see
-// scenarios/apikey_auth.go). This file is a thin Ginkgo adapter: Setup /
-// Cleanup and every assertion's actual logic live in the library so the
-// same scenario code can run unmodified against a different Lifecycle
-// (e.g. an AIManager-backed one in a downstream repo). Individual `It`s
-// are preserved 1:1 with the library's named assertions so CI reporting
-// stays per-check.
-var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils.GinkgoLabelSmoke, func() {
-	// CaseAuth deployment values — Setup forces AuthAPIKeyEnabled=true
-	// regardless of what's declared here, since this group only exists
-	// to exercise auth (mirrors cases.go's pre-existing AuthAPIKeyEnabled:
-	// true for CaseAuth).
-	authDeployment := CaseDeployments[CaseAuth][0]
+// scenarios/gpu_smoke.go). It covers ONLY the lightweight
+// framework-initialisation sanity check and gateway-reachability check —
+// the InferenceSet/EPP/HTTPRoute observability, fake-node, shadow-pod,
+// and garbage-collection assertions that also live under the GPU-mocker
+// umbrella remain Infra/Routing-labeled in gpu_mocker_test.go /
+// CaseGPUMocker and are untouched by this library.
+//
+// This group owns its own small, dedicated (non-auth), single-replica
+// deployment (CaseGPUSmoke) so `E2E_LABEL=Smoke` runs don't pay for the
+// larger GPU-mocker case's fake-node/shadow-pod setup.
+var _ = Describe("GPU Framework Smoke", Ordered, utils.GinkgoLabelSmoke, func() {
+	gpuSmokeDeployment := CaseDeployments[CaseGPUSmoke][0]
 
 	lifecycle := utils.NewHelmLifecycle()
-	cfg := scenarios.APIKeyAuthConfig{
-		Namespace: CaseNamespace(CaseAuth),
+	cfg := scenarios.GPUSmokeConfig{
+		Namespace: CaseNamespace(CaseGPUSmoke),
 		Deployment: scenarios.DeploymentSpec{
-			Name:         authDeployment.Name,
-			Model:        authDeployment.Model,
-			Replicas:     authDeployment.Replicas,
-			InstanceType: authDeployment.InstanceType,
+			Name:         gpuSmokeDeployment.Name,
+			Model:        gpuSmokeDeployment.Model,
+			Replicas:     gpuSmokeDeployment.Replicas,
+			InstanceType: gpuSmokeDeployment.InstanceType,
 		},
 		Lifecycle: lifecycle,
 		Chat:      utils.ChatClientHelm{},
@@ -57,7 +57,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 
 	var (
 		ctx         context.Context
-		state       scenarios.APIKeyAuthState
+		state       scenarios.GPUSmokeState
 		groupFailed bool
 	)
 
@@ -70,8 +70,8 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		// or operating on zero-value names.
 		groupFailed = true
 		var err error
-		state, err = scenarios.APIKeyAuthSetup(ctx, cfg)
-		Expect(err).NotTo(HaveOccurred(), "API-key-auth group setup should succeed")
+		state, err = scenarios.GPUSmokeSetup(ctx, cfg)
+		Expect(err).NotTo(HaveOccurred(), "GPU-smoke group setup should succeed")
 		groupFailed = false
 	})
 
@@ -84,18 +84,18 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 	AfterAll(func() {
 		err := scenarios.Cleanup(ctx, cfg.Lifecycle, cfg.Logger, state.Resources(),
 			!groupFailed, nil, utils.DiagnosticsHelm{})
-		Expect(err).NotTo(HaveOccurred(), "API-key-auth group cleanup should succeed")
+		Expect(err).NotTo(HaveOccurred(), "GPU-smoke group cleanup should succeed")
 	})
 
-	It("should reject requests without an Authorization header (401)", func() {
-		Expect(scenarios.AssertRejectsMissingAuth(ctx, state)).To(Succeed())
+	Context("Framework validation", func() {
+		It("should have the test framework properly initialised", func() {
+			Expect(scenarios.AssertFrameworkInitialised()).To(Succeed())
+		})
 	})
 
-	It("should reject requests with an invalid API key (401)", func() {
-		Expect(scenarios.AssertRejectsInvalidAPIKey(ctx, state)).To(Succeed())
-	})
-
-	It("should accept requests with a valid API key (200)", func() {
-		Expect(scenarios.AssertAcceptsValidAPIKey(ctx, state)).To(Succeed())
+	Context("Gateway connectivity", func() {
+		It("should be reachable and return a response", func() {
+			Expect(scenarios.AssertGatewayReachable(ctx, state)).To(Succeed())
+		})
 	})
 })
