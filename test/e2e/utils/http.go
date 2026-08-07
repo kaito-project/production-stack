@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -27,6 +28,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,9 +45,10 @@ const (
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request body.
 type ChatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []ChatMessage `json:"messages"`
-	Tools    []Tool        `json:"tools,omitempty"`
+	Model     string        `json:"model"`
+	Messages  []ChatMessage `json:"messages"`
+	Tools     []Tool        `json:"tools,omitempty"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
 }
 
 // ChatMessage represents a single message in a chat completion request.
@@ -146,6 +149,7 @@ type portForward struct {
 	err       error
 	localPort int
 	url       string
+	restartMu sync.Mutex
 }
 
 // portForwardKey identifies a (namespace, serviceName) pair so the same
@@ -334,9 +338,22 @@ func startPortForward(pf *portForward, namespace, serviceName string) error {
 // Send* helpers fresh each iteration. portForwardMu must NOT be held.
 func restartPortForward(key portForwardKey) error {
 	portForwardMu.Lock()
-	defer portForwardMu.Unlock()
 	pf, ok := portForwards[key]
+	portForwardMu.Unlock()
 	if !ok {
+		return fmt.Errorf("no port-forward registered for %s/%s", key.namespace, key.service)
+	}
+	pf.restartMu.Lock()
+	defer pf.restartMu.Unlock()
+	return restartPortForwardLocked(key, pf)
+}
+
+// restartPortForwardLocked performs a restart while pf.restartMu is held.
+func restartPortForwardLocked(key portForwardKey, pf *portForward) error {
+	portForwardMu.Lock()
+	defer portForwardMu.Unlock()
+	current, ok := portForwards[key]
+	if !ok || current != pf {
 		return fmt.Errorf("no port-forward registered for %s/%s", key.namespace, key.service)
 	}
 	// Another goroutine may have already restarted it.
@@ -363,6 +380,62 @@ func restartPortForward(key portForwardKey) error {
 	portForwardByURL[newURL] = key
 	pf.url = newURL
 	return nil
+}
+
+// recoverPortForward restarts the registered tunnel used by failedURL even if
+// kubectl is still running. A port-forward process can remain alive after its
+// SPDY stream wedges, so process-exit checks alone cannot detect every broken
+// tunnel. Concurrent failures are coalesced: after the first restart changes
+// pf.url, later callers see that their failed URL is stale and return.
+func recoverPortForward(failedURL string) error {
+	portForwardMu.Lock()
+	key, ok := portForwardByURL[failedURL]
+	if !ok {
+		portForwardMu.Unlock()
+		return fmt.Errorf("no port-forward registered for %s", failedURL)
+	}
+	pf, ok := portForwards[key]
+	portForwardMu.Unlock()
+	if !ok {
+		return fmt.Errorf("no port-forward registered for %s/%s", key.namespace, key.service)
+	}
+
+	pf.restartMu.Lock()
+	defer pf.restartMu.Unlock()
+
+	portForwardMu.Lock()
+	if current, exists := portForwards[key]; !exists || current != pf {
+		portForwardMu.Unlock()
+		return fmt.Errorf("port-forward registration changed for %s/%s", key.namespace, key.service)
+	}
+	if pf.url != failedURL {
+		portForwardMu.Unlock()
+		return nil
+	}
+	cmd, done := pf.cmd, pf.done
+	portForwardMu.Unlock()
+
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		if done != nil {
+			<-done
+		}
+	}
+	return restartPortForwardLocked(key, pf)
+}
+
+// RefreshPortForward replaces the tunnel behind gatewayURL. Long full-corpus
+// runs rotate between shards while no requests are in flight, avoiding stale
+// SPDY streams without masking request failures inside a measured shard.
+func RefreshPortForward(gatewayURL string) error {
+	return recoverPortForward(resolveGatewayURL(gatewayURL))
+}
+
+func isRecoverablePortForwardError(err error) bool {
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNREFUSED)
 }
 
 // GetGatewayURLFor returns a base URL that proxies HTTP traffic to the
@@ -522,25 +595,50 @@ func SendChatCompletionWithPrompt(gatewayURL, model, prompt string) (*http.Respo
 
 // SendChatCompletionRaw sends an arbitrary ChatCompletionRequest to the gateway.
 func SendChatCompletionRaw(gatewayURL string, reqBody ChatCompletionRequest) (*http.Response, error) {
+	return sendChatCompletionRaw(context.Background(), gatewayURL, reqBody, HTTPTimeout)
+}
+
+func sendChatCompletionRaw(ctx context.Context, gatewayURL string, reqBody ChatCompletionRequest, timeout time.Duration) (*http.Response, error) {
+	return sendChatCompletionRawAttempt(ctx, gatewayURL, reqBody, timeout, false)
+}
+
+func sendChatCompletionRawWithRecovery(ctx context.Context, gatewayURL string, reqBody ChatCompletionRequest, timeout time.Duration) (*http.Response, error) {
+	return sendChatCompletionRawAttempt(ctx, gatewayURL, reqBody, timeout, true)
+}
+
+func sendChatCompletionRawAttempt(ctx context.Context, gatewayURL string, reqBody ChatCompletionRequest, timeout time.Duration, recoverTransport bool) (*http.Response, error) {
 	if err := checkAllPortForwards(); err != nil {
 		return nil, err
 	}
-	gatewayURL = resolveGatewayURL(gatewayURL)
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	client := &http.Client{Timeout: HTTPTimeout}
-	url := gatewayURL + "/v1/chat/completions"
-
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	maxAttempts := 1
+	if recoverTransport {
+		maxAttempts = 2
 	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		attemptURL := resolveGatewayURL(gatewayURL)
+		client := &http.Client{Timeout: timeout}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, attemptURL+"/v1/chat/completions", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	return client.Do(req)
+		resp, err := client.Do(req)
+		if err == nil || !recoverTransport || ctx.Err() != nil || !isRecoverablePortForwardError(err) {
+			return resp, err
+		}
+		lastErr = err
+		if err := recoverPortForward(attemptURL); err != nil {
+			return nil, fmt.Errorf("request failed (%v) and port-forward recovery failed: %w", lastErr, err)
+		}
+	}
+	return nil, fmt.Errorf("request still failed after port-forward recovery: %w", lastErr)
 }
 
 // SendChatCompletionWithAuth sends an OpenAI-compatible chat completion request

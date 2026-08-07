@@ -160,7 +160,7 @@ func noncePrefixedTurn(base []utils.ChatMessage) ([]utils.ChatMessage, bool) {
 	turn := make([]utils.ChatMessage, 0, len(base)+1)
 	turn = append(turn, utils.ChatMessage{Role: "system", Content: uniqueNonce()})
 	turn = append(turn, base...)
-	return turn, utils.FitsModelContext(turn)
+	return turn, utils.FitsModelContextWithCompletion(turn, 1)
 }
 
 // uniquePrefixSessions rewrites sessions into genuinely unique-prefix load: each
@@ -213,6 +213,8 @@ var _ = Describe("Prefix Cache Routing Perf",
 					return nil
 				}
 				By(fmt.Sprintf("shard %s: %d sessions", shardName, len(sh.Sessions)))
+				Expect(utils.RefreshPortForward(gatewayURL)).To(Succeed(),
+					"refreshing gateway port-forward before shard %s", shardName)
 				fn(shardName, sh.Sessions)
 				return nil
 			})
