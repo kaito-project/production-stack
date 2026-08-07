@@ -120,39 +120,6 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch || github.ref }}
 
-      - name: Setup Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-
-      - name: Generate E2E coverage report
-        run: |
-          REPORT="${{ runner.temp }}/e2e-perf-ginkgo-${{ github.run_id }}-${{ github.run_attempt }}.json"
-          if [[ -f "${REPORT}" ]]; then
-            go run ./hack/e2e/report \
-              --label-filter 'Perf' \
-              --workflow 'E2E tests (weekly, full-corpus perf)' \
-              --results "${REPORT}" \
-              --output-md e2e-coverage-report.md \
-              --output-html e2e-coverage-report.html
-            echo '## Weekly Full-Corpus Perf Coverage' >> "$GITHUB_STEP_SUMMARY"
-            cat e2e-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '## Weekly Full-Corpus Perf Coverage' >> "$GITHUB_STEP_SUMMARY"
-            echo 'No Ginkgo report was produced; inspect the setup and replay logs.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload E2E coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-perf-full-corpus-report
-          path: |
-            e2e-coverage-report.md
-            e2e-coverage-report.html
-            ${{ runner.temp }}/e2e-perf-ginkgo-${{ github.run_id }}-${{ github.run_attempt }}.json
-          if-no-files-found: warn
-
       - name: Azure Login
         if: always()
         run: az login --identity
