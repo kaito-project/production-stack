@@ -4,6 +4,7 @@ name: E2E tests (weekly, full-corpus perf)
 # week. The corpus is prepared before AKS provisioning so download time does
 # not consume cluster resources.
 on:
+  pull_request: {} # remove
   schedule:
     # Start after the 14:00 UTC daily nightly workflow to reduce contention on
     # the singleton self-hosted E2E runner.
