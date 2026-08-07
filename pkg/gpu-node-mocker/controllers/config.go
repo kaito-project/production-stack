@@ -147,6 +147,13 @@ const (
 	MockNodeClassVersion  = "v1alpha1"
 	MockNodeClassKind     = "MockNodeClass"
 	MockNodeClassResource = "mocknodeclasses"
+
+	// Cloud provider identifiers accepted by --cloud-provider. They match the
+	// KAITO pkg/sku catalog keys (github.com/kaito-project/kaito/pkg/utils/consts).
+	CloudProviderAzure = "azure"
+	CloudProviderAWS   = "aws"
+	CloudProviderArc   = "arc"
+	DefaultCloudProvider = CloudProviderAzure
 )
 
 // NodeClassRef identifies the cluster-scoped karpenter NodeClass resource that
@@ -227,4 +234,9 @@ type Config struct {
 	// NodeClass is the karpenter NodeClass GVK the mocker reconciles (and
 	// discovery-checks) in karpenter mode. Defaults to the mock node class.
 	NodeClass NodeClassRef
+
+	// CloudProvider selects the KAITO SKU catalog used to size the fake node's
+	// nvidia.com/gpu capacity. Valid values: "azure", "aws", "arc". Empty
+	// disables the lookup and every fake node advertises 1 GPU.
+	CloudProvider string
 }

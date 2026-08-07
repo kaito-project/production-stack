@@ -84,6 +84,7 @@ func main() {
 		nodeClassVersion       string
 		nodeClassKind          string
 		nodeClassResource      string
+		cloudProvider          string
 	)
 
 	defaultNodeClass := controllers.DefaultNodeClassRef()
@@ -135,6 +136,9 @@ func main() {
 		"Kind of the karpenter NodeClass to reconcile in karpenter mode.")
 	flag.StringVar(&nodeClassResource, "node-class-resource", defaultNodeClass.Resource,
 		"Plural resource name of the karpenter NodeClass (used for the startup CRD discovery check).")
+	flag.StringVar(&cloudProvider, "cloud-provider", controllers.DefaultCloudProvider,
+		fmt.Sprintf("Cloud SKU catalog used to size the fake node's nvidia.com/gpu (%q, %q, %q). Empty disables the lookup and every fake node advertises 1 GPU.",
+			controllers.CloudProviderAzure, controllers.CloudProviderAWS, controllers.CloudProviderArc))
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -158,6 +162,13 @@ func main() {
 	}
 	if latencyCalculator == "" {
 		latencyCalculator = controllers.DefaultLatencyCalculator
+	}
+	switch cloudProvider {
+	case "", controllers.CloudProviderAzure, controllers.CloudProviderAWS, controllers.CloudProviderArc:
+	default:
+		setupLog.Error(nil, "--cloud-provider must be \"azure\", \"aws\", \"arc\", or empty",
+			"value", cloudProvider)
+		os.Exit(1)
 	}
 
 	cfg := controllers.Config{
@@ -183,6 +194,7 @@ func main() {
 			Kind:     nodeClassKind,
 			Resource: nodeClassResource,
 		},
+		CloudProvider: cloudProvider,
 	}
 
 	restCfg := ctrl.GetConfigOrDie()
