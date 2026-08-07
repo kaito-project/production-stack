@@ -1,0 +1,181 @@
+name: E2E tests (weekly, full-corpus perf)
+
+# Downloads and replays the complete Hugging Face agentic trace corpus once a
+# week. The corpus is prepared before AKS provisioning so download time does
+# not consume cluster resources.
+on:
+  schedule:
+    # Start after the 14:00 UTC daily nightly workflow to reduce contention on
+    # the singleton self-hosted E2E runner.
+    - cron: '0 18 * * 1'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch name to run E2E tests against'
+        required: true
+        default: 'main'
+      shard_count:
+        description: 'Number of balanced local shards used for bounded-memory replay'
+        required: false
+        default: '10'
+
+env:
+  RESOURCE_GROUP: "kaito-perf-rg-${{ github.run_id }}-${{ github.run_attempt }}"
+  CLUSTER_NAME: "kaito-perf-aks-${{ github.run_id }}-${{ github.run_attempt }}"
+  ACR_NAME: "kaitoperf${{ github.run_id }}a${{ github.run_attempt }}acr"
+  GPU_MOCKER_IMAGE: "gpu-node-mocker:perf-${{ github.run_id }}-${{ github.run_attempt }}"
+  LOCATION: australiaeast
+  NODE_COUNT: '3'
+  NODE_VM_SIZE: Standard_D8s_v5
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-perf-full-corpus
+  cancel-in-progress: false
+
+jobs:
+  e2e_perf_tests:
+    runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
+    environment: e2e-test
+    timeout-minutes: 2160
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download and shard complete agentic trace corpus
+        id: prepare-corpus
+        background: true
+        env:
+          SHARD_COUNT: ${{ github.event.inputs.shard_count || '10' }}
+          TRACE_SHARD_DIR: ${{ runner.temp }}/agentic-trace-shards
+          HF_HOME: ${{ runner.temp }}/huggingface
+        run: |
+          if ! [[ "${SHARD_COUNT}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "shard_count must be a positive integer, got '${SHARD_COUNT}'" >&2
+            exit 2
+          fi
+          rm -rf "${TRACE_SHARD_DIR}" "${HF_HOME}"
+          python -m pip install --disable-pip-version-check datasets
+          python hack/e2e/scripts/extract_agentic_traces.py \
+            --shards "${SHARD_COUNT}" \
+            --shard-dir "${TRACE_SHARD_DIR}" \
+            --max-sessions 0 \
+            --sources
+          du -sh "${TRACE_SHARD_DIR}"
+          find "${TRACE_SHARD_DIR}" -name 'shard-*.jsonl' -type f -print -exec wc -l {} \;
+
+      - name: E2E base setup
+        uses: ./.github/actions/e2e-base-setup
+        with:
+          resource-group: ${{ env.RESOURCE_GROUP }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          acr-name: ${{ env.ACR_NAME }}
+          gpu-mocker-image: ${{ env.GPU_MOCKER_IMAGE }}
+          location: ${{ env.LOCATION }}
+          node-count: ${{ env.NODE_COUNT }}
+          node-vm-size: ${{ env.NODE_VM_SIZE }}
+
+      - name: Wait for agentic trace corpus
+        wait: prepare-corpus
+
+      - name: Run full-corpus prefix-cache perf tests
+        run: make test-e2e-perf
+        env:
+          E2E_TRACE_FIXTURE: ${{ runner.temp }}/agentic-trace-shards
+          E2E_PERF_TIMEOUT: 18h
+
+      - name: Preserve Ginkgo report for the cleanup job
+        if: always()
+        run: |
+          if [[ -f ginkgo-report.json ]]; then
+            cp ginkgo-report.json "${{ runner.temp }}/e2e-perf-ginkgo-${{ github.run_id }}-${{ github.run_attempt }}.json"
+          else
+            echo "No Ginkgo report was produced"
+          fi
+
+  report_and_cleanup:
+    needs: e2e_perf_tests
+    if: always()
+    runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
+    environment: e2e-test
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Generate E2E coverage report
+        run: |
+          REPORT="${{ runner.temp }}/e2e-perf-ginkgo-${{ github.run_id }}-${{ github.run_attempt }}.json"
+          if [[ -f "${REPORT}" ]]; then
+            go run ./hack/e2e/report \
+              --label-filter 'Perf' \
+              --workflow 'E2E tests (weekly, full-corpus perf)' \
+              --results "${REPORT}" \
+              --output-md e2e-coverage-report.md \
+              --output-html e2e-coverage-report.html
+            echo '## Weekly Full-Corpus Perf Coverage' >> "$GITHUB_STEP_SUMMARY"
+            cat e2e-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '## Weekly Full-Corpus Perf Coverage' >> "$GITHUB_STEP_SUMMARY"
+            echo 'No Ginkgo report was produced; inspect the setup and replay logs.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload E2E coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-perf-full-corpus-report
+          path: |
+            e2e-coverage-report.md
+            e2e-coverage-report.html
+            ${{ runner.temp }}/e2e-perf-ginkgo-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: warn
+
+      - name: Azure Login
+        if: always()
+        run: az login --identity
+
+      - name: Connect to cluster for diagnostics
+        if: ${{ always() && needs.e2e_perf_tests.result == 'failure' }}
+        run: |
+          if az aks show --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
+            az aks get-credentials --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" --overwrite-existing
+          fi
+
+      - name: Dump cluster state
+        if: ${{ always() && needs.e2e_perf_tests.result == 'failure' }}
+        run: make e2e-dump
+
+      - name: Teardown cluster
+        if: always()
+        run: make e2e-teardown
+        env:
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
+
+      - name: Remove temporary trace data
+        if: always()
+        run: |
+          rm -rf "${{ runner.temp }}/agentic-trace-shards" "${{ runner.temp }}/huggingface"
+          rm -f "${{ runner.temp }}/e2e-perf-ginkgo-${{ github.run_id }}-${{ github.run_attempt }}.json"

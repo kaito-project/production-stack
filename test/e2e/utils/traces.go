@@ -135,6 +135,13 @@ func estimateTokens(msgs []ChatMessage) int {
 	return words
 }
 
+// FitsModelContext reports whether messages fit within the simulator's
+// configured context window according to the same conservative estimator used
+// when loading trace turns.
+func FitsModelContext(msgs []ChatMessage) bool {
+	return estimateTokens(msgs) <= MaxModelLenTokens
+}
+
 // decodeTraceLine parses one JSONL line into a trace row. ok is false when the
 // line is blank, missing required fields, or filtered by the block-size floor
 // or context ceiling; err is non-nil only for a hard JSON parse failure. It is

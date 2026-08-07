@@ -15,10 +15,11 @@
 """Extract a small, committable trace fixture from the HuggingFace dataset
 sammshen/lmcache-agentic-traces for the prefix-cache perf e2e spec.
 
-This is the ONE-TIME, OFFLINE step of "Option A": the full dataset is ~2.37 GB
-and must never be fetched at test time. Run this locally to (re)generate the
-committed fixture at test/e2e/testdata/agentic-traces.jsonl, then commit the
-result.
+For normal E2E runs this is an offline preparation step: run it locally to
+(re)generate the small committed fixture at
+test/e2e/testdata/agentic-traces.jsonl, then commit the result. The dedicated
+weekly perf workflow also uses partition mode to fetch and shard the complete
+~2.37 GB corpus before provisioning its test cluster.
 
 The output schema matches what test/e2e/utils/traces.go (LoadTraceSessions)
 reads: one JSON object per line, one object per LLM iteration, grouped by

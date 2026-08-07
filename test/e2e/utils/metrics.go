@@ -262,6 +262,25 @@ func DiffSnapshots(before, after PodMetricSnapshot) PodMetricSnapshot {
 	return diff
 }
 
+// ValidateCounterSnapshots verifies that a counter delta is meaningful. Pod
+// replacement changes the snapshot key set, while a lower value indicates a
+// counter reset; either condition invalidates a before/after measurement.
+func ValidateCounterSnapshots(before, after PodMetricSnapshot) error {
+	if len(before) != len(after) {
+		return fmt.Errorf("metric pod set changed: before=%v after=%v", before, after)
+	}
+	for pod, beforeVal := range before {
+		afterVal, ok := after[pod]
+		if !ok {
+			return fmt.Errorf("metric pod set changed: pod %q missing after measurement", pod)
+		}
+		if afterVal < beforeVal {
+			return fmt.Errorf("metric counter reset on pod %q: before=%v after=%v", pod, beforeVal, afterVal)
+		}
+	}
+	return nil
+}
+
 // TotalDelta returns the sum of all deltas in a diff snapshot.
 func TotalDelta(diff PodMetricSnapshot) float64 {
 	var total float64

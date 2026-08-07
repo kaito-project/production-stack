@@ -17,7 +17,6 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -130,6 +129,14 @@ func repeatSessions(sessions []utils.ReplaySession, rounds int) []utils.ReplaySe
 	return out
 }
 
+func replayRequestCount(sessions []utils.ReplaySession) int64 {
+	var total int64
+	for _, session := range sessions {
+		total += int64(len(session.Turns))
+	}
+	return total
+}
+
 // perfNonceSeed makes uniquePrefixSessions' nonces distinct across processes so
 // a re-run against a still-warm backend can't accidentally reuse cached blocks.
 var perfNonceSeed = time.Now().UnixNano()
@@ -149,6 +156,13 @@ func uniqueNonce() string {
 	return b.String()
 }
 
+func noncePrefixedTurn(base []utils.ChatMessage) ([]utils.ChatMessage, bool) {
+	turn := make([]utils.ChatMessage, 0, len(base)+1)
+	turn = append(turn, utils.ChatMessage{Role: "system", Content: uniqueNonce()})
+	turn = append(turn, base...)
+	return turn, utils.FitsModelContext(turn)
+}
+
 // uniquePrefixSessions rewrites sessions into genuinely unique-prefix load: each
 // session becomes a single-turn request carrying its full cumulative context
 // (the last, largest turn) with a unique nonce prepended. This removes both
@@ -157,18 +171,18 @@ func uniqueNonce() string {
 func uniquePrefixSessions(sessions []utils.ReplaySession) []utils.ReplaySession {
 	out := make([]utils.ReplaySession, 0, len(sessions))
 	for i, s := range sessions {
-		if len(s.Turns) == 0 {
-			continue
+		for turnIdx := len(s.Turns) - 1; turnIdx >= 0; turnIdx-- {
+			turn, fits := noncePrefixedTurn(s.Turns[turnIdx])
+			if !fits {
+				continue
+			}
+			out = append(out, utils.ReplaySession{
+				SessionID: fmt.Sprintf("%s-unique-%d", s.SessionID, i),
+				Turns:     [][]utils.ChatMessage{turn},
+				PreGaps:   []float64{0},
+			})
+			break
 		}
-		base := s.Turns[len(s.Turns)-1]
-		turn := make([]utils.ChatMessage, 0, len(base)+1)
-		turn = append(turn, utils.ChatMessage{Role: "system", Content: uniqueNonce()})
-		turn = append(turn, base...)
-		out = append(out, utils.ReplaySession{
-			SessionID: fmt.Sprintf("%s-unique-%d", s.SessionID, i),
-			Turns:     [][]utils.ChatMessage{turn},
-			PreGaps:   []float64{0},
-		})
 	}
 	return out
 }
@@ -180,7 +194,6 @@ var _ = Describe("Prefix Cache Routing Perf",
 		caseNamespace := CaseNamespace(CasePrefixCachePerf)
 
 		var (
-			ctx        context.Context
 			gatewayURL string
 			fixture    string
 		)
@@ -191,23 +204,22 @@ var _ = Describe("Prefix Cache Routing Perf",
 		// cross-pod prefix routing. Shards with fewer are logged and skipped. A
 		// hard load error fails the spec. BeforeAll has already guaranteed at
 		// least one usable shard exists, so fn runs at least once.
-		forEachUsableShard := func(fn func(sessions []utils.ReplaySession)) {
+		forEachUsableShard := func(fn func(shardName string, sessions []utils.ReplaySession)) {
 			err := utils.StreamTraceShards(fixture, func(sh utils.TraceShard) error {
+				shardName := filepath.Base(sh.Path)
 				if len(sh.Sessions) < 2 {
 					GinkgoWriter.Printf("[perf] skipping shard %s: %d session(s) < 2, cannot exercise cross-pod routing\n",
-						filepath.Base(sh.Path), len(sh.Sessions))
+						shardName, len(sh.Sessions))
 					return nil
 				}
-				By(fmt.Sprintf("shard %s: %d sessions", filepath.Base(sh.Path), len(sh.Sessions)))
-				fn(sh.Sessions)
+				By(fmt.Sprintf("shard %s: %d sessions", shardName, len(sh.Sessions)))
+				fn(shardName, sh.Sessions)
 				return nil
 			})
 			Expect(err).NotTo(HaveOccurred(), "streaming trace shards from %s", fixture)
 		}
 
 		BeforeAll(func() {
-			ctx = context.Background()
-
 			fixture = resolveTraceFixture()
 
 			// Validate by streaming the shards once (one resident at a time, so
@@ -249,7 +261,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 			UninstallCase(CasePrefixCachePerf)
 		})
 
-		It("replays agentic traces under concurrent load with zero 5xx and >=80% prefix-cache hit ratio", func() {
+		It("replays agentic traces under load with stable errors, effective caching, and an A/B benefit", func(ctx SpecContext) {
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -269,6 +281,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 			var (
 				totalReqs          int64
 				total5xx           int64
+				total503           int64
 				totalTransport     int64
 				totalLoadShed      int64
 				hitsDeltaSum       float64
@@ -277,23 +290,42 @@ var _ = Describe("Prefix Cache Routing Perf",
 				indexerMetricPods  int
 			)
 
-			forEachUsableShard(func(sessions []utils.ReplaySession) {
+			forEachUsableShard(func(shardName string, sessions []utils.ReplaySession) {
 				hitsBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 				Expect(err).NotTo(HaveOccurred())
 				queriesBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
 				Expect(err).NotTo(HaveOccurred())
 
 				By(fmt.Sprintf("replaying %d sessions x %d rounds at concurrency %d", len(sessions), perfMeasuredRounds, perfConcurrency))
-				stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(sessions, perfMeasuredRounds), perfConcurrency, false)
+				runSessions := repeatSessions(sessions, perfMeasuredRounds)
+				stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, runSessions, perfConcurrency, false)
 				GinkgoWriter.Printf("[perf] shard replay stats: %+v\n", stats)
+				Expect(stats.Total).To(Equal(replayRequestCount(runSessions)),
+					"shared-prefix replay did not attempt every selected turn: %+v", stats)
+				Expect(stats.OtherNon2xx-stats.StatusCounts[429]).To(BeNumerically("==", 0),
+					"shared-prefix replay for shard %s produced unexpected 4xx responses: %+v", shardName, stats)
+				Expect(stats.Errors5xx-stats.StatusCounts[503]).To(BeNumerically("==", 0),
+					"shared-prefix replay for shard %s produced unexpected 5xx responses: %+v", shardName, stats)
 
 				hitsAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 				Expect(err).NotTo(HaveOccurred())
 				queriesAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
 				Expect(err).NotTo(HaveOccurred())
 
-				hitsDeltaSum += utils.SumSnapshot(utils.DiffSnapshots(hitsBefore, hitsAfter))
-				queriesDeltaSum += utils.SumSnapshot(utils.DiffSnapshots(queriesBefore, queriesAfter))
+				Expect(utils.ValidateCounterSnapshots(hitsBefore, hitsAfter)).To(Succeed(),
+					"prefix-cache hit counters changed identity or reset during shard replay")
+				Expect(utils.ValidateCounterSnapshots(queriesBefore, queriesAfter)).To(Succeed(),
+					"prefix-cache query counters changed identity or reset during shard replay")
+				shardHits := utils.SumSnapshot(utils.DiffSnapshots(hitsBefore, hitsAfter))
+				shardQueries := utils.SumSnapshot(utils.DiffSnapshots(queriesBefore, queriesAfter))
+				Expect(shardQueries).To(BeNumerically(">", 0),
+					"shard %s replay did not advance vllm:prefix_cache_queries", shardName)
+				shardRatio := shardHits / shardQueries
+				Expect(shardRatio).To(BeNumerically(">=", prefixCacheHitRatioTarget),
+					"shard %s prefix-cache hit ratio %.3f below target %.2f (hitsΔ=%.0f queriesΔ=%.0f)",
+					shardName, shardRatio, prefixCacheHitRatioTarget, shardHits, shardQueries)
+				hitsDeltaSum += shardHits
+				queriesDeltaSum += shardQueries
 
 				// EPP-side cross-check: the prefix indexer's own hit ratio. It is
 				// computed independently of the sim's vllm counters — from the
@@ -311,6 +343,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 
 				totalReqs += stats.Total
 				total5xx += stats.Errors5xx
+				total503 += stats.StatusCounts[503]
 				totalTransport += stats.TransportErr
 				// Bounded backpressure: at most 10% of requests may be load-shed
 				// (429 Too Many Requests / 503 Service Unavailable). 400s (e.g.
@@ -322,8 +355,8 @@ var _ = Describe("Prefix Cache Routing Perf",
 
 			By("asserting aggregate error-rate stability under saturation")
 			Expect(totalReqs).To(BeNumerically(">", 0))
-			Expect(total5xx).To(BeNumerically("==", 0),
-				"gateway->EPP->backend chain must stay 5xx-free under load (aggregate 5xx=%d)", total5xx)
+			Expect(total5xx).To(Equal(total503),
+				"only 503 load-shed responses are allowed under load (aggregate 5xx=%d, 503=%d)", total5xx, total503)
 			Expect(totalTransport).To(BeNumerically("==", 0),
 				"replay hit transport errors (aggregate=%d)", totalTransport)
 			Expect(float64(totalLoadShed)).To(BeNumerically("<=", 0.10*float64(totalReqs)),
@@ -374,87 +407,83 @@ var _ = Describe("Prefix Cache Routing Perf",
 			Expect(utils.MinSnapshot(waiting)).To(BeNumerically(">=", 0),
 				"num_requests_waiting is a non-negative gauge: %+v", waiting)
 			GinkgoWriter.Printf("[perf] vllm:num_requests_waiting max across pods = %.0f\n", utils.MaxSnapshot(waiting))
-		})
 
-		It("shows shared-prefix load yields a higher cache-hit ratio than unique-prefix load", utils.GinkgoLabelPerf, func() {
-			clientset, err := utils.GetK8sClientset()
-			Expect(err).NotTo(HaveOccurred())
-
-			// measure runs one load and returns the (hits, queries) deltas it
-			// produced, so callers can accumulate across shards before taking a
-			// ratio (Σhits/Σqueries) — the same shard-by-shard aggregation the
-			// main spec uses, keeping peak memory at one shard.
-			measure := func(runSessions []utils.ReplaySession) (hits, queries float64) {
-				hb, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
+			// Reuse the six-round load above as the shared side of the A/B
+			// comparison. Only run the inexpensive one-request-per-session unique
+			// control here; replaying the shared workload again would duplicate the
+			// dominant cost without adding another measurement.
+			var uniqueHits, uniqueQueries float64
+			forEachUsableShard(func(_ string, sessions []utils.ReplaySession) {
+				hitsBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
 				Expect(err).NotTo(HaveOccurred())
-				qb, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
+				queriesBefore, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
 				Expect(err).NotTo(HaveOccurred())
-
-				stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, runSessions, perfConcurrency, false)
-				Expect(stats.Errors5xx).To(BeNumerically("==", 0), "A/B run produced 5xx: %+v", stats)
-
-				ha, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
-				Expect(err).NotTo(HaveOccurred())
-				qa, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
-				Expect(err).NotTo(HaveOccurred())
-
-				return utils.SumSnapshot(utils.DiffSnapshots(hb, ha)), utils.SumSnapshot(utils.DiffSnapshots(qb, qa))
-			}
-
-			var sharedHits, sharedQueries, uniqueHits, uniqueQueries float64
-			forEachUsableShard(func(sessions []utils.ReplaySession) {
-				By("running shared-prefix load (repeated identical sessions)")
-				h, q := measure(repeatSessions(sessions, perfMeasuredRounds))
-				sharedHits += h
-				sharedQueries += q
 
 				By("running unique-prefix load (per-request unique nonce, no shared prefix)")
-				h, q = measure(uniquePrefixSessions(sessions))
-				uniqueHits += h
-				uniqueQueries += q
+				uniqueSessions := uniquePrefixSessions(sessions)
+				Expect(uniqueSessions).NotTo(BeEmpty(), "no session in shard has room for the unique-prefix nonce")
+				stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, uniqueSessions, perfConcurrency, false)
+				Expect(stats.Total).To(Equal(replayRequestCount(uniqueSessions)),
+					"A/B unique run did not attempt every selected request: %+v", stats)
+				Expect(stats.Success).To(Equal(stats.Total), "A/B unique run must succeed completely: %+v", stats)
+
+				hitsAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_hits")
+				Expect(err).NotTo(HaveOccurred())
+				queriesAfter, err := utils.ScrapeModelMetric(ctx, clientset, caseNamespace, model, "vllm:prefix_cache_queries")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(utils.ValidateCounterSnapshots(hitsBefore, hitsAfter)).To(Succeed(),
+					"prefix-cache hit counters changed identity or reset during unique control")
+				Expect(utils.ValidateCounterSnapshots(queriesBefore, queriesAfter)).To(Succeed(),
+					"prefix-cache query counters changed identity or reset during unique control")
+				uniqueHits += utils.SumSnapshot(utils.DiffSnapshots(hitsBefore, hitsAfter))
+				uniqueQueries += utils.SumSnapshot(utils.DiffSnapshots(queriesBefore, queriesAfter))
 			})
 
-			ratio := func(hits, queries float64) float64 {
-				if queries <= 0 {
-					return 0
-				}
-				return hits / queries
-			}
-			sharedRatio := ratio(sharedHits, sharedQueries)
-			uniqueRatio := ratio(uniqueHits, uniqueQueries)
+			Expect(uniqueQueries).To(BeNumerically(">", 0),
+				"unique-prefix control did not advance vllm:prefix_cache_queries")
+			uniqueRatio := uniqueHits / uniqueQueries
 
-			GinkgoWriter.Printf("[perf] aggregate shared-prefix hit ratio=%.3f unique-prefix hit ratio=%.3f\n", sharedRatio, uniqueRatio)
-			Expect(sharedRatio).To(BeNumerically(">", uniqueRatio),
+			GinkgoWriter.Printf("[perf] aggregate shared-prefix hit ratio=%.3f unique-prefix hit ratio=%.3f\n", ratio, uniqueRatio)
+			Expect(ratio).To(BeNumerically(">", uniqueRatio),
 				"shared-prefix load should yield a higher cache-hit ratio than unique-prefix load (shared=%.3f unique=%.3f)",
-				sharedRatio, uniqueRatio)
+				ratio, uniqueRatio)
 		})
 
-		It("concentrates each prefix's requests on a single pod (sticky routing under load)", utils.GinkgoLabelPerf, func() {
+		It("concentrates each prefix's requests on a single pod (sticky routing under load)", utils.GinkgoLabelPerf, func(ctx SpecContext) {
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
-			forEachUsableShard(func(sessions []utils.ReplaySession) {
-				// Measure one exact prompt per session. Replaying a whole multi-turn
-				// session would aggregate several distinct cumulative prompts and
-				// could look evenly distributed even when each prompt is sticky.
-				// Use the first loader-approved turn because it is above the cache
-				// block floor and avoids later turns near the context limit.
+			forEachUsableShard(func(_ string, sessions []utils.ReplaySession) {
+				// Measure one exact prompt per session. Give it a fresh block-0 nonce
+				// so earlier perf specs cannot have warmed the same prefix on both
+				// pods. Replaying a whole multi-turn session would aggregate several
+				// distinct cumulative prompts and could look evenly distributed even
+				// when each prompt is sticky. Use the first loader-approved turn to
+				// avoid later turns near the context limit.
 				prefixes := make([]utils.ReplaySession, 0, len(sessions))
 				for _, session := range sessions {
-					if len(session.Turns) == 0 {
-						continue
+					for _, base := range session.Turns {
+						turn, fits := noncePrefixedTurn(base)
+						if !fits {
+							continue
+						}
+						prefixes = append(prefixes, utils.ReplaySession{
+							SessionID: session.SessionID,
+							Turns:     [][]utils.ChatMessage{turn},
+							PreGaps:   []float64{0},
+						})
+						break
 					}
-					prefixes = append(prefixes, utils.ReplaySession{
-						SessionID: session.SessionID,
-						Turns:     [][]utils.ChatMessage{session.Turns[0]},
-						PreGaps:   []float64{0},
-					})
 				}
+				Expect(prefixes).NotTo(BeEmpty(), "no session in shard has room for the sticky-routing nonce")
 
 				// Prime every selected prefix once under concurrent load so the
 				// sticky pod for each is established.
 				warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, prefixes, perfConcurrency, false)
-				Expect(warm.Errors5xx).To(BeNumerically("==", 0), "priming produced 5xx: %+v", warm)
+				Expect(warm.Total).To(Equal(replayRequestCount(prefixes)),
+					"sticky priming did not attempt every selected request: %+v", warm)
+				Expect(warm.Success).To(Equal(warm.Total), "sticky priming must succeed completely: %+v", warm)
 
 				for _, s := range prefixes {
 					By(fmt.Sprintf("measuring routing concentration for session %s", s.SessionID))
@@ -467,10 +496,14 @@ var _ = Describe("Prefix Cache Routing Perf",
 					// for a single warm prefix rather than worker interleaving.
 					single := []utils.ReplaySession{s}
 					stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(single, perfStickyMeasuredRequests), 1, false)
-					Expect(stats.Errors5xx).To(BeNumerically("==", 0), "sticky run produced 5xx: %+v", stats)
+					Expect(stats.Total).To(Equal(int64(perfStickyMeasuredRequests)),
+						"sticky run did not attempt every request: %+v", stats)
+					Expect(stats.Success).To(Equal(stats.Total), "sticky run must succeed completely: %+v", stats)
 
 					after, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
 					Expect(err).NotTo(HaveOccurred())
+					Expect(utils.ValidateCounterSnapshots(before, after)).To(Succeed(),
+						"request-success counters changed identity or reset during sticky measurement")
 
 					delta := utils.DiffSnapshots(before, after)
 					served := utils.SumSnapshot(delta)
