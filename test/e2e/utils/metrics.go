@@ -262,6 +262,25 @@ func DiffSnapshots(before, after PodMetricSnapshot) PodMetricSnapshot {
 	return diff
 }
 
+// ValidateCounterSnapshots verifies that a counter delta is meaningful. Pod
+// replacement changes the snapshot key set, while a lower value indicates a
+// counter reset; either condition invalidates a before/after measurement.
+func ValidateCounterSnapshots(before, after PodMetricSnapshot) error {
+	if len(before) != len(after) {
+		return fmt.Errorf("metric pod set changed: before=%v after=%v", before, after)
+	}
+	for pod, beforeVal := range before {
+		afterVal, ok := after[pod]
+		if !ok {
+			return fmt.Errorf("metric pod set changed: pod %q missing after measurement", pod)
+		}
+		if afterVal < beforeVal {
+			return fmt.Errorf("metric counter reset on pod %q: before=%v after=%v", pod, beforeVal, afterVal)
+		}
+	}
+	return nil
+}
+
 // TotalDelta returns the sum of all deltas in a diff snapshot.
 func TotalDelta(diff PodMetricSnapshot) float64 {
 	var total float64
@@ -331,23 +350,30 @@ func GetEPPPods(ctx context.Context, clientset *kubernetes.Clientset, deployment
 // ScrapeEPPMetric scrapes a single metric from the EPP pod(s) for a deployment
 // and returns the value. If multiple EPP pods exist, sums across them.
 func ScrapeEPPMetric(ctx context.Context, clientset *kubernetes.Clientset, deploymentName, namespace, metricName string, labels map[string]string) (float64, error) {
+	total, _, err := ScrapeEPPMetricWithPresence(ctx, clientset, deploymentName, namespace, metricName, labels)
+	return total, err
+}
+
+// ScrapeEPPMetricWithPresence scrapes a single metric from the EPP pod(s),
+// returning both its summed value and the number of pods that exported it.
+func ScrapeEPPMetricWithPresence(ctx context.Context, clientset *kubernetes.Clientset, deploymentName, namespace, metricName string, labels map[string]string) (total float64, present int, err error) {
 	pods, err := GetEPPPods(ctx, clientset, deploymentName, namespace)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	var total float64
 	for _, pod := range pods {
 		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, EPPMetricsPort)
 		if err != nil {
-			return 0, fmt.Errorf("scraping EPP pod %s: %w", pod.Name, err)
+			return 0, 0, fmt.Errorf("scraping EPP pod %s: %w", pod.Name, err)
 		}
 		val, found := ParseMetricValue(raw, metricName, labels)
 		if found {
 			total += val
+			present++
 		}
 	}
-	return total, nil
+	return total, present, nil
 }
 
 // SumSnapshot returns the sum of all values in a snapshot.

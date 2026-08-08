@@ -84,8 +84,7 @@ jobs:
           node-class: ${{ github.event.inputs.node_class }}
 
       - name: Run E2E tests
-        # Skip Nightly and Perf specs. Nightly runs in e2e-nightly.yaml;
-        # prefix-cache load tests run via the dedicated test-e2e-perf target.
+        # Slow Nightly and Perf specs run in their dedicated workflows.
         run: make test-e2e
         env:
           E2E_LABEL: "!Nightly && !Perf"

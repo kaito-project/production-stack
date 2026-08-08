@@ -144,6 +144,7 @@ docker-buildx-status-reporter: ## Multi-arch build (and optionally push) the pro
 E2E_LABEL ?=
 E2E_PARALLEL ?= 2
 E2E_TIMEOUT  ?= 60m
+E2E_PERF_TIMEOUT ?= 24h
 E2E_JSON_REPORT ?= ginkgo-report.json
 
 .PHONY: test-e2e
@@ -164,8 +165,8 @@ test-e2e-karpenter: ## Run the Karpenter nightly scale-from-zero scenarios with 
 	$(MAKE) test-e2e E2E_LABEL='Karpenter' E2E_PARALLEL=1 E2E_TIMEOUT=180m
 
 .PHONY: test-e2e-perf
-test-e2e-perf: ## Run the prefix-cache perf/load replay spec (serial). Override the trace fixture with E2E_TRACE_FIXTURE=/path (a .jsonl file or shard directory).
-	$(MAKE) test-e2e E2E_LABEL='Perf' E2E_PARALLEL=1 E2E_TIMEOUT=90m
+test-e2e-perf: ## Run prefix-cache perf specs serially. Override E2E_TRACE_FIXTURE and E2E_PERF_TIMEOUT as needed.
+	$(MAKE) test-e2e E2E_LABEL='Perf' E2E_PARALLEL=1 E2E_TIMEOUT=$(E2E_PERF_TIMEOUT)
 ## --------------------------------------
 ## E2E Targets
 ##

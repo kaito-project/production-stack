@@ -83,15 +83,17 @@ Step-by-step targets exist as well: `e2e-setup`, `docker-build`, `e2e-push-image
 
 [`prefix_cache_perf_test.go`](prefix_cache_perf_test.go) (labels `Perf` + `PrefixCache`, case `CasePrefixCachePerf`) drives **sustained concurrent load** through the gateway → EPP → backend chain and asserts on the EPP prefix-cache-scorer signals (hit ratio ≥ 80%, zero 5xx, bounded 429/503, KV-cache / queue metrics exported). It runs on the **gpu-node-mocker** path (`llm-d-inference-sim` shadow pods, no real GPU), and the simulator is configured with `enable-kvcache` + `block-size 16` using the sim's built-in (dummy) tokenizer, which still yields deterministic per-block hashes so `vllm:prefix_cache_hits/_queries` and sticky routing are genuine — only throughput/latency are synthetic.
 
-The spec has three `It`s:
+The spec has two `It`s:
 
-1. **Load + cache effectiveness** — replays the fixture under concurrency and asserts hit ratio ≥ 80%, zero 5xx / transport errors, ≤ 10% 429/503, and that `vllm:kv_cache_usage_perc` / `vllm:num_requests_waiting` are exported and in-bounds.
-2. **A/B benefit** — shared-prefix load must yield a higher cache-hit ratio than genuinely unique-prefix load (per-request nonce at block 0).
-3. **Sticky routing concentration** — replays each prefix in isolation (after a concurrent priming pass) and asserts one pod serves ≥ 70% of that prefix's requests (`perfStickyConcentrationTarget`). The threshold is below 100% because the queue / kv-cache scorers can legitimately spill some requests under load.
+1. **Load + cache effectiveness + A/B benefit** — replays the fixture under concurrency and asserts hit ratio ≥ 80%, zero 5xx / transport errors, ≤ 10% 429/503, and that `vllm:kv_cache_usage_perc` / `vllm:num_requests_waiting` are exported and in-bounds. The same measured shared-prefix ratio is then compared with a genuinely unique-prefix control (one request per session with a nonce at block 0), avoiding a second six-round shared replay.
+2. **Sticky routing concentration** — selects one loader-approved turn per session, prepends a fresh stable nonce so earlier specs cannot have cached it on both pods, primes those prefixes concurrently, then repeats each identical turn in isolation and asserts one pod serves ≥ 70% of its requests (`perfStickyConcentrationTarget`). The threshold is below 100% because the queue / kv-cache scorers can legitimately spill some requests under load.
 
 ```bash
-# Convenience target (serial, 90m timeout):
+# Convenience target (serial, 24h timeout for corpus-scale runs):
 make test-e2e-perf
+
+# Use a shorter timeout for the committed fixture or a single shard:
+E2E_PERF_TIMEOUT=30m make test-e2e-perf
 
 # Equivalent explicit invocation:
 E2E_LABEL='Perf' E2E_PARALLEL=1 make test-e2e
@@ -104,7 +106,7 @@ Load is a **replay of real multi-turn agentic sessions**, not a synthetic prompt
 1. **Fixture → sessions.** `LoadTraceSessions` reads a JSONL fixture (one row per LLM iteration) and groups rows by `session_id` into ordered `ReplaySession`s. Each turn's `input` is the full cumulative OpenAI messages array, so turn *N* is a prefix-superset of turn *N-1* — exactly the shared-prefix pattern the prefix-cache-scorer exploits. Turns are dropped at load time if they fall below one 16-token block (`BlockSizeTokens` floor — no prefix hashes) or exceed the model context window (`MaxModelLenTokens` = 32768 ceiling — unservable, the backend would 400). Because turns grow monotonically, the ceiling truncates a session at its first over-length turn, preserving the shared-prefix chain of what remains.
 2. **Concurrent replay.** `ReplaySessionsConcurrent` distributes sessions across a worker pool (`perfConcurrency`, default 8). Turns **within** a session are sent sequentially by one worker (so the shared prefix accumulates in the KV cache); **sessions** run in parallel (to saturate serving and fill the queue). All requests target the deployment name (`X-Gateway-Model-Name`), overriding the model recorded in the trace.
 3. **Measurement.** The fixture is replayed `perfMeasuredRounds` times while prefix-cache / success / error counters are snapshotted before and after. There is **no separate warm-up pass** — each shard's first replay round absorbs its first-touch cold misses and the remaining rounds run hot, so `perfMeasuredRounds` is set high enough to keep the aggregate ratio above target. `repeatSessions` concatenates the fixture N times so a small fixture still generates sustained load.
-4. **A/B check.** Shared-prefix load (repeated sessions) is compared against genuinely unique-prefix load (a per-request nonce prepended at block 0, single-turn) to prove cache-hit growth is real.
+4. **A/B check.** The shared-prefix ratio already measured by the load run is compared against genuinely unique-prefix load (a per-request nonce prepended at block 0, single-turn) to prove cache-hit growth is real without repeating the expensive shared workload.
 
 Total requests ≈ `sessions × turns × perfMeasuredRounds`, spread across `perfConcurrency` workers. The load constants are in [`prefix_cache_perf_test.go`](prefix_cache_perf_test.go): `perfConcurrency`, `perfMeasuredRounds`, and the `prefixCacheHitRatioTarget` threshold.
 
@@ -126,13 +128,13 @@ The spec scrapes Prometheus metrics from every shadow pod (backend) and from the
 
 | Metric | Used for | Assertion |
 | --- | --- | --- |
-| `inference_extension_prefix_indexer_hit_ratio` | independent cross-check of the prefix indexer's hit ratio (from EPP's longest-prefix-match decisions, not the vLLM counters) | max across shards `> 0` |
+| `inference_extension_prefix_indexer_hit_ratio` | independent cross-check of the prefix indexer's hit ratio (from EPP's longest-prefix-match decisions, not the vLLM counters) | when exported by the EPP build, max across shards `> 0`; otherwise the cross-check is skipped and logged |
 
 The replay also buckets **HTTP response codes** (outcome tallies, not Prometheus metrics): 2xx are successes, aggregate **5xx must be 0**, and **429/503** load-shed responses must stay `≤ 10%` of total requests. 400s (e.g. context overflow) are content errors excluded from the load-shed budget — over-length turns are already dropped at load time.
 
 ### The trace fixture (and pulling down more)
 
-The committed fixture [`testdata/agentic-traces.jsonl`](testdata/agentic-traces.jsonl) is only a **small trimmed slice** of the HuggingFace dataset [`sammshen/lmcache-agentic-traces`](https://huggingface.co/datasets/sammshen/lmcache-agentic-traces) (~2.36 GB). The full dataset is **never fetched at test time** — the test reads a local file only, keeping CI hermetic and network-independent.
+The committed fixture [`testdata/agentic-traces.jsonl`](testdata/agentic-traces.jsonl) is only a **small trimmed slice** of the HuggingFace dataset [`sammshen/lmcache-agentic-traces`](https://huggingface.co/datasets/sammshen/lmcache-agentic-traces) (~2.36 GB). Normal E2E runs read this local fixture and remain hermetic. The dedicated weekly workflow [`.github/workflows/e2e-perf-weekly.yaml`](../../.github/workflows/e2e-perf-weekly.yaml) downloads and shards the complete corpus before provisioning AKS, then runs only the `Perf` specs.
 
 To pull down more, regenerate the fixture **offline** with [`hack/e2e/scripts/extract_agentic_traces.py`](../../hack/e2e/scripts/extract_agentic_traces.py). It uses `datasets` streaming, so it downloads only what it needs and stops early:
 
@@ -163,9 +165,11 @@ A bigger fixture raises the load automatically (more distinct sessions and deepe
 
 > **Goal: run against the full ~2.36 GB corpus.** The two-stage design (offline extract → local replay) is intended to scale up to the entire dataset. Because real sessions have a median ~21K input tokens, committing a full-size fixture would bloat the repo, so the path to "all traces" is: generate a large (or complete) fixture to a scratch path, then drive the perf spec at it via `E2E_TRACE_FIXTURE` (e.g. in a dedicated nightly/manual job) rather than checking the corpus into git. Raise `--num-sessions` / `--max-turns` toward the dataset's full session/turn counts, and scale `perfConcurrency` to keep the backend saturated.
 
+The weekly workflow regenerates the shards on every run. At ~2.36 GB, the download is small relative to the many-hour replay and guarantees that the run covers the current upstream corpus. Persisting the shards in Azure Blob Storage is unnecessary initially; add a versioned blob snapshot only if Hugging Face availability or download time becomes a recurring source of failed runs. GitHub artifacts are intended for run outputs, not as a durable corpus store.
+
 ### Running the perf test against real dataset shards
 
-The three specs above stream a fixture selected by `E2E_TRACE_FIXTURE` (default: the committed trimmed fixture) — either a single JSONL file or a directory of shards. Each shard is warmed and measured **on its own** and the results are aggregated (Σhits/Σqueries), so the spec can replay the **whole corpus** while only ever holding **one shard in memory at a time** (peak RAM ≈ the largest shard, not the sum of all shards). To exercise the perf spec against **real** agentic data at scale, partition the HuggingFace corpus into shard files and point the spec at the directory (whole corpus) or one file (single-shard dev run).
+The two specs above stream a fixture selected by `E2E_TRACE_FIXTURE` (default: the committed trimmed fixture) — either a single JSONL file or a directory of shards. Each shard is warmed and measured **on its own** and the results are aggregated (Σhits/Σqueries), so the spec can replay the **whole corpus** while only ever holding **one shard in memory at a time** (peak RAM ≈ the largest shard, not the sum of all shards). To exercise the perf spec against **real** agentic data at scale, partition the HuggingFace corpus into shard files and point the spec at the directory (whole corpus) or one file (single-shard dev run).
 
 **1. Partition the corpus into shards (offline, streaming):**
 
@@ -191,6 +195,9 @@ This streams the whole dataset (never holding it in memory) and assigns each **w
 ```bash
 # a whole directory: takes ALL *.jsonl files in it (streamed one at a time = whole corpus)
 E2E_TRACE_FIXTURE=/tmp/pc-shards make test-e2e-perf
+
+# Override the 24h default when the corpus needs a different budget
+E2E_TRACE_FIXTURE=/tmp/pc-shards E2E_PERF_TIMEOUT=36h make test-e2e-perf
 
 # one shard for a quick dev run (only if it has >=2 sessions, else the spec skips)
 E2E_TRACE_FIXTURE=/tmp/pc-shards/shard-0.jsonl make test-e2e-perf

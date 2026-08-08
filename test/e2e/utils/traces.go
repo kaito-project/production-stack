@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -106,6 +107,12 @@ type ReplaySample struct {
 // — such turns are dropped at load time (block-size floor).
 const BlockSizeTokens = 16
 
+// traceRequestTimeout allows large prompts queued under perf concurrency to
+// outlive the general-purpose 60-second E2E request timeout without letting a
+// wedged tunnel stall each worker for several minutes. Transport failures get
+// one retry through a freshly established port-forward.
+const traceRequestTimeout = 2 * time.Minute
+
 // MaxModelLenTokens mirrors the simulator's max-model-len (the shadow pod
 // config sets max-model-len: 32768). A turn whose prompt exceeds the model's
 // context window is unservable — the backend rejects it with HTTP 400
@@ -113,26 +120,56 @@ const BlockSizeTokens = 16
 // rather than send it. Such turns are dropped at load time (context ceiling),
 // symmetric to the block-size floor. Because turns grow monotonically within a
 // session, dropping an over-length turn truncates the session at that point and
-// preserves the shared-prefix chain of what remains. The estimator below is
-// >= the sim's (roughly word-based) dummy tokenizer count, so the ceiling
-// conservatively catches every turn the sim would reject.
+// preserves the shared-prefix chain of what remains. The estimator below
+// mirrors the simulator's dummy tokenizer and chat-message rendering.
 const MaxModelLenTokens = 32768
 
-// estimateTokens approximates the token count of a messages array closely
-// enough to enforce the one-block floor. It takes the larger of the
-// whitespace-word count and chars/4 (a common rough bytes-per-token ratio):
-// it matches neither tokenizer exactly but is comfortably conservative for a
-// 16-token floor, so it never drops a turn that would actually span a block.
+// dummyTokenizerRegex mirrors llm-d-inference-sim's SimpleTokenizer. In
+// particular, punctuation and identifiers are separate tokens, which matters
+// for code-heavy agent traces where chars/4 substantially undercounts.
+var dummyTokenizerRegex = regexp.MustCompile(`(\{|\}|:|,|-|\.|\?|\!|;|@|#|\$|%|\^|&|\*|\(|\)|\+|\-|_|~|/|\\|>|<|\[|\]|=|"|'|\w+)(\s*)`)
+
+// estimateTokens reproduces the simulator's SimpleTokenizer.RenderMessages
+// path: each message is wrapped in its chat separators, rendered with role and
+// tool-call metadata, then split with the dummy tokenizer regex.
 func estimateTokens(msgs []ChatMessage) int {
-	words, chars := 0, 0
+	var rendered strings.Builder
 	for _, m := range msgs {
-		chars += len(m.Content)
-		words += len(strings.Fields(m.Content))
+		rendered.WriteString("### ")
+		rendered.WriteString(m.Role)
+		if m.ToolCallID != "" {
+			rendered.WriteString("(")
+			rendered.WriteString(m.ToolCallID)
+			rendered.WriteString(")")
+		}
+		rendered.WriteString(": ")
+		rendered.WriteString(m.Content)
+		for _, toolCall := range m.ToolCalls {
+			if toolCall.Function.Name == "" {
+				continue
+			}
+			rendered.WriteString("[")
+			rendered.WriteString(toolCall.Function.Name)
+			rendered.WriteString("(")
+			rendered.WriteString(toolCall.Function.Arguments)
+			rendered.WriteString(")]")
+		}
+		rendered.WriteString("\n")
 	}
-	if approx := chars / 4; approx > words {
-		return approx
-	}
-	return words
+	return len(dummyTokenizerRegex.FindAllStringIndex(rendered.String(), -1))
+}
+
+// FitsModelContext reports whether messages fit within the simulator's
+// configured context window according to the same conservative estimator used
+// when loading trace turns.
+func FitsModelContext(msgs []ChatMessage) bool {
+	return FitsModelContextWithCompletion(msgs, 0)
+}
+
+// FitsModelContextWithCompletion reports whether the prompt and requested
+// completion fit together within the simulator's context window.
+func FitsModelContextWithCompletion(msgs []ChatMessage, completionTokens int) bool {
+	return estimateTokens(msgs)+completionTokens <= MaxModelLenTokens
 }
 
 // decodeTraceLine parses one JSONL line into a trace row. ok is false when the
@@ -163,7 +200,7 @@ func decodeTraceLine(text string) (row traceRow, ok bool, err error) {
 	// a real client could serve. Dropping an over-length (necessarily trailing)
 	// turn truncates the session there and preserves the prefix chain of the
 	// earlier turns.
-	if estimateTokens(row.Input) > MaxModelLenTokens {
+	if !FitsModelContextWithCompletion(row.Input, 1) {
 		return traceRow{}, false, nil
 	}
 	return row, true, nil
@@ -377,13 +414,15 @@ func replayFromChannel(ctx context.Context, gatewayURL, model string, in <-chan 
 						time.Sleep(time.Duration(s.PreGaps[turnIdx] * float64(time.Second)))
 					}
 					total.Add(1)
-					resp, err := SendChatCompletionRaw(gatewayURL, ChatCompletionRequest{
-						Model:    model,
-						Messages: turn,
-					})
+					resp, err := sendChatCompletionRawWithRecovery(ctx, gatewayURL, ChatCompletionRequest{
+						Model:     model,
+						Messages:  turn,
+						MaxTokens: 1,
+					}, traceRequestTimeout)
 					if err != nil {
 						transportErr.Add(1)
 						recordStatus(0)
+						captureSample(0, []byte(err.Error()))
 						continue
 					}
 					body, _ := ReadResponseBody(resp)
