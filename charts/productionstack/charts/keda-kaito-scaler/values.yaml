@@ -19,9 +19,9 @@ nameOverrider: ""
 namespaceOverride: ""
 
 image:
-    registry: ghcr.io
-    repository: kaito-project/keda-kaito-scaler
-    tag: 0.6.2
+    registry: mcr.microsoft.com
+    repository: oss/v2/kaito/keda-kaito-scaler
+    tag: v0.6.2
     pullSecrets: []
 
 ports:

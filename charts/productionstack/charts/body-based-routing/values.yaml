@@ -102,8 +102,8 @@ bbr:
   tolerations: []
 
   image:
-    registry: registry.k8s.io
-    repository: gateway-api-inference-extension/bbr
+    registry: mcr.microsoft.com
+    repository: oss/v2/gateway-api-inference-extension/bbr
     tag: v1.5.0
     pullPolicy: Always
 
