@@ -15,6 +15,7 @@ This project evaluates a production inference stack built on top of existing OSS
 - **[Kaito InferenceSet](https://github.com/kaito-project/kaito)** — Manages groups of vLLM inference pods. Multiple InferenceSets (e.g., Model-A, Model-B) can run different models simultaneously.
 - **[vLLM Inference Pods(llm-d-inference-sim)](https://github.com/llm-d/llm-d-inference-sim)** — Serve model inference requests. On CPU-only E2E clusters, the real vLLM container is replaced by a **shadow pod** running llm-d-inference-sim (image `ghcr.io/llm-d/llm-d-inference-sim`), a lightweight vLLM-compatible simulator that exposes the same OpenAI API and `vllm:*` Prometheus metrics. See [`pkg/gpu-node-mocker/README.md`](pkg/gpu-node-mocker/README.md) for the original-pod ↔ shadow-pod mechanism.
 - **[keda-kaito-scaler](https://github.com/kaito-project/keda-kaito-scaler)** — Metric-based autoscaler built on [KEDA](https://keda.sh/) that scales vLLM inference pods up and down based on workload metrics.
+- **[productionstack-status-reporter](charts/productionstack/charts/productionstack-status-reporter)** — Control-plane status reporter bundled with the `productionstack` umbrella chart. A single, leader-elected, read-only controller that evaluates the end-to-end error-handling reason catalogue across the cluster / modelharness / modeldeployment layers on every resync and surfaces the aggregated result as Kubernetes `Event`s in `kube-system`. It is the sole producer of these reasons, giving operators one place to observe why the stack (gateway, auth, BBR, EPP, InferenceSets, or nodes) is unhealthy. Runs HA (≥ 2 replicas); only the leader emits events.
 - **[Mocked GPU Nodes](https://github.com/kaito-project/production-stack/blob/main/pkg/gpu-node-mocker/README.md) / CPU Nodes** — Infrastructure layer providing compute resources for inference workloads. The `gpu-node-mocker` controller (E2E-only) fakes GPU nodes on CPU-only clusters and runs the `llm-d-inference-sim` shadow pods on real CPU nodes.
 
 ### Request and Scaling Flows
@@ -138,7 +139,7 @@ chains two reusable workflows
 [`publish-helm-chart.yaml`](.github/workflows/publish-helm-chart.yaml))
 into one synchronous run. A release publishes:
 
-- a multi-arch container image at `ghcr.io/kaito-project/gpu-node-mocker:<X.Y.Z>` (no leading `v`);
+- two multi-arch container images (no leading `v`) — the `gpu-node-mocker` controller at `ghcr.io/kaito-project/gpu-node-mocker:<X.Y.Z>` and the control-plane status reporter at `ghcr.io/kaito-project/productionstack-status-reporter:<X.Y.Z>` (the latter is pulled by the `productionstack` umbrella chart's `productionstack-status-reporter` subchart);
 - the four Helm charts under [`charts/`](charts/) — `gpu-node-mocker`, `modeldeployment`, `modelharness`, and the `productionstack` umbrella chart — published to **all three** chart distribution channels:
   - the gh-pages Helm repo `https://kaito-project.github.io/production-stack/charts/kaito-project`,
   - OCI artifacts under `oci://ghcr.io/kaito-project/helm/<chart>`,
@@ -151,13 +152,19 @@ To publish `vX.Y.Z`:
 1. **Open a PR against `main`** that bumps the chart versions for any chart
    whose contents changed in this release. For each touched chart in
    [`charts/`](charts/), update its `Chart.yaml` (`version` and `appVersion`).
-   When `charts/gpu-node-mocker` ships a new mocker image, also update its
-   `values.yaml` `image.tag`. A typical bump touches:
+   The in-tree `image.tag` defaults are pinned (not `latest`), so a raw
+   in-tree install works out of the box; bump them to the new release version
+   too. A typical bump touches:
    - [`charts/gpu-node-mocker/Chart.yaml`](charts/gpu-node-mocker/Chart.yaml) and
-     [`charts/gpu-node-mocker/values.yaml`](charts/gpu-node-mocker/values.yaml)
+     [`charts/gpu-node-mocker/values.yaml`](charts/gpu-node-mocker/values.yaml) (`image.tag`)
    - [`charts/modeldeployment/Chart.yaml`](charts/modeldeployment/Chart.yaml)
    - [`charts/modelharness/Chart.yaml`](charts/modelharness/Chart.yaml)
    - [`charts/productionstack/Chart.yaml`](charts/productionstack/Chart.yaml)
+   - [`charts/productionstack/charts/productionstack-status-reporter/Chart.yaml`](charts/productionstack/charts/productionstack-status-reporter/Chart.yaml)
+     and its [`values.yaml`](charts/productionstack/charts/productionstack-status-reporter/values.yaml) (`image.tag`)
+     (bump the subchart's `version`, and the matching `productionstack-status-reporter`
+     dependency `version` in [`charts/productionstack/Chart.yaml`](charts/productionstack/Chart.yaml),
+     whenever the reporter image or subchart changes)
 
 2. **After the PR is merged**, run **Actions → "Create release (manually)"**
    with `release_version=vX.Y.Z`.

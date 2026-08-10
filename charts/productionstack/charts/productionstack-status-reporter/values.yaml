@@ -13,7 +13,7 @@ namespaceOverride: ""
 
 image:
   repository: ghcr.io/kaito-project/productionstack-status-reporter
-  tag: latest
+  tag: 0.4.0
   pullPolicy: IfNotPresent
 
 # Run HA so a node drain never blanks the status stream. Only the elected

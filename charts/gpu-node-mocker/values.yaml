@@ -8,7 +8,7 @@ namespaceOverride: ""
 image:
   # REQUIRED: set via --set image.repository=<your-acr>.azurecr.io/gpu-node-mocker
   repository: "ghcr.io/kaito-project/gpu-node-mocker"
-  tag: latest
+  tag: 0.4.0
   pullPolicy: IfNotPresent
 
 shadowPod:
