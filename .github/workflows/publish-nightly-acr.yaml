@@ -70,6 +70,16 @@ jobs:
           IMG_NAME: ${{ matrix.image_name }}
           IMG_TAG: ${{ steps.get-image-tag.outputs.img_tag }}
 
+      - name: Build and push productionstack-status-reporter:${{ steps.get-image-tag.outputs.img_tag }}
+        # The umbrella chart's status-reporter subchart pulls this image;
+        # build it under the same nightly tag so publish-charts-acr can pin it.
+        run: |
+          OUTPUT_TYPE=type=registry make docker-buildx-status-reporter
+        env:
+          REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
+          STATUS_REPORTER_IMG_NAME: productionstack-status-reporter
+          IMG_TAG: ${{ steps.get-image-tag.outputs.img_tag }}
+
   publish-charts-acr:
     needs: [build-publish-image-acr]
     runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
@@ -108,6 +118,15 @@ jobs:
         run: |
           yq -i ".image.repository = \"${REGISTRY}/gpu-node-mocker\" | .image.tag = \"${IMG_TAG}\"" \
             charts/gpu-node-mocker/values.yaml
+        env:
+          REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
+
+      - name: Pin productionstack-status-reporter subchart to nightly ACR image
+        # The umbrella chart bundles the status-reporter subchart; pin it to
+        # the nightly ACR image so a nightly install does not pull :latest.
+        run: |
+          yq -i ".image.repository = \"${REGISTRY}/productionstack-status-reporter\" | .image.tag = \"${IMG_TAG}\"" \
+            charts/productionstack/charts/productionstack-status-reporter/values.yaml
         env:
           REGISTRY: ${{ secrets.KAITO_ACR_REGISTRY }}
 

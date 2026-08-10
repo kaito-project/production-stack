@@ -34,6 +34,10 @@ jobs:
         include:
           - image_name: gpu-node-mocker
             chart_path: charts/gpu-node-mocker
+            make_target: docker-buildx
+          - image_name: productionstack-status-reporter
+            chart_path: charts/productionstack/charts/productionstack-status-reporter
+            make_target: docker-buildx-status-reporter
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -67,10 +71,11 @@ jobs:
 
       - name: Build and push ${{ matrix.image_name }}:${{ env.IMG_TAG }}
         run: |
-          OUTPUT_TYPE=type=registry make docker-buildx
+          OUTPUT_TYPE=type=registry make ${{ matrix.make_target }}
         env:
           REGISTRY: ${{ steps.get-registry.outputs.registry_repository }}
           IMG_NAME: ${{ matrix.image_name }}
+          STATUS_REPORTER_IMG_NAME: ${{ matrix.image_name }}
 
       - name: Scan ${{ steps.get-registry.outputs.registry_repository }}/${{ matrix.image_name }}:${{ env.IMG_TAG }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
