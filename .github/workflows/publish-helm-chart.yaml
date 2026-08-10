@@ -53,6 +53,17 @@ jobs:
           yq -i ".image.repository = \"ghcr.io/kaito-project/gpu-node-mocker\" | .image.tag = \"${IMG_TAG}\"" \
             charts/gpu-node-mocker/values.yaml
 
+      - name: Pin productionstack-status-reporter subchart to release image
+        # The umbrella chart bundles the productionstack-status-reporter
+        # subchart; publish-image.yaml has pushed
+        # ghcr.io/kaito-project/productionstack-status-reporter:${IMG_TAG}.
+        # Bake the tag in so a default install does not pull :latest (which
+        # is never published and 403s).
+        run: |
+          IMG_TAG="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
+          yq -i ".image.repository = \"ghcr.io/kaito-project/productionstack-status-reporter\" | .image.tag = \"${IMG_TAG}\"" \
+            charts/productionstack/charts/productionstack-status-reporter/values.yaml
+
       - name: Update productionstack chart dependencies
         # productionstack is an umbrella chart with an OCI subchart
         # (llm-gateway-apikey) pulled from a public registry at
@@ -122,6 +133,14 @@ jobs:
           yq -i ".image.repository = \"ghcr.io/kaito-project/gpu-node-mocker\" | .image.tag = \"${IMG_TAG}\"" \
             charts/gpu-node-mocker/values.yaml
 
+      - name: Pin productionstack-status-reporter subchart to release image
+        # See push-charts-to-ghp for rationale: bake the released image
+        # repository and tag into the subchart values before packaging.
+        run: |
+          IMG_TAG="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
+          yq -i ".image.repository = \"ghcr.io/kaito-project/productionstack-status-reporter\" | .image.tag = \"${IMG_TAG}\"" \
+            charts/productionstack/charts/productionstack-status-reporter/values.yaml
+
       - name: Push charts to GHCR
         run: |
           export CHART_REGISTRY='ghcr.io/kaito-project/helm'
@@ -160,6 +179,13 @@ jobs:
           IMG_TAG="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
           yq -i ".image.repository = \"ghcr.io/kaito-project/gpu-node-mocker\" | .image.tag = \"${IMG_TAG}\"" \
             charts/gpu-node-mocker/values.yaml
+      - name: Pin productionstack-status-reporter subchart to release image
+        # See push-charts-to-ghp for rationale: bake the released image
+        # repository and tag into the subchart values before packaging.
+        run: |
+          IMG_TAG="$(sed -e 's/^v//g' <<< '${{ inputs.release_version }}')"
+          yq -i ".image.repository = \"ghcr.io/kaito-project/productionstack-status-reporter\" | .image.tag = \"${IMG_TAG}\"" \
+            charts/productionstack/charts/productionstack-status-reporter/values.yaml
       - name: ACR Login
         run: |
           az login --identity
