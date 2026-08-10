@@ -1,4 +1,4 @@
-name: Publish nightly GH images
+name: Publish nightly images to GHCR (scheduled)
 
 # Mirrors publish-image.yaml (release flow) but runs daily on a schedule
 # and tags images with <chart-version>-<UTC-date>, then promotes the

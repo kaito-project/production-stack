@@ -1,4 +1,4 @@
-name: Publish production-stack helm charts
+name: Publish release charts (reusable)
 
 # Reusable workflow. Invoked by create-release.yaml after the image has been
 # published. Stages the releasable charts and pushes them to gh-pages under

@@ -1,4 +1,4 @@
-name: E2E tests (weekly, full-corpus perf)
+name: E2E tests (weekly, perf)
 
 # Downloads and replays the complete Hugging Face agentic trace corpus once a
 # week. The corpus is prepared before AKS provisioning so download time does

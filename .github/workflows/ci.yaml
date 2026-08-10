@@ -1,4 +1,4 @@
-name: CI for pull requests
+name: Lint, test & build (push / PR)
 
 on:
   push:

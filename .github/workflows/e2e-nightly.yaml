@@ -1,4 +1,4 @@
-name: E2E tests (nightly, full suite)
+name: E2E tests (nightly)
 
 # Runs ONLY specs labeled `Nightly` (slow / destructive scaling cases, etc.).
 # Triggers:

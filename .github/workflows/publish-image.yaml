@@ -1,4 +1,4 @@
-name: Publish gpu-node-mocker image
+name: Publish release images (reusable)
 
 # Reusable workflow. Invoked by create-release.yaml as the first stage of a
 # release. Creates the git tag (if missing), builds & pushes a multi-arch

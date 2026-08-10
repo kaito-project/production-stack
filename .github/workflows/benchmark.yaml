@@ -1,4 +1,4 @@
-name: ModelDeployment benchmark
+name: ModelDeployment benchmark (manual)
 
 # Workflow that:
 #   1. Reuses the E2E base setup composite action to bring up the AKS

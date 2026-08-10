@@ -1,4 +1,4 @@
-name: Publish nightly ACR images and charts
+name: Publish nightly images & charts to ACR (scheduled)
 
 on:
   schedule:

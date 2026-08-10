@@ -1,4 +1,4 @@
-name: Create release (manually)
+name: Create release (manual)
 
 # Single manual entry point for releasing production-stack. Orchestrates:
 #   1. publish-image.yaml      — create tag, build & push multi-arch image, scan
