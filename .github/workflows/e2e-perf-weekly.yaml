@@ -5,9 +5,9 @@ name: E2E tests (weekly, perf)
 # not consume cluster resources.
 on:
   schedule:
-    # Start after the 14:00 UTC daily nightly workflow to reduce contention on
-    # the singleton self-hosted E2E runner.
-    - cron: '0 18 * * 1'
+    # Saturday 18:00 UTC. Runs after that day's 14:00 UTC nightly workflow to
+    # reduce contention on the singleton self-hosted E2E runner.
+    - cron: '0 18 * * 6'
   workflow_dispatch:
     inputs:
       branch:

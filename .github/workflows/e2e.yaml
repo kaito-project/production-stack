@@ -1,10 +1,26 @@
-name: E2E tests (push / PR)
+name: E2E tests (PR)
 
 on:
-  push:
-    branches:
-      - main
-  pull_request: {}
+  # Only run E2E when a change can actually affect cluster behaviour
+  # (controllers, charts, images, the e2e suite or its setup / build inputs).
+  # Docs-only or otherwise unrelated changes are skipped so the singleton
+  # self-hosted E2E runner isn't spent on PRs that can't change the outcome.
+  # No push-to-main trigger: PRs already gate the merge and e2e-nightly.yaml
+  # runs the full suite on main daily, so post-merge breakage is caught there.
+  pull_request:
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'charts/**'
+      - 'docker/**'
+      - 'test/**'
+      - 'hack/e2e/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - 'versions.env'
+      - '.github/actions/e2e-base-setup/**'
+      - '.github/workflows/e2e.yaml'
   workflow_dispatch:
     inputs:
       branch:
