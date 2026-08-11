@@ -150,9 +150,9 @@ const (
 
 	// Cloud provider identifiers accepted by --cloud-provider. They match the
 	// KAITO pkg/sku catalog keys (github.com/kaito-project/kaito/pkg/utils/consts).
-	CloudProviderAzure = "azure"
-	CloudProviderAWS   = "aws"
-	CloudProviderArc   = "arc"
+	CloudProviderAzure   = "azure"
+	CloudProviderAWS     = "aws"
+	CloudProviderArc     = "arc"
 	DefaultCloudProvider = CloudProviderAzure
 )
 
