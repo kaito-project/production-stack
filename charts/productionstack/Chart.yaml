@@ -74,7 +74,7 @@ dependencies:
   # is part of the umbrella `productionstack` release manifest, so
   # `helm uninstall productionstack` cleans it up automatically.
   - name: llm-gateway-apikey
-    version: 0.0.14-alpha
+    version: 0.1.0
     repository: oci://mcr.microsoft.com/aks/kaito/helm
     condition: llm-gateway-apikey.enabled
     tags:
@@ -91,7 +91,7 @@ dependencies:
   # tenant-specific configuration (`azure.tenantId`, `azure.jwt.audiences`)
   # and has no sensible default.
   - name: llm-gateway-azureauth
-    version: 0.0.14-alpha
+    version: 0.1.0
     repository: oci://mcr.microsoft.com/aks/kaito/helm
     condition: llm-gateway-azureauth.enabled
     tags:

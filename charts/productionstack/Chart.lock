@@ -1,18 +1,21 @@
 dependencies:
 - name: body-based-routing
   repository: ""
-  version: 0.1.0
+  version: 0.1.1
 - name: keda-kaito-scaler
   repository: ""
   version: 0.6.2
 - name: gpu-node-mocker
   repository: file://../gpu-node-mocker
-  version: 0.3.1
+  version: 0.4.0
 - name: llm-gateway-apikey
   repository: oci://mcr.microsoft.com/aks/kaito/helm
-  version: 0.0.14-alpha
+  version: 0.1.0
 - name: llm-gateway-azureauth
   repository: oci://mcr.microsoft.com/aks/kaito/helm
-  version: 0.0.14-alpha
-digest: sha256:9660cc186a97fec0a2ab26d2d0650ce67b625e9efeb9c469e4652340c2a8513f
-generated: "2026-07-24T10:04:59.639851+10:00"
+  version: 0.1.0
+- name: productionstack-status-reporter
+  repository: ""
+  version: 0.4.0
+digest: sha256:0696ac2c3d12b27befff51bb79224796601cbee3cdb87f7f73ff09708401f7db
+generated: "2026-08-12T15:01:05.834782+10:00"
