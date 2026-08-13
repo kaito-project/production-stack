@@ -18,8 +18,8 @@ data:
     - name: default
       plugins:
       - pluginRef: queue-scorer
-        weight: 2
+        weight: 3
       - pluginRef: kv-cache-utilization-scorer
         weight: 2
       - pluginRef: prefix-cache-scorer
-        weight: 3
+        weight: 1
