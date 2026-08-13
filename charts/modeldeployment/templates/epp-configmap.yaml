@@ -22,4 +22,4 @@ data:
       - pluginRef: kv-cache-utilization-scorer
         weight: 2
       - pluginRef: prefix-cache-scorer
-        weight: 1
+        weight: 0
