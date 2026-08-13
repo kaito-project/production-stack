@@ -223,7 +223,7 @@ epp:
   # Adjust to trade off load distribution vs prefix-cache affinity.
   scorerWeights:
     queue: 2
-    kvCache: 2
+    kvCacheUtilization: 2
     prefixCache: 3
   resources:
     requests:

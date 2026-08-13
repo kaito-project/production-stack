@@ -68,7 +68,7 @@ type ModelDeploymentValues struct {
 	AutoUpgrade AutoUpgrade
 	// EPPScorerWeights overrides the EPP EndpointPickerConfig plugin weights
 	// for this deployment. Nil fields fall through to chart defaults
-	// (queue=3, kvCache=2, prefixCache=1).
+	// (queue=3, kvCacheUtilization=2, prefixCache=1).
 	EPPScorerWeights *EPPScorerWeights
 }
 
@@ -91,9 +91,9 @@ type AutoUpgrade struct {
 // EndpointPickerConfig scorer weights. A nil pointer means "use chart
 // defaults"; individual zero-valued fields ARE rendered (weight 0 is valid).
 type EPPScorerWeights struct {
-	Queue       *int
-	KVCache     *int
-	PrefixCache *int
+	Queue              *int
+	KVCacheUtilization *int
+	PrefixCache        *int
 }
 
 // ScalingMetric describes one composite scaling signal, mirroring a single
@@ -188,8 +188,8 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 		if v.EPPScorerWeights.Queue != nil {
 			args = append(args, "--set", "epp.scorerWeights.queue="+strconv.Itoa(*v.EPPScorerWeights.Queue))
 		}
-		if v.EPPScorerWeights.KVCache != nil {
-			args = append(args, "--set", "epp.scorerWeights.kvCache="+strconv.Itoa(*v.EPPScorerWeights.KVCache))
+		if v.EPPScorerWeights.KVCacheUtilization != nil {
+			args = append(args, "--set", "epp.scorerWeights.kvCacheUtilization="+strconv.Itoa(*v.EPPScorerWeights.KVCacheUtilization))
 		}
 		if v.EPPScorerWeights.PrefixCache != nil {
 			args = append(args, "--set", "epp.scorerWeights.prefixCache="+strconv.Itoa(*v.EPPScorerWeights.PrefixCache))

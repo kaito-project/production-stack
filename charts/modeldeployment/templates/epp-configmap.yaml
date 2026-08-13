@@ -20,6 +20,6 @@ data:
       - pluginRef: queue-scorer
         weight: {{ .Values.epp.scorerWeights.queue }}
       - pluginRef: kv-cache-utilization-scorer
-        weight: {{ .Values.epp.scorerWeights.kvCache }}
+        weight: {{ .Values.epp.scorerWeights.kvCacheUtilization }}
       - pluginRef: prefix-cache-scorer
         weight: {{ .Values.epp.scorerWeights.prefixCache }}
