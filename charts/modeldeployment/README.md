@@ -24,7 +24,7 @@ cross-field guard `maxReplicas >= replicas` and the non-empty
 are additionally enforced by fail-fast template guards when
 `enableScaling=true`.
 
-The EPP runs the [`llm-d-router-endpoint-picker`](https://github.com/llm-d/llm-d-router/tree/v0.9.1)
+The EPP runs the [`llm-d-router-endpoint-picker`](https://github.com/llm-d/llm-d-router/tree/v0.9.0)
 distribution with `--secure-serving=false`, so the Istio Gateway can reach it
 over plaintext gRPC and **no `DestinationRule` is required**.
 
@@ -53,7 +53,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `autoUpgrade.maintenanceWindow.duration` | optional | _empty_ → `4h`                                      | How long the window stays open once it opens, e.g. `"4h"`. Empty inherits the KAITO controller's `4h` default. Ignored when `schedule` is empty. |
 | `gatewayName`             | optional | _empty_ → `<namespace>-gw`                                          | Gateway the HTTPRoute attaches to. Defaults to the per-namespace Gateway provisioned by `charts/modelharness`. |
 | `epp.image.repository`    | optional | `mcr.microsoft.com/oss/v2/llm-d/llm-d-router-endpoint-picker`       | EPP container image.                                                                       |
-| `epp.image.tag`           | optional | `v0.9.1`                                                             | EPP image tag.                                                                             |
+| `epp.image.tag`           | optional | `v0.9.0`                                                             | EPP image tag.                                                                             |
 | `epp.image.pullPolicy`    | optional | `IfNotPresent`                                                       | EPP image pull policy.                                                                     |
 | `epp.replicas`            | optional | `1`                                                                  | Number of EPP pods.                                                                        |
 | `epp.modelServerPort`     | optional | `5000`                                                               | Port exposed by inference pods (`KAITO PortInferenceServer`).                              |
