@@ -91,8 +91,8 @@ type AutoUpgrade struct {
 // EndpointPickerConfig scorer weights. A nil pointer means "use chart
 // defaults"; individual zero-valued fields ARE rendered (weight 0 is valid).
 type EPPScorerWeights struct {
-	Queue *int
-	KVCache *int
+	Queue       *int
+	KVCache     *int
 	PrefixCache *int
 }
 
