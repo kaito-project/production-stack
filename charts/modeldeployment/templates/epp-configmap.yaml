@@ -18,8 +18,8 @@ data:
     - name: default
       plugins:
       - pluginRef: queue-scorer
-        weight: 3
+        weight: {{ .Values.epp.scorerWeights.queue }}
       - pluginRef: kv-cache-utilization-scorer
-        weight: 2
+        weight: {{ .Values.epp.scorerWeights.kvCache }}
       - pluginRef: prefix-cache-scorer
-        weight: 0
+        weight: {{ .Values.epp.scorerWeights.prefixCache }}

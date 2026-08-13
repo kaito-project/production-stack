@@ -66,6 +66,10 @@ type ModelDeploymentValues struct {
 	// upgrades, wired onto the modeldeployment chart's autoUpgrade.* values
 	// (rendered as spec.autoUpgrade). Only rendered when Enabled is true.
 	AutoUpgrade AutoUpgrade
+	// EPPScorerWeights overrides the EPP EndpointPickerConfig plugin weights
+	// for this deployment. Nil fields fall through to chart defaults
+	// (queue=3, kvCache=2, prefixCache=1).
+	EPPScorerWeights *EPPScorerWeights
 }
 
 // AutoUpgrade mirrors the modeldeployment chart's autoUpgrade values, wired
@@ -81,6 +85,15 @@ type AutoUpgrade struct {
 	// (autoUpgrade.maintenanceWindow.duration). Ignored when
 	// MaintenanceWindowSchedule is empty.
 	MaintenanceWindowDuration string
+}
+
+// EPPScorerWeights allows per-deployment override of the EPP
+// EndpointPickerConfig scorer weights. A nil pointer means "use chart
+// defaults"; individual zero-valued fields ARE rendered (weight 0 is valid).
+type EPPScorerWeights struct {
+	Queue *int
+	KVCache *int
+	PrefixCache *int
 }
 
 // ScalingMetric describes one composite scaling signal, mirroring a single
@@ -169,6 +182,17 @@ func (v ModelDeploymentValues) helmSetArgs() []string {
 				args = append(args, "--set-string",
 					"autoUpgrade.maintenanceWindow.duration="+v.AutoUpgrade.MaintenanceWindowDuration)
 			}
+		}
+	}
+	if v.EPPScorerWeights != nil {
+		if v.EPPScorerWeights.Queue != nil {
+			args = append(args, "--set", "epp.scorerWeights.queue="+strconv.Itoa(*v.EPPScorerWeights.Queue))
+		}
+		if v.EPPScorerWeights.KVCache != nil {
+			args = append(args, "--set", "epp.scorerWeights.kvCache="+strconv.Itoa(*v.EPPScorerWeights.KVCache))
+		}
+		if v.EPPScorerWeights.PrefixCache != nil {
+			args = append(args, "--set", "epp.scorerWeights.prefixCache="+strconv.Itoa(*v.EPPScorerWeights.PrefixCache))
 		}
 	}
 	return args

@@ -219,6 +219,12 @@ epp:
   metricsPort: 9090
   # logVerbosity passed as `--v=<n>`.
   logVerbosity: 1
+  # scorerWeights controls the EPP EndpointPickerConfig plugin weights.
+  # Adjust to trade off load distribution vs prefix-cache affinity.
+  scorerWeights:
+    queue: 3
+    kvCache: 2
+    prefixCache: 1
   resources:
     requests:
       cpu: 100m
