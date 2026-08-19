@@ -64,12 +64,28 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 	cfg := e.cfg
 	checks := []depReason{
 		{reason.ClusterIstioControlPlaneNotReady, cfg.IstioNamespace, cfg.IstiodDeployment, "istiod control plane"},
-		{reason.ClusterGatewayAuthNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthDeployment, "llm-gateway-auth ext_authz"},
 		{reason.ClusterBBRNotReady, cfg.BBRNamespace, cfg.BBRDeployment, "body-based-routing"},
 		{reason.ClusterKaitoControllerNotReady, cfg.KaitoNamespace, cfg.KaitoDeployment, "KAITO workspace controller"},
 		{reason.ClusterKedaKaitoScalerNotReady, cfg.KedaScalerNamespace, cfg.KedaScalerDeployment, "keda-kaito-scaler"},
 		{reason.ClusterKedaNotReady, cfg.KedaNamespace, "keda-operator", "KEDA control-plane"},
 		{reason.ClusterKedaNotReady, cfg.KedaNamespace, "keda-operator-metrics-apiserver", "KEDA control-plane"},
+	}
+	// clusterGatewayAuthNotReady — the fail-closed ext_authz data plane. Which
+	// backend Deployment exists depends on the per-namespace auth.mode the
+	// gateway-auth subcharts were installed for: apikey-authz (apikey/hybrid)
+	// and/or azure-authz (azure/hybrid). Both share this one reason and are
+	// probed only when configured, so a pure-azure cluster (no apikey-authz) or
+	// a pure-apikey cluster (no azure-authz) is not penalised for the absent
+	// backend; the active-map dedup below reports the shared reason at most once.
+	if cfg.GatewayAuthDeployment != "" {
+		checks = append(checks, depReason{
+			reason.ClusterGatewayAuthNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthDeployment, "apikey-authz ext_authz",
+		})
+	}
+	if cfg.AzureAuthz.Name != "" {
+		checks = append(checks, depReason{
+			reason.ClusterGatewayAuthNotReady, cfg.AzureAuthz.Namespace, cfg.AzureAuthz.Name, "azure-authz ext_authz",
+		})
 	}
 	// clusterNodeProvisionerNotReady — checked only when a provisioner is registered.
 	if cfg.NodeProvisioner.Name != "" {

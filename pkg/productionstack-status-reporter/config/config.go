@@ -51,6 +51,18 @@ type NodeProvisionerRef struct {
 	Namespace string
 }
 
+// AzureAuthzRef registers the optional azure-authz ext_authz Deployment the
+// cluster evaluator probes for clusterGatewayAuthNotReady. azure-authz is
+// installed for both azure and hybrid auth (subchart llm-gateway-azureauth); it
+// is a fail-closed ext_authz backend, so an outage blocks authenticated
+// requests exactly like apikey-authz. It shares the clusterGatewayAuthNotReady
+// reason with apikey-authz (GatewayAuthDeployment). When Name is empty the
+// probe is skipped so a pure-apikey cluster is not penalised (§1.2).
+type AzureAuthzRef struct {
+	Name      string
+	Namespace string
+}
+
 // Config holds the evaluator tunables, wired from command-line flags / the
 // Helm chart values.
 type Config struct {
@@ -66,7 +78,9 @@ type Config struct {
 	BBRNamespace         string
 	KedaScalerNamespace  string
 
-	// Deployment names probed for cluster-layer readiness.
+	// Deployment names probed for cluster-layer readiness. GatewayAuthDeployment
+	// is the apikey-authz ext_authz backend (present only for apikey/hybrid auth);
+	// leave it empty on a pure-azure cluster so its absence is not flagged.
 	IstiodDeployment      string
 	KaitoDeployment       string
 	BBRDeployment         string
@@ -75,6 +89,10 @@ type Config struct {
 
 	// NodeProvisioner is the optional node-provisioner Deployment to probe.
 	NodeProvisioner NodeProvisionerRef
+
+	// AzureAuthz is the optional azure-authz ext_authz Deployment to probe as a
+	// second backend of the clusterGatewayAuthNotReady reason.
+	AzureAuthz AzureAuthzRef
 
 	// WeightDownload configures the inferencesetWeightDownloadSlow window.
 	WeightDownload window.Config

@@ -51,7 +51,16 @@ controlPlane:
   kaitoDeployment: kaito-workspace
   bbrDeployment: body-based-router
   kedaScalerDeployment: keda-kaito-scaler
+  # apikey-authz ext_authz backend, present only for apikey/hybrid auth. Set to
+  # "" on a pure-azure cluster so its absence is not flagged.
   gatewayAuthDeployment: apikey-authz
+  # Optional azure-authz ext_authz backend (subchart llm-gateway-azureauth),
+  # installed for both azure and hybrid auth. It shares the
+  # clusterGatewayAuthNotReady reason with apikey-authz. Leave name empty on a
+  # pure-apikey cluster to skip the check.
+  azureAuthz:
+    name: ""
+    namespace: ""
   # Optional cluster-autoscaler / Karpenter node provisioner Deployment.
   # Leave name empty to skip the clusterNodeProvisionerNotReady check.
   nodeProvisioner:

@@ -65,6 +65,8 @@ func main() {
 		gatewayAuthDeployment string
 		nodeProvisionerName   string
 		nodeProvisionerNS     string
+		azureAuthzName        string
+		azureAuthzNS          string
 		weightWindowSeconds   int
 		weightMinMBps         float64
 		metricName            string
@@ -93,9 +95,11 @@ func main() {
 	flag.StringVar(&kaitoDeployment, "kaito-deployment", cfg.KaitoDeployment, "KAITO workspace controller Deployment name.")
 	flag.StringVar(&bbrDeployment, "bbr-deployment", cfg.BBRDeployment, "body-based-routing Deployment name.")
 	flag.StringVar(&kedaScalerDeployment, "keda-scaler-deployment", cfg.KedaScalerDeployment, "keda-kaito-scaler Deployment name.")
-	flag.StringVar(&gatewayAuthDeployment, "gateway-auth-deployment", cfg.GatewayAuthDeployment, "llm-gateway-auth ext_authz Deployment name.")
+	flag.StringVar(&gatewayAuthDeployment, "gateway-auth-deployment", cfg.GatewayAuthDeployment, "apikey-authz ext_authz Deployment name (apikey/hybrid auth); empty disables the check.")
 	flag.StringVar(&nodeProvisionerName, "node-provisioner-name", "", "Optional node-provisioner Deployment name; empty disables the check.")
 	flag.StringVar(&nodeProvisionerNS, "node-provisioner-namespace", "", "Node-provisioner Deployment namespace.")
+	flag.StringVar(&azureAuthzName, "azure-authz-deployment", "", "Optional azure-authz ext_authz Deployment name (azure/hybrid auth, shares clusterGatewayAuthNotReady); empty disables the check.")
+	flag.StringVar(&azureAuthzNS, "azure-authz-namespace", "", "azure-authz ext_authz Deployment namespace.")
 	flag.IntVar(&weightWindowSeconds, "weight-download-window-seconds", 60, "Sliding-window length for inferencesetWeightDownloadSlow.")
 	flag.Float64Var(&weightMinMBps, "weight-download-min-mbps", 20, "Throughput threshold (MB/s) for inferencesetWeightDownloadSlow.")
 	flag.StringVar(&metricName, "weight-download-metric", cfg.MetricName, "Prometheus gauge name for model-weights download throughput.")
@@ -120,6 +124,7 @@ func main() {
 	cfg.KedaScalerDeployment = kedaScalerDeployment
 	cfg.GatewayAuthDeployment = gatewayAuthDeployment
 	cfg.NodeProvisioner = config.NodeProvisionerRef{Name: nodeProvisionerName, Namespace: nodeProvisionerNS}
+	cfg.AzureAuthz = config.AzureAuthzRef{Name: azureAuthzName, Namespace: azureAuthzNS}
 	cfg.WeightDownload.WindowDuration = time.Duration(weightWindowSeconds) * time.Second
 	cfg.WeightDownload.MinMBps = weightMinMBps
 	cfg.MetricName = metricName

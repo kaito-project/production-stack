@@ -69,6 +69,12 @@ spec:
             - --node-provisioner-namespace={{ .namespace }}
             {{- end }}
             {{- end }}
+            {{- with .Values.controlPlane.azureAuthz }}
+            {{- if .name }}
+            - --azure-authz-deployment={{ .name }}
+            - --azure-authz-namespace={{ .namespace }}
+            {{- end }}
+            {{- end }}
             - --weight-download-window-seconds={{ .Values.controlPlane.weightDownload.windowSeconds }}
             - --weight-download-min-mbps={{ .Values.controlPlane.weightDownload.minMBps }}
             - --weight-download-metric={{ .Values.controlPlane.weightDownload.metricName }}
