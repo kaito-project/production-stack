@@ -77,7 +77,7 @@ var _ = Describe("Filter execution order",
 			caseNS = CaseNamespace(CaseFilterOrder)
 			dep := CaseDeployments[CaseFilterOrder][0]
 			modelName = dep.Name
-			hostHeader = caseNS + ".gw.example.com"
+			hostHeader = utils.GatewayHost(caseNS)
 			gatewayLabel = "gateway.networking.k8s.io/gateway-name=" + CaseGatewayName(CaseFilterOrder)
 
 			// Bearer token used by every "happy path" request below. Issued
@@ -121,7 +121,7 @@ var _ = Describe("Filter execution order",
 				req.Header.Set("Authorization", "Bearer "+token)
 			}
 			req.Host = hostHeader
-			client := &http.Client{Timeout: utils.HTTPTimeout}
+			client := utils.NewHTTPClient(utils.HTTPTimeout)
 			return client.Do(req)
 		}
 
@@ -322,7 +322,7 @@ var _ = Describe("Filter execution order",
 					"per-namespace Gateway pod should be Running")
 
 				dump, err := kubectlExec(caseNS, gwPod,
-					"curl", "-s", "http://127.0.0.1:15000/config_dump")
+					"pilot-agent", "request", "GET", "config_dump")
 				Expect(err).NotTo(HaveOccurred(),
 					"failed to read Envoy admin /config_dump from %s/%s", caseNS, gwPod)
 

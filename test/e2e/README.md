@@ -23,7 +23,7 @@ Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets
 `utils/`:
 
 - [`setup.go`](utils/setup.go) — `EnsureNamespace` (installs the modelharness chart per namespace), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
-- [`http.go`](utils/http.go) — multi-gateway port-forward (`GetGatewayURLFor`), `SendChatCompletion`.
+- [`http.go`](utils/http.go) — Gateway access (`GetGatewayURLFor`): DNS-independent HTTPS-to-load-balancer dialing on Azure, multi-gateway port-forwarding upstream, and `SendChatCompletion`.
 - [`helm.go`](utils/helm.go) — `InstallModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`.
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).

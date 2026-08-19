@@ -655,19 +655,18 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	// in an external namespace, which exercises the real CNI path the
 	// production N/S traffic would use.
 	It("should ALLOW external-namespace ingress to the gateway pod via Service ClusterIP", func() {
-		gwSvcName := utils.IstioGatewayServiceName(CaseGatewayName(CaseNetworkPolicyA))
-		svc, err := clientset.CoreV1().Services(namespace).Get(ctx, gwSvcName, metav1.GetOptions{})
-		Expect(err).NotTo(HaveOccurred(), "could not look up gateway Service %s/%s", namespace, gwSvcName)
+		svc, err := utils.GetGatewayService(ctx, namespace, CaseGatewayName(CaseNetworkPolicyA))
+		Expect(err).NotTo(HaveOccurred(), "could not look up gateway Service for %s", namespace)
 		Expect(svc.Spec.ClusterIP).NotTo(BeEmpty(), "gateway Service has no ClusterIP")
 
 		var gwPort int32
 		for _, p := range svc.Spec.Ports {
-			if p.Port == 80 {
+			if p.Port == 80 || p.Port == 443 {
 				gwPort = p.Port
 				break
 			}
 		}
-		Expect(gwPort).To(BeNumerically(">", 0), "gateway Service does not expose port 80")
+		Expect(gwPort).To(BeNumerically(">", 0), "gateway Service does not expose port 80 or 443")
 
 		out, _ := probeTarget("e2e-netpol-external-client",
 			connectCmd(svc.Spec.ClusterIP, gwPort), probeTimeout, nil)

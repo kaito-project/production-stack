@@ -2,36 +2,26 @@
 {{- if not .Values.azure.defaultDomain.zoneName }}
 {{- fail "cloudprovider=\"azure\" requires azure.defaultDomain.zoneName. Fetch with: az aks show -g $RG -n $CLUSTER --query 'ingressProfile.webAppRouting.defaultDomain.domainName' -o tsv" }}
 {{- end }}
-# Gateway with an Azure App-Routing default-domain HTTPS listener.
+# Gateway with an Azure App-Routing default-domain HTTP listener.
 # Rendered only when `cloudprovider=azure`; the non-Azure sibling
 # `templates/gateway.yaml` (HTTP only) renders otherwise. Kept as a
 # separate file (rather than an inline conditional in the shared
 # Gateway spec) so the two variants can evolve independently and it's
 # obvious at a glance which cloud a given cluster is running.
 #
-# HTTPS-only by design: the Azure Gateway is fronted by a public
-# LoadBalancer, and `auth.enabled` makes every request carry a bearer
-# credential (an Entra ID token under `auth.mode` azure/hybrid, or an
-# `sk-` API key under apikey/hybrid). A plaintext listener on a public
-# address would expose those credentials in transit, so no HTTP
-# listener is rendered here and `gatewayPort` applies to the non-cloud
-# variant only.
+# E2E reaches this listener through a local Service port-forward, so it
+# does not depend on public DNS or expose test credentials on the public
+# LoadBalancer. Production TLS requires the App Routing Key Vault and
+# Workload Identity integration and is intentionally outside this chart.
 #
-# Hostname on the HTTPS listener is composed as
+# Hostname on the HTTP listener is composed as
 # `<workload-namespace>.<zoneName>` so every modelharness release
 # gets a unique subdomain that the App-Routing operator's
 # `default-domain-dns` ClusterExternalDNS auto-publishes into the
 # aksapp.io zone.
 #
-# The cross-namespace `certificateRefs.namespace` is authorised by
-# the ReferenceGrant this chart renders in
-# `templates/azure/referencegrant.yaml` (into `secretRef.namespace`,
-# not this workload namespace).
-#
-# `gatewayClassName` MUST be `approuting-istio` for the HTTPS
-# listener to be reconciled; the Istio service-mesh add-on's
-# `istio` GatewayClass does not integrate with the default-domain
-# controller.
+# `gatewayClassName` MUST be `approuting-istio`; the Istio service-mesh
+# add-on's `istio` GatewayClass is a different AKS integration.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -43,16 +33,9 @@ spec:
   gatewayClassName: {{ .Values.gatewayClassName }}
   listeners:
     - name: {{ .Values.azure.defaultDomain.listenerName | quote }}
-      port: {{ .Values.azure.defaultDomain.httpsPort }}
-      protocol: HTTPS
+      port: {{ .Values.gatewayPort }}
+      protocol: HTTP
       hostname: {{ printf "%s.%s" (include "modelharness.namespace" .) (.Values.azure.defaultDomain.zoneName | trimPrefix ".") | quote }}
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - kind: Secret
-            group: ""
-            name: {{ .Values.azure.defaultDomain.secretRef.name | quote }}
-            namespace: {{ .Values.azure.defaultDomain.secretRef.namespace | quote }}
       allowedRoutes:
         namespaces:
           from: Same

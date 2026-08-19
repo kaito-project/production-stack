@@ -15,7 +15,7 @@ ENABLE_NODE_MOCKER="${ENABLE_NODE_MOCKER:-true}"
 
 FAILED=0
 TIMEOUT="${VALIDATE_TIMEOUT:-120s}"
-E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 
 # Derive KEDA namespace from provider when not explicitly provided.
 if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
@@ -92,14 +92,35 @@ elif [[ "${NODE_PROVISIONER}" == "karpenter" ]]; then
 fi
 
 
-# ── Istio (istiod) ──────────────────────────────────────────────────────
-echo "=== Istio ==="
-if kubectl -n istio-system wait --for=condition=ready pod -l app=istiod --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+# ── Routing controller ──────────────────────────────────────────────────
+echo "=== Routing controller ==="
+if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+  if kubectl wait --for=condition=Accepted gatewayclass/approuting-istio --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+    pass "AKS App Routing Istio GatewayClass is Accepted"
+  else
+    fail "AKS App Routing Istio GatewayClass is NOT Accepted"
+  fi
+  kubectl get gatewayclass approuting-istio 2>/dev/null || true
+  if [[ "$(kubectl -n aks-istio-system get deployment/istiod \
+      -o jsonpath='{range .spec.template.spec.containers[?(@.name=="discovery")].env[?(@.name=="ENABLE_GATEWAY_API_INFERENCE_EXTENSION")]}{.value}{end}')" == "true" ]]; then
+    pass "AKS App Routing istiod has Gateway API Inference Extension enabled"
+  else
+    fail "AKS App Routing istiod does NOT have Gateway API Inference Extension enabled"
+  fi
+  if [[ "$(kubectl auth can-i list envoyfilters.networking.istio.io \
+      --as=system:serviceaccount:aks-istio-system:istiod)" == "yes" ]]; then
+    pass "AKS App Routing istiod can read Istio extension resources"
+  else
+    fail "AKS App Routing istiod cannot read Istio extension resources"
+  fi
+elif kubectl -n istio-system wait --for=condition=ready pod -l app=istiod --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "istiod is Running"
 else
   fail "istiod is NOT Running"
 fi
-kubectl -n istio-system get pods -l app=istiod
+if [[ "${E2E_PROVIDER}" == "upstream" ]]; then
+  kubectl -n istio-system get pods -l app=istiod
+fi
 echo ""
 
 # ── BBR ──────────────────────────────────────────────────────────────────

@@ -146,10 +146,14 @@ E2E_PARALLEL ?= 2
 E2E_TIMEOUT  ?= 60m
 E2E_PERF_TIMEOUT ?= 24h
 E2E_JSON_REPORT ?= ginkgo-report.json
+E2E_PROVIDER ?= azure
 
 .PHONY: test-e2e
 test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 	@echo "Running e2e tests (parallel=$(E2E_PARALLEL), timeout=$(E2E_TIMEOUT))..."
+	E2E_PROVIDER=$(E2E_PROVIDER) \
+	RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) \
+	CLUSTER_NAME=$(E2E_CLUSTER_NAME) \
 	go run github.com/onsi/ginkgo/v2/ginkgo \
 		--procs=$(E2E_PARALLEL) \
 		--timeout=$(E2E_TIMEOUT) \
@@ -174,11 +178,11 @@ test-e2e-perf: ## Run prefix-cache perf specs serially. Override E2E_TRACE_FIXTU
 ## Override any version via environment variables, e.g.:
 ##   ISTIO_VERSION=1.30.0 KEDA_VERSION=v2.20.0 make e2e-install
 ##
-## The E2E_PROVIDER master switch (default: upstream) selects how
+## The E2E_PROVIDER master switch (default: azure) selects how
 ## infrastructure components are sourced:
 ##   upstream → install everything via Helm/upstream manifests
-##   azure    → enable the AKS managed KEDA add-on at cluster create
-##              time and skip the standalone Helm KEDA install
+##   azure    → enable AKS managed KEDA, Gateway API, App Routing Istio,
+##              and the AKS default domain at cluster create time
 ## --------------------------------------
 
 .PHONY: e2e
@@ -245,9 +249,15 @@ e2e-teardown: ## Tear down the E2E cluster.
 e2e-up: ## One command to set up full local E2E env (cluster, build, push, install, validate).
 	@set -e; \
 	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \
-	IMAGE_LINE=$$(hack/e2e/scripts/prepare-image.sh | grep '^image='); \
+	IMAGE_OUTPUT=$$(hack/e2e/scripts/prepare-image.sh); \
+	IMAGE_LINE=$$(printf '%s\n' "$${IMAGE_OUTPUT}" | grep '^image='); \
+	STATUS_REPORTER_IMAGE_LINE=$$(printf '%s\n' "$${IMAGE_OUTPUT}" | grep '^status_reporter_image='); \
 	export SHADOW_CONTROLLER_IMAGE=$${IMAGE_LINE#image=}; \
+	export STATUS_REPORTER_IMAGE=$${STATUS_REPORTER_IMAGE_LINE#status_reporter_image=}; \
+	test -n "$${SHADOW_CONTROLLER_IMAGE}"; \
+	test -n "$${STATUS_REPORTER_IMAGE}"; \
 	echo "Using SHADOW_CONTROLLER_IMAGE=$${SHADOW_CONTROLLER_IMAGE}"; \
+	echo "Using STATUS_REPORTER_IMAGE=$${STATUS_REPORTER_IMAGE}"; \
 	hack/e2e/scripts/run-e2e-local.sh setup; \
 	hack/e2e/scripts/run-e2e-local.sh install; \
 	hack/e2e/scripts/run-e2e-local.sh validate; \
@@ -255,7 +265,8 @@ e2e-up: ## One command to set up full local E2E env (cluster, build, push, insta
 	echo "=== E2E environment is ready ==="; \
 	echo "  Cluster: $(E2E_CLUSTER_NAME)"; \
 	echo "  Resource Group: $(E2E_RESOURCE_GROUP)"; \
-	echo "  Image:   $${SHADOW_CONTROLLER_IMAGE}"; \
+	echo "  Mocker image: $${SHADOW_CONTROLLER_IMAGE}"; \
+	echo "  Status reporter image: $${STATUS_REPORTER_IMAGE}"; \
 	echo "Run tests with: make test-e2e"; \
 	echo "Tear down with: CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) make e2e-teardown"
 
@@ -309,7 +320,11 @@ azure-karpenter-helm: ## Install Azure Karpenter Helm chart (run karpenter-azure
 e2e-up-karpenter: ## One command to set up full local E2E env using real Karpenter (AKS NAP, no gpu-node-mocker).
 	@set -e; \
 	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) LOCATION=eastus KAITO_NODE_PROVISIONER=karpenter KAITO_NODE_CLASS=azure ENABLE_NODE_MOCKER=false; \
-	hack/e2e/scripts/prepare-image.sh; \
+	IMAGE_OUTPUT=$$(hack/e2e/scripts/prepare-image.sh); \
+	STATUS_REPORTER_IMAGE_LINE=$$(printf '%s\n' "$${IMAGE_OUTPUT}" | grep '^status_reporter_image='); \
+	export STATUS_REPORTER_IMAGE=$${STATUS_REPORTER_IMAGE_LINE#status_reporter_image=}; \
+	test -n "$${STATUS_REPORTER_IMAGE}"; \
+	echo "Using STATUS_REPORTER_IMAGE=$${STATUS_REPORTER_IMAGE}"; \
 	hack/e2e/scripts/run-e2e-local.sh setup; \
 	$(MAKE) karpenter-azure-identity AZURE_CLUSTER_NAME=$(E2E_CLUSTER_NAME) AZURE_RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \
 	$(MAKE) azure-karpenter-helm AZURE_CLUSTER_NAME=$(E2E_CLUSTER_NAME) AZURE_RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \

@@ -506,7 +506,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(utils.EnsurePortForwards()).To(Succeed())
 			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
 
-			client := &http.Client{Timeout: utils.HTTPTimeout}
+			client := utils.NewHTTPClient(utils.HTTPTimeout)
 			body := []byte(`{"messages": [{"role": "user", "content": "hello"}]}`)
 			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
 				bytes.NewReader(body))
@@ -536,7 +536,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(utils.EnsurePortForwards()).To(Succeed())
 			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
 
-			client := &http.Client{Timeout: utils.HTTPTimeout}
+			client := utils.NewHTTPClient(utils.HTTPTimeout)
 			body := []byte(`{"model": 42, "messages": [{"role": "user", "content": "hello"}]}`)
 			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
 				bytes.NewReader(body))
@@ -571,7 +571,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(utils.EnsurePortForwards()).To(Succeed())
 			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
 
-			client := &http.Client{Timeout: utils.HTTPTimeout}
+			client := utils.NewHTTPClient(utils.HTTPTimeout)
 			body := []byte(`this is not json`)
 			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
 				bytes.NewReader(body))
@@ -603,7 +603,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(utils.EnsurePortForwards()).To(Succeed())
 			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
 
-			client := &http.Client{Timeout: utils.HTTPTimeout}
+			client := utils.NewHTTPClient(utils.HTTPTimeout)
 
 			// GET /healthz — should bypass BBR entirely.
 			req, err := http.NewRequest(http.MethodGet, gatewayURL+"/healthz", nil)

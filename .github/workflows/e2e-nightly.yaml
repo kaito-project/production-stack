@@ -20,9 +20,9 @@ on:
         required: true
         default: 'main'
       provider:
-        description: 'E2E provider — "upstream" or "azure" (Azure-managed KEDA add-on).'
+        description: 'E2E provider — "azure" uses managed KEDA, Gateway API, App Routing Istio, and the AKS default domain.'
         required: false
-        default: 'upstream'
+        default: 'azure'
         type: choice
         options:
           - upstream

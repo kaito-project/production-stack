@@ -21,8 +21,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestChatCompletionRequestSerializesMaxTokens(t *testing.T) {
@@ -52,5 +57,36 @@ func TestIsRecoverablePortForwardError(t *testing.T) {
 				t.Fatalf("isRecoverablePortForwardError() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestNewHTTPClientBypassesDNSAndPreservesHost(t *testing.T) {
+	receivedHost := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		receivedHost <- request.Host
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	target, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "gateway.invalid"
+	registerGatewayDialTarget(host, target)
+	t.Cleanup(func() {
+		gatewayDialMu.Lock()
+		delete(gatewayDialTargets, host)
+		gatewayDialMu.Unlock()
+	})
+
+	response, err := NewHTTPClient(time.Second).Get("http://" + net.JoinHostPort(host, port))
+	if err != nil {
+		t.Fatalf("request through registered dial target failed: %v", err)
+	}
+	response.Body.Close()
+
+	if got, want := <-receivedHost, net.JoinHostPort(host, port); got != want {
+		t.Fatalf("request Host = %q, want %q", got, want)
 	}
 }

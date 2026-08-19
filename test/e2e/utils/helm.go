@@ -21,7 +21,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
+	"sync"
 )
 
 // ModelDeploymentChartPath is the relative path (from the repo root, where
@@ -29,6 +32,94 @@ import (
 // It can be overridden via the MODELDEPLOYMENT_CHART env var to support
 // running tests from other working directories.
 const defaultModelDeploymentChartPath = "charts/modeldeployment"
+
+var (
+	azureRoutingOnce   sync.Once
+	azureRoutingArgs   []string
+	azureRoutingDomain string
+	azureRoutingErr    error
+)
+
+var dnsNamePattern = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?\.)+[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
+
+func parseDefaultDomain(output string) (string, error) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		candidate := strings.TrimPrefix(strings.TrimSpace(lines[i]), "*.")
+		if dnsNamePattern.MatchString(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("AKS App Routing default domain is missing or invalid")
+}
+
+func appRoutingHelmArgs(gatewayClass bool) ([]string, error) {
+	if os.Getenv("E2E_PROVIDER") != "azure" {
+		return nil, nil
+	}
+
+	azureRoutingOnce.Do(func() {
+		domain := os.Getenv("AZURE_DEFAULT_DOMAIN")
+		if domain == "" {
+			resourceGroup := os.Getenv("RESOURCE_GROUP")
+			clusterName := os.Getenv("CLUSTER_NAME")
+			if resourceGroup == "" || clusterName == "" {
+				azureRoutingErr = fmt.Errorf("Azure app routing requires AZURE_DEFAULT_DOMAIN or both RESOURCE_GROUP and CLUSTER_NAME")
+				return
+			}
+			cmd := exec.Command("az", "aks", "show",
+				"--resource-group", resourceGroup,
+				"--name", clusterName,
+				"--query", "ingressProfile.webAppRouting.defaultDomain.domainName",
+				"-o", "tsv")
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				azureRoutingErr = fmt.Errorf("discover AKS App Routing default domain: %w\n%s", err, string(out))
+				return
+			}
+			domain = string(out)
+		}
+		domain, err := parseDefaultDomain(domain)
+		if err != nil {
+			azureRoutingErr = err
+			return
+		}
+		azureRoutingDomain = domain
+		azureRoutingArgs = []string{
+			"--set", "cloudprovider=azure",
+			"--set", "azure.defaultDomain.zoneName=" + azureRoutingDomain,
+		}
+	})
+	if azureRoutingErr != nil {
+		return nil, azureRoutingErr
+	}
+
+	args := append([]string(nil), azureRoutingArgs...)
+	if gatewayClass {
+		args = append(args, "--set", "gatewayClassName=approuting-istio")
+	}
+	return args, nil
+}
+
+func appRoutingGatewayURL(namespace string) (string, error) {
+	if os.Getenv("E2E_PROVIDER") != "azure" {
+		return "", nil
+	}
+	if _, err := appRoutingHelmArgs(false); err != nil {
+		return "", err
+	}
+	return "http://" + namespace + "." + azureRoutingDomain, nil
+}
+
+// GatewayHost returns the hostname that requests to a namespace Gateway must
+// carry. Azure routes use the AKS default domain; upstream port-forwards keep
+// the synthetic host consumed by the API-key authorization service.
+func GatewayHost(namespace string) string {
+	if os.Getenv("E2E_PROVIDER") == "azure" && azureRoutingDomain != "" {
+		return namespace + "." + azureRoutingDomain
+	}
+	return namespace + ".gw.example.com"
+}
 
 // ModelDeploymentValues holds the subset of `charts/modeldeployment/values.yaml`
 // inputs that E2E test cases need to configure.
@@ -235,6 +326,11 @@ func InstallModelDeployment(values ModelDeploymentValues) error {
 		"--create-namespace",
 	}
 	args = append(args, values.helmSetArgs()...)
+	routingArgs, err := appRoutingHelmArgs(false)
+	if err != nil {
+		return fmt.Errorf("configure modeldeployment app routing: %w", err)
+	}
+	args = append(args, routingArgs...)
 
 	cmd := exec.Command("helm", args...)
 	out, err := cmd.CombinedOutput()
@@ -307,6 +403,11 @@ func InstallModelHarness(namespace string, authEnabled bool) error {
 		"--set", "namespace=" + namespace,
 		"--set", "auth.enabled=" + strconv.FormatBool(authEnabled),
 	}
+	routingArgs, err := appRoutingHelmArgs(true)
+	if err != nil {
+		return fmt.Errorf("configure modelharness app routing: %w", err)
+	}
+	args = append(args, routingArgs...)
 	args = append(args, "--wait")
 
 	cmd := exec.Command("helm", args...)

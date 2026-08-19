@@ -28,9 +28,9 @@ on:
         required: true
         default: 'main'
       provider:
-        description: 'E2E provider — selects component install mix. "upstream" = Helm-installed components; "azure" = AKS managed KEDA add-on, others stay upstream.'
+        description: 'E2E provider. "azure" uses managed KEDA, Gateway API, App Routing Istio, and the AKS default domain.'
         required: false
-        default: 'upstream'
+        default: 'azure'
         type: choice
         options:
           - upstream
