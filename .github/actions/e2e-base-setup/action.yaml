@@ -144,6 +144,8 @@ runs:
           echo "KAITO_NODE_PROVISIONER=${KAITO_NODE_PROVISIONER}"
           echo "ENABLE_NODE_MOCKER=${ENABLE_NODE_MOCKER}"
           echo "KAITO_NODE_CLASS=${KAITO_NODE_CLASS}"
+          echo "RESOURCE_GROUP=${{ inputs.resource-group }}"
+          echo "CLUSTER_NAME=${{ inputs.cluster-name }}"
         } >> "$GITHUB_ENV"
 
     - name: Print versions
@@ -217,28 +219,6 @@ runs:
         NODE_COUNT: ${{ inputs.node-count }}
         NODE_VM_SIZE: ${{ inputs.node-vm-size }}
       run: make e2e-setup
-
-    - name: Export AKS default domain
-      if: ${{ env.E2E_PROVIDER == 'azure' }}
-      shell: bash
-      env:
-        RESOURCE_GROUP: ${{ inputs.resource-group }}
-        CLUSTER_NAME: ${{ inputs.cluster-name }}
-      run: |
-        DOMAIN_OUTPUT=$(az aks show \
-          --resource-group "${RESOURCE_GROUP}" \
-          --name "${CLUSTER_NAME}" \
-          --query 'ingressProfile.webAppRouting.defaultDomain.domainName' \
-          -o tsv)
-        AZURE_DEFAULT_DOMAIN=$(printf '%s\n' "${DOMAIN_OUTPUT}" |
-          grep -E '^(\*\.)?([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]*[a-z0-9])?$' |
-          tail -n 1 || true)
-        AZURE_DEFAULT_DOMAIN="${AZURE_DEFAULT_DOMAIN#\*.}"
-        if [[ -z "${AZURE_DEFAULT_DOMAIN}" ]]; then
-          echo "AKS did not report an App Routing default domain" >&2
-          exit 1
-        fi
-        echo "AZURE_DEFAULT_DOMAIN=${AZURE_DEFAULT_DOMAIN}" >> "$GITHUB_ENV"
 
     - name: Install karpenter helm chart
       if: ${{ inputs.enable-node-mocker == 'false' && inputs.node-provisioner == 'karpenter' }}

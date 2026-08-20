@@ -493,8 +493,8 @@ func CaseGatewayName(caseName string) string {
 // for the EPP / inference pods + gateway routing to be ready. Returns the
 // gateway URL that routes to this case's deployments.
 //
-// EnsureNamespace installs the modelharness chart (Gateway, catch-all
-// HTTPRoute, ReferenceGrant, and optional auth artifacts) so each case
+// EnsureNamespace installs the modelharness chart (Gateway, routing
+// EnvoyFilters, network policies, and optional auth artifacts) so each case
 // has an isolated dataplane and parallel Ginkgo workers do not contend
 // on a shared gateway.
 //

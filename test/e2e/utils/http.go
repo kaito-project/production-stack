@@ -136,13 +136,6 @@ func (e *ErrorResponse) ErrorCode() string {
 	return strings.TrimSpace(string(e.Error.Code))
 }
 
-// IstioGatewayServiceName returns the Kubernetes Service name Istio
-// creates for a Gateway with the given resource name. Istio's pattern is
-// "<gateway-name>-istio".
-func IstioGatewayServiceName(gatewayName string) string {
-	return gatewayName + "-istio"
-}
-
 func findGatewayService(ctx context.Context, clientset kubernetes.Interface, namespace, gatewayName string) (*corev1.Service, error) {
 	services, err := clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "gateway.networking.k8s.io/gateway-name=" + gatewayName,
@@ -214,7 +207,7 @@ func gatewayURLHost(gatewayURL string) string {
 }
 
 // NewHTTPClient returns a client that bypasses public DNS for registered
-// Azure Gateway hostnames while preserving the request URL, Host, and TLS SNI.
+// Azure Gateway hostnames while preserving the request URL and Host header.
 func NewHTTPClient(timeout time.Duration) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil

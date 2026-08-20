@@ -1,0 +1,6 @@
+apiVersion: v2
+name: app-routing-config
+description: E2E configuration for AKS App Routing Istio extensions
+type: application
+version: 0.1.0
+appVersion: "1.0"

@@ -235,10 +235,8 @@ kubectl -n kube-system wait --for=condition=ready pod \
 #              Istio is installed via istioctl.
 #
 # Istio is installed here (rather than in install-components.sh's
-# phase1-base) so the productionstack umbrella chart — which ships an
-# EnvoyFilter requiring networking.istio.io/v1alpha3 to be Established
-# — can install in parallel with KAITO et al. without racing on the
-# Istio control plane being up.
+# phase1-base) so workload charts can render EnvoyFilters without racing
+# the Istio CRDs or control plane.
 #
 # GAIE (Gateway API Inference Extension) CRDs are installed later by
 # install-components.sh in phase1-base — no AKS managed add-on covers
@@ -367,65 +365,12 @@ install_istio() {
       crd/requestauthentications.security.istio.io \
       --timeout=180s
 
-    # The managed istiod account only has access to APIs installed by the
-    # add-on. Grant read-only access to the Istio extension APIs used by the
-    # modelharness EnvoyFilters and authorization policies.
-    kubectl apply -f - <<'EOF'
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: e2e-app-routing-istio-extension-reader
-rules:
-  - apiGroups:
-      - networking.istio.io
-      - security.istio.io
-      - extensions.istio.io
-      - telemetry.istio.io
-    resources: ["*"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: e2e-app-routing-istio-extension-reader
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: e2e-app-routing-istio-extension-reader
-subjects:
-  - kind: ServiceAccount
-    name: istiod
-    namespace: aks-istio-system
-EOF
-
-    # InferencePool support is present in the managed image but disabled by
-    # default. AKS continuously reconciles this Deployment, so preserve only
-    # this required E2E setting while allowing every other add-on update.
-    kubectl apply -f - <<'EOF'
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicy
-metadata:
-  name: e2e-preserve-istiod-inference-extension
-spec:
-  failurePolicy: Fail
-  matchConstraints:
-    resourceRules:
-      - apiGroups: ["apps"]
-        apiVersions: ["v1"]
-        operations: ["CREATE", "UPDATE"]
-        resources: ["deployments"]
-  validations:
-    - expression: "object.metadata.namespace != 'aks-istio-system' || object.metadata.name != 'istiod' || object.spec.template.spec.containers.exists(c, c.name == 'discovery' && c.env.exists(e, e.name == 'ENABLE_GATEWAY_API_INFERENCE_EXTENSION' && e.value == 'true'))"
-      message: "The E2E App Routing istiod must keep Gateway API Inference Extension enabled"
----
-apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingAdmissionPolicyBinding
-metadata:
-  name: e2e-preserve-istiod-inference-extension
-spec:
-  policyName: e2e-preserve-istiod-inference-extension
-  validationActions: [Deny]
-EOF
+    # The chart grants managed istiod access only to the extension resources
+    # modelharness renders and preserves the InferencePool feature flag against
+    # AKS reconciliation.
+    helm upgrade --install app-routing-config \
+      "${SCRIPT_DIR}/../../../charts/app-routing-config" \
+      --namespace aks-istio-system
 
     kubectl -n aks-istio-system set env deployment/istiod \
       ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true

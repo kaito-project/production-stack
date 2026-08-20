@@ -247,7 +247,7 @@ install_node_provisioner() {
   fi
 
   echo "=== Deploying gpu-node-mocker (GPU node mocker, --node-provisioner=${NODE_PROVISIONER}) ==="
-  helm install gpu-node-mocker ./charts/gpu-node-mocker \
+  helm upgrade --install gpu-node-mocker ./charts/gpu-node-mocker \
     --namespace kaito-system \
     --create-namespace \
     --set nodeProvisioner="${NODE_PROVISIONER}" \
@@ -333,13 +333,13 @@ install_productionstack() {
   echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
   echo "    productionstack-status-reporter → kaito-system (image: ${STATUS_REPORTER_IMAGE})"
   # productionstack-status-reporter control-plane overrides: the reporter's
-  # chart defaults target a production AKS topology (aks-istio-system,
-  # kaito-workspace namespace). The E2E cluster installs istiod via istioctl
-  # into `istio-system` and the KAITO workspace controller into `kaito-system`,
-  # so point the reporter's probes at the E2E namespaces. startupGraceSeconds
-  # is shortened so findings surface within the test emit timeouts.
+  # KAITO workspace controller runs in kaito-system. Istio is AKS-managed in
+  # aks-istio-system for Azure and self-managed in istio-system upstream.
+  # startupGraceSeconds is shortened so findings surface within test timeouts.
   local provider_args=()
+  local istio_namespace="istio-system"
   if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    istio_namespace="aks-istio-system"
     provider_args=(
       --set cloudprovider=azure
     )
@@ -355,7 +355,7 @@ install_productionstack() {
     --set productionstack-status-reporter.image.tag="${STATUS_REPORTER_IMAGE##*:}" \
     --set productionstack-status-reporter.image.pullPolicy=Always \
     --set productionstack-status-reporter.startupGraceSeconds=30 \
-    --set productionstack-status-reporter.controlPlane.istioNamespace=istio-system \
+    --set productionstack-status-reporter.controlPlane.istioNamespace="${istio_namespace}" \
     --set productionstack-status-reporter.controlPlane.istiodDeployment=istiod \
     --set productionstack-status-reporter.controlPlane.kaitoNamespace=kaito-system \
     --set productionstack-status-reporter.controlPlane.kaitoDeployment=kaito-workspace \
