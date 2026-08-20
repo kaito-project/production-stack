@@ -32,7 +32,7 @@ inputs:
     required: false
     default: 'Standard_D4d_v4'
   provider:
-    description: 'E2E provider (upstream|azure) — master switch for component install mix. Empty defaults to upstream.'
+    description: 'E2E provider (upstream|azure) — master switch for component install mix. Empty uses versions.env (azure by default).'
     required: false
     default: ''
   # Component version overrides — empty string means "use versions.env default".
@@ -131,6 +131,8 @@ runs:
         # Export to GITHUB_ENV so all subsequent steps inherit these.
         {
           echo "GO_VERSION=${GO_VERSION}"
+          echo "AZURE_CLI_VERSION=${AZURE_CLI_VERSION}"
+          echo "AKS_PREVIEW_VERSION=${AKS_PREVIEW_VERSION}"
           echo "E2E_PROVIDER=${E2E_PROVIDER}"
           echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
@@ -142,6 +144,8 @@ runs:
           echo "KAITO_NODE_PROVISIONER=${KAITO_NODE_PROVISIONER}"
           echo "ENABLE_NODE_MOCKER=${ENABLE_NODE_MOCKER}"
           echo "KAITO_NODE_CLASS=${KAITO_NODE_CLASS}"
+          echo "RESOURCE_GROUP=${{ inputs.resource-group }}"
+          echo "CLUSTER_NAME=${{ inputs.cluster-name }}"
         } >> "$GITHUB_ENV"
 
     - name: Print versions
@@ -150,6 +154,8 @@ runs:
         echo "E2E_PROVIDER=${E2E_PROVIDER}"
         echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
         echo "GO_VERSION=${GO_VERSION}"
+        echo "AZURE_CLI_VERSION=${AZURE_CLI_VERSION}"
+        echo "AKS_PREVIEW_VERSION=${AKS_PREVIEW_VERSION}"
         echo "ISTIO_VERSION=${ISTIO_VERSION}"
         echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
         echo "KEDA_VERSION=${KEDA_VERSION}"
@@ -164,6 +170,22 @@ runs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+
+    - name: Setup Azure CLI
+      shell: bash
+      run: |
+        AZURE_CLI_ROOT="${RUNNER_TEMP}/azure-cli-${AZURE_CLI_VERSION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        python3 -m pip install \
+          --disable-pip-version-check \
+          --quiet \
+          --target "${AZURE_CLI_ROOT}/lib" \
+          "azure-cli==${AZURE_CLI_VERSION}"
+        mkdir -p "${AZURE_CLI_ROOT}/bin"
+        printf '#!/usr/bin/env bash\nexec env PYTHONPATH=%q python3 -m azure.cli "$@"\n' \
+          "${AZURE_CLI_ROOT}/lib" > "${AZURE_CLI_ROOT}/bin/az"
+        chmod +x "${AZURE_CLI_ROOT}/bin/az"
+        echo "${AZURE_CLI_ROOT}/bin" >> "$GITHUB_PATH"
+        "${AZURE_CLI_ROOT}/bin/az" version
 
     - name: Azure Login
       shell: bash

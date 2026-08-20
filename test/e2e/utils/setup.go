@@ -27,7 +27,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 )
 
 // EnsureNamespace creates the namespace if it does not exist and installs
@@ -101,7 +100,7 @@ func DeleteNamespace(ctx context.Context, name string) error {
 }
 
 // WaitForGatewayService blocks until the Istio Service backing the named
-// Gateway exists AND the gateway Pod has at least one Ready replica, so
+// Gateway exists AND the gateway Pod has at least one Ready replica. This ensures
 // port-forwards started immediately afterwards do not race the
 // gateway-controller. Istio creates the Service synchronously when it
 // observes the Gateway resource, but the underlying envoy Pod takes
@@ -110,19 +109,17 @@ func DeleteNamespace(ctx context.Context, name string) error {
 // causes the 30s port-forward readiness probe to time out.
 func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, timeout time.Duration) error {
 	GetClusterClient(TestingCluster)
-	cl := TestingCluster.KubeClient
 	clientset, err := GetK8sClientset()
 	if err != nil {
 		return fmt.Errorf("init clientset: %w", err)
 	}
 
 	deadline := time.Now().Add(timeout)
-	svc := &corev1.Service{}
-	svcKey := types.NamespacedName{Namespace: namespace, Name: IstioGatewayServiceName(gatewayName)}
 	podSelector := fmt.Sprintf("gateway.networking.k8s.io/gateway-name=%s", gatewayName)
 
 	for time.Now().Before(deadline) {
-		if err := cl.Get(ctx, svcKey, svc); err != nil {
+		_, err := findGatewayService(ctx, clientset, namespace, gatewayName)
+		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -143,8 +140,9 @@ func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, t
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return fmt.Errorf("gateway %s/%s did not become ready within %s (service=%s, pod selector=%q)",
-		namespace, gatewayName, timeout, svcKey.Name, podSelector)
+	return fmt.Errorf("gateway %s/%s did not become ready within %s (service selector=%q, pod selector=%q)",
+		namespace, gatewayName, timeout,
+		"gateway.networking.k8s.io/gateway-name="+gatewayName, podSelector)
 }
 
 // SetupInferenceSetsWithRouting idempotently installs the modeldeployment
@@ -278,18 +276,9 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 				key, err := GetAPIKeyFromSecret(ctx, d.Namespace)
 				Expect(err).NotTo(HaveOccurred())
 				bearerToken = key
-				hostHeader = d.Namespace + ".gw.example.com"
+				hostHeader = GatewayHost(d.Namespace)
 				// Give Envoy a moment to pick up the AuthorizationPolicy.
 				time.Sleep(5 * time.Second)
-				// DEBUG: surface the bearer prefix + host so failed-warmup
-				// triage can correlate the request with what apikey-authz
-				// indexed for this namespace.
-				keyPrefix := bearerToken
-				if len(keyPrefix) > 8 {
-					keyPrefix = keyPrefix[:8]
-				}
-				By(fmt.Sprintf("DEBUG warmup auth ns=%s deployment=%s host=%s bearerPrefix=%s bearerLen=%d",
-					d.Namespace, d.Name, hostHeader, keyPrefix, len(bearerToken)))
 			}
 			By(fmt.Sprintf("Waiting for gateway routing to be ready for deployment %s (preset %s)", d.Name, d.Model))
 			Eventually(func() error {

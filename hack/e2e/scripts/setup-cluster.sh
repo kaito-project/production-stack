@@ -14,10 +14,10 @@
 #   LOCATION              — Azure region               (default: australiaeast)
 #   NODE_COUNT            — Number of worker nodes      (default: 2)
 #   NODE_VM_SIZE          — VM SKU for the node pool    (default: Standard_D8d_v4)
-#   E2E_PROVIDER          — upstream|azure              (default: upstream)
+#   E2E_PROVIDER          — upstream|azure              (default: azure)
 #   GATEWAY_API_VERSION   — Gateway API CRD version    (sourced from versions.env)
 #   KEDA_VERSION          — KEDA Helm chart version    (sourced from versions.env)
-#   ISTIO_VERSION         — Istio control-plane version (sourced from versions.env)
+#   ISTIO_VERSION         — Istio control-plane version for upstream provider
 #   KEDA_NAMESPACE        — Override the namespace KEDA is installed into
 #                           (derived from E2E_PROVIDER when unset)
 #   KAITO_NODE_PROVISIONER — Provisioner KAITO is configured to use
@@ -44,13 +44,16 @@ ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
 LOCATION="${LOCATION:-australiaeast}"
 NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
-E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+E2E_PROVIDER="${E2E_PROVIDER:-azure}"
+AZURE_CLI_VERSION="${AZURE_CLI_VERSION:-2.85.0}"
+AKS_PREVIEW_VERSION="${AKS_PREVIEW_VERSION:-21.0.0b10}"
 
 # Optional AKS-managed add-ons toggled by provider.
 #   azure    -> enable the managed KEDA add-on so the cluster ships with
 #               KEDA pre-installed in `kube-system`, and install-components.sh
 #               skips the Helm-based KEDA install. Also enable the managed
-#               Gateway API CRDs add-on (preview, requires aks-preview
+#               Gateway API CRDs and App Routing Istio add-ons (preview,
+#               requires aks-preview
 #               extension and the `ManagedGatewayAPIPreview` feature flag)
 #               so install-components.sh can skip the upstream
 #               kubectl-apply of standard-install.yaml.
@@ -60,17 +63,37 @@ E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
 EXTRA_AKS_ARGS=()
 case "${E2E_PROVIDER}" in
   azure)
-    EXTRA_AKS_ARGS+=(--enable-keda --enable-gateway-api)
+    EXTRA_AKS_ARGS+=(
+      --enable-keda
+      --enable-gateway-api
+      --enable-app-routing-istio
+      --enable-default-domain
+    )
 
     # Managed Gateway API requires the aks-preview extension and the
     # `ManagedGatewayAPIPreview` feature flag to be registered on the
     # subscription. Make both prerequisites idempotent.
-    echo "=== Ensuring aks-preview Azure CLI extension is installed ==="
-    if ! az extension show --name aks-preview >/dev/null 2>&1; then
-      az extension add --name aks-preview --yes
-    else
-      az extension update --name aks-preview >/dev/null || true
+    INSTALLED_AZURE_CLI_VERSION=$(az version --query '"azure-cli"' -o tsv)
+    if [[ "$(printf '%s\n' "${AZURE_CLI_VERSION}" "${INSTALLED_AZURE_CLI_VERSION}" | sort -V | head -n 1)" != "${AZURE_CLI_VERSION}" ]]; then
+      echo "Azure CLI ${AZURE_CLI_VERSION} or newer is required; found ${INSTALLED_AZURE_CLI_VERSION}." >&2
+      exit 1
     fi
+    echo "=== Ensuring aks-preview Azure CLI extension ${AKS_PREVIEW_VERSION} is installed ==="
+    INSTALLED_AKS_PREVIEW_VERSION=$(az extension show \
+      --name aks-preview \
+      --query version -o tsv 2>/dev/null || true)
+    if [[ "${INSTALLED_AKS_PREVIEW_VERSION}" != "${AKS_PREVIEW_VERSION}" ]]; then
+      if [[ -n "${INSTALLED_AKS_PREVIEW_VERSION}" ]]; then
+        az extension remove --name aks-preview
+      fi
+      az extension add \
+        --name aks-preview \
+        --version "${AKS_PREVIEW_VERSION}" \
+        --yes
+    fi
+    az extension show \
+      --name aks-preview \
+      --query '{name:name, version:version}' -o table
 
     echo "=== Ensuring ManagedGatewayAPIPreview feature flag is registered ==="
     FEATURE_STATE=$(az feature show \
@@ -190,7 +213,7 @@ kubectl -n kube-system wait --for=condition=ready pod \
   -l k8s-app=cilium --timeout=300s
 
 # ─────────────────────────────────────────────────────────────────────────
-# Cluster-prep components (KEDA + Gateway API base CRDs + Istio)
+# Cluster-prep components (KEDA + Gateway API base CRDs + routing controller)
 #
 # These pieces sit BETWEEN cluster creation and application install:
 # they are infrastructure prerequisites every E2E run needs, and on AKS
@@ -204,18 +227,16 @@ kubectl -n kube-system wait --for=condition=ready pod \
 # Per-provider behavior:
 #   azure    → managed KEDA + managed Gateway API CRDs are already
 #              installed by `az aks create --enable-keda
-#              --enable-gateway-api`. We only wait for their controllers
-#              / CRDs to be served. Istio is still installed via
-#              istioctl here.
+#              --enable-gateway-api --enable-app-routing-istio
+#              --enable-default-domain`. We only wait for their controllers,
+#              CRDs, and the `approuting-istio` GatewayClass to be ready.
 #   upstream → install KEDA via Helm into a dedicated `keda` namespace
 #              and apply the upstream Gateway API base CRDs via kubectl.
 #              Istio is installed via istioctl.
 #
 # Istio is installed here (rather than in install-components.sh's
-# phase1-base) so the productionstack umbrella chart — which ships an
-# EnvoyFilter requiring networking.istio.io/v1alpha3 to be Established
-# — can install in parallel with KAITO et al. without racing on the
-# Istio control plane being up.
+# phase1-base) so workload charts can render EnvoyFilters without racing
+# the Istio CRDs or control plane.
 #
 # GAIE (Gateway API Inference Extension) CRDs are installed later by
 # install-components.sh in phase1-base — no AKS managed add-on covers
@@ -245,14 +266,14 @@ if ! command -v helm &>/dev/null; then
   curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash
 fi
 
-# Ensure istioctl is available before fan-out so the parallel install
-# task does not need to download it under a forked subshell.
-if ! command -v istioctl &>/dev/null; then
+# Ensure istioctl is available for the upstream provider before fan-out so
+# the parallel install task does not download it under a forked subshell.
+if [[ "${E2E_PROVIDER}" == "upstream" ]] && ! command -v istioctl &>/dev/null; then
   echo "=== Installing istioctl ${ISTIO_VERSION} ==="
   curl -L https://istio.io/downloadIstio | ISTIO_VERSION="${ISTIO_VERSION}" sh -
   export PATH="${PWD}/istio-${ISTIO_VERSION}/bin:${PATH}"
+  echo "Using istioctl: $(command -v istioctl)"
 fi
-echo "Using istioctl: $(command -v istioctl)"
 
 # Source the shared run_phase / fmt_dur helpers so KEDA, Gateway API
 # CRDs, and Istio can install concurrently.
@@ -323,6 +344,40 @@ install_gateway_api_crds() {
 # productionstack BBR subchart depends on is part of "Istio core" and is
 # therefore Established before istiod's rollout completes.
 install_istio() {
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    echo "=== Waiting for AKS App Routing Istio GatewayClass ==="
+    for _ in $(seq 1 60); do
+      if kubectl get gatewayclass approuting-istio >/dev/null 2>&1; then
+        kubectl wait --for=condition=Accepted gatewayclass/approuting-istio --timeout=300s
+        break
+      fi
+      sleep 5
+    done
+    if ! kubectl get gatewayclass approuting-istio >/dev/null 2>&1; then
+      echo "ERROR: approuting-istio GatewayClass was not created by the AKS add-on" >&2
+      return 1
+    fi
+
+    echo "=== Installing Istio ${ISTIO_VERSION} extension CRDs for App Routing ==="
+    kubectl apply -f "https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/manifests/charts/base/files/crd-all.gen.yaml"
+    kubectl wait --for=condition=Established \
+      crd/envoyfilters.networking.istio.io \
+      crd/requestauthentications.security.istio.io \
+      --timeout=180s
+
+    # The chart grants managed istiod access only to the extension resources
+    # modelharness renders and preserves the InferencePool feature flag against
+    # AKS reconciliation.
+    helm upgrade --install app-routing-config \
+      "${SCRIPT_DIR}/../../../charts/app-routing-config" \
+      --namespace aks-istio-system
+
+    kubectl -n aks-istio-system set env deployment/istiod \
+      ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true
+    kubectl -n aks-istio-system rollout status deployment/istiod --timeout=300s
+    return
+  fi
+
   echo "=== Installing Istio ${ISTIO_VERSION} ==="
   istioctl install \
     --set profile=minimal \

@@ -27,7 +27,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 STATUS_REPORTER_IMAGE="${STATUS_REPORTER_IMAGE:-ghcr.io/kaito-project/productionstack-status-reporter:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
-E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+E2E_PROVIDER="${E2E_PROVIDER:-azure}"
+
+AZURE_DEFAULT_DOMAIN="${AZURE_DEFAULT_DOMAIN:-}"
+if [[ "${E2E_PROVIDER}" == "azure" && -z "${AZURE_DEFAULT_DOMAIN}" ]]; then
+  : "${RESOURCE_GROUP:?RESOURCE_GROUP is required to discover the AKS default domain}"
+  : "${CLUSTER_NAME:?CLUSTER_NAME is required to discover the AKS default domain}"
+  echo "=== Discovering AKS App Routing default domain ==="
+  for _ in $(seq 1 60); do
+    DOMAIN_OUTPUT=$(az aks show \
+      --resource-group "${RESOURCE_GROUP}" \
+      --name "${CLUSTER_NAME}" \
+      --query 'ingressProfile.webAppRouting.defaultDomain.domainName' \
+      -o tsv 2>/dev/null || true)
+    AZURE_DEFAULT_DOMAIN=$(printf '%s\n' "${DOMAIN_OUTPUT}" |
+      grep -E '^(\*\.)?([a-z0-9]([-a-z0-9]*[a-z0-9])?\.)+[a-z0-9]([-a-z0-9]*[a-z0-9])?$' |
+      tail -n 1 || true)
+    AZURE_DEFAULT_DOMAIN="${AZURE_DEFAULT_DOMAIN#\*.}"
+    if [[ -n "${AZURE_DEFAULT_DOMAIN}" ]]; then
+      break
+    fi
+    sleep 5
+  done
+  if [[ -z "${AZURE_DEFAULT_DOMAIN}" ]]; then
+    echo "ERROR: AKS did not report an App Routing default domain" >&2
+    exit 1
+  fi
+fi
+export AZURE_DEFAULT_DOMAIN
 
 # shellcheck source=lib-parallel.sh
 source "${SCRIPT_DIR}/lib-parallel.sh"
@@ -98,6 +125,7 @@ echo "  NODE_PROVISIONER:          ${NODE_PROVISIONER}"
 echo "  ENABLE_NODE_MOCKER:        ${ENABLE_NODE_MOCKER}"
 echo "  KAITO_NODE_CLASS:          ${KAITO_NODE_CLASS} (${NODE_CLASS_GROUP}/${NODE_CLASS_VERSION} ${NODE_CLASS_KIND})"
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
+[[ "${E2E_PROVIDER}" == "azure" ]] && echo "  AZURE_DEFAULT_DOMAIN:      ${AZURE_DEFAULT_DOMAIN}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
 echo "  STATUS_REPORTER_IMAGE:     ${STATUS_REPORTER_IMAGE}"
 echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
@@ -110,6 +138,24 @@ PRODUCTIONSTACK_CHART_DIR="${SCRIPT_DIR}/../../../charts/productionstack"
 if ! command -v helm &>/dev/null; then
   echo "Installing helm..."
   curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash
+fi
+
+# AKS App Routing provides the managed Istio controller but may not install
+# extension CRDs used by productionstack/modelharness. Ensure those CRDs exist
+# before Helm builds any manifests containing EnvoyFilter or
+# RequestAuthentication. This is idempotent and also repairs existing clusters
+# whose setup completed before this preflight was added.
+if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+  : "${ISTIO_VERSION:?ISTIO_VERSION is required to install App Routing extension CRDs}"
+  if ! kubectl get crd envoyfilters.networking.istio.io >/dev/null 2>&1 ||
+     ! kubectl get crd requestauthentications.security.istio.io >/dev/null 2>&1; then
+    echo "=== Installing Istio ${ISTIO_VERSION} extension CRDs for App Routing ==="
+    kubectl apply -f "https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/manifests/charts/base/files/crd-all.gen.yaml"
+  fi
+  kubectl wait --for=condition=Established \
+    crd/envoyfilters.networking.istio.io \
+    crd/requestauthentications.security.istio.io \
+    --timeout=180s
 fi
 
 # ── KAITO chart resolution ────────────────────────────────────────────────
@@ -201,7 +247,7 @@ install_node_provisioner() {
   fi
 
   echo "=== Deploying gpu-node-mocker (GPU node mocker, --node-provisioner=${NODE_PROVISIONER}) ==="
-  helm install gpu-node-mocker ./charts/gpu-node-mocker \
+  helm upgrade --install gpu-node-mocker ./charts/gpu-node-mocker \
     --namespace kaito-system \
     --create-namespace \
     --set nodeProvisioner="${NODE_PROVISIONER}" \
@@ -287,11 +333,18 @@ install_productionstack() {
   echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
   echo "    productionstack-status-reporter → kaito-system (image: ${STATUS_REPORTER_IMAGE})"
   # productionstack-status-reporter control-plane overrides: the reporter's
-  # chart defaults target a production AKS topology (aks-istio-system,
-  # kaito-workspace namespace). The E2E cluster installs istiod via istioctl
-  # into `istio-system` and the KAITO workspace controller into `kaito-system`,
-  # so point the reporter's probes at the E2E namespaces. startupGraceSeconds
-  # is shortened so findings surface within the test emit timeouts.
+  # KAITO workspace controller runs in kaito-system. Istio is AKS-managed in
+  # aks-istio-system for Azure and self-managed in istio-system upstream.
+  # startupGraceSeconds is shortened so findings surface within test timeouts.
+  local provider_args=()
+  local istio_namespace="istio-system"
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    istio_namespace="aks-istio-system"
+    provider_args=(
+      --set cloudprovider=azure
+    )
+  fi
+
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
     --namespace kaito-system \
     --create-namespace \
@@ -302,12 +355,13 @@ install_productionstack() {
     --set productionstack-status-reporter.image.tag="${STATUS_REPORTER_IMAGE##*:}" \
     --set productionstack-status-reporter.image.pullPolicy=Always \
     --set productionstack-status-reporter.startupGraceSeconds=30 \
-    --set productionstack-status-reporter.controlPlane.istioNamespace=istio-system \
+    --set productionstack-status-reporter.controlPlane.istioNamespace="${istio_namespace}" \
     --set productionstack-status-reporter.controlPlane.istiodDeployment=istiod \
     --set productionstack-status-reporter.controlPlane.kaitoNamespace=kaito-system \
     --set productionstack-status-reporter.controlPlane.kaitoDeployment=kaito-workspace \
     --set productionstack-status-reporter.controlPlane.kedaNamespace="${KEDA_NAMESPACE}" \
     --set productionstack-status-reporter.controlPlane.kedaScalerNamespace="${KEDA_NAMESPACE}" \
+    "${provider_args[@]+"${provider_args[@]}"}" \
     --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."
