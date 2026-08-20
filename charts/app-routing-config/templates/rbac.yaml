@@ -6,11 +6,15 @@ metadata:
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     app.kubernetes.io/part-of: app-routing-config
 rules:
-  - apiGroups: ["networking.istio.io"]
-    resources: ["envoyfilters"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["security.istio.io"]
-    resources: ["requestauthentications"]
+  # istiod starts informers for every served Istio CRD, not only resources
+  # currently created by workload charts. The full CRD bundle installed by
+  # setup-cluster.sh therefore requires read access across all four groups.
+  - apiGroups:
+      - networking.istio.io
+      - security.istio.io
+      - extensions.istio.io
+      - telemetry.istio.io
+    resources: ["*"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
@@ -125,6 +126,32 @@ var _ = Describe("Filter execution order",
 			return client.Do(req)
 		}
 
+		const bbrNS = "kaito-system"
+		const bbrSelector = "app.kubernetes.io/name=body-based-routing"
+
+		bbrLogs := func(clientset *kubernetes.Clientset) (string, error) {
+			pods, err := clientset.CoreV1().Pods(bbrNS).List(ctx, metav1.ListOptions{
+				LabelSelector: bbrSelector,
+				FieldSelector: "status.phase=Running",
+			})
+			if err != nil {
+				return "", err
+			}
+			if len(pods.Items) == 0 {
+				return "", fmt.Errorf("no Running BBR pods match %q", bbrSelector)
+			}
+
+			var logs strings.Builder
+			for i := range pods.Items {
+				podLogs, err := utils.GetPodLogs(clientset, bbrNS, pods.Items[i].Name, "bbr")
+				if err != nil {
+					return "", err
+				}
+				logs.WriteString(podLogs)
+			}
+			return logs.String(), nil
+		}
+
 		// ─────────────────────────────────────────────────────────────────
 		// P0 — ext_authz must run before the router (and the catch-all)
 		// ─────────────────────────────────────────────────────────────────
@@ -159,16 +186,6 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				bbrNS := "kaito-system"
-				bbrPod, err := firstRunningPod(ctx, bbrNS,
-					"app.kubernetes.io/name=body-based-routing")
-				Expect(err).NotTo(HaveOccurred(),
-					"BBR pod should be running in %s", bbrNS)
-
-				before, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
-				Expect(err).NotTo(HaveOccurred())
-				beforeLen := len(before)
-
 				// Use a unique model value so we can grep for it after.
 				needle := fmt.Sprintf("a2-no-bbr-%d", time.Now().UnixNano())
 				resp, err := sendAuth(needle, "")
@@ -179,14 +196,10 @@ var _ = Describe("Filter execution order",
 				// Give BBR's log writer time to flush — if it would have run.
 				time.Sleep(3 * time.Second)
 
-				after, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
+				after, err := bbrLogs(clientset)
 				Expect(err).NotTo(HaveOccurred())
-				delta := after
-				if len(after) >= beforeLen {
-					delta = after[beforeLen:]
-				}
-				Expect(delta).NotTo(ContainSubstring(needle),
-					"BBR should not have seen the unauth'd request body; found needle %q in new log slice", needle)
+				Expect(after).NotTo(ContainSubstring(needle),
+					"BBR should not have seen the unauth'd request body; found needle %q", needle)
 			})
 
 			// B2 — Sanity counter-test for A2: a fully authenticated request
@@ -197,12 +210,7 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				bbrNS := "kaito-system"
-				bbrPod, err := firstRunningPod(ctx, bbrNS,
-					"app.kubernetes.io/name=body-based-routing")
-				Expect(err).NotTo(HaveOccurred())
-
-				before, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
+				before, err := bbrLogs(clientset)
 				Expect(err).NotTo(HaveOccurred())
 				beforeLen := len(before)
 
@@ -219,7 +227,7 @@ var _ = Describe("Filter execution order",
 				// the new log line lands (or the timeout proves BBR was truly
 				// silent, which is the real failure this counter-test guards).
 				Eventually(func(g Gomega) {
-					after, gErr := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
+					after, gErr := bbrLogs(clientset)
 					g.Expect(gErr).NotTo(HaveOccurred())
 					g.Expect(len(after)).To(BeNumerically(">", beforeLen),
 						"BBR log size should grow after a valid authenticated request (proves the A2 needle-absence is meaningful)")
@@ -469,9 +477,6 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				const bbrNS = "kaito-system"
-				const bbrSelector = "app.kubernetes.io/name=body-based-routing"
-
 				// BBR runs as an HA Deployment (>= 2 replicas) and the gateway
 				// load-balances the ext_proc call across every replica, so a
 				// single request may be handled by ANY replica. Snapshotting
@@ -482,25 +487,11 @@ var _ = Describe("Filter execution order",
 				// running BBR replicas so we observe growth regardless of which
 				// replica served the request.
 				totalBBRLogLen := func() (int, error) {
-					pods, err := clientset.CoreV1().Pods(bbrNS).List(ctx, metav1.ListOptions{
-						LabelSelector: bbrSelector,
-						FieldSelector: "status.phase=Running",
-					})
+					logs, err := bbrLogs(clientset)
 					if err != nil {
 						return 0, err
 					}
-					if len(pods.Items) == 0 {
-						return 0, fmt.Errorf("no Running BBR pods match %q", bbrSelector)
-					}
-					total := 0
-					for i := range pods.Items {
-						logs, err := utils.GetPodLogs(clientset, bbrNS, pods.Items[i].Name, "bbr")
-						if err != nil {
-							return 0, err
-						}
-						total += len(logs)
-					}
-					return total, nil
+					return len(logs), nil
 				}
 
 				beforeLen, err := totalBBRLogLen()
