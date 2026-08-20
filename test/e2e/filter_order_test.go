@@ -601,6 +601,12 @@ func kubectlExec(namespace, pod string, command ...string) (string, error) {
 // the inference-traffic HCM on the Gateway). This avoids hard-coding the
 // listener name (Istio generates a number-suffixed name per Gateway pod).
 func extractGatewayHTTPFilterNames(configDump string) []string {
+	jsonStart := strings.IndexByte(configDump, '{')
+	if jsonStart < 0 {
+		return nil
+	}
+	configDump = configDump[jsonStart:]
+
 	var root struct {
 		Configs []map[string]json.RawMessage `json:"configs"`
 	}

@@ -45,6 +45,8 @@ LOCATION="${LOCATION:-australiaeast}"
 NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 E2E_PROVIDER="${E2E_PROVIDER:-azure}"
+AZURE_CLI_VERSION="${AZURE_CLI_VERSION:-2.85.0}"
+AKS_PREVIEW_VERSION="${AKS_PREVIEW_VERSION:-21.0.0b10}"
 
 # Optional AKS-managed add-ons toggled by provider.
 #   azure    -> enable the managed KEDA add-on so the cluster ships with
@@ -71,12 +73,27 @@ case "${E2E_PROVIDER}" in
     # Managed Gateway API requires the aks-preview extension and the
     # `ManagedGatewayAPIPreview` feature flag to be registered on the
     # subscription. Make both prerequisites idempotent.
-    echo "=== Ensuring aks-preview Azure CLI extension is installed ==="
-    if ! az extension show --name aks-preview >/dev/null 2>&1; then
-      az extension add --name aks-preview --yes
-    else
-      az extension update --name aks-preview >/dev/null || true
+    INSTALLED_AZURE_CLI_VERSION=$(az version --query '"azure-cli"' -o tsv)
+    if [[ "$(printf '%s\n' "${AZURE_CLI_VERSION}" "${INSTALLED_AZURE_CLI_VERSION}" | sort -V | head -n 1)" != "${AZURE_CLI_VERSION}" ]]; then
+      echo "Azure CLI ${AZURE_CLI_VERSION} or newer is required; found ${INSTALLED_AZURE_CLI_VERSION}." >&2
+      exit 1
     fi
+    echo "=== Ensuring aks-preview Azure CLI extension ${AKS_PREVIEW_VERSION} is installed ==="
+    INSTALLED_AKS_PREVIEW_VERSION=$(az extension show \
+      --name aks-preview \
+      --query version -o tsv 2>/dev/null || true)
+    if [[ "${INSTALLED_AKS_PREVIEW_VERSION}" != "${AKS_PREVIEW_VERSION}" ]]; then
+      if [[ -n "${INSTALLED_AKS_PREVIEW_VERSION}" ]]; then
+        az extension remove --name aks-preview
+      fi
+      az extension add \
+        --name aks-preview \
+        --version "${AKS_PREVIEW_VERSION}" \
+        --yes
+    fi
+    az extension show \
+      --name aks-preview \
+      --query '{name:name, version:version}' -o table
 
     echo "=== Ensuring ManagedGatewayAPIPreview feature flag is registered ==="
     FEATURE_STATE=$(az feature show \

@@ -131,6 +131,8 @@ runs:
         # Export to GITHUB_ENV so all subsequent steps inherit these.
         {
           echo "GO_VERSION=${GO_VERSION}"
+          echo "AZURE_CLI_VERSION=${AZURE_CLI_VERSION}"
+          echo "AKS_PREVIEW_VERSION=${AKS_PREVIEW_VERSION}"
           echo "E2E_PROVIDER=${E2E_PROVIDER}"
           echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
@@ -150,6 +152,8 @@ runs:
         echo "E2E_PROVIDER=${E2E_PROVIDER}"
         echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
         echo "GO_VERSION=${GO_VERSION}"
+        echo "AZURE_CLI_VERSION=${AZURE_CLI_VERSION}"
+        echo "AKS_PREVIEW_VERSION=${AKS_PREVIEW_VERSION}"
         echo "ISTIO_VERSION=${ISTIO_VERSION}"
         echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
         echo "KEDA_VERSION=${KEDA_VERSION}"
@@ -164,6 +168,22 @@ runs:
       uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
+
+    - name: Setup Azure CLI
+      shell: bash
+      run: |
+        AZURE_CLI_ROOT="${RUNNER_TEMP}/azure-cli-${AZURE_CLI_VERSION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        python3 -m pip install \
+          --disable-pip-version-check \
+          --quiet \
+          --target "${AZURE_CLI_ROOT}/lib" \
+          "azure-cli==${AZURE_CLI_VERSION}"
+        mkdir -p "${AZURE_CLI_ROOT}/bin"
+        printf '#!/usr/bin/env bash\nexec env PYTHONPATH=%q python3 -m azure.cli "$@"\n' \
+          "${AZURE_CLI_ROOT}/lib" > "${AZURE_CLI_ROOT}/bin/az"
+        chmod +x "${AZURE_CLI_ROOT}/bin/az"
+        echo "${AZURE_CLI_ROOT}/bin" >> "$GITHUB_PATH"
+        "${AZURE_CLI_ROOT}/bin/az" version
 
     - name: Azure Login
       shell: bash
