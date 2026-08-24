@@ -46,58 +46,13 @@ NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
 
-# Optional AKS-managed add-ons toggled by provider.
-#   azure    -> enable the managed KEDA add-on so the cluster ships with
-#               KEDA pre-installed in `kube-system`, and install-components.sh
-#               skips the Helm-based KEDA install. Also enable the managed
-#               Gateway API CRDs add-on (preview, requires aks-preview
-#               extension and the `ManagedGatewayAPIPreview` feature flag)
-#               so install-components.sh can skip the upstream
-#               kubectl-apply of standard-install.yaml.
-#               Doc: https://learn.microsoft.com/azure/aks/managed-gateway-api
-#   upstream -> no managed add-ons; KEDA + Gateway API CRDs are installed
-#               via Helm/kubectl later.
+# Optional AKS-managed KEDA add-on toggled by provider.
+#   azure    -> enable managed KEDA in `kube-system`.
+#   upstream -> install KEDA via Helm later.
 EXTRA_AKS_ARGS=()
 case "${E2E_PROVIDER}" in
   azure)
-    EXTRA_AKS_ARGS+=(--enable-keda --enable-gateway-api)
-
-    # Managed Gateway API requires the aks-preview extension and the
-    # `ManagedGatewayAPIPreview` feature flag to be registered on the
-    # subscription. Make both prerequisites idempotent.
-    echo "=== Ensuring aks-preview Azure CLI extension is installed ==="
-    if ! az extension show --name aks-preview >/dev/null 2>&1; then
-      az extension add --name aks-preview --yes
-    else
-      az extension update --name aks-preview >/dev/null || true
-    fi
-
-    echo "=== Ensuring ManagedGatewayAPIPreview feature flag is registered ==="
-    FEATURE_STATE=$(az feature show \
-      --namespace Microsoft.ContainerService \
-      --name ManagedGatewayAPIPreview \
-      --query properties.state -o tsv 2>/dev/null || echo "NotRegistered")
-    if [[ "${FEATURE_STATE}" != "Registered" ]]; then
-      echo "Registering ManagedGatewayAPIPreview (current state: ${FEATURE_STATE})..."
-      az feature register \
-        --namespace Microsoft.ContainerService \
-        --name ManagedGatewayAPIPreview >/dev/null
-      # Wait until the feature transitions to Registered (usually <2 min,
-      # can take up to ~15 min the first time).
-      for _ in $(seq 1 60); do
-        FEATURE_STATE=$(az feature show \
-          --namespace Microsoft.ContainerService \
-          --name ManagedGatewayAPIPreview \
-          --query properties.state -o tsv 2>/dev/null || echo "")
-        [[ "${FEATURE_STATE}" == "Registered" ]] && break
-        sleep 15
-      done
-      if [[ "${FEATURE_STATE}" != "Registered" ]]; then
-        echo "WARNING: ManagedGatewayAPIPreview not Registered after wait (state=${FEATURE_STATE}). Continuing — az aks create will fail loudly if it is truly required." >&2
-      fi
-      # Propagate the registration to the ContainerService RP.
-      az provider register --namespace Microsoft.ContainerService >/dev/null || true
-    fi
+    EXTRA_AKS_ARGS+=(--enable-keda)
     ;;
   upstream)
     ;;
@@ -106,6 +61,39 @@ case "${E2E_PROVIDER}" in
     exit 1
     ;;
 esac
+
+# Managed Gateway API is enabled on every cluster and requires the aks-preview
+# extension plus the subscription-level ManagedGatewayAPIPreview feature.
+echo "=== Ensuring aks-preview Azure CLI extension is installed ==="
+if ! az extension show --name aks-preview >/dev/null 2>&1; then
+  az extension add --name aks-preview --yes
+else
+  az extension update --name aks-preview >/dev/null || true
+fi
+
+echo "=== Ensuring ManagedGatewayAPIPreview feature flag is registered ==="
+FEATURE_STATE=$(az feature show \
+  --namespace Microsoft.ContainerService \
+  --name ManagedGatewayAPIPreview \
+  --query properties.state -o tsv 2>/dev/null || echo "NotRegistered")
+if [[ "${FEATURE_STATE}" != "Registered" ]]; then
+  echo "Registering ManagedGatewayAPIPreview (current state: ${FEATURE_STATE})..."
+  az feature register \
+    --namespace Microsoft.ContainerService \
+    --name ManagedGatewayAPIPreview >/dev/null
+  for _ in $(seq 1 60); do
+    FEATURE_STATE=$(az feature show \
+      --namespace Microsoft.ContainerService \
+      --name ManagedGatewayAPIPreview \
+      --query properties.state -o tsv 2>/dev/null || echo "")
+    [[ "${FEATURE_STATE}" == "Registered" ]] && break
+    sleep 15
+  done
+  if [[ "${FEATURE_STATE}" != "Registered" ]]; then
+    echo "WARNING: ManagedGatewayAPIPreview not Registered after wait (state=${FEATURE_STATE}). Continuing; az aks create will fail if it is required." >&2
+  fi
+  az provider register --namespace Microsoft.ContainerService >/dev/null || true
+fi
 
 # Karpenter needs cluster OIDC issuer + Workload Identity so a self-managed
 # Karpenter Helm install can obtain federated credentials to call the Azure ARM
@@ -129,6 +117,9 @@ az aks create \
   --network-plugin-mode overlay \
   --network-dataplane cilium \
   --network-policy cilium \
+  --enable-gateway-api \
+  --enable-app-routing-istio \
+  --enable-default-domain \
   --generate-ssh-keys \
   ${AKS_K8S_VERSION:+--kubernetes-version "${AKS_K8S_VERSION}"} \
   ${EXTRA_AKS_ARGS[@]+"${EXTRA_AKS_ARGS[@]}"}
@@ -201,15 +192,10 @@ kubectl -n kube-system wait --for=condition=ready pod \
 # provider-agnostic and never has to branch on E2E_PROVIDER for these
 # components.
 #
-# Per-provider behavior:
-#   azure    → managed KEDA + managed Gateway API CRDs are already
-#              installed by `az aks create --enable-keda
-#              --enable-gateway-api`. We only wait for their controllers
-#              / CRDs to be served. Istio is still installed via
-#              istioctl here.
-#   upstream → install KEDA via Helm into a dedicated `keda` namespace
-#              and apply the upstream Gateway API base CRDs via kubectl.
-#              Istio is installed via istioctl.
+# The managed Gateway API CRDs are enabled for every cluster; wait for them
+# to be served and fall back to the upstream CRDs if needed. The provider only
+# selects managed KEDA (`azure`) or Helm-installed KEDA (`upstream`). Istio is
+# still installed via istioctl here while migration to App Routing continues.
 #
 # Istio is installed here (rather than in install-components.sh's
 # phase1-base) so the productionstack umbrella chart — which ships an
@@ -285,31 +271,20 @@ install_keda() {
 
 # ── Gateway API base CRDs ────────────────────────────────────────────────
 install_gateway_api_crds() {
-  case "${E2E_PROVIDER}" in
-    azure)
-      echo "=== Verifying managed Gateway API CRDs are served ==="
-      # The managed add-on installs the standard-channel CRDs at
-      # cluster-create time. Block briefly in case the install hasn't
-      # propagated yet, then fall back to upstream install if it never does.
-      local served=0
-      for _ in $(seq 1 30); do
-        if kubectl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1; then
-          echo "  ✅ gateways CRD is served by the managed add-on"
-          served=1
-          break
-        fi
-        sleep 2
-      done
-      if [[ "${served}" -ne 1 ]]; then
-        echo "  ❌ Managed Gateway API CRDs not present after 60s — falling back to upstream install"
-        kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
-      fi
-      ;;
-    upstream)
-      echo "=== Installing Gateway API CRDs ${GATEWAY_API_VERSION} ==="
-      kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
-      ;;
-  esac
+  echo "=== Verifying managed Gateway API CRDs are served ==="
+  local served=0
+  for _ in $(seq 1 30); do
+    if kubectl get crd gateways.gateway.networking.k8s.io >/dev/null 2>&1; then
+      echo "  ✅ gateways CRD is served by the managed add-on"
+      served=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${served}" -ne 1 ]]; then
+    echo "  ❌ Managed Gateway API CRDs not present after 60s — falling back to upstream install"
+    kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+  fi
 }
 
 # GAIE (Gateway API Inference Extension) CRDs are installed by
