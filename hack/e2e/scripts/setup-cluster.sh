@@ -15,6 +15,7 @@
 #   NODE_COUNT            — Number of worker nodes      (default: 2)
 #   NODE_VM_SIZE          — VM SKU for the node pool    (default: Standard_D8d_v4)
 #   E2E_PROVIDER          — upstream|azure              (default: upstream)
+#   AKS_PREVIEW_VERSION   — aks-preview extension version (default: 21.0.0b9)
 #   GATEWAY_API_VERSION   — Gateway API CRD version    (sourced from versions.env)
 #   KEDA_VERSION          — KEDA Helm chart version    (sourced from versions.env)
 #   ISTIO_VERSION         — Istio control-plane version (sourced from versions.env)
@@ -45,6 +46,7 @@ LOCATION="${LOCATION:-australiaeast}"
 NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+AKS_PREVIEW_VERSION="${AKS_PREVIEW_VERSION:-21.0.0b9}"
 
 # Optional AKS-managed KEDA add-on toggled by provider.
 #   azure    -> enable managed KEDA in `kube-system`.
@@ -64,12 +66,19 @@ esac
 
 # Managed Gateway API is enabled on every cluster and requires the aks-preview
 # extension plus the subscription-level ManagedGatewayAPIPreview feature.
-echo "=== Ensuring aks-preview Azure CLI extension is installed ==="
-if ! az extension show --name aks-preview >/dev/null 2>&1; then
-  az extension add --name aks-preview --yes
-else
-  az extension update --name aks-preview >/dev/null || true
+AZURE_CLI_MIN_VERSION="2.85.0"
+AZURE_CLI_VERSION=$(az version --query '"azure-cli"' -o tsv)
+if [[ "$(printf '%s\n' "${AZURE_CLI_MIN_VERSION}" "${AZURE_CLI_VERSION}" | sort -V | head -n1)" != "${AZURE_CLI_MIN_VERSION}" ]]; then
+  echo "Azure CLI ${AZURE_CLI_MIN_VERSION}+ is required by aks-preview ${AKS_PREVIEW_VERSION}; found ${AZURE_CLI_VERSION}." >&2
+  exit 1
 fi
+
+echo "=== Installing aks-preview ${AKS_PREVIEW_VERSION} Azure CLI extension ==="
+az extension remove --name aks-preview >/dev/null 2>&1 || true
+az extension add \
+  --name aks-preview \
+  --version "${AKS_PREVIEW_VERSION}" \
+  --yes
 
 echo "=== Ensuring ManagedGatewayAPIPreview feature flag is registered ==="
 FEATURE_STATE=$(az feature show \
