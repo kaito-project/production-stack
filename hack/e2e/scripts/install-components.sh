@@ -140,21 +140,15 @@ if ! command -v helm &>/dev/null; then
   curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash
 fi
 
-# AKS App Routing provides the managed Istio controller but may not install
-# extension CRDs used by productionstack/modelharness. Ensure those CRDs exist
-# before Helm builds any manifests containing EnvoyFilter or
-# RequestAuthentication. This is idempotent and also repairs existing clusters
-# whose setup completed before this preflight was added.
+# setup-cluster.sh installs the EnvoyFilter CRD through app-routing-config.
+# Fail early if component installation is pointed at an unprepared AKS cluster.
 if [[ "${E2E_PROVIDER}" == "azure" ]]; then
-  : "${ISTIO_VERSION:?ISTIO_VERSION is required to install App Routing extension CRDs}"
-  if ! kubectl get crd envoyfilters.networking.istio.io >/dev/null 2>&1 ||
-     ! kubectl get crd requestauthentications.security.istio.io >/dev/null 2>&1; then
-    echo "=== Installing Istio ${ISTIO_VERSION} extension CRDs for App Routing ==="
-    kubectl apply -f "https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/manifests/charts/base/files/crd-all.gen.yaml"
+  if ! kubectl get crd envoyfilters.networking.istio.io >/dev/null 2>&1; then
+    echo "ERROR: EnvoyFilter CRD is missing; run setup-cluster.sh first" >&2
+    exit 1
   fi
   kubectl wait --for=condition=Established \
     crd/envoyfilters.networking.istio.io \
-    crd/requestauthentications.security.istio.io \
     --timeout=180s
 fi
 

@@ -339,10 +339,9 @@ install_gateway_api_crds() {
 # install run in parallel with KAITO, which bundles the same CRDs.
 
 # ── Istio control plane ──────────────────────────────────────────────────
-# Install the istiod control plane (Istio core CRDs + namespace + istiod
-# Deployment) into istio-system. The EnvoyFilter CRD that the
-# productionstack BBR subchart depends on is part of "Istio core" and is
-# therefore Established before istiod's rollout completes.
+# On Azure, configure the managed control plane and install the EnvoyFilter CRD
+# needed by modelharness. Other providers install the upstream control plane and
+# its core CRDs into istio-system.
 install_istio() {
   if [[ "${E2E_PROVIDER}" == "azure" ]]; then
     echo "=== Waiting for AKS App Routing Istio GatewayClass ==="
@@ -358,19 +357,15 @@ install_istio() {
       return 1
     fi
 
-    echo "=== Installing Istio ${ISTIO_VERSION} extension CRDs for App Routing ==="
-    kubectl apply -f "https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/manifests/charts/base/files/crd-all.gen.yaml"
-    kubectl wait --for=condition=Established \
-      crd/envoyfilters.networking.istio.io \
-      crd/requestauthentications.security.istio.io \
-      --timeout=180s
-
-    # The chart grants managed istiod access only to the extension resources
-    # modelharness renders and preserves the InferencePool feature flag against
-    # AKS reconciliation.
+    # The chart installs only the EnvoyFilter CRD, grants managed istiod read
+    # access to it, and preserves the InferencePool feature flag against AKS
+    # reconciliation.
     helm upgrade --install app-routing-config \
       "${SCRIPT_DIR}/../../../charts/app-routing-config" \
       --namespace aks-istio-system
+    kubectl wait --for=condition=Established \
+      crd/envoyfilters.networking.istio.io \
+      --timeout=180s
 
     kubectl -n aks-istio-system set env deployment/istiod \
       ENABLE_GATEWAY_API_INFERENCE_EXTENSION=true
