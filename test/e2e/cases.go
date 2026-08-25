@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -58,42 +59,42 @@ const (
 // their deployments via the Ordered Describe's BeforeAll / AfterAll;
 // lifecycle cases install per-test in their own random namespace.
 const (
-	// CaseGPUMocker covers gpu_mocker_test.go (framework smoke, gateway
+	// CaseGPUMocker covers gpu_mocker_spec.go (framework smoke, gateway
 	// connectivity, InferenceSet/EPP/HTTPRoute observability, fake-node and
 	// shadow-pod lifecycle, status patching, unknown-model 404).
 	CaseGPUMocker = "gpu-mocker"
 
-	// CaseModelRouting covers model_routing_test.go (single-model echo,
+	// CaseModelRouting covers model_routing_spec.go (single-model echo,
 	// cross-model isolation, EPP metrics, load distribution, debug-filter
 	// log chain, malformed-request handling).
 	CaseModelRouting = "model-routing"
 
-	// CasePrefixCache covers prefix_cache_routing_test.go (prefix/KV-cache
+	// CasePrefixCache covers prefix_cache_routing_spec.go (prefix/KV-cache
 	// aware routing — needs ≥2 replicas of a single model).
 	CasePrefixCache = "prefix-cache"
 
 	// CaseModelDeploymentChart covers the "ModelDeployment Chart" Describe
-	// in modeldeployment_chart_test.go (chart install/render assertions and
+	// in modeldeployment_chart_spec.go (chart install/render assertions and
 	// chart uninstall/deletion assertions, exercised by sibling It blocks
 	// that share BeforeEach/AfterEach).
 	CaseModelDeploymentChart = "modeldeployment-chart"
 
-	// CaseAuth covers apikey_auth_test.go (API key authentication via
+	// CaseAuth covers apikey_auth_spec.go (API key authentication via
 	// Istio ext_authz — valid/invalid/missing key scenarios).
 	CaseAuth = "auth"
 
 	// CaseNetworkPolicyA covers the primary workload namespace in
-	// network_policy_test.go (default-deny-ingress + allow-inference
+	// network_policy_spec.go (default-deny-ingress + allow-inference
 	// NetworkPolicy pair). Holds the model pod that the deny / allow
 	// probes target.
 	CaseNetworkPolicyA = "network-policy-a"
 
 	// CaseNetworkPolicyB covers the secondary workload namespace in
-	// network_policy_test.go used to prove cross-namespace isolation
+	// network_policy_spec.go used to prove cross-namespace isolation
 	// between two NetworkPolicy-locked-down workload namespaces.
 	CaseNetworkPolicyB = "network-policy-b"
 
-	// CaseScaling covers scaling_test.go (KEDA-driven Scale-Up / Scale-Down
+	// CaseScaling covers scaling_spec.go (KEDA-driven Scale-Up / Scale-Down
 	// of a single model, fake-node and shadow-pod inventory churn,
 	// background load to assert no 5xx during transitions).
 	CaseScaling = "scaling"
@@ -124,7 +125,7 @@ const (
 	// required.
 	CaseKarpenterLarge = "karpenter-large"
 
-	// CasePrefixCachePerf covers prefix_cache_perf_test.go — a prefix-cache
+	// CasePrefixCachePerf covers prefix_cache_perf_spec.go — a prefix-cache
 	// load/perf spec that replays real multi-turn agent sessions
 	// from the sammshen/lmcache-agentic-traces dataset (committed fixture under
 	// test/e2e/testdata) under concurrent load. It runs on the gpu-node-mocker
@@ -135,7 +136,7 @@ const (
 	// multiple pods to route stickily between.
 	CasePrefixCachePerf = "prefix-cache-perf"
 
-	// CaseFilterOrder covers filter_order_test.go — verifies the Envoy
+	// CaseFilterOrder covers filter_order_spec.go — verifies the Envoy
 	// HTTP filter chain execution order on a per-namespace Gateway:
 	//   ext_authz  →  ext_proc.bbr  →  ext_proc (InferencePool/EPP)  →  router
 	// The case provisions an API-key-enabled deployment so that
@@ -143,7 +144,7 @@ const (
 	// the same dataplane.
 	CaseFilterOrder = "filter-order"
 
-	// CaseClusterFilterHA covers cluster_filter_ha_test.go — BBR
+	// CaseClusterFilterHA covers cluster_filter_ha_spec.go — BBR
 	// high-availability and single-replica-loss failover (issue #89).
 	// A lightweight gpu-mocker-style deployment provides a working
 	// BBR → EPP request path; the test then perturbs the cluster-wide
@@ -152,14 +153,14 @@ const (
 	// survives and only fails closed when ALL replicas are down.
 	CaseClusterFilterHA = "cluster-filter-ha"
 
-	// CaseBBROutage covers bbr_outage_test.go — verifies that when the
+	// CaseBBROutage covers bbr_outage_spec.go — verifies that when the
 	// cluster-wide BBR ext_proc filter is unavailable (fail-closed), a
 	// request is mapped to a 502 `bbr_unavailable` outage reply by the
 	// per-namespace local_reply, and NOT to a misleading 404 model_not_found.
 	// Non-auth so only the BBR + EPP filters are in path.
 	CaseBBROutage = "bbr-outage"
 
-	// CaseExtAuthzOutage covers ext_authz_outage_test.go — verifies that
+	// CaseExtAuthzOutage covers ext_authz_outage_spec.go — verifies that
 	// when the cluster-wide llm-gateway-auth ext_authz filter is
 	// unavailable (fail-closed), an authenticated request is NOT mapped to
 	// a misleading 404 model_not_found, and (best-effort) surfaces a 502
@@ -167,7 +168,7 @@ const (
 	// in path.
 	CaseExtAuthzOutage = "ext-authz-outage"
 
-	// CaseEPPOutage covers epp_outage_test.go — verifies that when the
+	// CaseEPPOutage covers epp_outage_spec.go — verifies that when the
 	// per-InferenceSet EPP (InferencePool ext_proc, failureMode: FailClose)
 	// is unavailable, a request is mapped to a 502 `epp_unavailable` outage
 	// reply (x-kaito-error-source: epp) by the consolidated per-namespace
@@ -177,7 +178,7 @@ const (
 	// does not need Serial. Non-auth so only BBR + EPP are in path.
 	CaseEPPOutage = "epp-outage"
 
-	// CaseModelUnavailable covers model_unavailable_test.go — verifies that
+	// CaseModelUnavailable covers model_unavailable_spec.go — verifies that
 	// when the InferencePool has zero ready inference endpoints (the
 	// InferenceSet is scaled to replicas=0) while the HTTPRoute and EPP
 	// remain healthy, a request is mapped to a 503 `model_unavailable`
@@ -188,14 +189,14 @@ const (
 	// Serial. Non-auth so only BBR + EPP are in path.
 	CaseModelUnavailable = "model-unavailable"
 
-	// CaseControlPlaneError covers control_plane_error_test.go (per-InferenceSet
+	// CaseControlPlaneError covers control_plane_error_spec.go (per-InferenceSet
 	// inferencesetEPPNotReady). It owns a dedicated
 	// namespace so the suite can perturb its EPP Deployment
 	// in parallel with other Describes without colliding on the
 	// model-routing case's namespace or reporter Events.
 	CaseControlPlaneError = "control-plane-error"
 
-	// CaseWeightDownloadSlow covers weight_download_slow_test.go (negative
+	// CaseWeightDownloadSlow covers weight_download_slow_spec.go (negative
 	// assertion that a healthy deployment never trips
 	// inferencesetWeightDownloadSlow). It owns a dedicated namespace so its
 	// quiet-window negative assertion is not contaminated by another Describe
@@ -222,7 +223,7 @@ const (
 //     the modelharness chart during InstallCase.
 //   - Replicas / InstanceType: explicit so test assertions can compare
 //     against a known-good value.
-var CaseDeployments = map[string][]utils.ModelDeploymentValues{
+var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 	CaseGPUMocker: {
 		{
 			Name:         "gpu-mocker-phi",
@@ -241,7 +242,7 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			InstanceType: "Standard_NV36ads_A10_v5",
 			// Disable prefix-cache scoring so identical prompts spread
 			// across replicas instead of sticking to one pod.
-			EPPScorerWeights: &utils.EPPScorerWeights{PrefixCache: intPtr(0)},
+			EPPScorerWeights: &deploy.EPPScorerWeights{PrefixCache: intPtr(0)},
 		},
 		{
 			Name:             "routing-ministral",
@@ -249,7 +250,7 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			Model:            presetMinistral,
 			Replicas:         2,
 			InstanceType:     "Standard_NV36ads_A10_v5",
-			EPPScorerWeights: &utils.EPPScorerWeights{PrefixCache: intPtr(0)},
+			EPPScorerWeights: &deploy.EPPScorerWeights{PrefixCache: intPtr(0)},
 		},
 	},
 	CasePrefixCache: {
@@ -304,7 +305,7 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			// chain (ext_authz → bbr → ext_proc(EPP) → router) is
 			// materialised on this case's per-namespace Gateway. Two
 			// replicas let the load / endpoint-picker assertions in
-			// filter_order_test.go observe non-trivial routing
+			// filter_order_spec.go observe non-trivial routing
 			// decisions across more than one shadow pod.
 			Name:              "filter-order-phi",
 			Namespace:         "e2e-filter-order",
@@ -373,7 +374,7 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 			// it so the sub-threshold workload (scalingSubThresholdConcurrency)
 			// drains the queue under it and scale-down converges back to
 			// the baseline. UpThreshold MUST be > DownThreshold (chart guard).
-			ScalingMetrics: []utils.ScalingMetric{
+			ScalingMetrics: []deploy.ScalingMetric{
 				{
 					Name:          "vllm:num_requests_waiting",
 					Type:          "gauge",

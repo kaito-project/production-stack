@@ -35,7 +35,7 @@ import (
 )
 
 var _ = Describe("GPU Mocker E2E", Ordered, func() {
-	// Per-case deployments owned by gpu_mocker_test.go (see cases.go).
+	// Per-case deployments owned by gpu_mocker_spec.go (see cases.go).
 	// Installed in a dedicated namespace by BeforeAll so this case can
 	// run in parallel with other Ordered Describes.
 	caseDeployments := CaseDeployments[CaseGPUMocker]

@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
 
 const (
@@ -89,9 +91,9 @@ func WaitForInferenceSetReady(ctx context.Context, cl client.Client, name, names
 //
 // After the chart is installed, the call blocks until the InferencePool is
 // observable on the cluster.
-func CreateInferenceSetWithRouting(ctx context.Context, cl client.Client, values ModelDeploymentValues) error {
-	if err := InstallModelDeployment(values); err != nil {
-		return fmt.Errorf("failed to install modeldeployment chart for %s: %w", values.Name, err)
+func CreateInferenceSetWithRouting(ctx context.Context, cl client.Client, values deploy.ModelDeploymentValues) error {
+	if err := InstallModelDeployment(ctx, values); err != nil {
+		return fmt.Errorf("failed to install modeldeployment for %s: %w", values.Name, err)
 	}
 
 	if err := WaitForInferenceSetReady(ctx, cl, values.Name, values.Namespace, InferenceSetReadyTimeout); err != nil {
@@ -103,8 +105,7 @@ func CreateInferenceSetWithRouting(ctx context.Context, cl client.Client, values
 // CleanupInferenceSetWithRouting uninstalls the modeldeployment Helm release,
 // which removes the InferenceSet, InferencePool, EPP artifacts, and HTTPRoute.
 func CleanupInferenceSetWithRouting(ctx context.Context, _ client.Client, name, namespace string) error {
-	_ = ctx
-	if err := UninstallModelDeployment(name, namespace); err != nil {
+	if err := UninstallModelDeployment(ctx, name, namespace); err != nil {
 		return fmt.Errorf("failed to uninstall modeldeployment %s: %w", name, err)
 	}
 	return nil

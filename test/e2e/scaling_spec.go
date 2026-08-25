@@ -67,9 +67,9 @@ const (
 var _ = Describe("InferenceSet Scaling — Infra",
 	Ordered, utils.GinkgoLabelScaling, utils.GinkgoLabelNightly, func() {
 
-		// Per-case deployment owned by scaling_test.go (see cases.go).
+		// Per-case deployment owned by scaling_spec.go (see cases.go).
 		// Resolved as Describe-local values so the table lookup happens
-		// inside the suite (matching the pattern in model_routing_test.go),
+		// inside the suite (matching the pattern in model_routing_spec.go),
 		// not at package init.
 		caseDeployments := CaseDeployments[CaseScaling]
 		scalingModel := caseDeployments[0].Name

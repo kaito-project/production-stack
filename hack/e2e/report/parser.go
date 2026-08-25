@@ -125,18 +125,16 @@ func mergeLabels(base, extra []string) []string {
 	return result
 }
 
-// parseTestFiles scans every *_test.go file in e2eDir (skipping e2e_test.go)
-// and returns the parsed blocks grouped by file.
+// parseTestFiles scans every *_spec.go file in e2eDir and returns the parsed
+// blocks grouped by file. Specs live in non-test files so out-of-tree suites
+// can import them; e2e_test.go holds only the RunSpecs entry point.
 func parseTestFiles(e2eDir string, labelMap map[string]string) []TestFile {
-	matches, _ := filepath.Glob(filepath.Join(e2eDir, "*_test.go"))
+	matches, _ := filepath.Glob(filepath.Join(e2eDir, "*_spec.go"))
 	sort.Strings(matches)
 
 	var files []TestFile
 	for _, path := range matches {
 		name := filepath.Base(path)
-		if name == "e2e_test.go" {
-			continue
-		}
 
 		f, err := os.Open(path)
 		if err != nil {

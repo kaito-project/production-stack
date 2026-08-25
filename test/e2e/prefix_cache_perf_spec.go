@@ -33,7 +33,7 @@ import (
 
 // Prefix-cache routing PERFORMANCE / LOAD spec.
 //
-// This extends prefix_cache_routing_test.go (which verifies functional
+// This extends prefix_cache_routing_spec.go (which verifies functional
 // stickiness with a few sequential requests) into a sustained CONCURRENT load
 // test. Load is driven by replaying real multi-turn agent sessions from the
 // sammshen/lmcache-agentic-traces dataset (a small committed fixture under

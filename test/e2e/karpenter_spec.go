@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package e2e contains end-to-end tests for the KAITO production-stack.
 //
-// karpenter_test.go exercises Karpenter-driven GPU node provisioning on Azure
+// karpenter_spec.go exercises Karpenter-driven GPU node provisioning on Azure
 // (AKS NAP) across three model-size classes:
 //
 //   - Small  (~7B qwen2.5-coder) — single GPU, single A100 node

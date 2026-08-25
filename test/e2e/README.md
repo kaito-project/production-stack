@@ -8,11 +8,11 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 
 | Case key | Test file | Namespace | Gateway | Deployments | Lifecycle |
 | --- | --- | --- | --- | --- | --- |
-| `CaseGPUMocker` | `gpu_mocker_test.go` | `e2e-gpu-mocker` | `e2e-gpu-mocker-gw` | `gpu-mocker-phi` | `BeforeAll` / `AfterAll` |
-| `CaseModelRouting` | `model_routing_test.go` | `e2e-model-routing` | `e2e-model-routing-gw` | `routing-phi`, `routing-ministral` | `BeforeAll` / `AfterAll` |
-| `CasePrefixCache` | `prefix_cache_routing_test.go` | `e2e-prefix-cache` | `e2e-prefix-cache-gw` | `prefix-cache-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
-| `CasePrefixCachePerf` | `prefix_cache_perf_test.go` | `e2e-pc-perf` | `e2e-pc-perf-gw` | `pc-perf-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
-| `CaseModelDeploymentChart` | `modeldeployment_chart_test.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
+| `CaseGPUMocker` | `gpu_mocker_spec.go` | `e2e-gpu-mocker` | `e2e-gpu-mocker-gw` | `gpu-mocker-phi` | `BeforeAll` / `AfterAll` |
+| `CaseModelRouting` | `model_routing_spec.go` | `e2e-model-routing` | `e2e-model-routing-gw` | `routing-phi`, `routing-ministral` | `BeforeAll` / `AfterAll` |
+| `CasePrefixCache` | `prefix_cache_routing_spec.go` | `e2e-prefix-cache` | `e2e-prefix-cache-gw` | `prefix-cache-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
+| `CasePrefixCachePerf` | `prefix_cache_perf_spec.go` | `e2e-pc-perf` | `e2e-pc-perf-gw` | `pc-perf-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
+| `CaseModelDeploymentChart` | `modeldeployment_chart_spec.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
 
 `Name` is unique cluster-wide and is the value matched by `X-Gateway-Model-Name` (i.e. the `model` field clients send in OpenAI-compatible requests). `Model` is the KAITO preset only — multiple deployments may share a preset under different `Name`s.
 
@@ -22,9 +22,9 @@ Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets
 
 `utils/`:
 
-- [`setup.go`](utils/setup.go) — `EnsureNamespace` (installs the modelharness chart per namespace), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
+- [`setup.go`](utils/setup.go) — `EnsureNamespace` (installs the modelharness per namespace), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
 - [`http.go`](utils/http.go) — multi-gateway port-forward (`GetGatewayURLFor`), `SendChatCompletion`.
-- [`helm.go`](utils/helm.go) — `InstallModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`.
+- [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).
 
@@ -77,11 +77,77 @@ Step-by-step targets exist as well: `e2e-setup`, `docker-build`, `e2e-push-image
 | `E2E_LABEL` | Ginkgo label filter | _(all)_ |
 | `E2E_PARALLEL` | Ginkgo `--procs` | `2` |
 | `NODE_COUNT` | AKS node count | `2` |
-| `MODELDEPLOYMENT_CHART` | Override chart path | _(repo root)_ |
+| `E2E_DEPLOYMENT_BACKEND` | Deployment backend name (see [below](#deployment-backends)) | `helm` |
+| `MODELDEPLOYMENT_CHART` | Override chart path (`helm` backend only) | _(repo root)_ |
+| `MODELHARNESS_CHART` | Override chart path (`helm` backend only) | _(repo root)_ |
+
+## Deployment backends
+
+Specs never invoke Helm directly. Every modelharness / modeldeployment install
+and cleanup goes through the [`deploy.Deployer`](deploy/deploy.go) interface:
+
+```go
+type Deployer interface {
+    Name() string
+    InstallModelHarness(ctx context.Context, values ModelHarnessValues) error
+    UninstallModelHarness(ctx context.Context, namespace string) error
+    InstallModelDeployment(ctx context.Context, values ModelDeploymentValues) error
+    UninstallModelDeployment(ctx context.Context, name, namespace string) error
+}
+```
+
+Implementations must be idempotent on install (re-running reconciles to the
+supplied values), treat a missing resource as a successful delete, and validate
+values before issuing any remote call.
+
+`helm` is the only backend in this repo and remains the default, so local runs
+are unchanged. Select a backend with `E2E_DEPLOYMENT_BACKEND=<name>`; the
+[`deploy`](deploy) package holds no Helm, Ginkgo, or Kubernetes dependencies so
+out-of-tree backends can import it cheaply.
+
+### Reusing the suite from another repository
+
+The specs live in ordinary `*_spec.go` files (not `_test.go`), so another module
+can import this package to register all of them and run them against its own
+backend — for example an Azure AI Manager backend built on
+`armcontainerserviceaimanager`:
+
+```go
+package azuree2e
+
+import (
+    "testing"
+
+    . "github.com/onsi/ginkgo/v2"
+    . "github.com/onsi/gomega"
+
+    _ "github.com/kaito-project/production-stack/test/e2e" // registers every spec
+    "github.com/kaito-project/production-stack/test/e2e/utils"
+)
+
+func TestE2E(t *testing.T) {
+    utils.SetDeployer(aimanager.New(cfg)) // must run before any spec
+    RegisterFailHandler(Fail)
+    RunSpecs(t, "AKS AI Manager E2E")
+}
+```
+
+Notes for out-of-tree consumers:
+
+- Importing the package registers **all** specs. Narrow the run with
+  `--label-filter`, not by import.
+- Readiness assertions still run against Kubernetes resources, so both backends
+  are validated by the same observable behavior.
+- Chart paths and `testdata/` fixtures are local to this repo. A non-Helm backend
+  needs no charts; perf specs need `E2E_TRACE_FIXTURE` pointed at a readable
+  fixture.
+- Managed ARM resources and Helm releases are not semantically identical. Values
+  a backend cannot express should be reported as an explicit error rather than
+  silently dropped.
 
 ## Prefix-cache perf / load test
 
-[`prefix_cache_perf_test.go`](prefix_cache_perf_test.go) (labels `Perf` + `PrefixCache`, case `CasePrefixCachePerf`) drives **sustained concurrent load** through the gateway → EPP → backend chain and asserts on the EPP prefix-cache-scorer signals (hit ratio ≥ 80%, zero 5xx, bounded 429/503, KV-cache / queue metrics exported). It runs on the **gpu-node-mocker** path (`llm-d-inference-sim` shadow pods, no real GPU), and the simulator is configured with `enable-kvcache` + `block-size 16` using the sim's built-in (dummy) tokenizer, which still yields deterministic per-block hashes so `vllm:prefix_cache_hits/_queries` and sticky routing are genuine — only throughput/latency are synthetic.
+[`prefix_cache_perf_spec.go`](prefix_cache_perf_spec.go) (labels `Perf` + `PrefixCache`, case `CasePrefixCachePerf`) drives **sustained concurrent load** through the gateway → EPP → backend chain and asserts on the EPP prefix-cache-scorer signals (hit ratio ≥ 80%, zero 5xx, bounded 429/503, KV-cache / queue metrics exported). It runs on the **gpu-node-mocker** path (`llm-d-inference-sim` shadow pods, no real GPU), and the simulator is configured with `enable-kvcache` + `block-size 16` using the sim's built-in (dummy) tokenizer, which still yields deterministic per-block hashes so `vllm:prefix_cache_hits/_queries` and sticky routing are genuine — only throughput/latency are synthetic.
 
 The spec has two `It`s:
 
@@ -108,7 +174,7 @@ Load is a **replay of real multi-turn agentic sessions**, not a synthetic prompt
 3. **Measurement.** The fixture is replayed `perfMeasuredRounds` times while prefix-cache / success / error counters are snapshotted before and after. There is **no separate warm-up pass** — each shard's first replay round absorbs its first-touch cold misses and the remaining rounds run hot, so `perfMeasuredRounds` is set high enough to keep the aggregate ratio above target. `repeatSessions` concatenates the fixture N times so a small fixture still generates sustained load.
 4. **A/B check.** The shared-prefix ratio already measured by the load run is compared against genuinely unique-prefix load (a per-request nonce prepended at block 0, single-turn) to prove cache-hit growth is real without repeating the expensive shared workload.
 
-Total requests ≈ `sessions × turns × perfMeasuredRounds`, spread across `perfConcurrency` workers. The load constants are in [`prefix_cache_perf_test.go`](prefix_cache_perf_test.go): `perfConcurrency`, `perfMeasuredRounds`, and the `prefixCacheHitRatioTarget` threshold.
+Total requests ≈ `sessions × turns × perfMeasuredRounds`, spread across `perfConcurrency` workers. The load constants are in [`prefix_cache_perf_spec.go`](prefix_cache_perf_spec.go): `perfConcurrency`, `perfMeasuredRounds`, and the `prefixCacheHitRatioTarget` threshold.
 
 ### Metrics the perf spec asserts on
 
@@ -234,7 +300,7 @@ The suite enforces **one `Ordered` Describe per test file**, with deployments de
 ```go
 const CaseMyFeature = "my-feature"
 
-var CaseDeployments = map[string][]utils.ModelDeploymentValues{
+var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
     // ...existing entries...
     CaseMyFeature: {
         {
@@ -250,10 +316,10 @@ var CaseDeployments = map[string][]utils.ModelDeploymentValues{
 
 `InstallCase` / `UninstallCase` automatically pick up new entries — no other changes needed in `cases.go`.
 
-### 3. Create the test file
+### 3. Create the spec file
 
 ```go
-// test/e2e/myfeature_test.go
+// test/e2e/myfeature_spec.go
 package e2e
 
 import (
@@ -319,13 +385,16 @@ E2E_LABEL=MyFeature make test-e2e
 
 ```
 test/e2e/
-├── e2e_test.go                       # Suite entry point, BeforeSuite/AfterSuite
+├── e2e_test.go                       # `go test` entry point (RunSpecs)
+├── suite.go                          # Package doc + AfterSuite (importable)
 ├── cases.go                          # CaseDeployments + Install/UninstallCase
-├── gpu_mocker_test.go                # CaseGPUMocker
-├── model_routing_test.go             # CaseModelRouting
-├── prefix_cache_routing_test.go      # CasePrefixCache
-├── prefix_cache_perf_test.go         # CasePrefixCachePerf (Perf load/replay)
-├── modeldeployment_chart_test.go     # CaseModelDeploymentChart (per-It ns)
+├── gpu_mocker_spec.go                # CaseGPUMocker
+├── model_routing_spec.go             # CaseModelRouting
+├── prefix_cache_routing_spec.go      # CasePrefixCache
+├── prefix_cache_perf_spec.go         # CasePrefixCachePerf (Perf load/replay)
+├── modeldeployment_chart_spec.go     # CaseModelDeploymentChart (per-It ns)
+├── deploy/                           # Backend-agnostic Deployer interface + values
+│   └── helm/                         # Default Helm CLI backend
 ├── testdata/
 │   └── agentic-traces.jsonl          # trimmed replay fixture (see extract script)
 ├── production-stack-E2E-test-scenarios.md
@@ -334,7 +403,8 @@ test/e2e/
     ├── cluster.go                    # K8s + dynamic client init
     ├── dynamic.go                    # GVK constants
     ├── ginkgo.go                     # Label definitions
-    ├── helm.go                       # modeldeployment install/uninstall
+    ├── deployer.go                   # Deployer injection + lifecycle helpers
+    ├── helm.go                       # Value-type aliases re-exported from deploy
     ├── http.go                       # Gateway port-forward + chat helpers
     ├── inference.go                  # InferenceSet readiness + snapshot/diff
     ├── metrics.go                    # EPP metrics scraping

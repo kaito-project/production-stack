@@ -155,7 +155,7 @@ var _ = Describe("Suite A", utils.GinkgoLabelSmoke, func() {
 	})
 })
 `
-	if err := os.WriteFile(filepath.Join(dir, "alpha_test.go"), []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "alpha_spec.go"), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -166,8 +166,8 @@ var _ = Describe("Suite A", utils.GinkgoLabelSmoke, func() {
 		t.Fatalf("expected 1 file, got %d", len(files))
 	}
 	f := files[0]
-	if f.Name != "alpha_test.go" {
-		t.Errorf("expected alpha_test.go, got %s", f.Name)
+	if f.Name != "alpha_spec.go" {
+		t.Errorf("expected alpha_spec.go, got %s", f.Name)
 	}
 	if f.TestCount != 2 {
 		t.Errorf("expected 2 tests, got %d", f.TestCount)
@@ -192,7 +192,7 @@ var _ = Describe("Multi-line Suite",
 	It("test one", func() {})
 })
 `
-	if err := os.WriteFile(filepath.Join(dir, "multi_test.go"), []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "multi_spec.go"), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,9 +222,11 @@ var _ = Describe("Multi-line Suite",
 	}
 }
 
-func TestParseTestFiles_SkipsE2ETest(t *testing.T) {
+func TestParseTestFiles_SkipsNonSpecFiles(t *testing.T) {
 	dir := t.TempDir()
-	for _, name := range []string{"e2e_test.go", "real_test.go"} {
+	// e2e_test.go holds only the RunSpecs entry point, and cases.go holds
+	// shared tables; neither carries specs, so neither must be reported.
+	for _, name := range []string{"e2e_test.go", "cases.go", "real_spec.go"} {
 		content := `package e2e
 import . "github.com/onsi/ginkgo/v2"
 var _ = Describe("Suite", func() {
@@ -239,10 +241,10 @@ var _ = Describe("Suite", func() {
 	files := parseTestFiles(dir, nil)
 
 	if len(files) != 1 {
-		t.Fatalf("expected 1 file (e2e_test.go skipped), got %d", len(files))
+		t.Fatalf("expected 1 file (non-spec files skipped), got %d", len(files))
 	}
-	if files[0].Name != "real_test.go" {
-		t.Errorf("expected real_test.go, got %s", files[0].Name)
+	if files[0].Name != "real_spec.go" {
+		t.Errorf("expected real_spec.go, got %s", files[0].Name)
 	}
 }
 
@@ -271,7 +273,7 @@ var _ = Describe("Scaling Suite",
 	It("scale down", func() {})
 })
 `
-	if err := os.WriteFile(filepath.Join(dir, "scaling_test.go"), []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "scaling_spec.go"), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -334,7 +336,7 @@ var _ = Describe("Smoke Suite", Label("Smoke"), func() {
 	It("smoke test", func() {})
 })
 `
-	if err := os.WriteFile(filepath.Join(dir, "two_test.go"), []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "two_spec.go"), []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 

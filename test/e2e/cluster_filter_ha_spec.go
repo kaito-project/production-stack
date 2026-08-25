@@ -55,7 +55,7 @@ import (
 // Scope note: the structured `502 bbr_unavailable` envelope (+
 // `x-kaito-error-source: bbr` header) is produced by the cluster-wide
 // `local_reply` EnvoyFilter, which belongs to the separate BBR
-// fail-closed work that issue #89 depends on (Test Plan: bbr_outage_test.go).
+// fail-closed work that issue #89 depends on (Test Plan: bbr_outage_spec.go).
 // It is intentionally NOT asserted here; the all-replicas-down case below
 // asserts only that the request fails closed (5xx, never a silent 404).
 var _ = Describe("BBR cluster-filter HA",

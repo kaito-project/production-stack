@@ -64,7 +64,7 @@ var (
 	// GinkgoLabelFilterOrder marks tests that verify the Envoy HTTP
 	// filter chain execution order on the per-namespace Gateway:
 	//   ext_authz → ext_proc.bbr → ext_proc (InferencePool/EPP) → router
-	// See test/e2e/filter_order_test.go for the test matrix.
+	// See test/e2e/filter_order_spec.go for the test matrix.
 	GinkgoLabelFilterOrder = g.Label("FilterOrder")
 
 	// GinkgoLabelOutage marks tests that verify fail-closed / high-availability
@@ -77,15 +77,15 @@ var (
 	//   - Per-namespace data plane (EPP ext_proc fail-closed -> epp_unavailable;
 	//     zero ready inference endpoints -> model_unavailable). These perturb
 	//     only the case's OWN namespace, so they do not need Serial.
-	// See test/e2e/{bbr,ext_authz,epp}_outage_test.go, model_unavailable_test.go
-	// and cluster_filter_ha_test.go.
+	// See test/e2e/{bbr,ext_authz,epp}_outage_spec.go, model_unavailable_spec.go
+	// and cluster_filter_ha_spec.go.
 	GinkgoLabelOutage = g.Label("Outage")
 
 	// GinkgoLabelClusterFilterHA marks tests that verify the cluster-wide
 	// BBR ext_proc filter's high availability and single-replica-loss
 	// failover (issue #89). These tests perturb the shared kaito-system
 	// BBR Deployment, so the suite MUST decorate them Serial.
-	// See test/e2e/cluster_filter_ha_test.go.
+	// See test/e2e/cluster_filter_ha_spec.go.
 	GinkgoLabelClusterFilterHA = g.Label("ClusterFilterHA")
 
 	// GinkgoLabelClusterOutage marks tests that verify the fail-closed
@@ -110,7 +110,7 @@ var (
 	// inferencesetWeightDownloadSlow sliding-window negative path. Several specs
 	// perturb shared cluster-wide control-plane Deployments (BBR,
 	// llm-gateway-auth, KAITO), so those MUST be decorated Serial. See
-	// test/e2e/cluster_status_test.go, control_plane_error_test.go, and
-	// weight_download_slow_test.go.
+	// test/e2e/cluster_status_spec.go, control_plane_error_spec.go, and
+	// weight_download_slow_spec.go.
 	GinkgoLabelStatusReporter = g.Label("StatusReporter")
 )

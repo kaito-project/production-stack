@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -239,7 +240,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 
 			values := baseValues
 			values.Namespace = namespace
-			values.AutoUpgrade = utils.AutoUpgrade{
+			values.AutoUpgrade = deploy.AutoUpgrade{
 				Enabled:                   true,
 				MaintenanceWindowSchedule: "0 2 * * 6",
 				MaintenanceWindowDuration: "4h",

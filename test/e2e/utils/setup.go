@@ -28,6 +28,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
 
 // EnsureNamespace creates the namespace if it does not exist and installs
@@ -72,7 +74,7 @@ func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
 		return fmt.Errorf("create namespace %s: %w", name, err)
 	}
 
-	if err := InstallModelHarness(name, authEnabled); err != nil {
+	if err := InstallModelHarness(ctx, name, authEnabled); err != nil {
 		return fmt.Errorf("install modelharness in %s: %w", name, err)
 	}
 
@@ -90,7 +92,7 @@ func DeleteNamespace(ctx context.Context, name string) error {
 	RemovePortForwardsForNamespace(name)
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
-	if err := UninstallModelHarness(name); err != nil {
+	if err := UninstallModelHarness(ctx, name); err != nil {
 		return fmt.Errorf("uninstall modelharness from %s: %w", name, err)
 	}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
@@ -164,14 +166,14 @@ func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, t
 //   - namespace: target namespace for entries whose Namespace is unset.
 //   - gatewayURL: if non-empty, performs a warm-up request loop per
 //     deployment to wait for the BBR → EPP ext_proc pipeline to be ready.
-func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespace, gatewayURL string) {
+func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, namespace, gatewayURL string) {
 	ctx := context.Background()
 	GetClusterClient(TestingCluster)
 
 	cl := TestingCluster.KubeClient
 
 	// Apply namespace default eagerly so subsequent waits use the correct ns.
-	resolved := make([]ModelDeploymentValues, len(deployments))
+	resolved := make([]deploy.ModelDeploymentValues, len(deployments))
 	for i, d := range deployments {
 		if d.Namespace == "" {
 			d.Namespace = namespace
@@ -180,9 +182,9 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 	}
 
 	for _, d := range resolved {
-		By(fmt.Sprintf("Installing modeldeployment chart %s (model=%s) in %s", d.Name, d.Model, d.Namespace))
-		Expect(InstallModelDeployment(d)).To(Succeed(),
-			"failed to install modeldeployment chart for %s", d.Name)
+		By(fmt.Sprintf("Installing modeldeployment %s (model=%s) in %s", d.Name, d.Model, d.Namespace))
+		Expect(InstallModelDeployment(ctx, d)).To(Succeed(),
+			"failed to install modeldeployment for %s", d.Name)
 
 		By(fmt.Sprintf("Waiting for InferencePool for %s", d.Name))
 		Expect(WaitForInferenceSetReady(ctx, cl, d.Name, d.Namespace, InferenceSetReadyTimeout)).
@@ -332,14 +334,15 @@ func SetupInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespac
 // releases for every deployment, removing the InferenceSets, InferencePools,
 // EPP artifacts, and HTTPRoutes. Entries with an empty Namespace fall back
 // to the supplied namespace argument.
-func TeardownInferenceSetsWithRouting(deployments []ModelDeploymentValues, namespace string) {
+func TeardownInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, namespace string) {
+	ctx := context.Background()
 	for _, d := range deployments {
 		ns := d.Namespace
 		if ns == "" {
 			ns = namespace
 		}
-		By(fmt.Sprintf("Uninstalling modeldeployment chart for %s in %s", d.Name, ns))
-		if err := UninstallModelDeployment(d.Name, ns); err != nil {
+		By(fmt.Sprintf("Uninstalling modeldeployment %s in %s", d.Name, ns))
+		if err := UninstallModelDeployment(ctx, d.Name, ns); err != nil {
 			GinkgoWriter.Printf("Cleanup warning for %s: %v\n", d.Name, err)
 		}
 	}

@@ -51,7 +51,7 @@ import (
 //     direct_response, rendered per-namespace by charts/modelharness)
 
 var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func() {
-	// Per-case deployments owned by model_routing_test.go (see cases.go).
+	// Per-case deployments owned by model_routing_spec.go (see cases.go).
 	// Installed in a dedicated namespace by BeforeAll so this case can run
 	// in parallel with other Ordered Describes.
 	caseDeployments := CaseDeployments[CaseModelRouting]
@@ -476,7 +476,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 	})
 
 	Context("Unknown model / malformed request handling", func() {
-		// Note: basic 404 for unknown model is already tested in gpu_mocker_test.go.
+		// Note: basic 404 for unknown model is already tested in gpu_mocker_spec.go.
 		// These tests cover additional negative-path scenarios.
 
 		It("should return 404 model_not_found + x-kaito-error-source: gateway for an unknown model", func() {

@@ -38,7 +38,7 @@ type Block struct {
 	Status          string   // It blocks only: "passed", "failed", "skipped", "pending", or "" when unknown
 }
 
-// TestFile collects all parsed blocks from a single *_test.go file.
+// TestFile collects all parsed blocks from a single *_spec.go file.
 type TestFile struct {
 	Name      string
 	Blocks    []Block
