@@ -55,6 +55,14 @@ func testConfig() Config {
 		LeaseDurationSec:      40,
 		LeaseRenewIntervalSec: 10,
 		NodeClass:             DefaultNodeClassRef(),
+		// Probe settings match production, so every existing shadow-pod test
+		// doubles as a guard that detection does not over-match on
+		// non-streaming pods.
+		StreamingProbeImage:            DefaultStreamingProbeImage,
+		StreamingProbeTimeoutSec:       DefaultStreamingProbeTimeoutSec,
+		StreamingProbeCPU:              DefaultStreamingProbeCPU,
+		StreamingProbeMemory:           DefaultStreamingProbeMemory,
+		StreamingProbeStreamerMemLimit: DefaultStreamingProbeStreamerMemLimit,
 	}
 }
 

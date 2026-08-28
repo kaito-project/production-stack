@@ -23,6 +23,7 @@ import (
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -85,6 +86,12 @@ func main() {
 		nodeClassKind          string
 		nodeClassResource      string
 		cloudProvider          string
+
+		streamingProbeImage      string
+		streamingProbeTimeoutSec int
+		streamingProbeCPU        string
+		streamingProbeMemory     string
+		streamingProbeStreamerMB int64
 	)
 
 	defaultNodeClass := controllers.DefaultNodeClassRef()
@@ -139,6 +146,19 @@ func main() {
 	flag.StringVar(&cloudProvider, "cloud-provider", controllers.DefaultCloudProvider,
 		fmt.Sprintf("Cloud SKU catalog used to size the fake node's nvidia.com/gpu (%q, %q, %q). Empty disables the lookup and every fake node advertises 1 GPU.",
 			controllers.CloudProviderAzure, controllers.CloudProviderAWS, controllers.CloudProviderArc))
+	flag.StringVar(&streamingProbeImage, "streaming-probe-image", controllers.DefaultStreamingProbeImage,
+		"Base image for the streaming probe init container. The Run:ai streamer is pip-installed at container start.")
+	flag.IntVar(&streamingProbeTimeoutSec, "streaming-probe-timeout-seconds", controllers.DefaultStreamingProbeTimeoutSec,
+		"Wall-clock budget for the streaming probe, so a hung storage call fails the init container instead of hanging.")
+	flag.StringVar(&streamingProbeCPU, "streaming-probe-cpu", controllers.DefaultStreamingProbeCPU,
+		"CPU request and limit for the streaming probe init container.")
+	flag.StringVar(&streamingProbeMemory, "streaming-probe-memory", controllers.DefaultStreamingProbeMemory,
+		"Memory limit for the streaming probe init container. The request is pinned lower so shadow pods stay schedulable.")
+	flag.Int64Var(&streamingProbeStreamerMB, "streaming-probe-streamer-memory-limit-bytes",
+		controllers.DefaultStreamingProbeStreamerMemLimit,
+		"RUNAI_STREAMER_MEMORY_LIMIT for the probe, in bytes. 0 lets the streamer size its CPU buffer to the largest "+
+			"tensor in the shard it reads; a positive value must exceed that tensor or the streamer refuses to run.")
+
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -147,6 +167,22 @@ func main() {
 
 	if leaseRenewIntervalSec <= 0 {
 		setupLog.Error(nil, "--lease-renew-interval-seconds must be > 0")
+		os.Exit(1)
+	}
+	if streamingProbeTimeoutSec <= 0 {
+		setupLog.Error(nil, "--streaming-probe-timeout-seconds must be > 0")
+		os.Exit(1)
+	}
+	if streamingProbeStreamerMB < 0 {
+		setupLog.Error(nil, "--streaming-probe-streamer-memory-limit-bytes must be >= 0")
+		os.Exit(1)
+	}
+	if _, err := resource.ParseQuantity(streamingProbeCPU); err != nil {
+		setupLog.Error(err, "--streaming-probe-cpu must be a valid Kubernetes quantity", "value", streamingProbeCPU)
+		os.Exit(1)
+	}
+	if _, err := resource.ParseQuantity(streamingProbeMemory); err != nil {
+		setupLog.Error(err, "--streaming-probe-memory must be a valid Kubernetes quantity", "value", streamingProbeMemory)
 		os.Exit(1)
 	}
 	if leaseDurationSec <= 0 {
@@ -195,6 +231,12 @@ func main() {
 			Resource: nodeClassResource,
 		},
 		CloudProvider: cloudProvider,
+
+		StreamingProbeImage:            streamingProbeImage,
+		StreamingProbeTimeoutSec:       streamingProbeTimeoutSec,
+		StreamingProbeCPU:              streamingProbeCPU,
+		StreamingProbeMemory:           streamingProbeMemory,
+		StreamingProbeStreamerMemLimit: streamingProbeStreamerMB,
 	}
 
 	restCfg := ctrl.GetConfigOrDie()

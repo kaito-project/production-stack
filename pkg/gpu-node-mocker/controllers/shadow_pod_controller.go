@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -60,6 +61,11 @@ type ShadowPodReconciler struct {
 	client.Client
 	Config Config
 }
+
+// shadowPodRequeueInterval is the safety-net requeue used while waiting for a
+// shadow pod to become Running. The secondary watch normally re-triggers the
+// reconcile sooner.
+const shadowPodRequeueInterval = 5 * time.Second
 
 // SetupWithManager registers the controller with two watches:
 //
@@ -167,9 +173,14 @@ func (r *ShadowPodReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if shadowPod.Status.Phase != corev1.PodRunning || shadowPod.Status.PodIP == "" {
-		log.Info("shadow pod not yet Running — will retry", "shadowPod", shadowName, "phase", shadowPod.Status.Phase)
+		// Include the blocking container's reason/message so a failed streaming
+		// probe is distinguishable from an image pull or scheduling problem.
+		reason, message := firstUnreadyContainerReason(shadowPod)
+		log.Info("shadow pod not yet Running — will retry",
+			"shadowPod", shadowName, "phase", shadowPod.Status.Phase,
+			"reason", reason, "message", message)
 		// The secondary watch will re-trigger us; RequeueAfter is a safety net.
-		return ctrl.Result{RequeueAfter: 5_000_000_000}, nil // 5 s
+		return ctrl.Result{RequeueAfter: shadowPodRequeueInterval}, nil
 	}
 
 	// Patch the original pod's status only when it is stale — either not yet
@@ -215,6 +226,7 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		return nil, fmt.Errorf("get shadow pod: %w", err)
 	}
 
+	mode := detectStreamingMode(original)
 	modelName := extractModelName(original)
 	servedModelName := extractServedModelName(original, modelName)
 	servingPort := extractServingPort(original)
@@ -263,6 +275,41 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		labels[ShadowPodInferenceSetLabelKey] = v
 	}
 
+	// Streaming pods additionally carry a cloned streaming identity and a probe
+	// init container, so the shadow pod also validates that weights are actually
+	// reachable before the simulator is allowed to start.
+	var (
+		identity      streamingIdentity
+		probeCMName   string
+		probeVolumes  []corev1.Volume
+		probeInitCtrs []corev1.Container
+	)
+	switch mode {
+	case streamingModeSAS, streamingModeDirectAzure:
+		identity = buildStreamingIdentity(original, mode)
+		probeCMName = probeScriptConfigMapName(shadowName)
+		if err := r.ensureProbeScriptConfigMap(ctx, shadowNS, probeCMName, ownerRef); err != nil {
+			return nil, fmt.Errorf("ensure probe configmap: %w", err)
+		}
+		for k, v := range identity.podLabels {
+			labels[k] = v
+		}
+		probeInitCtrs = append(probeInitCtrs, identity.initContainers...)
+		probeInitCtrs = append(probeInitCtrs, buildProbeContainer(identity, r.Config, probeCMName))
+		probeVolumes = append(probeVolumes, identity.volumes...)
+		probeVolumes = append(probeVolumes, corev1.Volume{
+			Name: probeCMName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: probeCMName},
+				},
+			},
+		})
+	case streamingModeUnsupported:
+		log.FromContext(ctx).Info("streaming probe skipped: unsupported object-store scheme",
+			"pod", original.Namespace+"/"+original.Name, "model", extractModelName(original))
+	}
+
 	shadow := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            shadowName,
@@ -274,6 +321,8 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 			},
 		},
 		Spec: corev1.PodSpec{
+			ServiceAccountName: identity.serviceAccount,
+			InitContainers:     probeInitCtrs,
 			Affinity: &corev1.Affinity{
 				NodeAffinity: &corev1.NodeAffinity{
 					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
@@ -342,6 +391,8 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 			},
 		},
 	}
+
+	shadow.Spec.Volumes = append(shadow.Spec.Volumes, probeVolumes...)
 
 	if err := r.Create(ctx, shadow); err != nil {
 		return nil, fmt.Errorf("create shadow pod: %w", err)
@@ -455,6 +506,26 @@ func isPendingOnFakeNode(obj client.Object) bool {
 func isShadowPod(pod *corev1.Pod) bool {
 	_, ok := pod.Labels[ShadowPodLabelKey]
 	return ok
+}
+
+// firstUnreadyContainerReason returns the reason and message of the first
+// container holding the pod back, init containers first since they gate the
+// rest. Returns empty strings when nothing is waiting or terminated.
+func firstUnreadyContainerReason(pod *corev1.Pod) (string, string) {
+	statuses := make([]corev1.ContainerStatus, 0,
+		len(pod.Status.InitContainerStatuses)+len(pod.Status.ContainerStatuses))
+	statuses = append(statuses, pod.Status.InitContainerStatuses...)
+	statuses = append(statuses, pod.Status.ContainerStatuses...)
+
+	for _, cs := range statuses {
+		if w := cs.State.Waiting; w != nil {
+			return cs.Name + ": " + w.Reason, w.Message
+		}
+		if t := cs.State.Terminated; t != nil && t.ExitCode != 0 {
+			return fmt.Sprintf("%s: %s (exit %d)", cs.Name, t.Reason, t.ExitCode), t.Message
+		}
+	}
+	return "", ""
 }
 
 func shadowPodName(original *corev1.Pod) string {
