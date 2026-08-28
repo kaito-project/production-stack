@@ -212,6 +212,8 @@ install_node_provisioner() {
     --set image.repository="${SHADOW_CONTROLLER_IMAGE%:*}" \
     --set image.tag="${SHADOW_CONTROLLER_IMAGE##*:}"
 
+  apply_acr_secret_if_needed
+
   # In karpenter mode the mocker discovery-checks nodeclaims.karpenter.sh
   # (shipped by KAITO) plus nodepools.karpenter.sh and the selected NodeClass
   # CRD (mocknodeclasses.karpenter.kaito.sh by default, both shipped by this
@@ -310,6 +312,8 @@ install_productionstack() {
     --set productionstack-status-reporter.controlPlane.kedaScalerNamespace="${KEDA_NAMESPACE}" \
     --wait --timeout=600s
 
+  apply_acr_secret_if_needed
+
   echo "⏳ Waiting for BBR..."
   kubectl -n kaito-system rollout status deployment/body-based-router --timeout=120s 2>/dev/null || \
     kubectl -n kaito-system wait --for=condition=ready pod -l app=body-based-router --timeout=120s 2>/dev/null || \
@@ -332,6 +336,15 @@ install_productionstack() {
     deployment/apikey-authz --timeout=15m
 }
 
+apply_acr_secret_if_needed() {
+  if kubectl get secret acr-secret -n kaito-system >/dev/null 2>&1; then
+    echo "=== Applying acr-secret imagePullSecrets to ServiceAccounts in kaito-system ==="
+    for sa in $(kubectl get sa -n kaito-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      kubectl patch serviceaccount "$sa" -n kaito-system -p '{"imagePullSecrets": [{"name": "acr-secret"}]}' 2>/dev/null || true
+    done
+  fi
+}
+
 # ── Phased execution ──────────────────────────────────────────────────────
 # install_node_provisioner deploys gpu-node-mocker when ENABLE_NODE_MOCKER=true,
 # or is a no-op when false (the real provisioner — karpenter via separate helm
@@ -341,6 +354,8 @@ run_phase phase1-base \
   install_gwie_crds \
   install_node_provisioner \
   install_productionstack
+
+apply_acr_secret_if_needed
 
 echo ""
 echo "✅ All components installed."

@@ -65,7 +65,7 @@ az acr create --resource-group "${RESOURCE_GROUP}" --name "${ACR_NAME}" --sku Ba
 # Only the gpu-node-mocker provisioner needs a controller image. Other
 # provisioners (e.g. Karpenter / AKS NAP) provision real nodes and deploy no
 # mocker, so there is nothing to build or push. The ACR above is still created
-# so that setup-cluster.sh can attach it to AKS via --attach-acr.
+# so that setup-cluster.sh can attach it to AKS or configure fallback ACR credentials.
 if [[ "${ENABLE_NODE_MOCKER}" != "true" ]]; then
   echo "=== Skipping gpu-node-mocker image build/push (ENABLE_NODE_MOCKER=${ENABLE_NODE_MOCKER}, provisioner: ${NODE_PROVISIONER}) ===" >&2
   echo "image="

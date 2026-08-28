@@ -121,7 +121,6 @@ az aks create \
   --node-count "${NODE_COUNT}" \
   --node-vm-size "${NODE_VM_SIZE}" \
   --enable-managed-identity \
-  --attach-acr "${ACR_NAME}" \
   --network-plugin azure \
   --network-plugin-mode overlay \
   --network-dataplane cilium \
@@ -162,6 +161,38 @@ az aks get-credentials \
   --resource-group "${RESOURCE_GROUP}" \
   --name "${CLUSTER_NAME}" \
   --overwrite-existing
+
+echo "=== Attaching ACR ${ACR_NAME} to AKS ==="
+KUBELET_ID=$(az aks show --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" --query "identityProfile.kubeletidentity.objectId" -o tsv 2>/dev/null || echo "")
+ACR_ID=$(az acr show --resource-group "${RESOURCE_GROUP}" --name "${ACR_NAME}" --query "id" -o tsv 2>/dev/null || echo "")
+
+ATTACH_SUCCESS=0
+if [[ -n "${KUBELET_ID}" && -n "${ACR_ID}" ]]; then
+  if az role assignment create --assignee-object-id "${KUBELET_ID}" --assignee-principal-type ServicePrincipal --role AcrPull --scope "${ACR_ID}" >/dev/null 2>&1; then
+    echo "  ✅ Granted AcrPull role to AKS kubelet identity on ACR ${ACR_NAME}."
+    ATTACH_SUCCESS=1
+  fi
+fi
+
+if [[ "${ATTACH_SUCCESS}" -ne 1 ]]; then
+  echo "  ⚠️  Could not create AcrPull role assignment (requires Owner/User Access Administrator permissions)."
+  echo "  Configuring ACR admin credentials and Kubernetes image pull secret as fallback..."
+  az acr update --resource-group "${RESOURCE_GROUP}" --name "${ACR_NAME}" --admin-enabled true >/dev/null 2>&1 || true
+  ACR_SERVER="${ACR_NAME}.azurecr.io"
+  ACR_PASSWORD=$(az acr credential show --resource-group "${RESOURCE_GROUP}" --name "${ACR_NAME}" --query "passwords[0].value" -o tsv 2>/dev/null || echo "")
+  if [[ -n "${ACR_PASSWORD}" ]]; then
+    kubectl create namespace kaito-system --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create secret docker-registry acr-secret \
+      --namespace kaito-system \
+      --docker-server="${ACR_SERVER}" \
+      --docker-username="${ACR_NAME}" \
+      --docker-****** \
+      --dry-run=client -o yaml | kubectl apply -f -
+    echo "  ✅ ACR fallback imagePullSecret 'acr-secret' created in kaito-system."
+  else
+    echo "  ⚠️  Could not retrieve ACR admin credentials."
+  fi
+fi
 
 echo "=== Waiting for all nodes to be Ready ==="
 kubectl wait --for=condition=ready nodes --all --timeout=300s
