@@ -12,6 +12,8 @@
 #   CLUSTER_NAME          — AKS cluster name           (default: kaito-aks)
 #   ACR_NAME              — ACR registry name           (default: <cluster_name>acr, sanitized)
 #   LOCATION              — Azure region               (default: australiaeast)
+#   AZURE_SUBSCRIPTION_ID — subscription passed to every az call; unset falls
+#                           back to the CLI default
 #   NODE_COUNT            — Number of worker nodes      (default: 2)
 #   NODE_VM_SIZE          — VM SKU for the node pool    (default: Standard_D8d_v4)
 #   E2E_PROVIDER          — upstream|azure              (default: upstream)
@@ -48,6 +50,13 @@ NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
 AKS_PREVIEW_VERSION="${AKS_PREVIEW_VERSION:-21.0.0b9}"
 
+# Passed per call rather than via `az account set`: the CLI profile is global
+# state and the E2E runner is shared with concurrent jobs.
+AZ_SUB=()
+if [[ -n "${AZURE_SUBSCRIPTION_ID:-}" ]]; then
+  AZ_SUB=(--subscription "${AZURE_SUBSCRIPTION_ID}")
+fi
+
 # Optional AKS-managed KEDA add-on toggled by provider.
 #   azure    -> enable managed KEDA in `kube-system`.
 #   upstream -> install KEDA via Helm later.
@@ -81,17 +90,17 @@ az extension add \
   --yes
 
 echo "=== Ensuring ManagedGatewayAPIPreview feature flag is registered ==="
-FEATURE_STATE=$(az feature show \
+FEATURE_STATE=$(az feature show ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
   --namespace Microsoft.ContainerService \
   --name ManagedGatewayAPIPreview \
   --query properties.state -o tsv 2>/dev/null || echo "NotRegistered")
 if [[ "${FEATURE_STATE}" != "Registered" ]]; then
   echo "Registering ManagedGatewayAPIPreview (current state: ${FEATURE_STATE})..."
-  az feature register \
+  az feature register ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
     --namespace Microsoft.ContainerService \
     --name ManagedGatewayAPIPreview >/dev/null
   for _ in $(seq 1 60); do
-    FEATURE_STATE=$(az feature show \
+    FEATURE_STATE=$(az feature show ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
       --namespace Microsoft.ContainerService \
       --name ManagedGatewayAPIPreview \
       --query properties.state -o tsv 2>/dev/null || echo "")
@@ -101,7 +110,7 @@ if [[ "${FEATURE_STATE}" != "Registered" ]]; then
   if [[ "${FEATURE_STATE}" != "Registered" ]]; then
     echo "WARNING: ManagedGatewayAPIPreview not Registered after wait (state=${FEATURE_STATE}). Continuing; az aks create will fail if it is required." >&2
   fi
-  az provider register --namespace Microsoft.ContainerService >/dev/null || true
+  az provider register ${AZ_SUB[@]+"${AZ_SUB[@]}"} --namespace Microsoft.ContainerService >/dev/null || true
 fi
 
 # Karpenter needs cluster OIDC issuer + Workload Identity so a self-managed
@@ -115,7 +124,7 @@ if [[ "${NODE_PROVISIONER}" == "karpenter" && "${ENABLE_NODE_MOCKER}" != "true" 
 fi
 
 echo "=== Creating AKS cluster ${CLUSTER_NAME} (provider=${E2E_PROVIDER}, node-provisioner=${NODE_PROVISIONER}) ==="
-az aks create \
+az aks create ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
   --resource-group "${RESOURCE_GROUP}" \
   --name "${CLUSTER_NAME}" \
   --node-count "${NODE_COUNT}" \
@@ -141,7 +150,7 @@ echo "=== Waiting for AKS provisioningState=Succeeded ==="
 # half-provisioned control plane.
 PROVISIONING_STATE=""
 for i in $(seq 1 60); do
-  PROVISIONING_STATE=$(az aks show \
+  PROVISIONING_STATE=$(az aks show ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
     --resource-group "${RESOURCE_GROUP}" \
     --name "${CLUSTER_NAME}" \
     --query provisioningState -o tsv 2>/dev/null || echo "")
@@ -158,7 +167,7 @@ if [[ "${PROVISIONING_STATE}" != "Succeeded" ]]; then
 fi
 
 echo "=== Fetching kubeconfig ==="
-az aks get-credentials \
+az aks get-credentials ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
   --resource-group "${RESOURCE_GROUP}" \
   --name "${CLUSTER_NAME}" \
   --overwrite-existing

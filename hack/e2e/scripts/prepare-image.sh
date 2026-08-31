@@ -12,6 +12,8 @@
 #   CLUSTER_NAME     — AKS cluster name          (default: kaito-aks)
 #   ACR_NAME         — ACR registry name         (default: <cluster_name>acr, sanitized)
 #   LOCATION         — Azure region              (default: australiaeast)
+#   AZURE_SUBSCRIPTION_ID — subscription passed to every az call; unset falls
+#                      back to the CLI default
 #   IMG              — Local docker tag for the gpu-node-mocker image
 #                      (default: gpu-node-mocker:latest)
 #   STATUS_REPORTER_IMG — Local docker tag for the status-reporter image
@@ -39,6 +41,13 @@ LOCATION="${LOCATION:-australiaeast}"
 IMG="${IMG:-gpu-node-mocker:latest}"
 STATUS_REPORTER_IMG="${STATUS_REPORTER_IMG:-productionstack-status-reporter:latest}"
 
+# Passed per call rather than via `az account set`: the CLI profile is global
+# state and the E2E runner is shared with concurrent jobs.
+AZ_SUB=()
+if [[ -n "${AZURE_SUBSCRIPTION_ID:-}" ]]; then
+  AZ_SUB=(--subscription "${AZURE_SUBSCRIPTION_ID}")
+fi
+
 # Verify the container tool used by the Makefile (docker/podman) is installed
 # and its daemon is reachable. Fail fast here so users get an actionable error
 # before `az group create` runs, instead of a cryptic failure midway through
@@ -57,10 +66,10 @@ fi
 export CONTAINER_TOOL
 
 echo "=== Creating resource group ${RESOURCE_GROUP} in ${LOCATION} ===" >&2
-az group create --name "${RESOURCE_GROUP}" --location "${LOCATION}" >&2
+az group create ${AZ_SUB[@]+"${AZ_SUB[@]}"} --name "${RESOURCE_GROUP}" --location "${LOCATION}" >&2
 
 echo "=== Creating ACR ${ACR_NAME} ===" >&2
-az acr create --resource-group "${RESOURCE_GROUP}" --name "${ACR_NAME}" --sku Basic >&2
+az acr create ${AZ_SUB[@]+"${AZ_SUB[@]}"} --resource-group "${RESOURCE_GROUP}" --name "${ACR_NAME}" --sku Basic >&2
 
 # Only the gpu-node-mocker provisioner needs a controller image. Other
 # provisioners (e.g. Karpenter / AKS NAP) provision real nodes and deploy no

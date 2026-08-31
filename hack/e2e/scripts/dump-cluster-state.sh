@@ -2,7 +2,9 @@
 # ---------------------------------------------------------------------------
 # dump-cluster-state.sh — Print a debug snapshot of the cluster state.
 # ---------------------------------------------------------------------------
-set -euo pipefail
+# No `-e`: this is a best-effort diagnostic dump that also runs when the cluster
+# was never created, so a failing kubectl must not abort the remaining sections.
+set -uo pipefail
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
