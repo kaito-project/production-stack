@@ -184,7 +184,11 @@ runs:
 
     - name: Azure Login
       shell: bash
-      run: az login --identity
+      run: |
+        # Every later step (image push, cluster create, dump, teardown) passes it
+        # as --subscription; `az account set` is unsafe on this shared runner.
+        AZURE_SUBSCRIPTION_ID="$(hack/e2e/scripts/azure-login.sh)"
+        echo "AZURE_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}" >> "${GITHUB_ENV}"
 
     - name: Prepare E2E images
       id: image
