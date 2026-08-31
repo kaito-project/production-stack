@@ -43,6 +43,39 @@ shadowPod:
   kvCacheTransferTimePerToken: ""
   kvCacheTransferTimeStdDev: ""
 
+  # streamingProbe validates the KAITO model-streaming path on CPU before the
+  # simulator starts. When the original inference pod is a streaming pod, the
+  # shadow pod clones its streaming identity, re-runs the credential bootstrap,
+  # lists the model's safetensors and streams a shard into CPU memory.
+  # A failure keeps the shadow pod from becoming Ready, which keeps the mocked
+  # inference pod Pending — so "mock serving is Ready" also means "streaming is
+  # validated".
+  #
+  # There is no switch to skip the probe: a pod that streams is a pod whose
+  # streaming should be verified. To opt out, disable streaming on the model
+  # itself (modeldeployment `streaming.disabled`), so KAITO renders a
+  # non-streaming pod and there is nothing to probe.
+  #
+  # Requires Azure Workload Identity on the cluster: the probe relies on the
+  # azure-workload-identity mutating webhook to inject the AAD env vars and
+  # projected SA token into the shadow pod.
+  streamingProbe:
+    image: python:3.12-slim
+    timeoutSeconds: 600
+    resources:
+      cpu: "1"
+      # Memory limit. The controller pins the request lower so shadow pods stay
+      # schedulable. Sized for the small model the mocker is paired with; it
+      # mostly covers torch's resident footprint on the direct-azure path. The
+      # SAS path installs nothing and needs far less.
+      memory: 1Gi
+    # RUNAI_STREAMER_MEMORY_LIMIT in bytes. 0 selects the streamer's
+    # largest_chunk mode, sizing its CPU buffer to exactly the largest tensor in
+    # the shard being read — the minimum that can work, computed per model. A
+    # positive value is both a cap and the allocation size, and the streamer
+    # refuses to run when it falls below that tensor.
+    streamerMemoryLimitBytes: 0
+
 # nodeProvisioner selects which KAITO node provisioner to mock.
 # Must match KAITO's --node-provisioner value: azure-gpu-provisioner or karpenter.
 nodeProvisioner: karpenter

@@ -71,6 +71,16 @@ spec:
             {{- end }}
             - --lease-duration-seconds={{ .Values.leaseDurationSeconds }}
             - --lease-renew-interval-seconds={{ .Values.leaseRenewIntervalSeconds }}
+            - --streaming-probe-image={{ .Values.shadowPod.streamingProbe.image }}
+            - --streaming-probe-timeout-seconds={{ .Values.shadowPod.streamingProbe.timeoutSeconds }}
+            - --streaming-probe-cpu={{ .Values.shadowPod.streamingProbe.resources.cpu }}
+            - --streaming-probe-memory={{ .Values.shadowPod.streamingProbe.resources.memory }}
+            {{/*
+            int64 is required: Helm would otherwise render a value this large in
+            scientific notation (1.073741824e+09), which Go's flag package cannot
+            parse, and the controller would crash on startup.
+            */}}
+            - --streaming-probe-streamer-memory-limit-bytes={{ int64 .Values.shadowPod.streamingProbe.streamerMemoryLimitBytes }}
             - --node-provisioner={{ .Values.nodeProvisioner }}
             - --node-class-group={{ .Values.nodeClass.group }}
             - --node-class-version={{ .Values.nodeClass.version }}

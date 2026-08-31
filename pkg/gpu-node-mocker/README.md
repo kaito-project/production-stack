@@ -59,6 +59,76 @@
 - **Patches the inference pod's status** — copies the shadow pod's IP into the inference pod's `status.podIP`, sets `phase=Running`, `conditions[Ready]=True`, and builds fake `containerStatuses`. This makes KAITO think the inference pod is running.
 - **Annotates the inference pod** with `kaito.sh/shadow-pod-ref` pointing to the shadow pod, so future reconciles can correlate them.
 
+## Streaming probe
+
+KAITO streaming Workspaces load weights from object storage via the Run:ai model
+streamer. Weight loading is CPU-safe, so the shadow pod can validate that path
+without a GPU — and because the shadow pod gates the mocked inference pod's
+readiness, **"mock serving is Ready" also means "streaming is configured
+correctly"**.
+
+When the original pod is a streaming pod, the shadow pod clones its streaming
+identity (ServiceAccount, workload-identity label, and the `fetch-sas`
+credential-bootstrap init container plus the volumes it references) and runs a
+probe init container that lists the model's `*.safetensors`, streams one shard
+into CPU memory, and asserts at least one tensor is read.
+
+The original pod sits on a fake node, so its init containers never execute and
+the SAS env file they would have written does not exist — nor could it be
+reused, since that volume is an `emptyDir` scoped to a single Pod. The shadow
+pod therefore runs its **own** copy of `fetch-sas`, which mints a fresh SAS into
+the shadow pod's own volume:
+
+```
+initContainers[0]  fetch-sas        (cloned spec; runs here for the first time)
+initContainers[1]  streamer-probe   (sources the SAS env file, lists, streams)
+containers[0]      llm-d-inference-sim
+```
+
+Detection reads the pod spec only — KAITO stamps streaming annotations on the
+Workspace and never copies them onto the Pod. Modes:
+
+| Mode | Trigger | Behaviour |
+| --- | --- | --- |
+| `sas` | a `fetch-sas` init container | clone identity + bootstrap, then probe |
+| `direct-azure` | `--model az://…` | clone identity, then probe |
+| `unsupported-scheme` | `--model s3://…` or `gs://…` | no probe (not deployable from these charts yet) |
+| `none` | anything else | unchanged behaviour |
+
+`--load-format` deliberately plays no part in detection: KAITO also sets
+`--load-format=runai_streamer` for weights already on local disk, which is not
+streaming.
+
+**A failing probe blocks readiness indefinitely** — the shadow pod stays
+Pending, so the mocked inference pod stays Pending too. That is the intended
+trade-off, and there is deliberately no switch to skip the probe: a pod that
+streams is a pod whose streaming should be verified, and mocking it as
+download-at-runtime would report success for a path that was never exercised.
+To opt out, disable streaming on the model itself (`streaming.disabled` in the
+modeldeployment chart, which stamps `kaito.sh/model-streaming: "disabled"`), so
+KAITO renders a non-streaming pod and there is nothing to probe.
+
+The blocking container's reason and message are included in the controller's
+retry log line.
+
+### Requirements and caveats
+
+- **Azure Workload Identity must be enabled** on the cluster
+  (`az aks ... --enable-oidc-issuer --enable-workload-identity`). The probe
+  relies on the mutating webhook to inject the AAD env vars and projected token.
+- Shadow-pod nodes need egress to PyPI, `download.pytorch.org`, AAD/ARM and blob
+  storage. The Run:ai streamer hard-depends on torch, so the probe installs the
+  **CPU-only** wheel first to avoid pulling ~2.5 GB of CUDA packages.
+- Shadow pods are built once and never mutated, so changing the probe
+  configuration only affects shadow pods created afterwards. To refresh existing
+  ones, delete them — the controller recreates them from current config:
+  `kubectl delete pod -l kaito.sh/managed-by=gpu-mocker`.
+- The probe container runs as root (`python:3.12-slim`) and the shadow pod gains
+  a non-default ServiceAccount, init containers and a projected token. Under a
+  `restricted` PodSecurity label the shadow pod would be rejected.
+- **This controller is test-only.** It can create pods under any ServiceAccount,
+  including one federated to a real cloud identity. Never run it in production.
+
 ## Inference latency profile
 
 The shadow pod runs `llm-d-inference-sim`, configured with a latency calculator

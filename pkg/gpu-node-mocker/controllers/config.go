@@ -154,6 +154,81 @@ const (
 	CloudProviderAWS     = "aws"
 	CloudProviderArc     = "arc"
 	DefaultCloudProvider = CloudProviderAzure
+
+	// The Kaito* names below are mirrored from KAITO's
+	// pkg/workspace/inference/modelstreaming package. They are NOT a public API.
+	// If upstream renames one, detectStreamingMode falls back to "no probe" —
+	// never to a broken shadow pod — so a rename degrades gracefully and is
+	// fixed in this one place.
+
+	// KaitoSASFetchInitContainerName is the init container KAITO adds on the
+	// SAS/static-model-mirror streaming path. It mints a short-lived SAS via
+	// Workload Identity and writes it to KaitoSASSharedVolumeName.
+	KaitoSASFetchInitContainerName = "fetch-sas"
+
+	// KaitoSASSharedVolumeName is the memory-backed emptyDir the SAS env file is
+	// written to, shared between fetch-sas and the inference container. Where it
+	// is mounted is read off the cloned container, not assumed.
+	KaitoSASSharedVolumeName = "streaming-sas"
+
+	// KaitoSASEnvFileEnvVar names the file fetch-sas writes and consumers source.
+	KaitoSASEnvFileEnvVar = "STREAM_ENV_FILE"
+
+	// AzureWorkloadIdentityUseLabel opts a pod into the azure-workload-identity
+	// mutating webhook, which injects the AAD env vars and projected SA token.
+	AzureWorkloadIdentityUseLabel = "azure.workload.identity/use"
+
+	// AzureIdentityTokenVolumeName is the projected SA-token volume that same
+	// webhook injects. It is stripped when cloning and re-injected by the
+	// webhook on the shadow pod, so cloning stays correct regardless of whether
+	// the webhook is idempotent.
+	AzureIdentityTokenVolumeName = "azure-identity-token"
+
+	// StreamingProbeContainerName is the probe init container added to shadow
+	// pods that mirror a streaming inference pod.
+	StreamingProbeContainerName = "streamer-probe"
+
+	// StreamingProbeMountPath is where the probe script ConfigMap is mounted.
+	StreamingProbeMountPath = "/probe"
+
+	// StreamingProbeScriptFileName is the probe script's name within its mount.
+	StreamingProbeScriptFileName = "streaming_probe.py"
+
+	// DefaultStreamingProbeImage is a slim Python base; the Run:ai streamer is
+	// pip-installed at container start, mirroring KAITO's own fetch-sas.
+	DefaultStreamingProbeImage = "python:3.12-slim"
+
+	// RunAIStreamerVersion mirrors the pin in KAITO's
+	// presets/workspace/dependencies/requirements.txt. Keep them in sync.
+	RunAIStreamerVersion = "0.16.0"
+
+	// TorchCPUIndexURL serves CPU-only torch wheels. runai-model-streamer hard-
+	// depends on torch, and torch's PyPI wheel pulls 756 MB of nvidia-* CUDA
+	// packages (gated on platform_system=="Linux") on top of a 506 MB CUDA build,
+	// none of which a CPU shadow-pod node can use.
+	TorchCPUIndexURL = "https://download.pytorch.org/whl/cpu"
+
+	// TorchVersion mirrors the pin in KAITO's requirements.txt.
+	TorchVersion = "2.11.0"
+
+	// Streaming probe defaults. Requests and limits are split on purpose: a pod's
+	// effective request is max(init containers, sum(containers)), so an init
+	// container's REQUEST is reserved for the pod's whole life even though the probe
+	// exits in under a minute. Requesting the limit would strand a full CPU and 1Gi
+	// per streaming shadow pod -- enough to starve the ModelMirror download Job,
+	// which itself asks for 3 CPU.
+	DefaultStreamingProbeTimeoutSec    = 600
+	DefaultStreamingProbeCPU           = "1"
+	DefaultStreamingProbeCPURequest    = "100m"
+	DefaultStreamingProbeMemory        = "1Gi"
+	DefaultStreamingProbeMemoryRequest = "256Mi"
+
+	// DefaultStreamingProbeStreamerMemLimit is RUNAI_STREAMER_MEMORY_LIMIT. The
+	// streamer reads 0 as "largest_chunk" mode, sizing its CPU buffer to exactly
+	// the largest tensor in the shard it reads. A positive value is both a cap and
+	// the allocation size, and the streamer refuses to run when it falls below that
+	// tensor -- which is unpredictable per model, so we let it size itself.
+	DefaultStreamingProbeStreamerMemLimit int64 = 0
 )
 
 // NodeClassRef identifies the cluster-scoped karpenter NodeClass resource that
@@ -239,4 +314,28 @@ type Config struct {
 	// nvidia.com/gpu capacity. Valid values: "azure", "aws", "arc". Empty
 	// disables the lookup and every fake node advertises 1 GPU.
 	CloudProvider string
+
+	// StreamingProbeImage is the base image for the probe init container.
+	//
+	// There is deliberately no flag to disable the probe: a pod that streams is
+	// a pod whose streaming should be verified, and mocking it as
+	// download-at-runtime would report success for a path never exercised. To
+	// opt out, disable streaming on the model itself
+	// (kaito.sh/model-streaming: "disabled") so KAITO renders a non-streaming
+	// pod and there is nothing to probe.
+	StreamingProbeImage string
+
+	// StreamingProbeTimeoutSec bounds the probe's wall-clock runtime so a hung
+	// storage call fails the init container instead of hanging forever.
+	StreamingProbeTimeoutSec int
+
+	// StreamingProbeCPU / StreamingProbeMemory are the probe container's CPU
+	// request and limit and its memory limit; the memory request is pinned to
+	// DefaultStreamingProbeMemoryRequest so outlier models can burst.
+	StreamingProbeCPU    string
+	StreamingProbeMemory string
+
+	// StreamingProbeStreamerMemLimit is RUNAI_STREAMER_MEMORY_LIMIT in bytes, or
+	// 0 to let the streamer size its buffer to the largest tensor it reads.
+	StreamingProbeStreamerMemLimit int64
 }
