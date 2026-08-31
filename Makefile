@@ -181,6 +181,11 @@ test-e2e-perf: ## Run prefix-cache perf specs serially. Override E2E_TRACE_FIXTU
 ##              time and skip the standalone Helm KEDA install
 ## --------------------------------------
 
+# Passed to every az call instead of `az account set`: the CLI's active
+# subscription is global state on the shared E2E runner, so mutating it would
+# race with concurrent jobs. Empty falls back to the CLI default.
+AZ_SUB_ARG = $(if $(AZURE_SUBSCRIPTION_ID),--subscription $(AZURE_SUBSCRIPTION_ID),)
+
 .PHONY: e2e
 e2e: ## Run full E2E cycle: setup cluster, install, validate, test, teardown.
 	hack/e2e/scripts/run-e2e-local.sh all
@@ -195,7 +200,7 @@ e2e-prepare-image: ## Create RG+ACR and build/push the gpu-node-mocker image to 
 
 .PHONY: e2e-push-image
 e2e-push-image: ## Tag and push image to ACR. Sets SHADOW_CONTROLLER_IMAGE.
-	az acr login --name "$${ACR_NAME}" >&2; \
+	az acr login $(AZ_SUB_ARG) --name "$${ACR_NAME}" >&2; \
 	IMAGE_TAG="latest-$$(head -c 8 /dev/urandom | xxd -p)"; \
 	IMAGE="$${ACR_NAME}.azurecr.io/gpu-node-mocker:$${IMAGE_TAG}"; \
 	$(CONTAINER_TOOL) tag $(IMG) "$${IMAGE}" >&2; \
@@ -204,7 +209,7 @@ e2e-push-image: ## Tag and push image to ACR. Sets SHADOW_CONTROLLER_IMAGE.
 
 .PHONY: e2e-push-image-local
 e2e-push-image-local: ## Tag and push locally-built image to ACR (no hash, uses IMG).
-	az acr login --name "$${ACR_NAME}" >&2; \
+	az acr login $(AZ_SUB_ARG) --name "$${ACR_NAME}" >&2; \
 	IMAGE="$${ACR_NAME}.azurecr.io/gpu-node-mocker:latest"; \
 	$(CONTAINER_TOOL) tag $(IMG) "$${IMAGE}" >&2; \
 	$(CONTAINER_TOOL) push "$${IMAGE}" >&2; \
@@ -212,7 +217,7 @@ e2e-push-image-local: ## Tag and push locally-built image to ACR (no hash, uses 
 
 .PHONY: e2e-push-status-reporter-image
 e2e-push-status-reporter-image: ## Tag and push status-reporter image to ACR. Sets STATUS_REPORTER_IMAGE.
-	az acr login --name "$${ACR_NAME}" >&2; \
+	az acr login $(AZ_SUB_ARG) --name "$${ACR_NAME}" >&2; \
 	IMAGE_TAG="latest-$$(head -c 8 /dev/urandom | xxd -p)"; \
 	IMAGE="$${ACR_NAME}.azurecr.io/$(STATUS_REPORTER_IMG_NAME):$${IMAGE_TAG}"; \
 	$(CONTAINER_TOOL) tag $(STATUS_REPORTER_IMG) "$${IMAGE}" >&2; \
@@ -266,25 +271,25 @@ AZURE_KARPENTER_MSI_NAME ?= karpentermsi
 
 .PHONY: karpenter-azure-identity
 karpenter-azure-identity: ## Create Azure MSI, federated credential, and role assignments for Karpenter.
-	az identity create --name $(AZURE_KARPENTER_MSI_NAME) --resource-group $(AZURE_RESOURCE_GROUP) >/dev/null
-	OIDC_ISSUER=$$(az aks show --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_CLUSTER_NAME) \
+	az identity create $(AZ_SUB_ARG) --name $(AZURE_KARPENTER_MSI_NAME) --resource-group $(AZURE_RESOURCE_GROUP) >/dev/null
+	OIDC_ISSUER=$$(az aks show $(AZ_SUB_ARG) --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_CLUSTER_NAME) \
 	  --query "oidcIssuerProfile.issuerUrl" -o tsv); \
-	az identity federated-credential create \
+	az identity federated-credential create $(AZ_SUB_ARG) \
 	  --name karpenter-federated-credential \
 	  --identity-name $(AZURE_KARPENTER_MSI_NAME) \
 	  --resource-group $(AZURE_RESOURCE_GROUP) \
 	  --issuer "$${OIDC_ISSUER}" \
 	  --subject "system:serviceaccount:$(KARPENTER_NAMESPACE):$(KARPENTER_SA_NAME)" \
 	  --audiences api://AzureADTokenExchange >/dev/null
-	SUBSCRIPTION_ID=$$(az account show --query 'id' -o tsv); \
-	PRINCIPAL_ID=$$(az identity show --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_KARPENTER_MSI_NAME) --query 'principalId' -o tsv); \
-	NODE_RG=$$(az aks show --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_CLUSTER_NAME) --query nodeResourceGroup -o tsv); \
-	az role assignment create \
+	SUBSCRIPTION_ID=$$(az account show $(AZ_SUB_ARG) --query 'id' -o tsv); \
+	PRINCIPAL_ID=$$(az identity show $(AZ_SUB_ARG) --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_KARPENTER_MSI_NAME) --query 'principalId' -o tsv); \
+	NODE_RG=$$(az aks show $(AZ_SUB_ARG) --resource-group $(AZURE_RESOURCE_GROUP) --name $(AZURE_CLUSTER_NAME) --query nodeResourceGroup -o tsv); \
+	az role assignment create $(AZ_SUB_ARG) \
 	  --assignee-object-id "$${PRINCIPAL_ID}" \
 	  --assignee-principal-type ServicePrincipal \
 	  --scope "/subscriptions/$${SUBSCRIPTION_ID}/resourceGroups/$${NODE_RG}" \
 	  --role "Contributor" --output none; \
-	az role assignment create \
+	az role assignment create $(AZ_SUB_ARG) \
 	  --assignee-object-id "$${PRINCIPAL_ID}" \
 	  --assignee-principal-type ServicePrincipal \
 	  --scope "/subscriptions/$${SUBSCRIPTION_ID}" \

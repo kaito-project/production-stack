@@ -20,6 +20,11 @@ namespace: ""
 # of `name` — multiple deployments may share the same preset model. Required.
 model: ""
 
+# modelAccessSecret is the name of a Kubernetes Secret containing the
+# models access credentials for huggingface. Used within the InferenceSet 
+# spec.template.inference.preset.modelAccessSecret field.
+modelAccessSecret: ""
+
 # instanceType is the VM instance type used for the underlying nodes.
 instanceType: "Standard_NV36ads_A10_v5"
 

@@ -122,13 +122,15 @@ jobs:
 
       - name: Azure Login
         if: always()
-        run: az login --identity
+        run: |
+          AZURE_SUBSCRIPTION_ID="$(hack/e2e/scripts/azure-login.sh)"
+          echo "AZURE_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}" >> "${GITHUB_ENV}"
 
       - name: Connect to cluster for diagnostics
         if: ${{ always() && needs.e2e_perf_tests.result == 'failure' }}
         run: |
-          if az aks show --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
-            az aks get-credentials --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" --overwrite-existing
+          if az aks show --subscription "${AZURE_SUBSCRIPTION_ID}" --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
+            az aks get-credentials --subscription "${AZURE_SUBSCRIPTION_ID}" --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" --overwrite-existing
           fi
 
       - name: Dump cluster state

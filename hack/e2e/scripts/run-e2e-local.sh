@@ -18,6 +18,9 @@
 #   NODE_VM_SIZE     (default: Standard_D8d_v4)
 #   E2E_PARALLEL     (default: 2) — Ginkgo parallel worker count
 #   SKIP_TEARDOWN    (default: false) — set to "true" to keep cluster after tests
+#   AZURE_SUBSCRIPTION_ID (default: unset) — subscription every az call targets
+#                    via --subscription; falls back to E2E_SUBSCRIPTION_ID from
+#                    the E2E runner's environment, then to the CLI default
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -86,6 +89,16 @@ export NODE_COUNT="${NODE_COUNT:-2}"
 export NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 export E2E_PARALLEL="${E2E_PARALLEL:-2}"
 SKIP_TEARDOWN="${SKIP_TEARDOWN:-false}"
+
+# Exported, not applied with `az account set`: the CLI profile is global state
+# and the E2E runner is shared, so child scripts pass --subscription per call.
+# Unset means "use whatever subscription az already has active", so a local run
+# never silently moves resources out of the developer's own subscription.
+AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-${E2E_SUBSCRIPTION_ID:-}}"
+if [ -n "${AZURE_SUBSCRIPTION_ID}" ]; then
+  export AZURE_SUBSCRIPTION_ID
+  echo "=== Azure subscription for this run: ${AZURE_SUBSCRIPTION_ID} ==="
+fi
 
 STEP="${1:-all}"
 
