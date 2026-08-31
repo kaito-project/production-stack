@@ -125,8 +125,12 @@ func (d *Deployer) InstallModelHarness(ctx context.Context, values deploy.ModelH
 		"--create-namespace",
 		"--set", "namespace=" + values.Namespace,
 		"--set", "auth.enabled=" + strconv.FormatBool(values.AuthEnabled),
-		"--wait",
 	}
+	args = append(args, gatewaySetArgs(values.Gateway)...)
+	if values.Gateway.GatewayClassName != "" {
+		args = append(args, "--set", "gatewayClassName="+values.Gateway.GatewayClassName)
+	}
+	args = append(args, "--wait")
 
 	if out, err := d.run(ctx, args...); err != nil {
 		return fmt.Errorf("helm upgrade --install %s in %s failed: %w\n%s",
@@ -170,11 +174,23 @@ func (d *Deployer) InstallModelDeployment(ctx context.Context, values deploy.Mod
 		"--create-namespace",
 	}
 	args = append(args, setArgs(values)...)
+	args = append(args, gatewaySetArgs(values.Gateway)...)
 
 	if out, err := d.run(ctx, args...); err != nil {
 		return fmt.Errorf("helm upgrade --install %s failed: %w\n%s", values.Name, err, string(out))
 	}
 	return nil
+}
+
+func gatewaySetArgs(values deploy.GatewayValues) []string {
+	args := []string{}
+	if values.CloudProvider != "" {
+		args = append(args, "--set", "cloudprovider="+values.CloudProvider)
+	}
+	if values.DefaultDomain != "" {
+		args = append(args, "--set-string", "azure.defaultDomain.zoneName="+values.DefaultDomain)
+	}
+	return args
 }
 
 // UninstallModelDeployment runs `helm uninstall` for the named release.

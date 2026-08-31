@@ -104,6 +104,10 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 			MaintenanceWindowDuration: "4h",
 		},
 		EPPScorerWeights: &deploy.EPPScorerWeights{Queue: &queue, PrefixCache: &prefix},
+		Gateway: deploy.GatewayValues{
+			CloudProvider: "azure",
+			DefaultDomain: "example.aksapp.io",
+		},
 	}
 
 	if err := d.InstallModelDeployment(context.Background(), values); err != nil {
@@ -137,10 +141,14 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 		"scaling.metrics[1].metricCacheWindow=300",
 		"autoUpgrade.enabled=true",
 		"epp.scorerWeights.queue=5",
+		"cloudprovider=azure",
 	} {
 		if !hasArg(args, want) {
 			t.Errorf("missing --set %q in %v", want, args)
 		}
+	}
+	if domain, ok := argValue(args, "--set-string", "azure.defaultDomain.zoneName="); !ok || domain != "example.aksapp.io" {
+		t.Errorf("App Routing domain not passed via --set-string: %v", args)
 	}
 
 	// A zero weight is meaningful and must still be rendered.
@@ -222,8 +230,25 @@ func TestInstallModelHarnessMapsAuth(t *testing.T) {
 	if err := d.InstallModelHarness(context.Background(), deploy.ModelHarnessValues{Namespace: "ns-a"}); err != nil {
 		t.Fatalf("InstallModelHarness: %v", err)
 	}
-	if err := d.InstallModelHarness(context.Background(), deploy.ModelHarnessValues{Namespace: "ns-b", AuthEnabled: true}); err != nil {
+	if err := d.InstallModelHarness(context.Background(), deploy.ModelHarnessValues{
+		Namespace:   "ns-b",
+		AuthEnabled: true,
+		Gateway: deploy.GatewayValues{
+			CloudProvider:    "azure",
+			GatewayClassName: "approuting-istio",
+			DefaultDomain:    "example.aksapp.io",
+		},
+	}); err != nil {
 		t.Fatalf("InstallModelHarness (auth): %v", err)
+	}
+	args := (*calls)[1]
+	for _, want := range []string{"cloudprovider=azure", "gatewayClassName=approuting-istio"} {
+		if !hasArg(args, want) {
+			t.Errorf("missing App Routing argument %q in %v", want, args)
+		}
+	}
+	if domain, ok := argValue(args, "--set-string", "azure.defaultDomain.zoneName="); !ok || domain != "example.aksapp.io" {
+		t.Errorf("App Routing domain not passed via --set-string: %v", args)
 	}
 
 	if got := (*calls)[0]; got[2] != ModelHarnessReleaseName || !hasArg(got, "auth.enabled=false") || !hasArg(got, "namespace=ns-a") {

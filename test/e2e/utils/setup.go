@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
@@ -111,6 +112,19 @@ func DeleteNamespace(ctx context.Context, name string) error {
 // with no Ready endpoints hangs until those endpoints appear, which
 // causes the 30s port-forward readiness probe to time out.
 func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, timeout time.Duration) error {
+	if UseAppRouting() {
+		cmd := exec.CommandContext(ctx, "kubectl", "wait",
+			"--for=condition=Programmed",
+			"gateway/"+gatewayName,
+			"--namespace", namespace,
+			"--timeout", timeout.String())
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("App Routing Gateway %s/%s was not programmed: %w\n%s",
+				namespace, gatewayName, err, string(out))
+		}
+		return nil
+	}
+
 	GetClusterClient(TestingCluster)
 	cl := TestingCluster.KubeClient
 	clientset, err := GetK8sClientset()
@@ -265,8 +279,7 @@ func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, n
 			// When the deployment opts in to API key auth, the chart
 			// renders an APIKey CR; the apikey-operator generates a
 			// Secret named APIKeySecretName in the same namespace. The
-			// authz service resolves the namespace from the Host
-			// header subdomain (<ns>.gw.example.com).
+			// authz service resolves the namespace from the Host header subdomain.
 			var (
 				bearerToken string
 				hostHeader  string
@@ -280,18 +293,10 @@ func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, n
 				key, err := GetAPIKeyFromSecret(ctx, d.Namespace)
 				Expect(err).NotTo(HaveOccurred())
 				bearerToken = key
-				hostHeader = d.Namespace + ".gw.example.com"
+				hostHeader, err = GatewayHostFor(d.Namespace)
+				Expect(err).NotTo(HaveOccurred())
 				// Give Envoy a moment to pick up the AuthorizationPolicy.
 				time.Sleep(5 * time.Second)
-				// DEBUG: surface the bearer prefix + host so failed-warmup
-				// triage can correlate the request with what apikey-authz
-				// indexed for this namespace.
-				keyPrefix := bearerToken
-				if len(keyPrefix) > 8 {
-					keyPrefix = keyPrefix[:8]
-				}
-				By(fmt.Sprintf("DEBUG warmup auth ns=%s deployment=%s host=%s bearerPrefix=%s bearerLen=%d",
-					d.Namespace, d.Name, hostHeader, keyPrefix, len(bearerToken)))
 			}
 			By(fmt.Sprintf("Waiting for gateway routing to be ready for deployment %s (preset %s)", d.Name, d.Model))
 			Eventually(func() error {

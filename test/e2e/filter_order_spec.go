@@ -78,7 +78,9 @@ var _ = Describe("Filter execution order",
 			caseNS = CaseNamespace(CaseFilterOrder)
 			dep := CaseDeployments[CaseFilterOrder][0]
 			modelName = dep.Name
-			hostHeader = caseNS + ".gw.example.com"
+			var err error
+			hostHeader, err = utils.GatewayHostFor(caseNS)
+			Expect(err).NotTo(HaveOccurred())
 			gatewayLabel = "gateway.networking.k8s.io/gateway-name=" + CaseGatewayName(CaseFilterOrder)
 
 			// Bearer token used by every "happy path" request below. Issued
@@ -88,7 +90,6 @@ var _ = Describe("Filter execution order",
 				return utils.GetAPIKeyFromSecret(ctx, caseNS)
 			}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
 				"API key Secret should be created in %s", caseNS)
-			var err error
 			apiKey, err = utils.GetAPIKeyFromSecret(ctx, caseNS)
 			Expect(err).NotTo(HaveOccurred())
 		})
@@ -306,7 +307,7 @@ var _ = Describe("Filter execution order",
 					"per-namespace Gateway pod should be Running")
 
 				dump, err := kubectlExec(caseNS, gwPod,
-					"curl", "-s", "http://127.0.0.1:15000/config_dump")
+					"pilot-agent", "request", "GET", "/config_dump")
 				Expect(err).NotTo(HaveOccurred(),
 					"failed to read Envoy admin /config_dump from %s/%s", caseNS, gwPod)
 
@@ -612,6 +613,12 @@ func kubectlExec(namespace, pod string, command ...string) (string, error) {
 // the inference-traffic HCM on the Gateway). This avoids hard-coding the
 // listener name (Istio generates a number-suffixed name per Gateway pod).
 func extractGatewayHTTPFilterNames(configDump string) []string {
+	// pilot-agent may emit startup diagnostics before writing the admin
+	// response. Discard that prefix so the remainder is valid JSON.
+	if jsonStart := strings.Index(configDump, "\n{"); jsonStart >= 0 {
+		configDump = configDump[jsonStart+1:]
+	}
+
 	var root struct {
 		Configs []map[string]json.RawMessage `json:"configs"`
 	}

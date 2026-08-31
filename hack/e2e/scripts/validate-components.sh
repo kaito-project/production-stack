@@ -93,14 +93,37 @@ fi
 
 
 # ── Istio (istiod) ──────────────────────────────────────────────────────
-echo "=== Istio ==="
-if kubectl -n istio-system wait --for=condition=ready pod -l app=istiod --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+ISTIO_NAMESPACE="istio-system"
+if [[ "${E2E_USE_APP_ROUTING:-false}" == "true" ]]; then
+  ISTIO_NAMESPACE="aks-istio-system"
+fi
+
+echo "=== Istio (namespace: ${ISTIO_NAMESPACE}) ==="
+if kubectl -n "${ISTIO_NAMESPACE}" wait --for=condition=ready pod -l app=istiod --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "istiod is Running"
 else
   fail "istiod is NOT Running"
 fi
-kubectl -n istio-system get pods -l app=istiod
+kubectl -n "${ISTIO_NAMESPACE}" get pods -l app=istiod
 echo ""
+
+if [[ "${E2E_USE_APP_ROUTING:-false}" == "true" ]]; then
+  echo "=== App Routing Istio ==="
+  if kubectl wait --for=condition=Accepted gatewayclass/approuting-istio --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+    pass "approuting-istio GatewayClass is Accepted"
+  else
+    fail "approuting-istio GatewayClass is NOT Accepted"
+  fi
+  if kubectl -n kube-system wait --for=jsonpath='{.status.conditions[?(@.type=="Available")].status}'=True \
+    defaultdomaincertificate/cert --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+    pass "App Routing default-domain certificate is Available"
+  else
+    fail "App Routing default-domain certificate is NOT Available"
+  fi
+  kubectl get gatewayclass approuting-istio
+  kubectl -n kube-system get defaultdomaincertificate cert
+  echo ""
+fi
 
 # ── BBR ──────────────────────────────────────────────────────────────────
 # BBR is a workload-only singleton co-located with the umbrella release

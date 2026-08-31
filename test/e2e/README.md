@@ -18,6 +18,13 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 
 Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets its own Gateway, catch-all `model-not-found-direct` EnvoyFilter (Envoy `direct_response` 404), and (when enabled) API-key auth artifacts via the [`charts/modelharness`](../../charts/modelharness) chart installed by `EnsureNamespace`.
 
+Set `E2E_USE_APP_ROUTING=true` to exercise case Gateways with the managed
+`approuting-istio` GatewayClass and route tests through each namespace's AKS
+default-domain HTTPS hostname. The PR E2E workflow enables this proof path;
+the self-managed Istio path remains the local default during migration. This
+mode installs an E2E-only EnvoyFilter compatibility role and is not the
+production App Routing provisioning contract.
+
 ## Helpers
 
 `utils/`:

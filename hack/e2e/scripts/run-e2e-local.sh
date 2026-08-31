@@ -66,6 +66,7 @@ if [ -z "${KEDA_NAMESPACE:-}" ]; then
 fi
 
 export E2E_PROVIDER KEDA_NAMESPACE ISTIO_VERSION GATEWAY_API_VERSION KEDA_VERSION LLM_GATEWAY_AUTH_VERSION LLM_GATEWAY_AUTH_IMAGE_TAG AKS_K8S_VERSION
+export E2E_USE_APP_ROUTING="${E2E_USE_APP_ROUTING:-false}"
 
 # Node-provisioner selection (decoupled from real-vs-mocked); exported so the
 # child scripts (setup/install/validate) inherit canonical values:
@@ -76,6 +77,7 @@ export ENABLE_NODE_MOCKER="${ENABLE_NODE_MOCKER:-true}"
 
 echo "=== Component versions (from versions.env) ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
+echo "  E2E_USE_APP_ROUTING:       ${E2E_USE_APP_ROUTING}"
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  ISTIO_VERSION:             ${ISTIO_VERSION}"
 echo "  GATEWAY_API_VERSION:       ${GATEWAY_API_VERSION}"
