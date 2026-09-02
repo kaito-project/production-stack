@@ -18,6 +18,13 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 
 Inference tests target the case's **`caseGatewayURL`**. Each case namespace gets its own Gateway, catch-all `model-not-found-direct` EnvoyFilter (Envoy `direct_response` 404), and (when enabled) API-key auth artifacts via the [`charts/modelharness`](../../charts/modelharness) chart installed by `EnsureNamespace`.
 
+Set `E2E_USE_AZURE_SERVICE_MESH=true` to use the AKS-managed Istio control
+plane instead of installing Istio with `istioctl`. Case Gateways continue to
+use the `istio` GatewayClass and tests connect through local port-forwards.
+The PR E2E workflow enables this mode. Azure Service Mesh supplies the Istio
+CRDs, including EnvoyFilter; the E2E setup does not install or patch those
+CRDs.
+
 ## Helpers
 
 `utils/`:

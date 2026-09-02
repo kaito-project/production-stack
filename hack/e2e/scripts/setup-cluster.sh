@@ -17,6 +17,8 @@
 #   NODE_COUNT            — Number of worker nodes      (default: 2)
 #   NODE_VM_SIZE          — VM SKU for the node pool    (default: Standard_D8d_v4)
 #   E2E_PROVIDER          — upstream|azure              (default: upstream)
+#   E2E_USE_AZURE_SERVICE_MESH — true to use the AKS Istio add-on instead of
+#                           installing Istio with istioctl (default: false)
 #   AKS_PREVIEW_VERSION   — aks-preview extension version (default: 21.0.0b9)
 #   GATEWAY_API_VERSION   — Gateway API CRD version    (sourced from versions.env)
 #   KEDA_VERSION          — KEDA Helm chart version    (sourced from versions.env)
@@ -48,6 +50,7 @@ LOCATION="${LOCATION:-australiaeast}"
 NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+E2E_USE_AZURE_SERVICE_MESH="${E2E_USE_AZURE_SERVICE_MESH:-false}"
 AKS_PREVIEW_VERSION="${AKS_PREVIEW_VERSION:-21.0.0b9}"
 
 # Passed per call rather than via `az account set`: the CLI profile is global
@@ -113,6 +116,13 @@ if [[ "${FEATURE_STATE}" != "Registered" ]]; then
   az provider register ${AZ_SUB[@]+"${AZ_SUB[@]}"} --namespace Microsoft.ContainerService >/dev/null || true
 fi
 
+if [[ "${E2E_USE_AZURE_SERVICE_MESH}" == "true" ]]; then
+  EXTRA_AKS_ARGS+=(
+    --enable-azure-service-mesh
+    --aks-custom-headers EnableGatewayAPIInferenceExtension=true
+  )
+fi
+
 # Karpenter needs cluster OIDC issuer + Workload Identity so a self-managed
 # Karpenter Helm install can obtain federated credentials to call the Azure ARM
 # API. Only for a real Karpenter backend (ENABLE_NODE_MOCKER=false); the mocker
@@ -136,8 +146,6 @@ az aks create ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
   --network-dataplane cilium \
   --network-policy cilium \
   --enable-gateway-api \
-  --enable-app-routing-istio \
-  --enable-default-domain \
   --generate-ssh-keys \
   ${AKS_K8S_VERSION:+--kubernetes-version "${AKS_K8S_VERSION}"} \
   ${EXTRA_AKS_ARGS[@]+"${EXTRA_AKS_ARGS[@]}"}
@@ -213,18 +221,16 @@ kubectl -n kube-system wait --for=condition=ready pod \
 # The managed Gateway API CRDs are enabled for every cluster; wait for them
 # to be served and fall back to the upstream CRDs if needed. The provider only
 # selects managed KEDA (`azure`) or Helm-installed KEDA (`upstream`). Istio is
-# still installed via istioctl here while migration to App Routing continues.
+# either provided by the Azure Service Mesh add-on or installed via istioctl.
 #
-# Istio is installed here (rather than in install-components.sh's
-# phase1-base) so the productionstack umbrella chart — which ships an
-# EnvoyFilter requiring networking.istio.io/v1alpha3 to be Established
-# — can install in parallel with KAITO et al. without racing on the
-# Istio control plane being up.
+# Istio prerequisites are installed here (rather than in
+# install-components.sh's phase1-base) so the productionstack umbrella chart
+# can install in parallel with KAITO et al. without racing on the EnvoyFilter
+# CRD or the selected control plane.
 #
-# GAIE (Gateway API Inference Extension) CRDs are installed later by
-# install-components.sh in phase1-base — no AKS managed add-on covers
-# them today, and keeping them in install-components.sh lets the apply
-# run in parallel with the KAITO install (which bundles the same CRDs).
+# The InferencePool CRD used by E2E is managed by AKS when Azure Service Mesh
+# is enabled. Otherwise install-components.sh applies the upstream GAIE CRDs in
+# phase1-base alongside the KAITO install.
 # ─────────────────────────────────────────────────────────────────────────
 
 # Validate the versions required by this section. Defaults can be sourced
@@ -251,12 +257,14 @@ fi
 
 # Ensure istioctl is available before fan-out so the parallel install
 # task does not need to download it under a forked subshell.
-if ! command -v istioctl &>/dev/null; then
+if [[ "${E2E_USE_AZURE_SERVICE_MESH}" != "true" ]] && ! command -v istioctl &>/dev/null; then
   echo "=== Installing istioctl ${ISTIO_VERSION} ==="
   curl -L https://istio.io/downloadIstio | ISTIO_VERSION="${ISTIO_VERSION}" sh -
   export PATH="${PWD}/istio-${ISTIO_VERSION}/bin:${PATH}"
 fi
-echo "Using istioctl: $(command -v istioctl)"
+if [[ "${E2E_USE_AZURE_SERVICE_MESH}" != "true" ]]; then
+  echo "Using istioctl: $(command -v istioctl)"
+fi
 
 # Source the shared run_phase / fmt_dur helpers so KEDA, Gateway API
 # CRDs, and Istio can install concurrently.
@@ -305,10 +313,34 @@ install_gateway_api_crds() {
   fi
 }
 
-# GAIE (Gateway API Inference Extension) CRDs are installed by
-# install-components.sh in phase1-base (same for every provider — no
-# AKS managed add-on covers them today). Keeping them there lets the
-# install run in parallel with KAITO, which bundles the same CRDs.
+# ── Azure Service Mesh ───────────────────────────────────────────────────
+verify_azure_service_mesh() {
+  echo "=== Verifying Azure Service Mesh ==="
+  local gateway_api_installation
+  gateway_api_installation=$(az aks show ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
+    --resource-group "${RESOURCE_GROUP}" \
+    --name "${CLUSTER_NAME}" \
+    --query ingressProfile.gatewayApi.installation -o tsv)
+  if [[ "${gateway_api_installation}" != "InferenceExtension" ]]; then
+    echo "❌ Expected Gateway API installation InferenceExtension, got ${gateway_api_installation:-<empty>}." >&2
+    return 1
+  fi
+  kubectl wait --for=condition=Established \
+    crd/envoyfilters.networking.istio.io --timeout=300s
+  kubectl wait --for=condition=Established \
+    crd/inferencepools.inference.networking.k8s.io --timeout=300s
+  kubectl -n aks-istio-system rollout status deployment \
+    --selector app=istiod --timeout=300s
+
+  local inference_extension_enabled
+  inference_extension_enabled=$(kubectl -n aks-istio-system get deployment \
+    --selector app=istiod \
+    -o jsonpath='{.items[0].spec.template.spec.containers[?(@.name=="discovery")].env[?(@.name=="ENABLE_GATEWAY_API_INFERENCE_EXTENSION")].value}')
+  if [[ "${inference_extension_enabled}" != "true" ]]; then
+    echo "❌ Managed istiod does not enable Gateway API Inference Extension." >&2
+    return 1
+  fi
+}
 
 # ── Istio control plane ──────────────────────────────────────────────────
 # Install the istiod control plane (Istio core CRDs + namespace + istiod
@@ -331,10 +363,13 @@ install_istio() {
 # Fan out the three independent installs in parallel. They share no
 # runtime state and each writes to a distinct set of API objects, so the
 # longest task gates this phase.
-run_phase cluster-prep \
-  install_keda \
-  install_gateway_api_crds \
-  install_istio
+CLUSTER_PREP_TASKS=(install_keda install_gateway_api_crds)
+if [[ "${E2E_USE_AZURE_SERVICE_MESH}" == "true" ]]; then
+  CLUSTER_PREP_TASKS+=(verify_azure_service_mesh)
+else
+  CLUSTER_PREP_TASKS+=(install_istio)
+fi
+run_phase cluster-prep "${CLUSTER_PREP_TASKS[@]}"
 
 echo ""
 echo "✅ AKS cluster ${CLUSTER_NAME} is ready."

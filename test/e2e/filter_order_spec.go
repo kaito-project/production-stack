@@ -194,17 +194,10 @@ var _ = Describe("Filter execution order",
 			// output. Without this, A2 could pass even if BBR was simply
 			// silent.
 			It("A2 sanity: authenticated request DOES exercise BBR", func() {
-				clientset, err := utils.GetK8sClientset()
+				const bbrNS = "kaito-system"
+				const bbrSelector = "app.kubernetes.io/name=body-based-routing"
+				beforeLen, err := totalRunningPodLogLen(ctx, bbrNS, bbrSelector, "bbr")
 				Expect(err).NotTo(HaveOccurred())
-
-				bbrNS := "kaito-system"
-				bbrPod, err := firstRunningPod(ctx, bbrNS,
-					"app.kubernetes.io/name=body-based-routing")
-				Expect(err).NotTo(HaveOccurred())
-
-				before, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
-				Expect(err).NotTo(HaveOccurred())
-				beforeLen := len(before)
 
 				// Send a valid request and wait for it to complete.
 				resp, err := sendAuth(modelName, apiKey)
@@ -218,12 +211,11 @@ var _ = Describe("Filter execution order",
 				// and can observe a stale, unchanged log size. Re-fetch until
 				// the new log line lands (or the timeout proves BBR was truly
 				// silent, which is the real failure this counter-test guards).
-				Eventually(func(g Gomega) {
-					after, gErr := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
-					g.Expect(gErr).NotTo(HaveOccurred())
-					g.Expect(len(after)).To(BeNumerically(">", beforeLen),
-						"BBR log size should grow after a valid authenticated request (proves the A2 needle-absence is meaningful)")
-				}, 30*time.Second, 2*time.Second).Should(Succeed())
+				Eventually(func() (int, error) {
+					return totalRunningPodLogLen(ctx, bbrNS, bbrSelector, "bbr")
+				}, 30*time.Second, 2*time.Second).
+					Should(BeNumerically(">", beforeLen),
+						"aggregate BBR log size should grow after a valid authenticated request (proves the A2 needle-absence is meaningful)")
 			})
 		})
 
@@ -322,7 +314,7 @@ var _ = Describe("Filter execution order",
 					"per-namespace Gateway pod should be Running")
 
 				dump, err := kubectlExec(caseNS, gwPod,
-					"curl", "-s", "http://127.0.0.1:15000/config_dump")
+					"pilot-agent", "request", "GET", "/config_dump")
 				Expect(err).NotTo(HaveOccurred(),
 					"failed to read Envoy admin /config_dump from %s/%s", caseNS, gwPod)
 
@@ -466,9 +458,6 @@ var _ = Describe("Filter execution order",
 			// requests). Snapshot BBR logs around an authed request for an
 			// unknown model and assert BBR's log grew.
 			It("D3: authed + unknown model still transits BBR (catch-all path)", func() {
-				clientset, err := utils.GetK8sClientset()
-				Expect(err).NotTo(HaveOccurred())
-
 				const bbrNS = "kaito-system"
 				const bbrSelector = "app.kubernetes.io/name=body-based-routing"
 
@@ -481,29 +470,7 @@ var _ = Describe("Filter execution order",
 				// before == after exactly). Aggregate the log length across all
 				// running BBR replicas so we observe growth regardless of which
 				// replica served the request.
-				totalBBRLogLen := func() (int, error) {
-					pods, err := clientset.CoreV1().Pods(bbrNS).List(ctx, metav1.ListOptions{
-						LabelSelector: bbrSelector,
-						FieldSelector: "status.phase=Running",
-					})
-					if err != nil {
-						return 0, err
-					}
-					if len(pods.Items) == 0 {
-						return 0, fmt.Errorf("no Running BBR pods match %q", bbrSelector)
-					}
-					total := 0
-					for i := range pods.Items {
-						logs, err := utils.GetPodLogs(clientset, bbrNS, pods.Items[i].Name, "bbr")
-						if err != nil {
-							return 0, err
-						}
-						total += len(logs)
-					}
-					return total, nil
-				}
-
-				beforeLen, err := totalBBRLogLen()
+				beforeLen, err := totalRunningPodLogLen(ctx, bbrNS, bbrSelector, "bbr")
 				Expect(err).NotTo(HaveOccurred())
 
 				resp, err := sendAuth("d3-unknown-model", apiKey)
@@ -515,7 +482,9 @@ var _ = Describe("Filter execution order",
 				// Poll (rather than a fixed sleep) for the aggregated BBR log to
 				// grow, tolerating log-flush latency on whichever replica served
 				// the request.
-				Eventually(totalBBRLogLen, 30*time.Second, 2*time.Second).
+				Eventually(func() (int, error) {
+					return totalRunningPodLogLen(ctx, bbrNS, bbrSelector, "bbr")
+				}, 30*time.Second, 2*time.Second).
 					Should(BeNumerically(">", beforeLen),
 						"BBR log must grow even for catch-all paths (proves BBR runs before router on every request)")
 			})
@@ -562,6 +531,32 @@ func firstRunningPod(ctx context.Context, namespace, labelSelector string) (stri
 	return pods.Items[0].Name, nil
 }
 
+func totalRunningPodLogLen(ctx context.Context, namespace, labelSelector, container string) (int, error) {
+	clientset, err := utils.GetK8sClientset()
+	if err != nil {
+		return 0, err
+	}
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+		FieldSelector: "status.phase=Running",
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(pods.Items) == 0 {
+		return 0, fmt.Errorf("no Running pods in %s match %q", namespace, labelSelector)
+	}
+	total := 0
+	for i := range pods.Items {
+		logs, err := utils.GetPodLogs(clientset, namespace, pods.Items[i].Name, container)
+		if err != nil {
+			return 0, err
+		}
+		total += len(logs)
+	}
+	return total, nil
+}
+
 // kubectlExec runs `kubectl exec` and returns the combined stdout/stderr.
 // We shell out (rather than using the K8s REST exec subresource) to stay
 // consistent with the rest of this suite which already shells out for
@@ -601,6 +596,12 @@ func kubectlExec(namespace, pod string, command ...string) (string, error) {
 // the inference-traffic HCM on the Gateway). This avoids hard-coding the
 // listener name (Istio generates a number-suffixed name per Gateway pod).
 func extractGatewayHTTPFilterNames(configDump string) []string {
+	// pilot-agent may emit startup diagnostics before writing the admin
+	// response. Discard that prefix so the remainder is valid JSON.
+	if jsonStart := strings.Index(configDump, "\n{"); jsonStart >= 0 {
+		configDump = configDump[jsonStart+1:]
+	}
+
 	var root struct {
 		Configs []map[string]json.RawMessage `json:"configs"`
 	}

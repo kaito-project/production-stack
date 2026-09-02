@@ -93,13 +93,18 @@ fi
 
 
 # ── Istio (istiod) ──────────────────────────────────────────────────────
-echo "=== Istio ==="
-if kubectl -n istio-system wait --for=condition=ready pod -l app=istiod --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+ISTIO_NAMESPACE="istio-system"
+if [[ "${E2E_USE_AZURE_SERVICE_MESH:-false}" == "true" ]]; then
+  ISTIO_NAMESPACE="aks-istio-system"
+fi
+
+echo "=== Istio (namespace: ${ISTIO_NAMESPACE}) ==="
+if kubectl -n "${ISTIO_NAMESPACE}" wait --for=condition=ready pod -l app=istiod --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "istiod is Running"
 else
   fail "istiod is NOT Running"
 fi
-kubectl -n istio-system get pods -l app=istiod
+kubectl -n "${ISTIO_NAMESPACE}" get pods -l app=istiod
 echo ""
 
 # ── BBR ──────────────────────────────────────────────────────────────────

@@ -2,9 +2,8 @@
 # ---------------------------------------------------------------------------
 # install-components.sh — Install all E2E components onto the AKS cluster.
 #
-# Phase 1 (parallel): KAITO, GAIE CRDs, gpu-node-mocker, productionstack
-#                     (umbrella chart bundling body-based-routing,
-#                     keda-kaito-scaler, and llm-gateway-auth).
+# Phase 1 (parallel): KAITO, gpu-node-mocker, productionstack, and GAIE CRDs
+#                     when they are not managed by AKS.
 #
 # Per-namespace shared resources (Gateway, HTTPRoute, AuthorizationPolicy,
 # APIKey CR, etc.) are provisioned per-test via charts/modelharness.
@@ -28,6 +27,7 @@ SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-no
 STATUS_REPORTER_IMAGE="${STATUS_REPORTER_IMAGE:-ghcr.io/kaito-project/productionstack-status-reporter:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+E2E_USE_AZURE_SERVICE_MESH="${E2E_USE_AZURE_SERVICE_MESH:-false}"
 
 # shellcheck source=lib-parallel.sh
 source "${SCRIPT_DIR}/lib-parallel.sh"
@@ -94,6 +94,7 @@ export KEDA_NAMESPACE
 
 echo "=== Component versions ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
+echo "  E2E_USE_AZURE_SERVICE_MESH: ${E2E_USE_AZURE_SERVICE_MESH}"
 echo "  NODE_PROVISIONER:          ${NODE_PROVISIONER}"
 echo "  ENABLE_NODE_MOCKER:        ${ENABLE_NODE_MOCKER}"
 echo "  KAITO_NODE_CLASS:          ${KAITO_NODE_CLASS} (${NODE_CLASS_GROUP}/${NODE_CLASS_VERSION} ${NODE_CLASS_KIND})"
@@ -127,6 +128,12 @@ install_kaito() {
   git clone --depth 1 --quiet \
     https://github.com/kaito-project/kaito.git "${KAITO_CHART_TMPDIR}"
   KAITO_CHART_REF="${KAITO_CHART_TMPDIR}/charts/kaito/workspace"
+
+  if [[ "${E2E_USE_AZURE_SERVICE_MESH}" == "true" ]]; then
+    # AKS owns and protects the inference-extension CRDs in managed mode.
+    # Keep KAITO's other CRDs, including the NodeClaim CRD used by the mocker.
+    rm -f "${KAITO_CHART_REF}"/crds/inference.networking*.yaml
+  fi
 
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
@@ -263,6 +270,30 @@ install_productionstack() {
   kubectl create namespace "${KEDA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
   kubectl create namespace llm-gateway-auth  --dry-run=client -o yaml | kubectl apply -f -
 
+  AZURE_SERVICE_MESH_ARGS=()
+  ISTIO_NAMESPACE="istio-system"
+  ISTIOD_DEPLOYMENT="istiod"
+  if [[ "${E2E_USE_AZURE_SERVICE_MESH}" == "true" ]]; then
+    ISTIO_NAMESPACE="aks-istio-system"
+    ISTIOD_DEPLOYMENT=$(kubectl -n "${ISTIO_NAMESPACE}" get deployment \
+      -l app=istiod \
+      -o jsonpath='{.items[0].metadata.name}')
+    if [[ -z "${ISTIOD_DEPLOYMENT}" ]]; then
+      echo "❌ No managed istiod Deployment found in ${ISTIO_NAMESPACE}." >&2
+      return 1
+    fi
+    ISTIO_REVISION=$(kubectl -n "${ISTIO_NAMESPACE}" get deployment "${ISTIOD_DEPLOYMENT}" \
+      -o jsonpath='{.metadata.labels.istio\.io/rev}')
+    if [[ -z "${ISTIO_REVISION}" ]]; then
+      echo "❌ Managed istiod Deployment ${ISTIOD_DEPLOYMENT} has no istio.io/rev label." >&2
+      return 1
+    fi
+    echo "Using Azure Service Mesh revision ${ISTIO_REVISION} (${ISTIO_NAMESPACE}/${ISTIOD_DEPLOYMENT})"
+    AZURE_SERVICE_MESH_ARGS=(
+      --set-string llm-gateway-apikey.istio.revision="${ISTIO_REVISION}"
+    )
+  fi
+
   echo "⏳ Vendoring upstream llm-gateway-apikey OCI dependency..."
   # The llm-gateway-apikey subchart is pulled from oci://mcr.microsoft.com at
   # install time; MCR occasionally resets the TCP connection mid-download
@@ -287,11 +318,11 @@ install_productionstack() {
   echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
   echo "    productionstack-status-reporter → kaito-system (image: ${STATUS_REPORTER_IMAGE})"
   # productionstack-status-reporter control-plane overrides: the reporter's
-  # chart defaults target a production AKS topology (aks-istio-system,
-  # kaito-workspace namespace). The E2E cluster installs istiod via istioctl
-  # into `istio-system` and the KAITO workspace controller into `kaito-system`,
-  # so point the reporter's probes at the E2E namespaces. startupGraceSeconds
-  # is shortened so findings surface within the test emit timeouts.
+  # Point the reporter at either the self-managed control plane or the
+  # revisioned Azure Service Mesh Deployment selected above. The KAITO
+  # workspace controller runs in `kaito-system` in both modes.
+  # startupGraceSeconds is shortened so findings surface within the test
+  # emit timeouts.
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
     --namespace kaito-system \
     --create-namespace \
@@ -302,12 +333,13 @@ install_productionstack() {
     --set productionstack-status-reporter.image.tag="${STATUS_REPORTER_IMAGE##*:}" \
     --set productionstack-status-reporter.image.pullPolicy=Always \
     --set productionstack-status-reporter.startupGraceSeconds=30 \
-    --set productionstack-status-reporter.controlPlane.istioNamespace=istio-system \
-    --set productionstack-status-reporter.controlPlane.istiodDeployment=istiod \
+    --set productionstack-status-reporter.controlPlane.istioNamespace="${ISTIO_NAMESPACE}" \
+    --set productionstack-status-reporter.controlPlane.istiodDeployment="${ISTIOD_DEPLOYMENT}" \
     --set productionstack-status-reporter.controlPlane.kaitoNamespace=kaito-system \
     --set productionstack-status-reporter.controlPlane.kaitoDeployment=kaito-workspace \
     --set productionstack-status-reporter.controlPlane.kedaNamespace="${KEDA_NAMESPACE}" \
     --set productionstack-status-reporter.controlPlane.kedaScalerNamespace="${KEDA_NAMESPACE}" \
+    "${AZURE_SERVICE_MESH_ARGS[@]+"${AZURE_SERVICE_MESH_ARGS[@]}"}" \
     --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."
@@ -336,11 +368,11 @@ install_productionstack() {
 # install_node_provisioner deploys gpu-node-mocker when ENABLE_NODE_MOCKER=true,
 # or is a no-op when false (the real provisioner — karpenter via separate helm
 # steps, or KAITO's own azure-gpu-provisioner — needs no in-cluster install).
-run_phase phase1-base \
-  install_kaito \
-  install_gwie_crds \
-  install_node_provisioner \
-  install_productionstack
+PHASE1_TASKS=(install_kaito install_node_provisioner install_productionstack)
+if [[ "${E2E_USE_AZURE_SERVICE_MESH}" != "true" ]]; then
+  PHASE1_TASKS+=(install_gwie_crds)
+fi
+run_phase phase1-base "${PHASE1_TASKS[@]}"
 
 echo ""
 echo "✅ All components installed."
