@@ -30,6 +30,10 @@ instanceType: "Standard_NV36ads_A10_v5"
 
 # replicas is the desired number of InferenceSet replicas. Also wired to the
 # scaledobject.kaito.sh/min-replicas annotation.
+#
+# When enableScaling is true this is the LOWER BOUND, not the live count:
+# spec.replicas is then set on install only and afterwards owned by KEDA, so
+# upgrades do not reset a scaled-out deployment back down to it.
 replicas: 1
 
 # enableScaling toggles KAITO ScaledObject auto-provisioning. When false,
