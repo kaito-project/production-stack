@@ -28,9 +28,9 @@ on:
         required: true
         default: 'main'
       provider:
-        description: 'E2E provider — selects component install mix. "upstream" = Helm-installed components; "azure" = AKS managed KEDA add-on, others stay upstream.'
+        description: 'E2E provider — "azure" uses managed KEDA and App Routing; "upstream" uses Helm KEDA and Istio.'
         required: false
-        default: 'upstream'
+        default: 'azure'
         type: choice
         options:
           - upstream
@@ -94,7 +94,6 @@ jobs:
           node-count: ${{ env.NODE_COUNT }}
           node-vm-size: ${{ env.NODE_VM_SIZE }}
           provider: ${{ github.event.inputs.provider }}
-          use-app-routing: 'true'
           istio-version: ${{ github.event.inputs.istio_version }}
           gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
           keda-version: ${{ github.event.inputs.keda_version }}

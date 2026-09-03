@@ -174,11 +174,10 @@ test-e2e-perf: ## Run prefix-cache perf specs serially. Override E2E_TRACE_FIXTU
 ## Override any version via environment variables, e.g.:
 ##   ISTIO_VERSION=1.30.0 KEDA_VERSION=v2.20.0 make e2e-install
 ##
-## The E2E_PROVIDER master switch (default: upstream) selects how
+## The E2E_PROVIDER master switch (default: azure) selects how
 ## infrastructure components are sourced:
-##   upstream → install everything via Helm/upstream manifests
-##   azure    → enable the AKS managed KEDA add-on at cluster create
-##              time and skip the standalone Helm KEDA install
+##   upstream → install KEDA and Istio from upstream distributions
+##   azure    → use the AKS managed KEDA and App Routing add-ons
 ## --------------------------------------
 
 # Passed to every az call instead of `az account set`: the CLI's active
@@ -250,9 +249,14 @@ e2e-teardown: ## Tear down the E2E cluster.
 e2e-up: ## One command to set up full local E2E env (cluster, build, push, install, validate).
 	@set -e; \
 	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \
-	IMAGE_LINE=$$(hack/e2e/scripts/prepare-image.sh | grep '^image='); \
+	export E2E_PROVIDER=$${E2E_PROVIDER:-$$(sed -n 's/^E2E_PROVIDER="\([^"]*\)"/\1/p' versions.env)}; \
+	IMAGE_OUTPUT=$$(hack/e2e/scripts/prepare-image.sh); \
+	IMAGE_LINE=$$(printf '%s\n' "$${IMAGE_OUTPUT}" | grep '^image='); \
+	STATUS_REPORTER_IMAGE_LINE=$$(printf '%s\n' "$${IMAGE_OUTPUT}" | grep '^status_reporter_image='); \
 	export SHADOW_CONTROLLER_IMAGE=$${IMAGE_LINE#image=}; \
+	export STATUS_REPORTER_IMAGE=$${STATUS_REPORTER_IMAGE_LINE#status_reporter_image=}; \
 	echo "Using SHADOW_CONTROLLER_IMAGE=$${SHADOW_CONTROLLER_IMAGE}"; \
+	echo "Using STATUS_REPORTER_IMAGE=$${STATUS_REPORTER_IMAGE}"; \
 	hack/e2e/scripts/run-e2e-local.sh setup; \
 	hack/e2e/scripts/run-e2e-local.sh install; \
 	hack/e2e/scripts/run-e2e-local.sh validate; \
@@ -260,8 +264,10 @@ e2e-up: ## One command to set up full local E2E env (cluster, build, push, insta
 	echo "=== E2E environment is ready ==="; \
 	echo "  Cluster: $(E2E_CLUSTER_NAME)"; \
 	echo "  Resource Group: $(E2E_RESOURCE_GROUP)"; \
-	echo "  Image:   $${SHADOW_CONTROLLER_IMAGE}"; \
-	echo "Run tests with: make test-e2e"; \
+	echo "  Provider: $${E2E_PROVIDER}"; \
+	echo "  Mocker image: $${SHADOW_CONTROLLER_IMAGE}"; \
+	echo "  Status reporter image: $${STATUS_REPORTER_IMAGE}"; \
+	echo "Run tests with: E2E_PROVIDER=$${E2E_PROVIDER} make test-e2e"; \
 	echo "Tear down with: CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) make e2e-teardown"
 
 KARPENTER_VERSION ?= $(shell grep '^KARPENTER_VERSION=' versions.env | cut -d'"' -f2)

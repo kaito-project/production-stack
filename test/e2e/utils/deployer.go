@@ -105,7 +105,7 @@ func InstallModelDeployment(ctx context.Context, values deploy.ModelDeploymentVa
 }
 
 func deploymentGatewayValues() (deploy.GatewayValues, error) {
-	if !UseAppRouting() {
+	if !IsAzureProvider() {
 		return deploy.GatewayValues{}, nil
 	}
 	domain, err := getAppRoutingDomain()

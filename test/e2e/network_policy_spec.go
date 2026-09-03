@@ -657,7 +657,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func
 	It("should ALLOW external-namespace ingress to the gateway pod via Service ClusterIP", func() {
 		gwSvcName := utils.IstioGatewayServiceName(CaseGatewayName(CaseNetworkPolicyA))
 		gatewayPort := int32(80)
-		if utils.UseAppRouting() {
+		if utils.IsAzureProvider() {
 			gwSvcName = CaseGatewayName(CaseNetworkPolicyA) + "-approuting-istio"
 			gatewayPort = 443
 		}

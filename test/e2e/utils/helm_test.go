@@ -18,6 +18,28 @@ package utils
 
 import "testing"
 
+func TestIsAzureProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		want     bool
+	}{
+		{name: "default", want: true},
+		{name: "Azure", provider: "azure", want: true},
+		{name: "Azure case insensitive", provider: "AZURE", want: true},
+		{name: "upstream", provider: "upstream", want: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("E2E_PROVIDER", test.provider)
+			if got := IsAzureProvider(); got != test.want {
+				t.Fatalf("IsAzureProvider() = %t, want %t for E2E_PROVIDER=%q", got, test.want, test.provider)
+			}
+		})
+	}
+}
+
 func TestDomainFromDNSZoneResourceID(t *testing.T) {
 	tests := []struct {
 		name       string

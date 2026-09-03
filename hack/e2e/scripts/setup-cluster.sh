@@ -16,9 +16,9 @@
 #                           back to the CLI default
 #   NODE_COUNT            — Number of worker nodes      (default: 2)
 #   NODE_VM_SIZE          — VM SKU for the node pool    (default: Standard_D8d_v4)
-#   E2E_PROVIDER          — upstream|azure              (default: upstream)
-#   E2E_USE_APP_ROUTING   — true to exercise managed App Routing using an
-#                           E2E-only EnvoyFilter compatibility role (default: false)
+#   E2E_PROVIDER          — upstream|azure              (default: azure)
+#                           Azure uses managed KEDA and App Routing; upstream
+#                           uses Helm KEDA and standalone Istio.
 #   AKS_PREVIEW_VERSION   — aks-preview extension version (default: 21.0.0b9)
 #   GATEWAY_API_VERSION   — Gateway API CRD version    (sourced from versions.env)
 #   KEDA_VERSION          — KEDA Helm chart version    (sourced from versions.env)
@@ -49,8 +49,7 @@ ACR_NAME="${ACR_NAME:-$(echo "${CLUSTER_NAME}acr" | tr -d '-' | head -c 50)}"
 LOCATION="${LOCATION:-australiaeast}"
 NODE_COUNT="${NODE_COUNT:-2}"
 NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
-E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
-E2E_USE_APP_ROUTING="${E2E_USE_APP_ROUTING:-false}"
+E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 AKS_PREVIEW_VERSION="${AKS_PREVIEW_VERSION:-21.0.0b9}"
 
 # Passed per call rather than via `az account set`: the CLI profile is global
@@ -116,7 +115,7 @@ if [[ "${FEATURE_STATE}" != "Registered" ]]; then
   az provider register ${AZ_SUB[@]+"${AZ_SUB[@]}"} --namespace Microsoft.ContainerService >/dev/null || true
 fi
 
-if [[ "${E2E_USE_APP_ROUTING}" == "true" ]]; then
+if [[ "${E2E_PROVIDER}" == "azure" ]]; then
   echo "=== Ensuring AKSHTTPCustomFeatures feature flag is registered ==="
   FEATURE_STATE=$(az feature show ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
     --namespace Microsoft.ContainerService \
@@ -199,7 +198,7 @@ if [[ "${PROVISIONING_STATE}" != "Succeeded" ]]; then
   exit 1
 fi
 
-if [[ "${E2E_USE_APP_ROUTING}" == "true" ]]; then
+if [[ "${E2E_PROVIDER}" == "azure" ]]; then
   GATEWAY_API_INSTALLATION=$(az aks show ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
     --resource-group "${RESOURCE_GROUP}" \
     --name "${CLUSTER_NAME}" \
@@ -265,10 +264,9 @@ kubectl -n kube-system wait --for=condition=ready pod \
 # can install in parallel with KAITO et al. without racing on the EnvoyFilter
 # CRD or the selected control plane.
 #
-# GAIE (Gateway API Inference Extension) CRDs are installed later by
-# install-components.sh in phase1-base — no AKS managed add-on covers
-# them today, and keeping them in install-components.sh lets the apply
-# run in parallel with the KAITO install (which bundles the same CRDs).
+# install-components.sh installs the upstream GAIE CRDs for the upstream
+# provider. Azure instead uses AKS's managed Inference Extension and its
+# protected InferencePool CRD.
 # ─────────────────────────────────────────────────────────────────────────
 
 # Validate the versions required by this section. Defaults can be sourced
@@ -295,12 +293,12 @@ fi
 
 # Ensure istioctl is available before fan-out so the parallel install
 # task does not need to download it under a forked subshell.
-if [[ "${E2E_USE_APP_ROUTING}" != "true" ]] && ! command -v istioctl &>/dev/null; then
+if [[ "${E2E_PROVIDER}" == "upstream" ]] && ! command -v istioctl &>/dev/null; then
   echo "=== Installing istioctl ${ISTIO_VERSION} ==="
   curl -L https://istio.io/downloadIstio | ISTIO_VERSION="${ISTIO_VERSION}" sh -
   export PATH="${PWD}/istio-${ISTIO_VERSION}/bin:${PATH}"
 fi
-if [[ "${E2E_USE_APP_ROUTING}" != "true" ]]; then
+if [[ "${E2E_PROVIDER}" == "upstream" ]]; then
   echo "Using istioctl: $(command -v istioctl)"
 fi
 
@@ -362,6 +360,11 @@ install_app_routing_istio_prereqs() {
     return 1
   fi
 
+  echo "⏳ Waiting for the App Routing default-domain certificate CRD..."
+  kubectl wait --for=condition=Established \
+    crd/defaultdomaincertificates.approuting.kubernetes.azure.com \
+    --timeout=300s
+
   echo "=== Installing Istio ${ISTIO_VERSION} EnvoyFilter CRD for App Routing ==="
   curl -fsSL \
     "https://raw.githubusercontent.com/istio/istio/${ISTIO_VERSION}/manifests/charts/base/files/crd-all.gen.yaml" \
@@ -400,10 +403,8 @@ subjects:
 EOF
 }
 
-# GAIE (Gateway API Inference Extension) CRDs are installed by
-# install-components.sh in phase1-base (same for every provider — no
-# AKS managed add-on covers them today). Keeping them there lets the
-# install run in parallel with KAITO, which bundles the same CRDs.
+# install-components.sh installs the upstream GAIE CRDs only for the upstream
+# provider. Azure uses the AKS-managed Inference Extension configured above.
 
 # ── Istio control plane ──────────────────────────────────────────────────
 # Install the istiod control plane (Istio core CRDs + namespace + istiod
@@ -427,7 +428,7 @@ install_istio() {
 # runtime state and each writes to a distinct set of API objects, so the
 # longest task gates this phase.
 CLUSTER_PREP_TASKS=(install_keda install_gateway_api_crds)
-if [[ "${E2E_USE_APP_ROUTING}" == "true" ]]; then
+if [[ "${E2E_PROVIDER}" == "azure" ]]; then
   CLUSTER_PREP_TASKS+=(install_app_routing_istio_prereqs)
 else
   CLUSTER_PREP_TASKS+=(install_istio)

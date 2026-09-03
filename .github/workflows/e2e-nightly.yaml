@@ -20,9 +20,9 @@ on:
         required: true
         default: 'main'
       provider:
-        description: 'E2E provider — "upstream" or "azure" (Azure-managed KEDA add-on).'
+        description: 'E2E provider — "azure" uses managed KEDA and App Routing; "upstream" uses Helm KEDA and Istio.'
         required: false
-        default: 'upstream'
+        default: 'azure'
         type: choice
         options:
           - upstream

@@ -443,7 +443,7 @@ func isRecoverablePortForwardError(err error) bool {
 // (namespace, gatewayName) tuple starts a kubectl port-forward; later
 // calls reuse the same forward.
 func GetGatewayURLFor(namespace, gatewayName string) (string, error) {
-	if UseAppRouting() {
+	if IsAzureProvider() {
 		host, err := GatewayHostFor(namespace)
 		if err != nil {
 			return "", err

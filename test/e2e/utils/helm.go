@@ -35,13 +35,14 @@ var (
 	appRoutingDomainErr  error
 )
 
-// UseAppRouting reports whether E2E is targeting AKS managed App Routing.
-func UseAppRouting() bool {
-	return strings.EqualFold(os.Getenv("E2E_USE_APP_ROUTING"), "true")
+// IsAzureProvider reports whether E2E is using the Azure provider.
+func IsAzureProvider() bool {
+	provider := os.Getenv("E2E_PROVIDER")
+	return provider == "" || strings.EqualFold(provider, "azure")
 }
 
 func getAppRoutingDomain() (string, error) {
-	if !UseAppRouting() {
+	if !IsAzureProvider() {
 		return "", nil
 	}
 	appRoutingDomainOnce.Do(func() {
@@ -116,7 +117,7 @@ func isDNSAlphaNumeric(value byte) bool {
 // GatewayHostFor returns the authority used to route requests to a namespace's
 // Gateway in the active E2E gateway mode.
 func GatewayHostFor(namespace string) (string, error) {
-	if UseAppRouting() {
+	if IsAzureProvider() {
 		domain, err := getAppRoutingDomain()
 		if err != nil {
 			return "", err

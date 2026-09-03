@@ -112,7 +112,7 @@ func DeleteNamespace(ctx context.Context, name string) error {
 // with no Ready endpoints hangs until those endpoints appear, which
 // causes the 30s port-forward readiness probe to time out.
 func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, timeout time.Duration) error {
-	if UseAppRouting() {
+	if IsAzureProvider() {
 		cmd := exec.CommandContext(ctx, "kubectl", "wait",
 			"--for=condition=Programmed",
 			"gateway/"+gatewayName,

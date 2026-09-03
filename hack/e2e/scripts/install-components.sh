@@ -27,8 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 STATUS_REPORTER_IMAGE="${STATUS_REPORTER_IMAGE:-ghcr.io/kaito-project/productionstack-status-reporter:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
-E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
-E2E_USE_APP_ROUTING="${E2E_USE_APP_ROUTING:-false}"
+E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 
 # shellcheck source=lib-parallel.sh
 source "${SCRIPT_DIR}/lib-parallel.sh"
@@ -130,11 +129,18 @@ install_kaito() {
   KAITO_CHART_REF="${KAITO_CHART_TMPDIR}/charts/kaito/workspace"
 
   KAITO_HELM_ARGS=()
-  if [[ "${E2E_USE_APP_ROUTING}" == "true" ]]; then
-    # AKS owns the inference-extension CRDs in managed mode. Skip Helm's crds/
-    # directory, then install only the bundled Karpenter API needed by KAITO.
-    kubectl apply --server-side --force-conflicts \
-      -f "${KAITO_CHART_REF}/crds/karpenter.sh_nodeclaims.yaml"
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    # AKS owns inferencepools.inference.networking.k8s.io and rejects any
+    # create/update attempt, including Helm's CRD install. Install the
+    # NodeClaim CRD for the mocker path when no Karpenter installation already
+    # owns it, then skip the chart's crds/ directory. This stack does not create
+    # legacy InferenceObjective resources.
+    if ! kubectl get crd nodeclaims.karpenter.sh >/dev/null 2>&1; then
+      kubectl apply --server-side \
+        -f "${KAITO_CHART_REF}/crds/karpenter.sh_nodeclaims.yaml"
+    fi
+    kubectl wait --for=condition=Established \
+      crd/nodeclaims.karpenter.sh --timeout=60s
     KAITO_HELM_ARGS+=(--skip-crds)
   fi
 
@@ -191,7 +197,7 @@ install_kaito() {
 }
 
 install_gwie_crds() {
-  if [[ "${E2E_USE_APP_ROUTING}" == "true" ]]; then
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
     echo "=== Using AKS-managed GWIE CRDs ==="
     return
   fi
@@ -281,11 +287,7 @@ install_productionstack() {
 
   APP_ROUTING_ARGS=()
   ISTIO_NAMESPACE="istio-system"
-  if [[ "${E2E_USE_APP_ROUTING}" == "true" ]]; then
-    echo "⏳ Waiting for the App Routing default-domain certificate CRD..."
-    kubectl wait --for=condition=Established \
-      crd/defaultdomaincertificates.approuting.kubernetes.azure.com \
-      --timeout=300s
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
     ISTIO_NAMESPACE="aks-istio-system"
     APP_ROUTING_ARGS=(
       --set cloudprovider=azure

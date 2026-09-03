@@ -15,7 +15,7 @@ ENABLE_NODE_MOCKER="${ENABLE_NODE_MOCKER:-true}"
 
 FAILED=0
 TIMEOUT="${VALIDATE_TIMEOUT:-120s}"
-E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 
 # Derive KEDA namespace from provider when not explicitly provided.
 if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
@@ -94,7 +94,7 @@ fi
 
 # ── Istio (istiod) ──────────────────────────────────────────────────────
 ISTIO_NAMESPACE="istio-system"
-if [[ "${E2E_USE_APP_ROUTING:-false}" == "true" ]]; then
+if [[ "${E2E_PROVIDER}" == "azure" ]]; then
   ISTIO_NAMESPACE="aks-istio-system"
 fi
 
@@ -107,7 +107,7 @@ fi
 kubectl -n "${ISTIO_NAMESPACE}" get pods -l app=istiod
 echo ""
 
-if [[ "${E2E_USE_APP_ROUTING:-false}" == "true" ]]; then
+if [[ "${E2E_PROVIDER}" == "azure" ]]; then
   echo "=== App Routing Istio ==="
   if kubectl wait --for=condition=Accepted gatewayclass/approuting-istio --timeout="${TIMEOUT}" >/dev/null 2>&1; then
     pass "approuting-istio GatewayClass is Accepted"

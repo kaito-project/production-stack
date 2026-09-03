@@ -32,13 +32,9 @@ inputs:
     required: false
     default: 'Standard_D4d_v4'
   provider:
-    description: 'E2E provider (upstream|azure) — master switch for component install mix. Empty defaults to upstream.'
+    description: 'E2E provider (upstream|azure) — Azure uses managed KEDA and App Routing; upstream uses Helm KEDA and Istio. Empty defaults to Azure.'
     required: false
     default: ''
-  use-app-routing:
-    description: 'Exercise managed App Routing with an E2E-only EnvoyFilter compatibility role; not production provisioning.'
-    required: false
-    default: 'false'
   # Component version overrides — empty string means "use versions.env default".
   istio-version:
     description: 'Istio version override.'
@@ -101,7 +97,6 @@ runs:
         source versions.env
         # Inputs override defaults when non-empty.
         INPUT_PROVIDER="${{ inputs.provider }}"
-        INPUT_USE_APP_ROUTING="${{ inputs.use-app-routing }}"
         INPUT_ISTIO="${{ inputs.istio-version }}"
         INPUT_GWAPI="${{ inputs.gateway-api-version }}"
         INPUT_KEDA="${{ inputs.keda-version }}"
@@ -117,7 +112,6 @@ runs:
         KAITO_NODE_PROVISIONER="${INPUT_NODE_PROVISIONER:-karpenter}"
         ENABLE_NODE_MOCKER="${INPUT_ENABLE_NODE_MOCKER:-true}"
         KAITO_NODE_CLASS="${INPUT_NODE_CLASS:-mock}"
-        E2E_USE_APP_ROUTING="${INPUT_USE_APP_ROUTING:-false}"
 
         # Validate provider value.
         case "${E2E_PROVIDER}" in
@@ -138,7 +132,6 @@ runs:
         {
           echo "GO_VERSION=${GO_VERSION}"
           echo "E2E_PROVIDER=${E2E_PROVIDER}"
-          echo "E2E_USE_APP_ROUTING=${E2E_USE_APP_ROUTING}"
           echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
           echo "ISTIO_VERSION=${ISTIO_VERSION}"
           echo "GATEWAY_API_VERSION=${GATEWAY_API_VERSION}"
@@ -155,7 +148,6 @@ runs:
       shell: bash
       run: |
         echo "E2E_PROVIDER=${E2E_PROVIDER}"
-        echo "E2E_USE_APP_ROUTING=${E2E_USE_APP_ROUTING}"
         echo "KEDA_NAMESPACE=${KEDA_NAMESPACE}"
         echo "GO_VERSION=${GO_VERSION}"
         echo "ISTIO_VERSION=${ISTIO_VERSION}"
