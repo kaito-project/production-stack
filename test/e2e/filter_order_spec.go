@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
@@ -150,9 +151,8 @@ var _ = Describe("Filter execution order",
 			})
 
 			// A2 — An unauth'd request must NOT reach BBR. We assert this by
-			// snapshotting the BBR pod's log size before and after sending
-			// the unauth'd request, and grep'ing the new log lines for the
-			// unique correlation prompt. BBR's default `body-field-to-header`
+			// sending a unique model marker and checking every BBR replica's
+			// logs for that marker. BBR's default `body-field-to-header`
 			// plugin logs the extracted model name (at -v=3 which the chart
 			// pins), so any execution would surface in the logs.
 			It("A2: unauth'd request never reaches BBR", func() {
@@ -160,14 +160,9 @@ var _ = Describe("Filter execution order",
 				Expect(err).NotTo(HaveOccurred())
 
 				bbrNS := "kaito-system"
-				bbrPod, err := firstRunningPod(ctx, bbrNS,
-					"app.kubernetes.io/name=body-based-routing")
-				Expect(err).NotTo(HaveOccurred(),
-					"BBR pod should be running in %s", bbrNS)
-
-				before, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
+				bbrSelector := "app.kubernetes.io/name=body-based-routing"
+				_, err = runningPodLogs(ctx, clientset, bbrNS, bbrSelector, "bbr")
 				Expect(err).NotTo(HaveOccurred())
-				beforeLen := len(before)
 
 				// Use a unique model value so we can grep for it after.
 				needle := fmt.Sprintf("a2-no-bbr-%d", time.Now().UnixNano())
@@ -179,50 +174,39 @@ var _ = Describe("Filter execution order",
 				// Give BBR's log writer time to flush — if it would have run.
 				time.Sleep(3 * time.Second)
 
-				after, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
+				after, err := runningPodLogs(ctx, clientset, bbrNS, bbrSelector, "bbr")
 				Expect(err).NotTo(HaveOccurred())
-				delta := after
-				if len(after) >= beforeLen {
-					delta = after[beforeLen:]
-				}
-				Expect(delta).NotTo(ContainSubstring(needle),
-					"BBR should not have seen the unauth'd request body; found needle %q in new log slice", needle)
+				Expect(after).NotTo(ContainSubstring(needle),
+					"BBR should not have seen the unauth'd request body; found needle %q in BBR logs", needle)
 			})
 
-			// B2 — Sanity counter-test for A2: a fully authenticated request
-			// for the same unique model needle must *increase* BBR log
-			// output. Without this, A2 could pass even if BBR was simply
-			// silent.
+			// Sanity counter-test for A2: a fully authenticated request with a
+			// unique model needle must appear in one of the BBR replicas' logs.
+			// Without this, A2 could pass even if BBR was simply silent.
 			It("A2 sanity: authenticated request DOES exercise BBR", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
 				bbrNS := "kaito-system"
-				bbrPod, err := firstRunningPod(ctx, bbrNS,
-					"app.kubernetes.io/name=body-based-routing")
-				Expect(err).NotTo(HaveOccurred())
+				bbrSelector := "app.kubernetes.io/name=body-based-routing"
+				needle := fmt.Sprintf("a2-bbr-sanity-%d", time.Now().UnixNano())
 
-				before, err := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
-				Expect(err).NotTo(HaveOccurred())
-				beforeLen := len(before)
-
-				// Send a valid request and wait for it to complete.
-				resp, err := sendAuth(modelName, apiKey)
+				// A valid key allows this request to reach BBR. The deliberately
+				// unknown model then falls through to the catch-all after BBR logs
+				// the extracted model value.
+				resp, err := sendAuth(needle, apiKey)
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
-				Expect(resp.StatusCode).To(Equal(http.StatusOK))
+				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 
-				// Poll for the log to grow rather than sleeping a fixed
-				// interval: BBR logs via klog, which buffers and flushes on a
-				// periodic (~5s) timer, so a single fixed wait races the flush
-				// and can observe a stale, unchanged log size. Re-fetch until
-				// the new log line lands (or the timeout proves BBR was truly
-				// silent, which is the real failure this counter-test guards).
+				// BBR is an HA deployment and Envoy may select any replica. Poll
+				// the combined logs instead of assuming the first Running pod
+				// handled this request.
 				Eventually(func(g Gomega) {
-					after, gErr := utils.GetPodLogs(clientset, bbrNS, bbrPod, "bbr")
+					logs, gErr := runningPodLogs(ctx, clientset, bbrNS, bbrSelector, "bbr")
 					g.Expect(gErr).NotTo(HaveOccurred())
-					g.Expect(len(after)).To(BeNumerically(">", beforeLen),
-						"BBR log size should grow after a valid authenticated request (proves the A2 needle-absence is meaningful)")
+					g.Expect(logs).To(ContainSubstring(needle),
+						"BBR logs should contain the authenticated request's unique model marker (proves the A2 needle-absence is meaningful)")
 				}, 30*time.Second, 2*time.Second).Should(Succeed())
 			})
 		})
@@ -540,6 +524,33 @@ var _ = Describe("Filter execution order",
 			})
 		})
 	})
+
+// runningPodLogs returns the combined logs from every Running pod matching
+// labelSelector. BBR is deployed with multiple replicas, so assertions about
+// whether a request reached BBR must not assume which replica Envoy selected.
+func runningPodLogs(ctx context.Context, clientset *kubernetes.Clientset, namespace, labelSelector, container string) (string, error) {
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+		FieldSelector: "status.phase=Running",
+	})
+	if err != nil {
+		return "", fmt.Errorf("list pods in %s with %q: %w", namespace, labelSelector, err)
+	}
+	if len(pods.Items) == 0 {
+		return "", fmt.Errorf("no Running pods in %s match %q", namespace, labelSelector)
+	}
+
+	var logs strings.Builder
+	for i := range pods.Items {
+		podLogs, err := utils.GetPodLogs(clientset, namespace, pods.Items[i].Name, container)
+		if err != nil {
+			return "", fmt.Errorf("get logs for %s/%s: %w", namespace, pods.Items[i].Name, err)
+		}
+		logs.WriteString(podLogs)
+		logs.WriteByte('\n')
+	}
+	return logs.String(), nil
+}
 
 // firstRunningPod returns the name of the first Running pod that matches
 // labelSelector in the given namespace. Uses the shared GetK8sClientset
