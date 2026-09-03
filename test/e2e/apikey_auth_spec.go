@@ -102,10 +102,11 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 			fmt.Sprintf("invalid key should be rejected; got status %d", resp.StatusCode))
 	})
 
-	It("should accept requests with a valid API key (200)", func() {
+	validAPIKeyShouldSucceed := func(headerName, headerValue string) {
+		GinkgoHelper()
 		Eventually(func() error {
-			resp, err := utils.SendChatCompletionWithAuth(
-				caseAuthURL, modelName, "hello", apiKey, hostHeader())
+			resp, err := utils.SendChatCompletionWithHeader(
+				caseAuthURL, modelName, "hello", headerName, headerValue, hostHeader())
 			if err != nil {
 				return fmt.Errorf("request failed: %w", err)
 			}
@@ -116,6 +117,18 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 			}
 			return nil
 		}, 2*time.Minute, 5*time.Second).Should(Succeed(),
-			"request with valid API key should succeed with 200")
+			"request with valid API key in %s header should succeed with 200", headerName)
+	}
+
+	It("should accept requests with a valid API key in the X-API-Key header (200)", func() {
+		validAPIKeyShouldSucceed("X-API-Key", apiKey)
+	})
+
+	It("should accept requests with a valid API key in the API-Key header (200)", func() {
+		validAPIKeyShouldSucceed("API-Key", apiKey)
+	})
+
+	It("should accept requests with a valid API key in the Authorization header (200)", func() {
+		validAPIKeyShouldSucceed("Authorization", "Bearer "+apiKey)
 	})
 })

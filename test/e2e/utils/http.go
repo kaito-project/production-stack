@@ -645,6 +645,16 @@ func sendChatCompletionRawAttempt(ctx context.Context, gatewayURL string, reqBod
 // with an Authorization Bearer token and a custom Host header (needed for
 // namespace resolution by the apikey-authz service).
 func SendChatCompletionWithAuth(gatewayURL, model, prompt, bearerToken, hostHeader string) (*http.Response, error) {
+	authorization := ""
+	if bearerToken != "" {
+		authorization = "Bearer " + bearerToken
+	}
+	return SendChatCompletionWithHeader(gatewayURL, model, prompt, "Authorization", authorization, hostHeader)
+}
+
+// SendChatCompletionWithHeader sends an OpenAI-compatible chat completion request
+// with a custom header and Host header.
+func SendChatCompletionWithHeader(gatewayURL, model, prompt, headerName, headerValue, hostHeader string) (*http.Response, error) {
 	if err := checkAllPortForwards(); err != nil {
 		return nil, err
 	}
@@ -669,8 +679,8 @@ func SendChatCompletionWithAuth(gatewayURL, model, prompt, bearerToken, hostHead
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if bearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	if headerName != "" && headerValue != "" {
+		req.Header.Set(headerName, headerValue)
 	}
 	if hostHeader != "" {
 		req.Host = hostHeader
