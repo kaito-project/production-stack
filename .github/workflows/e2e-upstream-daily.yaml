@@ -1,0 +1,111 @@
+name: E2E tests (daily, upstream)
+
+# Runs the regular E2E suite against upstream KEDA and Istio with the GPU node
+# mocker. Slow Nightly and Perf specs remain in their dedicated workflows.
+# Triggers:
+#   - schedule: every day at 20:00 Sydney time
+#   - workflow_dispatch: manual run
+
+on:
+  schedule:
+    # 20:00 Sydney time. GitHub cron is UTC; Sydney is UTC+10 (AEST) for
+    # most of the year, so 10:00 UTC == 20:00 AEST. During AEDT
+    # (UTC+11, ~Oct–early Apr) this fires at 21:00 local. This leaves four
+    # hours before the Azure nightly run uses the same self-hosted runner.
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch name to run E2E tests against'
+        required: true
+        default: 'main'
+      istio_version:
+        description: 'Istio version (e.g. 1.29.0). Leave empty to use default from versions.env'
+        required: false
+        default: ''
+      gateway_api_version:
+        description: 'Gateway API CRD version (e.g. v1.2.0). Leave empty to use default from versions.env'
+        required: false
+        default: ''
+      keda_version:
+        description: 'KEDA Helm chart version (e.g. v2.19.0). Leave empty to use default from versions.env'
+        required: false
+        default: ''
+
+env:
+  # github.run_attempt is appended so retried runs ("Re-run failed jobs")
+  # don't collide with leftover resources from the previous attempt.
+  RESOURCE_GROUP: "kaito-up-day-rg-${{ github.run_id }}-${{ github.run_attempt }}"
+  CLUSTER_NAME: "kaito-up-day-aks-${{ github.run_id }}-${{ github.run_attempt }}"
+  ACR_NAME: "kaitoupday${{ github.run_id }}a${{ github.run_attempt }}acr"
+  GPU_MOCKER_IMAGE: "gpu-node-mocker:upstream-${{ github.run_id }}-${{ github.run_attempt }}"
+  LOCATION: australiaeast
+  NODE_COUNT: '3'
+  NODE_VM_SIZE: Standard_D8s_v5
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-upstream-daily-tests:
+    runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
+    environment: e2e-test
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: E2E base setup
+        uses: ./.github/actions/e2e-base-setup
+        with:
+          resource-group: ${{ env.RESOURCE_GROUP }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          acr-name: ${{ env.ACR_NAME }}
+          gpu-mocker-image: ${{ env.GPU_MOCKER_IMAGE }}
+          location: ${{ env.LOCATION }}
+          node-count: ${{ env.NODE_COUNT }}
+          node-vm-size: ${{ env.NODE_VM_SIZE }}
+          provider: upstream
+          istio-version: ${{ github.event.inputs.istio_version }}
+          gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
+          keda-version: ${{ github.event.inputs.keda_version }}
+
+      - name: Run E2E tests
+        run: make test-e2e
+        env:
+          E2E_LABEL: "!Nightly && !Perf"
+
+      - name: Generate E2E coverage report
+        if: always()
+        run: |
+          go run ./hack/e2e/report \
+            --label-filter '!Nightly && !Perf' \
+            --workflow 'E2E tests (daily, upstream)' \
+            --results ginkgo-report.json \
+            --output-md e2e-coverage-report.md \
+            --output-html e2e-coverage-report.html
+          echo '## Upstream Daily Coverage' >> "$GITHUB_STEP_SUMMARY"
+          cat e2e-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload E2E coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-upstream-coverage-report
+          path: |
+            e2e-coverage-report.md
+            e2e-coverage-report.html
+
+      - name: Dump cluster state
+        if: failure()
+        run: make e2e-dump
+
+      - name: Teardown cluster
+        if: always()
+        run: make e2e-teardown
+        env:
+          RESOURCE_GROUP: ${{ env.RESOURCE_GROUP }}
