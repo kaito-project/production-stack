@@ -36,7 +36,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `namespace`               | optional | `.Release.Namespace`                                                 | Target namespace.                                                                          |
 | `model`                   | required | `""`                                                                 | Preset model name. Used only as `spec.template.inference.preset.name`.                     |
 | `instanceType`            | required | `Standard_NV36ads_A10_v5`                                            | VM instance type for the underlying nodes.                                                 |
-| `replicas`                | required | `1`                                                                  | InferenceSet replicas. Also wired to `scaledobject.kaito.sh/min-replicas`.                 |
+| `replicas`                | required | `1`                                                                  | InferenceSet replicas. Also wired to `scaledobject.kaito.sh/min-replicas`. When `enableScaling=true`, this is the lower bound and `spec.replicas` is omitted because KEDA owns the live replica count. |
 | `enableScaling`           | optional | `false`                                                              | Wired to `scaledobject.kaito.sh/auto-provision`. Gates the entire `scaling` block.         |
 | `maxReplicas`             | optional | `3`                                                                  | Wired to `scaledobject.kaito.sh/max-replicas` (only when `enableScaling=true`).            |
 | `scaling.metrics`         | optional | `vllm:num_requests_waiting` gauge + `vllm:request_queue_time_seconds` histogram | Ordered list of scaling signals combined under the AND policy; rendered as a single `scaledobject.kaito.sh/metrics` annotation (a YAML list). At least one entry is required when `enableScaling=true`. |
@@ -128,4 +128,3 @@ When this chart is used together with KAITO's controller, the controller's
 KAITO will create a Flux `OCIRepository`/`HelmRelease` that renders a second
 InferencePool/EPP set with the same name and conflict with the resources
 rendered here.
-
