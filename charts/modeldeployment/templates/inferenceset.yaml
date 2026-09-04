@@ -54,7 +54,15 @@ metadata:
     {{- end }}
   {{- end }}
 spec:
+  {{- /*
+  When scaling is enabled, KEDA owns the live replica count: keda-kaito-scaler
+  drives it through the InferenceSet's scale subresource, whose specpath is
+  .spec.replicas, so the chart leaves that field unset. The lower bound reaches
+  KEDA through the scaledobject.kaito.sh/min-replicas annotation above.
+  */}}
+  {{- if not .Values.enableScaling }}
   replicas: {{ .Values.replicas }}
+  {{- end }}
   labelSelector:
     matchLabels:
       apps: {{ include "modeldeployment.name" . }}
