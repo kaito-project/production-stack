@@ -57,17 +57,10 @@ spec:
   {{- /*
   When scaling is enabled, KEDA owns the live replica count: keda-kaito-scaler
   drives it through the InferenceSet's scale subresource, whose specpath is
-  .spec.replicas. Re-rendering that field on every upgrade would reset a
-  scaled-out deployment back down to the lower bound until KEDA climbs again,
-  so it is emitted on install only.
-
-  Omitting it outright is not enough: spec.replicas is +optional with
-  +kubebuilder:default:=1, so a scaling-enabled install would start at 1
-  instead of the declared lower bound - and stay there if keda-kaito-scaler
-  never becomes ready. The lower bound still reaches KEDA either way, via the
-  scaledobject.kaito.sh/min-replicas annotation above.
+  .spec.replicas, so the chart leaves that field unset. The lower bound reaches
+  KEDA through the scaledobject.kaito.sh/min-replicas annotation above.
   */}}
-  {{- if or (not .Values.enableScaling) .Release.IsInstall }}
+  {{- if not .Values.enableScaling }}
   replicas: {{ .Values.replicas }}
   {{- end }}
   labelSelector:
