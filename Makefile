@@ -304,8 +304,18 @@ karpenter-azure-identity: ## Create Azure MSI, federated credential, and role as
 .PHONY: azure-karpenter-helm
 azure-karpenter-helm: ## Install Azure Karpenter Helm chart (run karpenter-azure-identity first).
 	curl -sO https://raw.githubusercontent.com/Azure/karpenter-provider-azure/main/hack/deploy/configure-values.sh
-	chmod +x ./configure-values.sh && ./configure-values.sh $(AZURE_CLUSTER_NAME) \
-	$(AZURE_RESOURCE_GROUP) $(KARPENTER_SA_NAME) $(AZURE_KARPENTER_MSI_NAME) false
+	@set -e; \
+	chmod +x ./configure-values.sh; \
+	if [ -n "$(AZURE_SUBSCRIPTION_ID)" ]; then \
+	  SOURCE_AZURE_CONFIG="$${AZURE_CONFIG_DIR:-$${HOME}/.azure}"; \
+	  ISOLATED_AZURE_CONFIG=$$(mktemp -d); \
+	  trap 'rm -rf "$${ISOLATED_AZURE_CONFIG}"' EXIT; \
+	  cp -a "$${SOURCE_AZURE_CONFIG}/." "$${ISOLATED_AZURE_CONFIG}/"; \
+	  export AZURE_CONFIG_DIR="$${ISOLATED_AZURE_CONFIG}"; \
+	  az account set --subscription "$(AZURE_SUBSCRIPTION_ID)"; \
+	fi; \
+	./configure-values.sh $(AZURE_CLUSTER_NAME) \
+	  $(AZURE_RESOURCE_GROUP) $(KARPENTER_SA_NAME) $(AZURE_KARPENTER_MSI_NAME) false
 	helm upgrade --install karpenter oci://mcr.microsoft.com/aks/karpenter/karpenter \
 	--version "$(KARPENTER_VERSION)" \
 	--namespace "$(KARPENTER_NAMESPACE)" --create-namespace \
