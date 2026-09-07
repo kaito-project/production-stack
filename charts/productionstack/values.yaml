@@ -327,8 +327,15 @@ azure:
 # values.yaml for the full reference.
 productionstack-status-reporter:
   enabled: true
-  # Inherit the umbrella release namespace by default.
-  namespaceOverride: ""
+  # Pinned to kube-system rather than the umbrella release namespace. The
+  # reporter is cluster-level shared state: it already publishes every
+  # control-plane Event into kube-system, and the model-discovery Service it
+  # fronts is targeted by every workload namespace's Gateway. Keeping the
+  # Service in a well-known namespace means modelharness's default
+  # `modelsAPI.serviceNamespace: kube-system` works with no extra wiring.
+  # If you move it, set `modelsAPI.serviceNamespace` on every modelharness
+  # release to match.
+  namespaceOverride: kube-system
   # Mirror the umbrella's control-plane install namespaces so the reporter
   # probes the same Deployments this chart installs. Keep these in sync
   # with the subchart namespaceOverrides above.

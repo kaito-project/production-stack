@@ -25,6 +25,16 @@ kaito-model-streamer
 {{- end }}
 
 {{/*
+Name of the cluster-singleton Service serving the model discovery endpoints,
+installed once per cluster by the productionstack umbrella chart. PINNED to
+match that chart's own pinned Service name; only the namespace and port are
+tunable (via modelsAPI.serviceNamespace / modelsAPI.servicePort).
+*/}}
+{{- define "modelharness.modelsServiceName" -}}
+productionstack-status-reporter
+{{- end }}
+
+{{/*
 Common labels applied to every harness-owned resource.
 
 `kaito.sh/owned-by: modelharness` is the stable ownership label the

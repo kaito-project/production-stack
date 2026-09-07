@@ -6,6 +6,12 @@ description: |
   error-handling reason catalogue (cluster / modelharness / modeldeployment
   layers) on every resync and surfaces the result as aggregated Kubernetes
   Events in kube-system. It is the SOLE producer of these reasons.
+
+  It also serves the OpenAI-compatible model discovery endpoints
+  (GET /v1/models and GET /v1/models/{id}) behind a cluster-singleton
+  Service, aggregating the InferenceSets of each modelharness-managed
+  workload namespace. That surface is read-only and runs on every replica
+  rather than only the elected leader.
 type: application
 version: 0.4.0
 appVersion: "0.4.0"

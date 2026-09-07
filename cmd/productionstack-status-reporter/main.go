@@ -21,16 +21,21 @@ import (
 	"os"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/config"
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/controllers"
+	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/evaluator/util"
 )
 
 var (
@@ -71,6 +76,7 @@ func main() {
 		weightMinMBps         float64
 		metricName            string
 		metricPort            int
+		modelsAPIAddr         string
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
@@ -104,6 +110,8 @@ func main() {
 	flag.Float64Var(&weightMinMBps, "weight-download-min-mbps", 20, "Throughput threshold (MB/s) for inferencesetWeightDownloadSlow.")
 	flag.StringVar(&metricName, "weight-download-metric", cfg.MetricName, "Prometheus gauge name for model-weights download throughput.")
 	flag.IntVar(&metricPort, "weight-download-metric-port", cfg.MetricPort, "Port exposing the throughput metric on the source pod.")
+	flag.StringVar(&modelsAPIAddr, "models-api-bind-address", cfg.ModelsAPIBindAddress,
+		"The address the OpenAI-compatible model discovery endpoint binds to (empty disables it).")
 
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
@@ -131,6 +139,7 @@ func main() {
 	cfg.MetricPort = metricPort
 	cfg.ResyncInterval = time.Duration(resyncSeconds) * time.Second
 	cfg.StartupGracePeriod = time.Duration(startupGraceSeconds) * time.Second
+	cfg.ModelsAPIBindAddress = modelsAPIAddr
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -138,6 +147,15 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       leaderElectionID,
+		Cache: cache.Options{
+			// The models API only ever resolves modelharness-managed namespaces,
+			// so caching the rest would be dead weight on a large cluster.
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.Namespace{}: {
+					Label: labels.SelectorFromSet(labels.Set{util.ManagedByLabel: util.ManagedByValue}),
+				},
+			},
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

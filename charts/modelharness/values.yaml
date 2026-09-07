@@ -119,6 +119,31 @@ bbr:
 # `model-not-found-direct` EnvoyFilter (templates/envoyfilter-not-found.yaml).
 # No backend Pod / Service / ReferenceGrant is required.
 
+# modelsAPI routes the OpenAI model-discovery endpoints (`GET /v1/models`
+# and `GET /v1/models/{id}`) from THIS namespace's Gateway to the
+# cluster-wide productionstack-status-reporter, which answers with the
+# InferenceSets registered in this namespace.
+#
+# The routes are rendered into the same `model-not-found-direct`
+# EnvoyFilter, AHEAD of the catch-all routes: a bodyless GET gets no
+# `X-Gateway-Model-Name` from BBR, so without them it would fall through
+# to the unconditional 400 invalid_request_body.
+#
+# Auth is unaffected and still applies: ext_authz is an HTTP filter and
+# runs before route selection, so an unauthenticated caller cannot
+# enumerate models in a namespace with `auth.enabled=true`.
+#
+# The Service name is pinned (`productionstack-status-reporter`) to match
+# the umbrella chart. `serviceNamespace` / `servicePort` MUST match where
+# that subchart was actually installed (umbrella default: kube-system,
+# port 8082).
+modelsAPI:
+  serviceNamespace: kube-system
+  servicePort: 8082
+  # Route timeout for the discovery hop. The reporter answers from an
+  # in-memory informer cache, so this only has to cover a cold start.
+  timeout: 10s
+
 # auth toggles the per-namespace API-key authentication artifacts. When
 # enabled, the chart renders:
 #   - APIKey CR: triggers the apikey-operator to reconcile a Secret named

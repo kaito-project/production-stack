@@ -27,6 +27,15 @@
       },
       "required": ["enabled", "id"]
     },
+    "modelsAPI": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "OpenAI-compatible model discovery endpoint (GET /v1/models, GET /v1/models/{id}). The Service name is pinned; port must match the modelharness chart's modelsAPI.servicePort.",
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      },
+      "required": ["port"]
+    },
     "controlPlane": {
       "type": "object",
       "additionalProperties": true,

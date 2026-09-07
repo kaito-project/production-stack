@@ -14,6 +14,16 @@ umbrella release namespace.
 {{- default .Release.Namespace .Values.namespaceOverride -}}
 {{- end }}
 
+{{/*
+Cluster-singleton Service fronting the model discovery endpoints. PINNED rather
+than release-derived: charts/modelharness is a SEPARATE Helm release and targets
+this Service by cluster FQDN, so it cannot know the umbrella release name.
+Changing it here means changing modelharness `modelsAPI` too.
+*/}}
+{{- define "productionstack-status-reporter.modelsServiceName" -}}
+productionstack-status-reporter
+{{- end }}
+
 {{- define "productionstack-status-reporter.labels" -}}
 app.kubernetes.io/name: {{ include "productionstack-status-reporter.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}

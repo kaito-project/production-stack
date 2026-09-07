@@ -120,14 +120,14 @@ not through the Gateway, so simulator-surface regressions are localised before R
 tests are run.
 
 * Health and readiness endpoints — `GET /health` and `GET /ready` both return HTTP 200. If these fail, Kubernetes probes mark the pod unhealthy and EPP removes it from the endpoint list.
-* OpenAI-compatible chat completion — `POST /v1/chat/completions` returns a valid response containing `id`, `model`, `choices[].message.content`, and `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`). The response `model` field equals the configured `served-model-name`, which is the same surface `GET /v1/models` exposes — so model listing is covered implicitly and no separate test is needed.
+* OpenAI-compatible chat completion — `POST /v1/chat/completions` returns a valid response containing `id`, `model`, `choices[].message.content`, and `usage` (`prompt_tokens`, `completion_tokens`, `total_tokens`). The response `model` field equals the configured `served-model-name`.
 * Prometheus metrics endpoint — `GET /metrics` returns valid Prometheus text format containing at minimum `vllm:request_success_total`, `vllm:num_requests_running`, `vllm:num_requests_waiting`, and `vllm:kv_cache_usage_perc`. Without these metrics, EPP scoring and KEDA scaling cannot function.
 * Streaming response — `POST /v1/chat/completions` with `"stream": true` returns Server-Sent Events with `chat.completion.chunk` objects and terminates with `data: [DONE]`. Validates the streaming path used by most real clients.
 * KV cache metrics update — After sending requests, verify `vllm:kv_cache_usage_perc{model_name}` > 0 and `vllm:prefix_cache_queries{model_name}` increments. Proves the KV-cache simulation is active so EPP's prefix-cache scorer has real data to work with (requires `enable-kvcache: true` in the simulator config).
 * Concurrent request handling — Send more concurrent requests than `max-num-seqs` (default 5). Verify `vllm:num_requests_running` saturates at the limit while excess requests appear in `vllm:num_requests_waiting`. Proves the simulator correctly models queue pressure — the signal that drives KEDA scaling.
 * Tokenizer sidecar correctness — `POST /tokenize` (served by the UDS tokenizer sidecar) returns a token list for the given text. Assert (a) the response is a non-empty token list, (b) token count scales with input length (long prompt yields strictly more tokens than short prompt), and (c) two identical inputs produce identical token sequences (stability). EPP depends on token-boundary stability to compute prefix hashes for cache-aware routing; a flaky tokenizer silently degrades prefix scoring to random selection.
 
-> Removed: `Model listing — GET /v1/models` — redundant with chat-completion's `model` field assertion; kept as part of chat-completion validation above.
+> Model listing is NOT covered here. A shadow pod only knows its own model, so `GET /v1/models` against a pod cannot produce the namespace-wide listing clients discover through the Gateway. That surface is covered by the Routing group below.
 
 ## Model-Based Routing — Routing
 
@@ -148,6 +148,20 @@ the correct pool received the request. EPP-side counters corroborate the schedul
 * EPP routing success (metrics) — After the above runs, verify `inference_extension_scheduler_attempts_total{status="success"}` increased by the total requests sent and `{status="failure"}` did not change. Verify `inference_objective_request_total{model_name="routing-phi"}` and `{model_name="routing-ministral"}` match the per-model counts. Proves EPP actively scheduled each request rather than falling through to a default route.
 * Load distribution — With 2 replicas per pool, send 20+ requests per model. Scrape `vllm:request_success_total` from each pod and verify no pod received 0 requests and none received more than 80% of its pool's traffic. Cross-check with `inference_pool_per_pod_queue_size{name, model_server_pod}` to confirm both pods were active. If one pod gets all traffic, EPP's scoring or endpoint list is broken.
 * Debug EnvoyFilter log chain — For **one** representative request in each of the cases above (phi, ministral, concurrent cross-model), tail istio-ingressgateway logs and verify the `inference-debug-filter` Lua chain emitted exactly one `[PRE-BBR]`, one `[POST-EPP]`, and one `[RESPONSE]` line sharing the same `x-request-id`. In the `[POST-EPP]` line, `x-gateway-model-name` equals the request's model field (proves BBR ran) and `x-gateway-destination-endpoint` is a non-empty `IP:port` matching the pod that actually served the request per `vllm:request_success_total` (proves EPP ran and its decision was honoured). Health-check `GET /` traffic must not produce these log lines. This folds the debug/observability surface into the main routing assertions so filter-chain ordering regressions (e.g., Istio upgrade) cannot silently break on-cluster debugging.
+
+### Model discovery — `GET /v1/models` and `GET /v1/models/{id}`
+
+The namespace Gateway routes both paths to the cluster-wide `productionstack-status-reporter`, which answers from an informer cache of the `InferenceSet`s in the caller's own namespace. The routes are rendered ahead of the catch-all routes in `model-not-found-direct`; without them a bodyless GET gets no `X-Gateway-Model-Name` from BBR and falls through to the unconditional `400 invalid_request_body`.
+
+The endpoint is a **registry**, not a health check: a model is listed as soon as its `InferenceSet` exists, whether or not it is currently serving.
+
+* Namespace listing — `GET /v1/models` returns `200` with `{"object":"list","data":[...]}` containing exactly the case namespace's models, sorted by `id`. Each entry carries `object: "model"`, `owned_by: "kaito"`, and a non-zero `created` (the `InferenceSet` creation time). Exact-set equality doubles as the cross-namespace isolation assertion — models from other cases' namespaces must never appear.
+* `id` is the invocation key — Every listed `id` equals the deployment name that `X-Gateway-Model-Name` matches, so discovery and invocation agree (a client can feed a listed `id` straight into the `model` field).
+* Single-model retrieve — `GET /v1/models/{id}` returns `200` with a **bare** model object (no `data` envelope) that is field-for-field identical to that model's entry in the listing.
+* Unknown model — `GET /v1/models/unknown` returns `404` with `code: model_not_found` and `type: invalid_request_error`, the same envelope the Gateway catch-all uses for an unroutable model, so "model does not exist" has one representation across the data plane.
+* Method enforcement — `POST /v1/models` returns `405` with an `Allow: GET` header.
+* Prefix isolation — `GET /v1/modelsfoo` must NOT be answered by the registry. The route pair is `exact /v1/models` plus `prefix /v1/models/`; a single bare `prefix /v1/models` would wrongly absorb sibling paths.
+* Authentication (see *API Key Authentication*) — with `auth.enabled`, both discovery paths return `401` without a key and with an invalid key, and `200` with a valid one. `ext_authz` is an HTTP filter and therefore runs before route selection, so discovery is covered by the same policy as inference traffic.
 
 ## Prefix Cache Aware Routing — PrefixCache
 

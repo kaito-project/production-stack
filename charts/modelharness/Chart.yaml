@@ -3,17 +3,16 @@ name: modelharness
 description: |
   Per-namespace shared resources for production-stack workloads. One
   modelharness release per workload namespace provisions the artifacts
-  every model deployment in that namespace shares: the Istio Gateway,
-  the catch-all HTTPRoute (forwards unknown-model requests to the
-  cluster-shared model-not-found Service via a ReferenceGrant), and —
-  when enabled — the APIKey CR that triggers the apikey-operator to
-  mint the per-namespace `llm-api-key` Secret consumed by clients.
-  ext_authz enforcement on the Gateway HTTP filter chain is owned by
-  the cluster-wide EnvoyFilter shipped by the `llm-gateway-apikey`
-  subchart of `productionstack` (since 0.0.11-alpha), not by a
-  per-namespace AuthorizationPolicy. The shared model-not-found
-  Service itself is installed once per cluster by the E2E install
-  script.
+  every model deployment in that namespace shares: the Istio Gateway, the
+  per-namespace EnvoyFilters (BBR ext_proc, the unified outage
+  local_reply, and the catch-all direct_response that answers unknown
+  models with an OpenAI-compatible 404), the routes that expose
+  GET /v1/models and GET /v1/models/{id} for this namespace, and — when
+  enabled — the ext_authz wiring plus the APIKey CR that triggers the
+  apikey-operator to mint the per-namespace `llm-api-key` Secret consumed
+  by clients. The cluster-wide components these reference (apikey-authz,
+  BBR, and the model registry served by productionstack-status-reporter)
+  are installed once per cluster by the `productionstack` umbrella chart.
 type: application
 version: 0.4.0
 appVersion: "0.4.0"

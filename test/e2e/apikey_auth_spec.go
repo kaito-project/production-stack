@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -132,5 +133,69 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 
 	It("should accept requests with a valid API key in the Authorization header (200)", func() {
 		validAPIKeyShouldSucceed("Authorization", "Bearer "+apiKey)
+	})
+
+	// Model discovery must sit BEHIND authentication: ext_authz is an HTTP
+	// filter and therefore runs before route selection, so the /v1/models
+	// routes are covered by the same policy as inference traffic. Without
+	// this an unauthenticated caller could enumerate a tenant's models.
+	Context("Model discovery is gated by ext_authz", func() {
+		modelsPaths := func() []string {
+			return []string{utils.ModelsPath, utils.ModelRetrievePath(modelName)}
+		}
+
+		It("should reject discovery requests without an Authorization header (401)", func() {
+			for _, path := range modelsPaths() {
+				Eventually(func() int {
+					resp, err := utils.SendModelsRequest(caseAuthURL, path, "", hostHeader())
+					if err != nil {
+						return 0
+					}
+					defer resp.Body.Close()
+					return resp.StatusCode
+				}, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusUnauthorized),
+					"unauthenticated %s must not enumerate models", path)
+			}
+		})
+
+		It("should reject discovery requests with an invalid API key (401)", func() {
+			for _, path := range modelsPaths() {
+				resp, err := utils.SendModelsRequest(caseAuthURL, path, "invalid-key-12345", hostHeader())
+				Expect(err).NotTo(HaveOccurred())
+				defer resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized),
+					"invalid key should be rejected on %s", path)
+			}
+		})
+
+		It("should list and retrieve the namespace's models with a valid API key (200)", func() {
+			Eventually(func() error {
+				resp, err := utils.SendModelsRequest(caseAuthURL, utils.ModelsPath, apiKey, hostHeader())
+				if err != nil {
+					return fmt.Errorf("request failed: %w", err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					body, _ := utils.ReadResponseBody(resp)
+					return fmt.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
+				}
+				list, err := utils.ParseModelList(resp)
+				if err != nil {
+					return err
+				}
+				if !slices.Contains(list.IDs(), modelName) {
+					return fmt.Errorf("model %q missing from listing %v", modelName, list.IDs())
+				}
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			resp, err := utils.SendModelsRequest(
+				caseAuthURL, utils.ModelRetrievePath(modelName), apiKey, hostHeader())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+			model, err := utils.ParseModel(resp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(model.ID).To(Equal(modelName))
+		})
 	})
 })

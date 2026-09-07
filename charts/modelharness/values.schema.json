@@ -39,6 +39,29 @@
       "maximum": 65535,
       "description": "HTTP listener port on the Gateway."
     },
+    "modelsAPI": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Routes GET /v1/models and GET /v1/models/{id} from this namespace's Gateway to the cluster-wide productionstack-status-reporter. The Service name is pinned; namespace and port MUST match wherever that subchart was installed.",
+      "properties": {
+        "serviceNamespace": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Namespace the productionstack-status-reporter models Service runs in."
+        },
+        "servicePort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Port of the productionstack-status-reporter models Service."
+        },
+        "timeout": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Envoy route timeout for the discovery hop (e.g. '10s')."
+        }
+      }
+    },
     "auth": {
       "type": "object",
       "additionalProperties": false,
