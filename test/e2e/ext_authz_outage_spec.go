@@ -82,13 +82,14 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 			caseURL = InstallCase(CaseExtAuthzOutage)
 			caseNS = CaseNamespace(CaseExtAuthzOutage)
 			modelName = CaseDeployments[CaseExtAuthzOutage][0].Name
-			hostHeader = caseNS + ".gw.example.com"
+			var err error
+			hostHeader, err = utils.GatewayHostFor(caseNS)
+			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() (string, error) {
 				return utils.GetAPIKeyFromSecret(ctx, caseNS)
 			}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
 				"API key Secret should be created in %s", caseNS)
-			var err error
 			apiKey, err = utils.GetAPIKeyFromSecret(ctx, caseNS)
 			Expect(err).NotTo(HaveOccurred())
 

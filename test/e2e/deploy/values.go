@@ -28,6 +28,15 @@ type ModelHarnessValues struct {
 	// APIKey CR that wire the Gateway into the cluster-wide
 	// apikey-ext-authz CUSTOM provider.
 	AuthEnabled bool
+	// Gateway overrides the chart's gateway provider and public domain.
+	Gateway GatewayValues
+}
+
+// GatewayValues configures charts for an externally managed GatewayClass.
+type GatewayValues struct {
+	CloudProvider    string
+	GatewayClassName string
+	DefaultDomain    string
 }
 
 // Validate reports whether the values describe a well-formed modelharness.
@@ -78,6 +87,8 @@ type ModelDeploymentValues struct {
 	// for this deployment. Nil fields fall through to chart defaults
 	// (queue=3, kvCacheUtilization=2, prefixCache=1).
 	EPPScorerWeights *EPPScorerWeights
+	// Gateway overrides the chart's gateway provider and public domain.
+	Gateway GatewayValues
 }
 
 // AutoUpgrade mirrors the modeldeployment chart's autoUpgrade values, wired

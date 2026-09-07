@@ -68,9 +68,14 @@ func InstallModelHarness(ctx context.Context, namespace string, authEnabled bool
 	if err != nil {
 		return err
 	}
+	gateway, err := deploymentGatewayValues()
+	if err != nil {
+		return err
+	}
 	return d.InstallModelHarness(ctx, deploy.ModelHarnessValues{
 		Namespace:   namespace,
 		AuthEnabled: authEnabled,
+		Gateway:     gateway,
 	})
 }
 
@@ -92,7 +97,26 @@ func InstallModelDeployment(ctx context.Context, values deploy.ModelDeploymentVa
 	if err != nil {
 		return err
 	}
+	values.Gateway, err = deploymentGatewayValues()
+	if err != nil {
+		return err
+	}
 	return d.InstallModelDeployment(ctx, values)
+}
+
+func deploymentGatewayValues() (deploy.GatewayValues, error) {
+	if !IsAzureProvider() {
+		return deploy.GatewayValues{}, nil
+	}
+	domain, err := getAppRoutingDomain()
+	if err != nil {
+		return deploy.GatewayValues{}, err
+	}
+	return deploy.GatewayValues{
+		CloudProvider:    "azure",
+		GatewayClassName: "approuting-istio",
+		DefaultDomain:    domain,
+	}, nil
 }
 
 // UninstallModelDeployment removes the named model deployment. Missing

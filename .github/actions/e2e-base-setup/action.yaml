@@ -32,7 +32,7 @@ inputs:
     required: false
     default: 'Standard_D4d_v4'
   provider:
-    description: 'E2E provider (upstream|azure) — master switch for component install mix. Empty defaults to upstream.'
+    description: 'E2E provider (upstream|azure) — Azure uses managed KEDA and App Routing; upstream uses Helm KEDA and Istio. Empty defaults to Azure.'
     required: false
     default: ''
   # Component version overrides — empty string means "use versions.env default".

@@ -443,6 +443,14 @@ func isRecoverablePortForwardError(err error) bool {
 // (namespace, gatewayName) tuple starts a kubectl port-forward; later
 // calls reuse the same forward.
 func GetGatewayURLFor(namespace, gatewayName string) (string, error) {
+	if IsAzureProvider() {
+		host, err := GatewayHostFor(namespace)
+		if err != nil {
+			return "", err
+		}
+		return "https://" + host, nil
+	}
+
 	serviceName := IstioGatewayServiceName(gatewayName)
 	key := portForwardKey{namespace: namespace, service: serviceName}
 
@@ -589,7 +597,6 @@ func SendChatCompletionWithPrompt(gatewayURL, model, prompt string) (*http.Respo
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-
 	return client.Do(req)
 }
 
@@ -628,7 +635,6 @@ func sendChatCompletionRawAttempt(ctx context.Context, gatewayURL string, reqBod
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-
 		resp, err := client.Do(req)
 		if err == nil || !recoverTransport || ctx.Err() != nil || !isRecoverablePortForwardError(err) {
 			return resp, err

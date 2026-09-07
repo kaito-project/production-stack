@@ -69,7 +69,9 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 	// hostHeader returns the Host header value that maps to the deployment
 	// namespace for the apikey-authz namespace resolution (subdomain = namespace).
 	hostHeader := func() string {
-		return caseNamespace + ".gw.example.com"
+		host, err := utils.GatewayHostFor(caseNamespace)
+		Expect(err).NotTo(HaveOccurred())
+		return host
 	}
 
 	It("should reject requests without an Authorization header (401)", func() {

@@ -1,40 +1,24 @@
-name: E2E tests (PR)
+name: E2E tests (daily, upstream)
+
+# Runs the regular E2E suite against upstream KEDA and Istio with the GPU node
+# mocker. Slow Nightly and Perf specs remain in their dedicated workflows.
+# Triggers:
+#   - schedule: every day at 20:00 Sydney time
+#   - workflow_dispatch: manual run
 
 on:
-  # Only run E2E when a change can actually affect cluster behaviour
-  # (controllers, charts, images, the e2e suite or its setup / build inputs).
-  # Docs-only or otherwise unrelated changes are skipped so the singleton
-  # self-hosted E2E runner isn't spent on PRs that can't change the outcome.
-  # No push-to-main trigger: PRs already gate the merge and e2e-nightly.yaml
-  # runs the full suite on main daily, so post-merge breakage is caught there.
-  pull_request:
-    paths:
-      - 'cmd/**'
-      - 'pkg/**'
-      - 'charts/**'
-      - 'docker/**'
-      - 'test/**'
-      - 'hack/e2e/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'Makefile'
-      - 'versions.env'
-      - '.github/actions/e2e-base-setup/**'
-      - '.github/workflows/e2e.yaml'
+  schedule:
+    # 20:00 Sydney time. GitHub cron is UTC; Sydney is UTC+10 (AEST) for
+    # most of the year, so 10:00 UTC == 20:00 AEST. During AEDT
+    # (UTC+11, ~Oct–early Apr) this fires at 21:00 local. This leaves four
+    # hours before the Azure nightly run uses the same self-hosted runner.
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       branch:
         description: 'Branch name to run E2E tests against'
         required: true
         default: 'main'
-      provider:
-        description: 'E2E provider — "azure" uses managed KEDA and App Routing; "upstream" uses Helm KEDA and Istio.'
-        required: false
-        default: 'azure'
-        type: choice
-        options:
-          - upstream
-          - azure
       istio_version:
         description: 'Istio version (e.g. 1.29.0). Leave empty to use default from versions.env'
         required: false
@@ -47,22 +31,14 @@ on:
         description: 'KEDA Helm chart version (e.g. v2.19.0). Leave empty to use default from versions.env'
         required: false
         default: ''
-      node_class:
-        description: 'Karpenter NodeClass: "mock" (gpu-node-mocker MockNodeClass) or "azure" (real AKSNodeClass).'
-        required: false
-        default: 'mock'
-        type: choice
-        options:
-          - mock
-          - azure
 
 env:
   # github.run_attempt is appended so retried runs ("Re-run failed jobs")
   # don't collide with leftover resources from the previous attempt.
-  RESOURCE_GROUP: "kaito-gw-e2e-rg-${{ github.run_id }}-${{ github.run_attempt }}"
-  CLUSTER_NAME: "kaito-gw-e2e-aks-${{ github.run_id }}-${{ github.run_attempt }}"
-  ACR_NAME: "kaitogwe2eaks${{ github.run_id }}a${{ github.run_attempt }}acr"
-  GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}-${{ github.run_attempt }}"
+  RESOURCE_GROUP: "kaito-up-day-rg-${{ github.run_id }}-${{ github.run_attempt }}"
+  CLUSTER_NAME: "kaito-up-day-aks-${{ github.run_id }}-${{ github.run_attempt }}"
+  ACR_NAME: "kaitoupday${{ github.run_id }}a${{ github.run_attempt }}acr"
+  GPU_MOCKER_IMAGE: "gpu-node-mocker:upstream-${{ github.run_id }}-${{ github.run_attempt }}"
   LOCATION: australiaeast
   NODE_COUNT: '3'
   NODE_VM_SIZE: Standard_D8s_v5
@@ -71,7 +47,7 @@ permissions:
   contents: read
 
 jobs:
-  e2e-tests:
+  e2e-upstream-daily-tests:
     runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
     environment: e2e-test
     permissions:
@@ -93,14 +69,12 @@ jobs:
           location: ${{ env.LOCATION }}
           node-count: ${{ env.NODE_COUNT }}
           node-vm-size: ${{ env.NODE_VM_SIZE }}
-          provider: ${{ github.event.inputs.provider }}
+          provider: upstream
           istio-version: ${{ github.event.inputs.istio_version }}
           gateway-api-version: ${{ github.event.inputs.gateway_api_version }}
           keda-version: ${{ github.event.inputs.keda_version }}
-          node-class: ${{ github.event.inputs.node_class }}
 
       - name: Run E2E tests
-        # Slow Nightly and Perf specs run in their dedicated workflows.
         run: make test-e2e
         env:
           E2E_LABEL: "!Nightly && !Perf"
@@ -110,17 +84,18 @@ jobs:
         run: |
           go run ./hack/e2e/report \
             --label-filter '!Nightly && !Perf' \
-            --workflow 'E2E tests' \
+            --workflow 'E2E tests (daily, upstream)' \
             --results ginkgo-report.json \
             --output-md e2e-coverage-report.md \
             --output-html e2e-coverage-report.html
+          echo '## Upstream Daily Coverage' >> "$GITHUB_STEP_SUMMARY"
           cat e2e-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload E2E coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-coverage-report
+          name: e2e-upstream-coverage-report
           path: |
             e2e-coverage-report.md
             e2e-coverage-report.html

@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 STATUS_REPORTER_IMAGE="${STATUS_REPORTER_IMAGE:-ghcr.io/kaito-project/productionstack-status-reporter:latest}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
-E2E_PROVIDER="${E2E_PROVIDER:-upstream}"
+E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 
 # shellcheck source=lib-parallel.sh
 source "${SCRIPT_DIR}/lib-parallel.sh"
@@ -128,6 +128,22 @@ install_kaito() {
     https://github.com/kaito-project/kaito.git "${KAITO_CHART_TMPDIR}"
   KAITO_CHART_REF="${KAITO_CHART_TMPDIR}/charts/kaito/workspace"
 
+  KAITO_HELM_ARGS=()
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    # AKS owns inferencepools.inference.networking.k8s.io and rejects any
+    # create/update attempt, including Helm's CRD install. Install the
+    # NodeClaim CRD for the mocker path when no Karpenter installation already
+    # owns it, then skip the chart's crds/ directory. This stack does not create
+    # legacy InferenceObjective resources.
+    if ! kubectl get crd nodeclaims.karpenter.sh >/dev/null 2>&1; then
+      kubectl apply --server-side \
+        -f "${KAITO_CHART_REF}/crds/karpenter.sh_nodeclaims.yaml"
+    fi
+    kubectl wait --for=condition=Established \
+      crd/nodeclaims.karpenter.sh --timeout=60s
+    KAITO_HELM_ARGS+=(--skip-crds)
+  fi
+
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
   #
@@ -163,6 +179,7 @@ install_kaito() {
   helm upgrade --install kaito "${KAITO_CHART_REF}" \
     --namespace kaito-system \
     --create-namespace \
+    "${KAITO_HELM_ARGS[@]+"${KAITO_HELM_ARGS[@]}"}" \
     --set featureGates.enableInferenceSetController=true \
     --set featureGates.gatewayAPIInferenceExtension=false \
     --set featureGates.enableBaseImageAutoUpgrade=true \
@@ -180,6 +197,11 @@ install_kaito() {
 }
 
 install_gwie_crds() {
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    echo "=== Using AKS-managed GWIE CRDs ==="
+    return
+  fi
+
   # Use server-side apply: the KAITO chart bundles the same GWIE CRDs and
   # client-side apply races between GET → CREATE-if-missing. Server-side
   # apply is a single atomic POST with --force-conflicts taking ownership.
@@ -201,7 +223,7 @@ install_node_provisioner() {
   fi
 
   echo "=== Deploying gpu-node-mocker (GPU node mocker, --node-provisioner=${NODE_PROVISIONER}) ==="
-  helm install gpu-node-mocker ./charts/gpu-node-mocker \
+  helm upgrade --install gpu-node-mocker ./charts/gpu-node-mocker \
     --namespace kaito-system \
     --create-namespace \
     --set nodeProvisioner="${NODE_PROVISIONER}" \
@@ -263,6 +285,17 @@ install_productionstack() {
   kubectl create namespace "${KEDA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
   kubectl create namespace llm-gateway-auth  --dry-run=client -o yaml | kubectl apply -f -
 
+  APP_ROUTING_ARGS=()
+  ISTIO_NAMESPACE="istio-system"
+  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+    ISTIO_NAMESPACE="aks-istio-system"
+    APP_ROUTING_ARGS=(
+      --set cloudprovider=azure
+      --set azure.defaultDomain.enabled=true
+      --set llm-gateway-apikey.istio.enabled=false
+    )
+  fi
+
   echo "⏳ Vendoring upstream llm-gateway-apikey OCI dependency..."
   # The llm-gateway-apikey subchart is pulled from oci://mcr.microsoft.com at
   # install time; MCR occasionally resets the TCP connection mid-download
@@ -302,12 +335,13 @@ install_productionstack() {
     --set productionstack-status-reporter.image.tag="${STATUS_REPORTER_IMAGE##*:}" \
     --set productionstack-status-reporter.image.pullPolicy=Always \
     --set productionstack-status-reporter.startupGraceSeconds=30 \
-    --set productionstack-status-reporter.controlPlane.istioNamespace=istio-system \
+    --set productionstack-status-reporter.controlPlane.istioNamespace="${ISTIO_NAMESPACE}" \
     --set productionstack-status-reporter.controlPlane.istiodDeployment=istiod \
     --set productionstack-status-reporter.controlPlane.kaitoNamespace=kaito-system \
     --set productionstack-status-reporter.controlPlane.kaitoDeployment=kaito-workspace \
     --set productionstack-status-reporter.controlPlane.kedaNamespace="${KEDA_NAMESPACE}" \
     --set productionstack-status-reporter.controlPlane.kedaScalerNamespace="${KEDA_NAMESPACE}" \
+    "${APP_ROUTING_ARGS[@]+"${APP_ROUTING_ARGS[@]}"}" \
     --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."
