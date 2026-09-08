@@ -57,10 +57,12 @@ func CurrentDeployer() (deploy.Deployer, error) {
 }
 
 // InstallModelHarness creates or reconciles the modelharness owning the
-// per-namespace shared resources: the Istio Gateway (named "<namespace>-gw" by
-// chart default), the catch-all `model-not-found-direct` EnvoyFilter, and —
-// when authEnabled is true — the AuthorizationPolicy + APIKey CR that wire the
-// Gateway into the cluster-wide apikey-ext-authz CUSTOM provider.
+// per-namespace shared resources: the workload namespace itself (stamped with
+// the discovery label the control plane selects on), the Istio Gateway (named
+// "<namespace>-gw" by chart default), the catch-all `model-not-found-direct`
+// EnvoyFilter, and — when authEnabled is true — the AuthorizationPolicy +
+// APIKey CR that wire the Gateway into the cluster-wide apikey-ext-authz
+// CUSTOM provider.
 //
 // Idempotent: safe to call repeatedly for the same namespace.
 func InstallModelHarness(ctx context.Context, namespace string, authEnabled bool) error {
@@ -79,8 +81,8 @@ func InstallModelHarness(ctx context.Context, namespace string, authEnabled bool
 	})
 }
 
-// UninstallModelHarness removes the modelharness from namespace. A namespace
-// with no modelharness is treated as success.
+// UninstallModelHarness removes the modelharness from namespace, including the
+// namespace itself. A namespace with no modelharness is treated as success.
 func UninstallModelHarness(ctx context.Context, namespace string) error {
 	d, err := CurrentDeployer()
 	if err != nil {
@@ -102,6 +104,26 @@ func InstallModelDeployment(ctx context.Context, values deploy.ModelDeploymentVa
 		return err
 	}
 	return d.InstallModelDeployment(ctx, values)
+}
+
+// UpgradeModelDeployment reconciles an existing model deployment to values.
+// Use it whenever a spec changes a deployment's declared configuration
+// (replicas, scaling thresholds, scorer weights, ...) so the change goes
+// through the same backend that installed it and stays visible to a
+// non-Helm Deployer.
+//
+// It does not create the deployment: upgrading one that was never installed
+// fails rather than silently provisioning it.
+func UpgradeModelDeployment(ctx context.Context, values deploy.ModelDeploymentValues) error {
+	d, err := CurrentDeployer()
+	if err != nil {
+		return err
+	}
+	values.Gateway, err = deploymentGatewayValues()
+	if err != nil {
+		return err
+	}
+	return d.UpgradeModelDeployment(ctx, values)
 }
 
 func deploymentGatewayValues() (deploy.GatewayValues, error) {

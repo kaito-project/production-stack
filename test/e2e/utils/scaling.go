@@ -157,8 +157,17 @@ func GetInferenceSetReplicas(ctx context.Context, model, namespace string) (int3
 	return int32(v), nil
 }
 
-// SetInferenceSetReplicas patches the InferenceSet's .spec.replicas. Used for
-// test cleanup to restore the baseline after a scaling test run.
+// SetInferenceSetReplicas patches the InferenceSet's .spec.replicas directly.
+//
+// Reserved for KEDA-managed deployments (EnableScaling), where the chart
+// deliberately leaves .spec.replicas unset because KEDA owns it through the
+// scale subresource. For those, UpgradeModelDeployment can only move the
+// min-replicas floor and would silently fail to restore the live count.
+// Everything else must change replicas through UpgradeModelDeployment so the
+// declared configuration stays the source of truth.
+//
+// Callers MUST carry GinkgoLabelStandardK8sOnly: a managed cluster such as AKS
+// Automatic does not allow the suite to reshape running workloads this way.
 func SetInferenceSetReplicas(ctx context.Context, model, namespace string, replicas int32) error {
 	dynClient, err := GetDynamicClient()
 	if err != nil {

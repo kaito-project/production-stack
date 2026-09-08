@@ -29,16 +29,16 @@ the production App Routing provisioning contract.
 
 `utils/`:
 
-- [`setup.go`](utils/setup.go) — `EnsureNamespace` (installs the modelharness per namespace), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
+- [`setup.go`](utils/setup.go) — `EnsureNamespace` (provisions the workload namespace + modelharness), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
 - [`http.go`](utils/http.go) — multi-gateway port-forward (`GetGatewayURLFor`), `SendChatCompletion`.
-- [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
+- [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UpgradeModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).
 
 `cases.go`:
 
 - `InstallCase(caseName) string` — calls `EnsureNamespace`, waits for the gateway service, returns the case's gateway URL, and installs every chart in the case. Use in `BeforeAll`.
-- `UninstallCase(caseName)` — uninstalls Helm releases and deletes the namespace (cascading the per-case Gateway + HTTPRoute). Use in `AfterAll`.
+- `UninstallCase(caseName)` — uninstalls the model deployments and the harness, which deletes the namespace (cascading the per-case Gateway + HTTPRoute). Use in `AfterAll`.
 - `CaseNamespace(caseName)`, `CaseGatewayName(caseName)`.
 
 ## Running tests
@@ -56,10 +56,29 @@ E2E_LABEL=Smoke make test-e2e
 E2E_PARALLEL=4 make test-e2e
 ```
 
-Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into two groups:
+Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into three groups:
 
 - **Cadence** (when a spec runs): `Smoke` (every PR), `Nightly` (long-running, nightly only).
 - **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
+- **Environment** (what kind of cluster a spec needs): `StandardK8sOnly`.
+
+`StandardK8sOnly` cuts across the other two. It marks specs that require a
+standard Kubernetes cluster and cannot run on an opinionated managed one such as
+AKS Automatic, because they reshape running workloads directly rather than going
+through the `Deployer` — `ScaleDeployment` on a Deployment's scale subresource
+([`utils/cluster.go`](utils/cluster.go)) or `SetInferenceSetReplicas` patching an
+InferenceSet ([`utils/scaling.go`](utils/scaling.go)). When running against a
+managed cluster:
+
+```bash
+E2E_LABEL='!StandardK8sOnly' make test-e2e
+```
+
+It currently covers `bbr_outage`, `ext_authz_outage`, `epp_outage`,
+`cluster_filter_ha`, `cluster_status`, `control_plane_error`, and `scaling`.
+Note it describes the MECHANISM, not the blast radius: `model_unavailable`
+empties an inference pool too, but does so through `UpgradeModelDeployment`, so
+any backend can honour it and it stays unlabelled.
 
 
 ### Bring up a cluster from scratch
@@ -99,6 +118,7 @@ type Deployer interface {
     InstallModelHarness(ctx context.Context, values ModelHarnessValues) error
     UninstallModelHarness(ctx context.Context, namespace string) error
     InstallModelDeployment(ctx context.Context, values ModelDeploymentValues) error
+    UpgradeModelDeployment(ctx context.Context, values ModelDeploymentValues) error
     UninstallModelDeployment(ctx context.Context, name, namespace string) error
 }
 ```
@@ -106,6 +126,22 @@ type Deployer interface {
 Implementations must be idempotent on install (re-running reconciles to the
 supplied values), treat a missing resource as a successful delete, and validate
 values before issuing any remote call.
+
+Two consequences worth knowing when writing a spec:
+
+- **The workload namespace belongs to the harness.** `InstallModelHarness`
+  creates it (with the `productionstack.kaito.sh/managed-by: modelharness`
+  discovery label) and `UninstallModelHarness` deletes it. Specs never create or
+  delete a workload namespace themselves, so a non-Helm backend can provision it
+  through its own API.
+- **Changing a deployment's values goes through `UpgradeModelDeployment`.**
+  Replicas, scaling thresholds, scorer weights — anything declared in
+  `ModelDeploymentValues` — must be changed through it rather than by patching
+  the rendered objects, so the backend stays the source of truth. The one
+  exception is a KEDA-managed deployment (`EnableScaling`), where the chart
+  hands `.spec.replicas` to KEDA's scale subresource; restoring a live replica
+  count there uses `utils.SetInferenceSetReplicas`, which says so in its doc
+  comment.
 
 `helm` is the only backend in this repo and remains the default, so local runs
 are unchanged. Select a backend with `E2E_DEPLOYMENT_BACKEND=<name>`; the

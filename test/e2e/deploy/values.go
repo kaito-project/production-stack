@@ -57,7 +57,9 @@ type ModelDeploymentValues struct {
 	Namespace string
 	// Model is the inference preset name (spec.template.inference.preset.name).
 	Model string
-	// Replicas is the desired number of InferenceSet replicas.
+	// Replicas is the desired number of InferenceSet replicas. Always
+	// rendered, so 0 is an explicit scale-to-zero rather than "unset" —
+	// UpgradeModelDeployment relies on that to empty an inference pool.
 	Replicas int64
 	// InstanceType is the VM instance type. Defaults to the backend default
 	// when empty.
@@ -145,6 +147,9 @@ func (v ModelDeploymentValues) Validate() error {
 	}
 	if v.Model == "" {
 		return fmt.Errorf("modeldeployment %q: Model is required (must be set explicitly, not derived from Name)", v.Name)
+	}
+	if v.Replicas < 0 {
+		return fmt.Errorf("modeldeployment %q: Replicas must not be negative (got %d)", v.Name, v.Replicas)
 	}
 	if !v.EnableScaling {
 		return nil
