@@ -46,10 +46,11 @@ const (
 	// presetQwen32B (~32B, ~61GiB weights) fits on one 2-GPU
 	// Standard_NC48ads_A100_v4 node, where KAITO uses tensor parallelism.
 	presetQwen32B = "qwen2.5-coder-32b-instruct"
-	// presetMistral119B (~113GiB weights) requires two 1-GPU
-	// Standard_NC24ads_A100_v4 nodes under KAITO's current estimator. It is
-	// catalogued, Apache-2.0, and publicly downloadable without an HF token.
-	presetMistral119B = "mistralai/Mistral-Small-4-119B-2603"
+	// presetQwen122BGPTQ (~73GiB weights) requires two 1-GPU
+	// Standard_NC24ads_A100_v4 nodes under KAITO's current estimator while
+	// downloading substantially faster than the 113GiB Mistral alternative.
+	// It is catalogued, Apache-2.0, and public, so no HF token is required.
+	presetQwen122BGPTQ = "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4"
 )
 
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
@@ -111,7 +112,7 @@ const (
 	CaseKarpenterMedium = "karpenter-medium"
 
 	// CaseKarpenterLarge covers the Karpenter nightly large scenario: a
-	// single InferenceSet replica whose public Mistral-Small-4-119B model is
+	// single InferenceSet replica whose public Qwen3.5-122B GPTQ model is
 	// sharded across multiple GPU nodes using
 	// KAITO's native multi-node support (no LWS, no Ray). KAITO derives the
 	// node count from the preset's total GPU-memory requirement (weights +
@@ -402,9 +403,9 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 	},
 	CaseKarpenterLarge: {
 		{
-			Name:         "k-m119b-2n",
+			Name:         "k-q122b-2n",
 			Namespace:    "e2e-k-lg",
-			Model:        presetMistral119B,
+			Model:        presetQwen122BGPTQ,
 			Replicas:     1,
 			InstanceType: "Standard_NC24ads_A100_v4",
 		},
