@@ -43,15 +43,13 @@ const (
 	presetPhi       = "phi-4-mini-instruct"
 	presetMinistral = "ministral-3-3b-instruct"
 	presetQwen7B    = "qwen2.5-coder-7b-instruct"
-	// presetQwen32B (~32B, ~61GiB bf16 weights, 32k context). The medium
-	// case runs it on a 2-GPU Standard_NC48ads_A100_v4 node (160GB total),
-	// where weights + KV cache + runtime overhead fit on a single node and
-	// KAITO shards it across both GPUs with tensor parallelism (TP=2). The
-	// large case runs the same preset on 1-GPU Standard_NC24ads_A100_v4
-	// nodes (80GB each), where it does not fit one node and KAITO instead
-	// splits it across two nodes — exercising the multi-node distributed
-	// inference path. Curated and ungated, so no HuggingFace token.
+	// presetQwen32B (~32B, ~61GiB weights) fits on one 2-GPU
+	// Standard_NC48ads_A100_v4 node, where KAITO uses tensor parallelism.
 	presetQwen32B = "qwen2.5-coder-32b-instruct"
+	// presetMistral119B (~113GiB weights) requires two 1-GPU
+	// Standard_NC24ads_A100_v4 nodes under KAITO's current estimator. It is
+	// catalogued, Apache-2.0, and publicly downloadable without an HF token.
+	presetMistral119B = "mistralai/Mistral-Small-4-119B-2603"
 )
 
 // Test-case identifiers. Each case owns its own ModelDeploymentValues table
@@ -113,15 +111,15 @@ const (
 	CaseKarpenterMedium = "karpenter-medium"
 
 	// CaseKarpenterLarge covers the Karpenter nightly large scenario: a
-	// single InferenceSet replica whose model (the curated, ungated
-	// qwen2.5-coder-32b-instruct) is sharded across multiple GPU nodes using
+	// single InferenceSet replica whose public Mistral-Small-4-119B model is
+	// sharded across multiple GPU nodes using
 	// KAITO's native multi-node support (no LWS, no Ray). KAITO derives the
 	// node count from the preset's total GPU-memory requirement (weights +
 	// KV cache + runtime overhead) divided by the 80GB per-node A100
 	// capacity; for this model that resolves to two NC24ads_A100_v4 nodes.
 	// Validates that Karpenter provisions the GPU nodes and that KAITO +
 	// production-stack schedule the distributed inference workload across
-	// them. The preset is curated and ungated, so no HuggingFace token is
+	// them. The model is publicly downloadable, so no HuggingFace token is
 	// required.
 	CaseKarpenterLarge = "karpenter-large"
 
@@ -404,9 +402,9 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 	},
 	CaseKarpenterLarge: {
 		{
-			Name:         "k-32b-2n",
+			Name:         "k-m119b-2n",
 			Namespace:    "e2e-k-lg",
-			Model:        presetQwen32B,
+			Model:        presetMistral119B,
 			Replicas:     1,
 			InstanceType: "Standard_NC24ads_A100_v4",
 		},
