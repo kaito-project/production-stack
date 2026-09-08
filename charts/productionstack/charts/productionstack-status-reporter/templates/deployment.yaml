@@ -79,12 +79,16 @@ spec:
             - --weight-download-min-mbps={{ .Values.controlPlane.weightDownload.minMBps }}
             - --weight-download-metric={{ .Values.controlPlane.weightDownload.metricName }}
             - --weight-download-metric-port={{ .Values.controlPlane.weightDownload.metricPort }}
+            - --models-api-bind-address=:{{ .Values.modelsAPI.port }}
           ports:
             - name: metrics
               containerPort: 8080
               protocol: TCP
             - name: health
               containerPort: 8081
+              protocol: TCP
+            - name: models-api
+              containerPort: {{ .Values.modelsAPI.port }}
               protocol: TCP
           livenessProbe:
             httpGet:

@@ -23,6 +23,11 @@ ABSENT route):
      usable `model` field -> 400 `invalid_request_body`
      (`x-kaito-error-source: bbr`).
 
+Ahead of those, two model-discovery routes forward `/v1/models` and
+`/v1/models/{id}` to the cluster-wide productionstack-status-reporter.
+They must come first: a bodyless GET gets no model header from BBR and
+would otherwise fall through to route 2's misleading 400.
+
 Why ABSENT is 400 and not 502 bbr_unavailable: BBR ext_proc is
 fail-closed (see envoyfilter-bbr.yaml), so a genuine BBR outage is
 rejected at the filter stage and rewritten to 502 by
@@ -58,6 +63,42 @@ spec:
         operation: MERGE
         value:
           routes:
+            {{- $modelsSvc := printf "%s.%s.svc.cluster.local" (include "modelharness.modelsServiceName" .) .Values.modelsAPI.serviceNamespace }}
+            {{- $modelsCluster := printf "outbound|%d||%s" (int .Values.modelsAPI.servicePort) $modelsSvc }}
+            # Model discovery. These must precede the catch-all routes below,
+            # which would otherwise absorb a bodyless GET (BBR injects no model
+            # header for it) and answer the misleading 400 invalid_request_body.
+            #
+            # Two routes, not one `prefix: /v1/models`: a bare prefix would also
+            # match sibling paths like /v1/modelsfoo, which must stay unmatched
+            # so the catch-all can answer them honestly.
+            #
+            # X-Kaito-Gateway-Namespace is the models API's namespace-scoping
+            # input and is OVERWRITTEN here, so a client cannot forge it to
+            # enumerate another tenant's models. Host is deliberately not used
+            # for this: it is caller-supplied.
+            - name: models-api-list
+              match:
+                path: /v1/models
+              route:
+                cluster: {{ $modelsCluster | quote }}
+                timeout: {{ .Values.modelsAPI.timeout | quote }}
+              request_headers_to_add:
+                - header:
+                    key: X-Kaito-Gateway-Namespace
+                    value: {{ include "modelharness.namespace" . | quote }}
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
+            - name: models-api-retrieve
+              match:
+                prefix: /v1/models/
+              route:
+                cluster: {{ $modelsCluster | quote }}
+                timeout: {{ .Values.modelsAPI.timeout | quote }}
+              request_headers_to_add:
+                - header:
+                    key: X-Kaito-Gateway-Namespace
+                    value: {{ include "modelharness.namespace" . | quote }}
+                  append_action: OVERWRITE_IF_EXISTS_OR_ADD
             # Appended after the per-model HTTPRoutes. The PRESENT route
             # (header set but unmatched -> 404) must precede the ABSENT
             # route (no header -> 400 invalid_request_body), which is

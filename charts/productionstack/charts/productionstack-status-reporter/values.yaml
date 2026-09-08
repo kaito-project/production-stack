@@ -35,6 +35,24 @@ leaderElection:
   enabled: true
   id: productionstack-status-reporter
 
+# modelsAPI serves the OpenAI-compatible model discovery endpoints
+# (`GET /v1/models` and `GET /v1/models/{id}`) for every modelharness-managed
+# workload namespace, aggregating the InferenceSets registered in the caller's
+# own namespace. It is a registry view, not a health check: a model is listed as
+# soon as its InferenceSet exists, regardless of whether it is serving yet.
+#
+# Unlike the event-emitting reporter loop, this endpoint runs on EVERY replica
+# (it opts out of leader election) because it sits behind a Service.
+#
+# The Service name is pinned (`productionstack-status-reporter`) because
+# charts/modelharness is a separate release that targets it by cluster FQDN.
+# Only the port is tunable here; change it and you must set the matching
+# modelharness `modelsAPI.servicePort`. Likewise this chart's install namespace
+# must match modelharness `modelsAPI.serviceNamespace` (both default to
+# kube-system).
+modelsAPI:
+  port: 8082
+
 # Install namespaces of the cluster-layer components the reporter probes.
 # These default to the umbrella chart's own defaults; override to match a
 # customised install.

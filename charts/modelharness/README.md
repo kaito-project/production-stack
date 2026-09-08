@@ -3,7 +3,7 @@
 Per-namespace shared resources for production-stack workloads. One `modelharness` release per workload namespace provisions everything every model deployment in that namespace shares:
 
 - the Istio `Gateway` that fronts the namespace,
-- the catch-all `EnvoyFilter` (`model-not-found-direct`) that returns an OpenAI-compatible `404 model_not_found` directly from Envoy for any path not matched by a deployment-specific `HTTPRoute`,
+- the catch-all `EnvoyFilter` (`model-not-found-direct`) that returns an OpenAI-compatible `404 model_not_found` directly from Envoy for any path not matched by a deployment-specific `HTTPRoute`, plus the routes that forward `GET /v1/models` and `GET /v1/models/{id}` to the cluster-wide model registry,
 - the per-namespace `EnvoyFilter` that injects BBR's ext_proc into the Gateway HCM,
 - the unified-error `local_reply` filter that maps fail-closed BBR / ext_authz outages and any other `>= 500` reply onto a consistent OpenAI-compatible error envelope,
 - (when `auth.enabled`) the `AuthorizationPolicy` and `APIKey` CR that wire the Gateway into the cluster-wide `apikey-ext-authz` CUSTOM provider,
@@ -17,7 +17,7 @@ A namespace may host one or more `modeldeployment` releases, all of which share 
 | ---------------------------------------------- | -------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Gateway`                                      | `gateway.networking.k8s.io/v1`   | always                       | Public entry point for the namespace; `gatewayClassName: istio`, HTTP/80 by default.                                                                                                   |
 | `EnvoyFilter` `bbr-ext-proc`                   | `networking.istio.io/v1alpha3`   | always                       | Injects the cluster-wide BBR ext_proc into the Gateway HCM, scoped via `workloadSelector`. BBR itself ships in `productionstack` / `body-based-routing`.                               |
-| `EnvoyFilter` `model-not-found-direct`         | `networking.istio.io/v1alpha3`   | always                       | Patches a `direct_response` onto the Gateway HCM; returns an OpenAI 404 for any unknown-model path. Required to keep API-key ext_authz running on unknown-model requests.              |
+| `EnvoyFilter` `model-not-found-direct`         | `networking.istio.io/v1alpha3`   | always                       | Patches `direct_response` routes onto the Gateway HCM; returns an OpenAI 404 for any unknown-model path. Required to keep API-key ext_authz running on unknown-model requests. Also carries the two model-discovery routes, ordered **ahead** of the catch-all routes. |
 | `EnvoyFilter` `gateway-filter-outage-local-reply` | `networking.istio.io/v1alpha3` | always                       | Single namespace-scoped `local_reply` that maps fail-closed BBR / ext_authz outages, gateway data-plane health failures, and any remaining 5xx onto the unified error envelope.        |
 | `EnvoyFilter` `apikey-ext-authz`               | `networking.istio.io/v1alpha3`   | `auth.enabled`               | Splices `envoy.filters.http.ext_authz` into the Gateway pod and points it at the cluster-wide `apikey-authz` gRPC Service installed by `productionstack/llm-gateway-apikey`.           |
 | `AuthorizationPolicy` `apikey-gateway-ext-authz` | `security.istio.io/v1`         | `auth.enabled`               | Per-namespace CUSTOM policy that gates traffic through the cluster-wide `apikey-ext-authz` extension provider on the Gateway pod.                                                       |
@@ -80,6 +80,24 @@ Top-level values (see [`values.yaml`](./values.yaml) for the full schema, defaul
 | `auth.extAuthz.*`                         | `apikey-authz` / `llm-gateway-auth` / `9001` / `5s` | Cluster-wide `apikey-authz` gRPC Service coordinates the per-namespace `EnvoyFilter` targets. Defaults match the `llm-gateway-apikey` subchart.                                              |
 | `networkPolicy.enabled`                   | `true`                           | Render the per-namespace `CiliumNetworkPolicy`. **Requires the Cilium dataplane** (see above). Disable when running on a non-Cilium cluster.                                                               |
 | `networkPolicy.allowedIngressNamespaces`  | `[keda, kaito-system, kube-system, monitoring]` | Cross-namespace ingress allowlist for inference pods. Each entry renders a `fromEndpoints` clause keyed off `k8s:io.kubernetes.pod.namespace`. Empty = strict per-namespace isolation. |
+| `modelsAPI.serviceNamespace` / `.servicePort` | `kube-system` / `8082` | Where the cluster-wide `productionstack-status-reporter` models Service actually runs. The Service *name* is pinned, so only these two need to match the umbrella install. |
+| `modelsAPI.timeout`                       | `10s`                            | Envoy route timeout for the discovery hop. The registry answers from an in-memory cache, so this only has to cover a cold start. |
+
+## Model discovery
+
+The namespace's Gateway serves the OpenAI model-discovery surface:
+
+```console
+$ curl -H "Authorization: Bearer $KEY" http://my-models.gw.example.com/v1/models
+{"object":"list","data":[{"id":"chat-phi","object":"model","created":1772000000,"owned_by":"kaito"}]}
+```
+
+The listing is scoped to this workload namespace and each `id` is the `modeldeployment` name — the same value `X-Gateway-Model-Name` matches — so a discovered model can be sent straight back in the `model` field.
+
+Two properties are worth calling out:
+
+- **The namespace is not derived from `Host`.** The routes stamp `X-Kaito-Gateway-Namespace` with `OVERWRITE_IF_EXISTS_OR_ADD`, so a client cannot forge it to enumerate another tenant's models.
+- **It is a registry, not a health check.** A model is listed as soon as its `InferenceSet` exists. Runtime availability is reported separately (inference requests return `model_unavailable`; the status reporter emits control-plane Events), so discovery never disagrees with what is routable by name.
 
 ## Companion charts
 

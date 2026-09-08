@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/config"
+	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/modelsapi"
 )
 
 // RBAC markers — the reporter has READ-ONLY access to every resource it
@@ -58,6 +59,13 @@ func SetupWithManager(mgr ctrl.Manager, cfg config.Config) error {
 	reporter := NewStatusReporter(cs, dyn, cfg)
 	if err := mgr.Add(reporter); err != nil {
 		return fmt.Errorf("add status reporter to manager: %w", err)
+	}
+
+	if cfg.ModelsAPIBindAddress != "" {
+		if err := modelsapi.SetupWithManager(mgr, cfg.ModelsAPIBindAddress,
+			ctrl.Log.WithName("models-api")); err != nil {
+			return fmt.Errorf("set up models API: %w", err)
+		}
 	}
 	return nil
 }

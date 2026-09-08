@@ -728,3 +728,95 @@ func ParseErrorResponse(resp *http.Response) (*ErrorResponse, error) {
 	}
 	return &result, nil
 }
+
+// ModelsPath is the OpenAI-compatible model listing endpoint served per
+// workload namespace by the productionstack-status-reporter (routed there by
+// the Gateway route that charts/modelharness renders).
+const ModelsPath = "/v1/models"
+
+// Model is one entry of an OpenAI-compatible model listing. ID is the value
+// clients send in the `model` field of an inference request.
+type Model struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int64  `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// ModelList is the `GET /v1/models` response envelope.
+type ModelList struct {
+	Object string  `json:"object"`
+	Data   []Model `json:"data"`
+}
+
+// IDs returns the model ids in the listing, for order-sensitive assertions.
+func (l *ModelList) IDs() []string {
+	ids := make([]string, 0, len(l.Data))
+	for _, m := range l.Data {
+		ids = append(ids, m.ID)
+	}
+	return ids
+}
+
+// ModelRetrievePath builds the single-model endpoint path for a model id.
+func ModelRetrievePath(id string) string {
+	return ModelsPath + "/" + id
+}
+
+// SendModelsRequest issues a bodyless GET against a model-discovery endpoint.
+// bearerToken and hostHeader are optional and mirror SendChatCompletionWithAuth
+// (the Host header carries the namespace for apikey-authz).
+func SendModelsRequest(gatewayURL, path, bearerToken, hostHeader string) (*http.Response, error) {
+	return SendModelsRequestWithMethod(http.MethodGet, gatewayURL, path, bearerToken, hostHeader)
+}
+
+// SendModelsRequestWithMethod is SendModelsRequest with an explicit method, so
+// specs can assert that non-GET verbs are rejected.
+func SendModelsRequestWithMethod(method, gatewayURL, path, bearerToken, hostHeader string) (*http.Response, error) {
+	if err := checkAllPortForwards(); err != nil {
+		return nil, err
+	}
+	gatewayURL = resolveGatewayURL(gatewayURL)
+
+	req, err := http.NewRequest(method, gatewayURL+path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
+	if hostHeader != "" {
+		req.Host = hostHeader
+	}
+
+	client := &http.Client{Timeout: HTTPTimeout}
+	return client.Do(req)
+}
+
+// ParseModelList reads the response body and unmarshals it into a ModelList.
+// It closes the response body.
+func ParseModelList(resp *http.Response) (*ModelList, error) {
+	body, err := ReadResponseBody(resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	var result ModelList
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse model list JSON: %w (body: %s)", err, string(body))
+	}
+	return &result, nil
+}
+
+// ParseModel reads the response body and unmarshals it into a single Model.
+// It closes the response body.
+func ParseModel(resp *http.Response) (*Model, error) {
+	body, err := ReadResponseBody(resp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	var result Model
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse model JSON: %w (body: %s)", err, string(body))
+	}
+	return &result, nil
+}

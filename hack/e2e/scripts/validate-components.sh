@@ -190,15 +190,31 @@ echo ""
 
 # ── ProductionStack Status Reporter ─────────────────────────────────────
 # Leader-elected control-plane reporter installed by the umbrella chart into
-# kaito-system. It publishes aggregated control-plane Warning Events into
+# kube-system. It publishes aggregated control-plane Warning Events into
 # kube-system, which the status-reporter e2e specs assert on.
 echo "=== ProductionStack Status Reporter ==="
-if kubectl -n kaito-system wait --for=condition=ready pod -l app.kubernetes.io/name=productionstack-status-reporter --timeout="${TIMEOUT}" >/dev/null 2>&1; then
+if kubectl -n kube-system wait --for=condition=ready pod -l app.kubernetes.io/name=productionstack-status-reporter --timeout="${TIMEOUT}" >/dev/null 2>&1; then
   pass "productionstack-status-reporter is Running"
 else
   fail "productionstack-status-reporter is NOT Running"
 fi
-kubectl -n kaito-system get pods -l app.kubernetes.io/name=productionstack-status-reporter 2>/dev/null || true
+kubectl -n kube-system get pods -l app.kubernetes.io/name=productionstack-status-reporter 2>/dev/null || true
+
+# The reporter also fronts the model-discovery endpoints. Each workload
+# namespace's Gateway routes /v1/models to this Service by cluster FQDN, so a
+# missing Service or an empty EndpointSlice breaks discovery in every namespace.
+if kubectl -n kube-system get service productionstack-status-reporter >/dev/null 2>&1; then
+  pass "models API Service exists"
+else
+  fail "models API Service is MISSING"
+fi
+if [ -n "$(kubectl -n kube-system get endpointslices \
+  -l kubernetes.io/service-name=productionstack-status-reporter \
+  -o jsonpath='{.items[*].endpoints[?(@.conditions.ready==true)].addresses[0]}' 2>/dev/null)" ]; then
+  pass "models API Service has ready endpoints"
+else
+  fail "models API Service has NO ready endpoints"
+fi
 echo ""
 
 # ── CRDs ─────────────────────────────────────────────────────────────────

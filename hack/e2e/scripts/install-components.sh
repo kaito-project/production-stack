@@ -318,7 +318,7 @@ install_productionstack() {
   echo "    body-based-routing → kaito-system (umbrella release namespace)"
   echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE}"
   echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
-  echo "    productionstack-status-reporter → kaito-system (image: ${STATUS_REPORTER_IMAGE})"
+  echo "    productionstack-status-reporter → kube-system (image: ${STATUS_REPORTER_IMAGE})"
   # productionstack-status-reporter control-plane overrides: the reporter's
   # chart defaults target a production AKS topology (aks-istio-system,
   # kaito-workspace namespace). The E2E cluster installs istiod via istioctl
@@ -350,7 +350,7 @@ install_productionstack() {
     echo "⚠️  BBR not ready yet — continuing."
 
   echo "⏳ Waiting for productionstack-status-reporter..."
-  kubectl -n kaito-system rollout status \
+  kubectl -n kube-system rollout status \
     deployment -l app.kubernetes.io/name=productionstack-status-reporter --timeout=180s || \
     echo "⚠️  status-reporter not ready yet — continuing."
 

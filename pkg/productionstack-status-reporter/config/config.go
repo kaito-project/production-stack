@@ -103,6 +103,11 @@ type Config struct {
 	// ResyncInterval is how often every reason is re-evaluated.
 	ResyncInterval time.Duration
 
+	// ModelsAPIBindAddress is where the OpenAI-compatible model discovery
+	// endpoint (`GET /v1/models`, `GET /v1/models/{id}`) listens. Empty
+	// disables the endpoint.
+	ModelsAPIBindAddress string
+
 	// StartupGracePeriod is the window during which transient startup states
 	// are not surfaced as Warning events. Cluster/harness/EPP/route findings
 	// are withheld while the backing resource is younger than this window
@@ -133,9 +138,10 @@ func DefaultConfig() Config {
 			WindowDuration: 60 * time.Second,
 			MinMBps:        20,
 		},
-		MetricName:         scraper.DefaultMetricName,
-		MetricPort:         5000,
-		ResyncInterval:     1 * time.Minute,
-		StartupGracePeriod: 60 * time.Second,
+		MetricName:           scraper.DefaultMetricName,
+		MetricPort:           5000,
+		ResyncInterval:       1 * time.Minute,
+		StartupGracePeriod:   60 * time.Second,
+		ModelsAPIBindAddress: ":8082",
 	}
 }

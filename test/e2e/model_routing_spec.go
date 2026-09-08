@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -143,6 +144,100 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			}, 30*time.Second, 2*time.Second).Should(Succeed())
 			Expect(parsed.Model).To(Equal(ministralModel),
 				"response model should match the requested ministral model")
+		})
+	})
+
+	Context("Model discovery", func() {
+		// The namespace's Gateway routes /v1/models to the cluster-wide
+		// productionstack-status-reporter, which aggregates the InferenceSets
+		// registered in this namespace. Without those routes a bodyless GET
+		// gets no X-Gateway-Model-Name from BBR and falls through to the
+		// catch-all's misleading 400 invalid_request_body.
+		listModels := func() (*utils.ModelList, error) {
+			resp, err := utils.SendModelsRequest(caseGatewayURL, utils.ModelsPath, "", "")
+			if err != nil {
+				return nil, err
+			}
+			if resp.StatusCode != http.StatusOK {
+				body, _ := utils.ReadResponseBody(resp)
+				return nil, fmt.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+			return utils.ParseModelList(resp)
+		}
+
+		It("should list every model registered in the namespace", func() {
+			var list *utils.ModelList
+			Eventually(func() error {
+				l, err := listModels()
+				if err != nil {
+					return err
+				}
+				list = l
+				return nil
+			}, 60*time.Second, 2*time.Second).Should(Succeed())
+
+			Expect(list.Object).To(Equal("list"))
+
+			// Scoped to this case's namespace: models deployed by other cases
+			// must never appear here.
+			want := append([]string(nil), modelNames...)
+			sort.Strings(want)
+			Expect(list.IDs()).To(Equal(want),
+				"listing must contain exactly this namespace's models, sorted by id")
+
+			for _, m := range list.Data {
+				Expect(m.Object).To(Equal("model"))
+				Expect(m.OwnedBy).To(Equal("kaito"))
+				Expect(m.Created).To(BeNumerically(">", 0),
+					"created should carry the InferenceSet creation time")
+			}
+		})
+
+		It("should serve each model individually and agree with the listing", func() {
+			list, err := listModels()
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, listed := range list.Data {
+				resp, err := utils.SendModelsRequest(
+					caseGatewayURL, utils.ModelRetrievePath(listed.ID), "", "")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+				got, err := utils.ParseModel(resp)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(*got).To(Equal(listed),
+					"retrieve must return the same object the listing carries for %s", listed.ID)
+			}
+		})
+
+		It("should return 404 model_not_found for an unknown model id", func() {
+			resp, err := utils.SendModelsRequest(
+				caseGatewayURL, utils.ModelRetrievePath("totally-unknown-model-xyz"), "", "")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+
+			errResp, err := utils.ParseErrorResponse(resp)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(errResp.ErrorCode()).To(Equal("model_not_found"))
+			Expect(errResp.Error.Type).To(Equal("invalid_request_error"))
+		})
+
+		It("should reject non-GET verbs on the discovery endpoints", func() {
+			resp, err := utils.SendModelsRequestWithMethod(
+				http.MethodPost, caseGatewayURL, utils.ModelsPath, "", "")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusMethodNotAllowed))
+		})
+
+		It("should not swallow sibling paths that merely share the prefix", func() {
+			// The route pair is `exact /v1/models` + `prefix /v1/models/`; a bare
+			// `prefix /v1/models` would wrongly capture this path too.
+			resp, err := utils.SendModelsRequest(caseGatewayURL, "/v1/modelsfoo", "", "")
+			Expect(err).NotTo(HaveOccurred())
+			defer resp.Body.Close()
+			Expect(resp.StatusCode).NotTo(Equal(http.StatusOK),
+				"/v1/modelsfoo must not be answered by the model registry")
 		})
 	})
 

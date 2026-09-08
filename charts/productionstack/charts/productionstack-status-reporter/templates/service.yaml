@@ -1,0 +1,29 @@
+{{/*
+Cluster-singleton Service fronting the OpenAI-compatible model discovery
+endpoints (`GET /v1/models`, `GET /v1/models/{id}`).
+
+The name is pinned rather than derived from the Helm release: each workload
+namespace's Gateway route (rendered by charts/modelharness, a SEPARATE Helm
+release) targets this Service by cluster FQDN and cannot know the umbrella
+release name. Keep this chart's install namespace and `modelsAPI.port` in sync
+with modelharness `modelsAPI.serviceNamespace` / `modelsAPI.servicePort`.
+
+Every reporter replica backs this Service — the models API deliberately opts
+out of leader election, unlike the event-emitting reporter loop.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "productionstack-status-reporter.modelsServiceName" . }}
+  namespace: {{ include "productionstack-status-reporter.namespace" . }}
+  labels:
+    {{- include "productionstack-status-reporter.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "productionstack-status-reporter.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http-models
+      port: {{ .Values.modelsAPI.port }}
+      targetPort: models-api
+      protocol: TCP
