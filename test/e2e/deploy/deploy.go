@@ -51,15 +51,34 @@ type Deployer interface {
 	// InstallModelHarness creates or reconciles the modelharness owning the
 	// per-namespace shared resources (Gateway, catch-all EnvoyFilter, and
 	// optionally the AuthorizationPolicy + APIKey pair).
+	//
+	// The workload namespace is part of what a modelharness owns, so
+	// implementations create it (carrying whatever discovery labels the
+	// control plane selects on) rather than expecting the caller to.
 	InstallModelHarness(ctx context.Context, values ModelHarnessValues) error
 
-	// UninstallModelHarness removes the modelharness from namespace. A
-	// namespace with no modelharness is treated as success.
+	// UninstallModelHarness removes the modelharness from namespace,
+	// including the namespace itself. A namespace with no modelharness is
+	// treated as success.
 	UninstallModelHarness(ctx context.Context, namespace string) error
 
 	// InstallModelDeployment creates or reconciles a single model deployment
 	// (InferenceSet, InferencePool, EPP artifacts, and HTTPRoute).
 	InstallModelDeployment(ctx context.Context, values ModelDeploymentValues) error
+
+	// UpgradeModelDeployment reconciles an EXISTING model deployment to
+	// values, and is how a test changes a deployment's declared
+	// configuration (replica count, scaling thresholds, scorer weights, ...).
+	//
+	// Unlike InstallModelDeployment it does not create the deployment: a
+	// missing deployment is an error, so a test that mistypes a name fails
+	// loudly instead of silently provisioning a second one.
+	//
+	// Note this reconciles DECLARED values. A field the chart hands off to
+	// another controller at runtime — spec.replicas once EnableScaling is on,
+	// which KEDA then drives through the scale subresource — will not change
+	// live state through this call.
+	UpgradeModelDeployment(ctx context.Context, values ModelDeploymentValues) error
 
 	// UninstallModelDeployment removes the named model deployment from
 	// namespace. A missing deployment is treated as success.

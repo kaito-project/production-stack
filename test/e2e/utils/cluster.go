@@ -66,6 +66,9 @@ func GetClusterClient(cluster *Cluster) {
 // ScaleDeployment sets the named Deployment's replica count via the scale
 // subresource. It updates spec only and does NOT wait for the rollout to
 // converge — use WaitForDeploymentReplicas for that.
+//
+// Callers MUST carry GinkgoLabelStandardK8sOnly: a managed cluster such as AKS
+// Automatic does not allow the suite to reshape running workloads this way.
 func ScaleDeployment(ctx context.Context, namespace, name string, replicas int32) error {
 	cs, err := GetK8sClientset()
 	if err != nil {

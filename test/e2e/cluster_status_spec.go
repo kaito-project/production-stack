@@ -36,7 +36,7 @@ import (
 // These perturb cluster-wide singletons every other namespace shares, so the
 // suite is decorated Serial.
 var _ = Describe("Cluster Status Reporter",
-	Serial, utils.GinkgoLabelStatusReporter, func() {
+	Serial, utils.GinkgoLabelStatusReporter, utils.GinkgoLabelStandardK8sOnly, func() {
 
 		const (
 			// Resync default is 30s; allow a couple of cycles plus rollout slack.
