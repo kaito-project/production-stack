@@ -113,4 +113,23 @@ var (
 	// test/e2e/cluster_status_spec.go, control_plane_error_spec.go, and
 	// weight_download_slow_spec.go.
 	GinkgoLabelStatusReporter = g.Label("StatusReporter")
+
+	// GinkgoLabelStandardK8sOnly marks tests that require a standard Kubernetes
+	// cluster and cannot run on an opinionated managed one such as AKS Automatic.
+	//
+	// What they need is the ability to reshape running workloads directly,
+	// bypassing the deploy.Deployer: ScaleDeployment on a Deployment's scale
+	// subresource (utils/cluster.go) or SetInferenceSetReplicas patching an
+	// InferenceSet (utils/scaling.go).
+	//
+	// It cuts ACROSS the feature-area labels — a spec keeps its own (Outage,
+	// StatusReporter, Scaling, ...) and carries this one in addition, so a run
+	// against a managed cluster skips exactly these:
+	//
+	//	E2E_LABEL='!StandardK8sOnly' make test-e2e
+	//
+	// Note this is about the MECHANISM, not the blast radius. A spec that empties
+	// an inference pool through the Deployer (model_unavailable_spec.go) is just
+	// as disruptive but stays unlabelled, because any backend can honour it.
+	GinkgoLabelStandardK8sOnly = g.Label("StandardK8sOnly")
 )

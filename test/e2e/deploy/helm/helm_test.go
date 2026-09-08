@@ -30,6 +30,14 @@ import (
 // newTestDeployer returns a Deployer whose charts resolve to real directories
 // and whose helm invocations are captured instead of executed.
 func newTestDeployer(t *testing.T, err error) (*Deployer, *[][]string) {
+	d, calls, _ := newTestDeployerWithKubectl(t, err, nil)
+	return d, calls
+}
+
+// newTestDeployerWithKubectl additionally captures kubectl invocations.
+// kubectlErr, when non-nil, fails every kubectl call whose first argument
+// matches kubectlErrVerb, letting tests drive the namespace-missing path.
+func newTestDeployerWithKubectl(t *testing.T, err error, kubectlErrVerbs map[string]error) (*Deployer, *[][]string, *[][]string) {
 	t.Helper()
 
 	root := t.TempDir()
@@ -42,6 +50,7 @@ func newTestDeployer(t *testing.T, err error) (*Deployer, *[][]string) {
 	}
 
 	var calls [][]string
+	var kubectlCalls [][]string
 	d, newErr := New(Options{
 		ModelHarnessChart:    harnessChart,
 		ModelDeploymentChart: deploymentChart,
@@ -49,11 +58,20 @@ func newTestDeployer(t *testing.T, err error) (*Deployer, *[][]string) {
 			calls = append(calls, args)
 			return []byte("helm output"), err
 		},
+		KubectlRunner: func(_ context.Context, args ...string) ([]byte, error) {
+			kubectlCalls = append(kubectlCalls, args)
+			if len(args) > 0 {
+				if verbErr, ok := kubectlErrVerbs[args[0]]; ok {
+					return []byte("kubectl output"), verbErr
+				}
+			}
+			return []byte("kubectl output"), nil
+		},
 	})
 	if newErr != nil {
 		t.Fatalf("New: %v", newErr)
 	}
-	return d, &calls
+	return d, &calls, &kubectlCalls
 }
 
 // argValue returns the argument following flag whose value carries prefix.
@@ -272,7 +290,7 @@ func TestInstallModelHarnessMapsAuth(t *testing.T) {
 }
 
 func TestUninstallIsIdempotentAndScoped(t *testing.T) {
-	d, calls := newTestDeployer(t, nil)
+	d, calls, kubectlCalls := newTestDeployerWithKubectl(t, nil, nil)
 
 	if err := d.UninstallModelDeployment(context.Background(), "phi", "e2e-ns"); err != nil {
 		t.Fatalf("UninstallModelDeployment: %v", err)
@@ -295,6 +313,132 @@ func TestUninstallIsIdempotentAndScoped(t *testing.T) {
 	}
 	if (*calls)[1][1] != ModelHarnessReleaseName {
 		t.Errorf("harness uninstall targeted %q, want %q", (*calls)[1][1], ModelHarnessReleaseName)
+	}
+
+	// The harness owns the namespace, so uninstalling it removes the namespace
+	// too. It must not block on termination, which finalizers can stretch to
+	// minutes.
+	if len(*kubectlCalls) != 1 {
+		t.Fatalf("expected exactly one kubectl call, got %v", *kubectlCalls)
+	}
+	del := (*kubectlCalls)[0]
+	if del[0] != "delete" || del[1] != "namespace" || del[2] != "e2e-ns" {
+		t.Errorf("unexpected namespace delete: %v", del)
+	}
+	if !hasArg(del, "--ignore-not-found") || !hasArg(del, "--wait=false") {
+		t.Errorf("namespace delete must be idempotent and non-blocking: %v", del)
+	}
+}
+
+// The workload namespace belongs to the harness, and the status reporter only
+// enumerates namespaces carrying the discovery label, so installing must
+// create and label it.
+func TestInstallModelHarnessOwnsTheNamespace(t *testing.T) {
+	t.Run("namespace already exists", func(t *testing.T) {
+		d, _, kubectlCalls := newTestDeployerWithKubectl(t, nil, nil)
+		if err := d.InstallModelHarness(context.Background(),
+			deploy.ModelHarnessValues{Namespace: "ns-a"}); err != nil {
+			t.Fatalf("InstallModelHarness: %v", err)
+		}
+
+		for _, args := range *kubectlCalls {
+			if args[0] == "create" {
+				t.Errorf("existing namespace must not be re-created: %v", *kubectlCalls)
+			}
+		}
+		assertNamespaceLabelled(t, *kubectlCalls, "ns-a")
+	})
+
+	t.Run("namespace missing", func(t *testing.T) {
+		d, _, kubectlCalls := newTestDeployerWithKubectl(t, nil,
+			map[string]error{"get": errors.New("namespaces \"ns-b\" not found")})
+		if err := d.InstallModelHarness(context.Background(),
+			deploy.ModelHarnessValues{Namespace: "ns-b"}); err != nil {
+			t.Fatalf("InstallModelHarness: %v", err)
+		}
+
+		var created bool
+		for _, args := range *kubectlCalls {
+			if args[0] == "create" && args[1] == "namespace" && args[2] == "ns-b" {
+				created = true
+			}
+		}
+		if !created {
+			t.Errorf("missing namespace was not created: %v", *kubectlCalls)
+		}
+		assertNamespaceLabelled(t, *kubectlCalls, "ns-b")
+	})
+}
+
+func assertNamespaceLabelled(t *testing.T, calls [][]string, namespace string) {
+	t.Helper()
+	for _, args := range calls {
+		if args[0] != "label" {
+			continue
+		}
+		if args[2] != namespace {
+			t.Errorf("label targeted %q, want %q", args[2], namespace)
+		}
+		if !hasArg(args, namespaceDiscoveryLabel+"="+namespaceDiscoveryValue) {
+			t.Errorf("discovery label missing: %v", args)
+		}
+		if !hasArg(args, "--overwrite") {
+			t.Errorf("label must be idempotent: %v", args)
+		}
+		return
+	}
+	t.Errorf("namespace was never labelled: %v", calls)
+}
+
+// Upgrade must not double as create: a mistyped release name has to fail
+// rather than silently provision a second deployment.
+func TestUpgradeModelDeploymentDoesNotInstall(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+
+	values := deploy.ModelDeploymentValues{
+		Name: "phi", Namespace: "e2e-ns", Model: "phi-4-mini-instruct", Replicas: 2,
+	}
+	if err := d.UpgradeModelDeployment(context.Background(), values); err != nil {
+		t.Fatalf("UpgradeModelDeployment: %v", err)
+	}
+
+	args := (*calls)[0]
+	if args[0] != "upgrade" || args[1] != "phi" {
+		t.Fatalf("unexpected leading args: %v", args)
+	}
+	if hasArg(args, "--install") || hasArg(args, "--create-namespace") {
+		t.Errorf("upgrade must not create the release or its namespace: %v", args)
+	}
+	if !hasArg(args, "replicas=2") {
+		t.Errorf("replicas not reconciled: %v", args)
+	}
+}
+
+// Zero is a real replica count (scale to an empty pool), not "unset".
+func TestReplicasZeroIsRendered(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+
+	if err := d.UpgradeModelDeployment(context.Background(), deploy.ModelDeploymentValues{
+		Name: "phi", Namespace: "e2e-ns", Model: "phi-4-mini-instruct", Replicas: 0,
+	}); err != nil {
+		t.Fatalf("UpgradeModelDeployment: %v", err)
+	}
+	if !hasArg((*calls)[0], "replicas=0") {
+		t.Errorf("scale-to-zero was dropped: %v", (*calls)[0])
+	}
+}
+
+func TestUpgradeValidatesBeforeInvokingHelm(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+
+	err := d.UpgradeModelDeployment(context.Background(), deploy.ModelDeploymentValues{
+		Name: "phi", Namespace: "e2e-ns", Model: "phi", Replicas: -1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "must not be negative") {
+		t.Fatalf("error = %v, want a negative-replicas validation error", err)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("helm was invoked despite invalid values: %v", *calls)
 	}
 }
 

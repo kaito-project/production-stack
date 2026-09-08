@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -61,8 +62,18 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 			caseURL      string
 			caseNS       string
 			modelName    string
+			caseValues   deploy.ModelDeploymentValues
 			origReplicas int32
 		)
+
+		// scaleTo reconciles the deployment's declared replica count through the
+		// active Deployer, so the change goes through the same path that
+		// installed it instead of patching the InferenceSet behind its back.
+		scaleTo := func(replicas int64) error {
+			values := caseValues
+			values.Replicas = replicas
+			return utils.UpgradeModelDeployment(ctx, values)
+		}
 
 		BeforeAll(func() {
 			ctx = context.Background()
@@ -71,7 +82,9 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 			caseNS = CaseNamespace(CaseModelUnavailable)
 			// The InferenceSet is named after the deployment Name (the chart
 			// `.Values.name`), matching the scaling helpers' convention.
-			modelName = CaseDeployments[CaseModelUnavailable][0].Name
+			caseValues = CaseDeployments[CaseModelUnavailable][0]
+			caseValues.Namespace = caseNS
+			modelName = caseValues.Name
 
 			// Sanity: a valid request must succeed BEFORE we induce the
 			// empty-pool state, otherwise a 503 below would be meaningless.
@@ -91,7 +104,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 			// namespace's pool empty for subsequent specs, even if an
 			// assertion above failed.
 			if origReplicas > 0 {
-				Expect(utils.SetInferenceSetReplicas(ctx, modelName, caseNS, origReplicas)).
+				Expect(scaleTo(int64(origReplicas))).
 					To(Succeed(), "failed to restore InferenceSet replicas")
 			}
 			UninstallCase(CaseModelUnavailable)
@@ -103,8 +116,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 			origReplicas, err = utils.GetInferenceSetReplicas(ctx, modelName, caseNS)
 			Expect(err).NotTo(HaveOccurred(), "failed to read InferenceSet replica count")
 			Expect(origReplicas).To(BeNumerically(">", 0), "InferenceSet should have had >0 replicas before the test")
-			Expect(utils.SetInferenceSetReplicas(ctx, modelName, caseNS, 0)).
-				To(Succeed(), "failed to scale InferenceSet to zero")
+			Expect(scaleTo(0)).To(Succeed(), "failed to scale InferenceSet to zero")
 
 			By("sending a valid chat completion and asserting the model_unavailable envelope")
 			Eventually(func(g Gomega) {
@@ -143,7 +155,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 			By("restoring the InferenceSet to its original replica count")
 			Expect(origReplicas).To(BeNumerically(">", 0),
 				"previous spec must have captured the original replica count")
-			Expect(utils.SetInferenceSetReplicas(ctx, modelName, caseNS, origReplicas)).
+			Expect(scaleTo(int64(origReplicas))).
 				To(Succeed(), "failed to restore InferenceSet replicas")
 
 			By("sending a valid chat completion and asserting it succeeds again")

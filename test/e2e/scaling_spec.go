@@ -65,7 +65,8 @@ const (
 )
 
 var _ = Describe("InferenceSet Scaling — Infra",
-	Ordered, utils.GinkgoLabelScaling, utils.GinkgoLabelNightly, func() {
+	Ordered, utils.GinkgoLabelScaling, utils.GinkgoLabelNightly,
+	utils.GinkgoLabelStandardK8sOnly, func() {
 
 		// Per-case deployment owned by scaling_spec.go (see cases.go).
 		// Resolved as Describe-local values so the table lookup happens

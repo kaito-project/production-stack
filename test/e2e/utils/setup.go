@@ -26,79 +26,50 @@ import (
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
 
-// EnsureNamespace creates the namespace if it does not exist and installs
-// the modelharness Helm chart into it. modelharness owns every per-namespace
-// shared resource: the Istio Gateway (named "<name>-gw" by chart
+// EnsureNamespace provisions the workload namespace and everything the
+// modelharness owns in it: the Istio Gateway (named "<name>-gw" by chart
 // default), the catch-all `model-not-found-direct` EnvoyFilter (Envoy
-// `direct_response` returning 404 + OpenAI-compatible JSON for any
-// request not matched by a deployment-specific HTTPRoute),
-// — when authEnabled is true — the AuthorizationPolicy + APIKey CR
-// that wire the Gateway into the cluster-wide apikey-ext-authz CUSTOM
-// provider, and the default-deny-ingress + allow-inference-traffic
-// NetworkPolicies that lock down East-West ingress while keeping the
-// per-namespace gateway pod reachable from outside the namespace
-// (matched via the standard `gateway.networking.k8s.io/gateway-name`
-// label that Istio stamps on every gateway pod). The chart-default
-// `allowedIngressNamespaces` (currently keda + kaito-system) covers
-// the control-plane scrapers — `keda-kaito-scaler` and the
-// gpu-node-mocker / kaito-workspace controllers — that need to reach
-// shadow pods directly from outside the workload namespace.
+// `direct_response` returning 404 + OpenAI-compatible JSON for any request not
+// matched by a deployment-specific HTTPRoute, plus the model-discovery routes),
+// — when authEnabled is true — the AuthorizationPolicy + APIKey CR that wire
+// the Gateway into the cluster-wide apikey-ext-authz CUSTOM provider, and the
+// CiliumNetworkPolicy that locks down East-West ingress while keeping the
+// per-namespace gateway pod reachable from outside the namespace (matched via
+// the standard `gateway.networking.k8s.io/gateway-name` label that Istio
+// stamps on every gateway pod). The chart-default `allowedIngressNamespaces`
+// (currently keda + kaito-system + kube-system + monitoring) covers the
+// control-plane scrapers — `keda-kaito-scaler` and the gpu-node-mocker /
+// kaito-workspace controllers — that need to reach shadow pods directly from
+// outside the workload namespace.
 //
-// Safe to call repeatedly; the underlying `helm upgrade --install` and
-// namespace Create are both idempotent.
+// The namespace is created by the Deployer rather than here, so a non-Helm
+// backend can provision it through its own API instead of needing cluster
+// credentials of its own.
+//
+// Safe to call repeatedly; the underlying deployer operations are idempotent.
 func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
-	GetClusterClient(TestingCluster)
-	cl := TestingCluster.KubeClient
-	// Stamp the namespace-discovery label the productionstack-status-reporter
-	// selects on. modelharness is installed directly into the workload
-	// namespace (release namespace == workload namespace), so Helm owns the
-	// Namespace's lifecycle and the installer — here, the E2E harness —
-	// stamps the discovery label at creation time, mirroring what an
-	// operator's onboarding flow does in production. See
-	// charts/modelharness/templates/namespace.yaml for the rationale.
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			Labels: map[string]string{
-				"productionstack.kaito.sh/managed-by": "modelharness",
-			},
-		},
-	}
-	if err := cl.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("create namespace %s: %w", name, err)
-	}
-
 	if err := InstallModelHarness(ctx, name, authEnabled); err != nil {
 		return fmt.Errorf("install modelharness in %s: %w", name, err)
 	}
-
 	return nil
 }
 
-// DeleteNamespace uninstalls the modelharness Helm release in the namespace
-// and then deletes the namespace itself. The release is uninstalled before
-// the namespace cascade so helm release metadata stays consistent.
+// DeleteNamespace removes the modelharness from the namespace, which also
+// deletes the namespace itself and cascades everything left in it.
 func DeleteNamespace(ctx context.Context, name string) error {
 	// Kill any cached kubectl port-forwards targeting this namespace
 	// before the namespace is gone, so subsequent EnsurePortForwards()
 	// healthchecks don't try to restart a forward against a vanished
 	// namespace (which surfaces as a 90s readiness timeout).
 	RemovePortForwardsForNamespace(name)
-	GetClusterClient(TestingCluster)
-	cl := TestingCluster.KubeClient
 	if err := UninstallModelHarness(ctx, name); err != nil {
 		return fmt.Errorf("uninstall modelharness from %s: %w", name, err)
-	}
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	if err := cl.Delete(ctx, ns); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete namespace %s: %w", name, err)
 	}
 	return nil
 }

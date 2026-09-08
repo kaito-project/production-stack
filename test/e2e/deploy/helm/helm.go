@@ -52,14 +52,23 @@ const (
 
 	// EnvModelHarnessChart overrides the modelharness chart path.
 	EnvModelHarnessChart = "MODELHARNESS_CHART"
+
+	// namespaceDiscoveryLabel / namespaceDiscoveryValue mark a workload
+	// namespace as production-stack managed. The productionstack-status-reporter
+	// selects on it, and the models API refuses namespaces without it. The chart
+	// cannot stamp it here: when the release namespace IS the workload namespace,
+	// Helm owns that Namespace and templating it would collide with Helm's
+	// ownership metadata (see charts/modelharness/templates/namespace.yaml).
+	namespaceDiscoveryLabel = "productionstack.kaito.sh/managed-by"
+	namespaceDiscoveryValue = "modelharness"
 )
 
 func init() {
 	deploy.Register(BackendName, func() (deploy.Deployer, error) { return New(Options{}) })
 }
 
-// Runner executes a helm invocation and returns its combined output. It is
-// injectable so unit tests can assert argument mapping without a helm binary.
+// Runner executes a CLI invocation and returns its combined output. It is
+// injectable so unit tests can assert argument mapping without the binaries.
 type Runner func(ctx context.Context, args ...string) ([]byte, error)
 
 // Options configures the Helm backend. The zero value resolves chart paths
@@ -72,6 +81,10 @@ type Options struct {
 	ModelDeploymentChart string
 	// Runner overrides helm execution. Empty uses the helm binary on PATH.
 	Runner Runner
+	// KubectlRunner overrides kubectl execution, used for the workload
+	// namespace this backend owns alongside the harness release. Empty uses
+	// the kubectl binary on PATH.
+	KubectlRunner Runner
 }
 
 // Deployer manages modelharness and modeldeployment lifecycles with the Helm CLI.
@@ -79,6 +92,7 @@ type Deployer struct {
 	modelHarnessChart    string
 	modelDeploymentChart string
 	run                  Runner
+	kubectl              Runner
 }
 
 var _ deploy.Deployer = (*Deployer)(nil)
@@ -89,9 +103,13 @@ func New(opts Options) (*Deployer, error) {
 		modelHarnessChart:    firstNonEmpty(opts.ModelHarnessChart, os.Getenv(EnvModelHarnessChart), defaultModelHarnessChartPath),
 		modelDeploymentChart: firstNonEmpty(opts.ModelDeploymentChart, os.Getenv(EnvModelDeploymentChart), defaultModelDeploymentChartPath),
 		run:                  opts.Runner,
+		kubectl:              opts.KubectlRunner,
 	}
 	if d.run == nil {
-		d.run = execRunner
+		d.run = execRunner("helm")
+	}
+	if d.kubectl == nil {
+		d.kubectl = execRunner("kubectl")
 	}
 	return d, nil
 }
@@ -99,15 +117,15 @@ func New(opts Options) (*Deployer, error) {
 // Name implements deploy.Deployer.
 func (d *Deployer) Name() string { return BackendName }
 
-// InstallModelHarness runs `helm upgrade --install` for the modelharness chart
-// in the target namespace. It provisions the per-namespace Gateway (named
-// "<namespace>-gw" by chart default), the catch-all `model-not-found-direct`
-// EnvoyFilter (Envoy `direct_response` returning 404 + OpenAI-compatible
-// JSON), and — when AuthEnabled is true — the per-namespace
-// AuthorizationPolicy + APIKey CR. When the chart's networkPolicy values are
-// enabled it additionally renders the default-deny-ingress /
-// allow-inference-traffic NetworkPolicies that lock down East-West ingress
-// while keeping the gateway pod reachable.
+// InstallModelHarness ensures the workload namespace exists and then runs
+// `helm upgrade --install` for the modelharness chart in it. It provisions the
+// per-namespace Gateway (named "<namespace>-gw" by chart default), the
+// catch-all `model-not-found-direct` EnvoyFilter (Envoy `direct_response`
+// returning 404 + OpenAI-compatible JSON, plus the model-discovery routes),
+// and — when AuthEnabled is true — the per-namespace AuthorizationPolicy +
+// APIKey CR. When the chart's networkPolicy values are enabled it additionally
+// renders the CiliumNetworkPolicy that locks down East-West ingress while
+// keeping the gateway pod reachable.
 //
 // Idempotent: re-running on an existing release reconciles the values.
 func (d *Deployer) InstallModelHarness(ctx context.Context, values deploy.ModelHarnessValues) error {
@@ -118,11 +136,13 @@ func (d *Deployer) InstallModelHarness(ctx context.Context, values deploy.ModelH
 	if err != nil {
 		return err
 	}
+	if err := d.ensureNamespace(ctx, values.Namespace); err != nil {
+		return err
+	}
 
 	args := []string{
 		"upgrade", "--install", ModelHarnessReleaseName, chart,
 		"--namespace", values.Namespace,
-		"--create-namespace",
 		"--set", "namespace=" + values.Namespace,
 		"--set", "auth.enabled=" + strconv.FormatBool(values.AuthEnabled),
 	}
@@ -139,8 +159,27 @@ func (d *Deployer) InstallModelHarness(ctx context.Context, values deploy.ModelH
 	return nil
 }
 
-// UninstallModelHarness runs `helm uninstall` for the modelharness release in
-// namespace. Missing releases are treated as success.
+// ensureNamespace creates the workload namespace if absent and stamps the
+// discovery label the control plane selects on. Both steps are idempotent.
+func (d *Deployer) ensureNamespace(ctx context.Context, namespace string) error {
+	if _, err := d.kubectl(ctx, "get", "namespace", namespace); err != nil {
+		if out, createErr := d.kubectl(ctx, "create", "namespace", namespace); createErr != nil {
+			return fmt.Errorf("create namespace %s: %w\n%s", namespace, createErr, string(out))
+		}
+	}
+	if out, err := d.kubectl(ctx, "label", "namespace", namespace,
+		namespaceDiscoveryLabel+"="+namespaceDiscoveryValue, "--overwrite"); err != nil {
+		return fmt.Errorf("label namespace %s: %w\n%s", namespace, err, string(out))
+	}
+	return nil
+}
+
+// UninstallModelHarness runs `helm uninstall` for the modelharness release and
+// then deletes the workload namespace, which cascades the per-case Gateway and
+// anything else left in it. Missing releases and namespaces are treated as
+// success. The namespace delete does not block on termination: finalizers can
+// keep a namespace Terminating for minutes and no caller needs to observe it
+// gone.
 func (d *Deployer) UninstallModelHarness(ctx context.Context, namespace string) error {
 	if namespace == "" {
 		return fmt.Errorf("modelharness: namespace is required")
@@ -151,6 +190,11 @@ func (d *Deployer) UninstallModelHarness(ctx context.Context, namespace string) 
 	if out, err := d.run(ctx, args...); err != nil {
 		return fmt.Errorf("helm uninstall %s in %s failed: %w\n%s",
 			ModelHarnessReleaseName, namespace, err, string(out))
+	}
+
+	if out, err := d.kubectl(ctx, "delete", "namespace", namespace,
+		"--ignore-not-found", "--wait=false"); err != nil {
+		return fmt.Errorf("delete namespace %s: %w\n%s", namespace, err, string(out))
 	}
 	return nil
 }
@@ -178,6 +222,30 @@ func (d *Deployer) InstallModelDeployment(ctx context.Context, values deploy.Mod
 
 	if out, err := d.run(ctx, args...); err != nil {
 		return fmt.Errorf("helm upgrade --install %s failed: %w\n%s", values.Name, err, string(out))
+	}
+	return nil
+}
+
+// UpgradeModelDeployment runs `helm upgrade` (without --install) so a release
+// that does not exist yet is a loud failure rather than a silent create. Every
+// value is re-sent, so the release converges on values rather than merging
+// onto whatever it previously held.
+func (d *Deployer) UpgradeModelDeployment(ctx context.Context, values deploy.ModelDeploymentValues) error {
+	if err := values.Validate(); err != nil {
+		return err
+	}
+	chart, err := resolveChart(d.modelDeploymentChart, EnvModelDeploymentChart, "modeldeployment")
+	if err != nil {
+		return err
+	}
+
+	args := []string{"upgrade", values.Name, chart, "--namespace", values.Namespace}
+	args = append(args, setArgs(values)...)
+	args = append(args, gatewaySetArgs(values.Gateway)...)
+
+	if out, err := d.run(ctx, args...); err != nil {
+		return fmt.Errorf("helm upgrade %s in %s failed: %w\n%s",
+			values.Name, values.Namespace, err, string(out))
 	}
 	return nil
 }
@@ -213,9 +281,9 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 		"--set", "name=" + v.Name,
 		"--set", "namespace=" + v.Namespace,
 		"--set", "model=" + v.Model,
-	}
-	if v.Replicas > 0 {
-		args = append(args, "--set", "replicas="+strconv.FormatInt(v.Replicas, 10))
+		// Always rendered: 0 means scale-to-zero, which UpgradeModelDeployment
+		// uses to empty an inference pool, so it cannot be treated as "unset".
+		"--set", "replicas=" + strconv.FormatInt(v.Replicas, 10),
 	}
 	if v.InstanceType != "" {
 		args = append(args, "--set", "instanceType="+v.InstanceType)
@@ -281,8 +349,10 @@ func resolveChart(chart, envVar, name string) (string, error) {
 	return "", fmt.Errorf("%s chart not found at %q (set %s): %w", name, chart, envVar, err)
 }
 
-func execRunner(ctx context.Context, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, "helm", args...).CombinedOutput()
+func execRunner(bin string) Runner {
+	return func(ctx context.Context, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, bin, args...).CombinedOutput()
+	}
 }
 
 func firstNonEmpty(values ...string) string {

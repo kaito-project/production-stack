@@ -35,7 +35,7 @@ import (
 // The perturbation is namespace-scoped to one EPP Deployment, so this suite
 // does not need to be Serial.
 var _ = Describe("Control-plane Error Reporter",
-	Ordered, utils.GinkgoLabelStatusReporter, func() {
+	Ordered, utils.GinkgoLabelStatusReporter, utils.GinkgoLabelStandardK8sOnly, func() {
 
 		const (
 			emitTimeout  = 3 * time.Minute
