@@ -117,10 +117,14 @@ var (
 	// GinkgoLabelStandardK8sOnly marks tests that require a standard Kubernetes
 	// cluster and cannot run on an opinionated managed one such as AKS Automatic.
 	//
-	// What they need is the ability to reshape running workloads directly,
-	// bypassing the deploy.Deployer: ScaleDeployment on a Deployment's scale
-	// subresource (utils/cluster.go) or SetInferenceSetReplicas patching an
-	// InferenceSet (utils/scaling.go).
+	// Two things put a spec here:
+	//
+	//   - It reshapes running workloads directly, bypassing the deploy.Deployer:
+	//     ScaleDeployment on a Deployment's scale subresource (utils/cluster.go)
+	//     or SetInferenceSetReplicas patching an InferenceSet (utils/scaling.go).
+	//   - Its assertion only holds under a ModelDeploymentValues field a managed
+	//     backend cannot express, such as the EPPScorerWeights override the
+	//     load-distribution spec needs to disable prefix-cache scoring.
 	//
 	// It cuts ACROSS the feature-area labels — a spec keeps its own (Outage,
 	// StatusReporter, Scaling, ...) and carries this one in addition, so a run
@@ -131,5 +135,8 @@ var (
 	// Note this is about the MECHANISM, not the blast radius. A spec that empties
 	// an inference pool through the Deployer (model_unavailable_spec.go) is just
 	// as disruptive but stays unlabelled, because any backend can honour it.
+	// Keep the label as tight as the container that actually needs it: the rest
+	// of model_routing_spec.go stays runnable because only its "Load
+	// distribution" Context carries this.
 	GinkgoLabelStandardK8sOnly = g.Label("StandardK8sOnly")
 )

@@ -31,6 +31,30 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
+// BBRPodSelector matches the cluster-wide body-based-router pods.
+const BBRPodSelector = "app.kubernetes.io/name=body-based-routing"
+
+// BBRNamespace discovers the namespace the cluster-wide body-based-router runs
+// in, rather than assuming the umbrella chart's release namespace: a managed
+// control plane installs the same workload into its own add-on namespace
+// (kube-system on AI Manager) instead of kaito-system.
+func BBRNamespace(ctx context.Context) (string, error) {
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return "", err
+	}
+	pods, err := clientset.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		LabelSelector: BBRPodSelector,
+	})
+	if err != nil {
+		return "", fmt.Errorf("list pods matching %q: %w", BBRPodSelector, err)
+	}
+	if len(pods.Items) == 0 {
+		return "", fmt.Errorf("no pods match %q in any namespace", BBRPodSelector)
+	}
+	return pods.Items[0].Namespace, nil
+}
+
 var (
 	scheme         = runtime.NewScheme()
 	TestingCluster = NewCluster(scheme)

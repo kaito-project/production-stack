@@ -18,6 +18,7 @@ package helm
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -492,5 +493,49 @@ func TestRegisteredAsDefaultBackend(t *testing.T) {
 	}
 	if deploy.DefaultBackend != BackendName {
 		t.Fatalf("DefaultBackend = %q, want %q so local runs stay on Helm", deploy.DefaultBackend, BackendName)
+	}
+}
+
+func TestNamespaceAPIKeyDecodesSecret(t *testing.T) {
+	var calls [][]string
+	d, err := New(Options{
+		KubectlRunner: func(_ context.Context, args ...string) ([]byte, error) {
+			calls = append(calls, args)
+			return []byte(base64.StdEncoding.EncodeToString([]byte("s3cret"))), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	key, err := d.NamespaceAPIKey(context.Background(), "e2e-ns")
+	if err != nil {
+		t.Fatalf("NamespaceAPIKey: %v", err)
+	}
+	if key != "s3cret" {
+		t.Fatalf("NamespaceAPIKey = %q, want %q", key, "s3cret")
+	}
+
+	got := strings.Join(calls[0], " ")
+	for _, want := range []string{
+		"get secret " + apiKeySecretName,
+		"--namespace e2e-ns",
+		"jsonpath={.data." + apiKeySecretDataKey + "}",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("kubectl args %q missing %q", got, want)
+		}
+	}
+}
+
+func TestNamespaceAPIKeyRejectsMissingKey(t *testing.T) {
+	d, err := New(Options{
+		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := d.NamespaceAPIKey(context.Background(), "e2e-ns"); err == nil {
+		t.Fatal("expected an error when the Secret has no API key")
 	}
 }

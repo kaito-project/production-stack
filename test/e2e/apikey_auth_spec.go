@@ -49,7 +49,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		caseAuthURL = InstallCase(CaseAuth)
 
 		Eventually(func() (string, error) {
-			return utils.GetAPIKeyFromSecret(ctx, caseNamespace)
+			return utils.NamespaceAPIKey(ctx, caseNamespace)
 		}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
 			"API key Secret should be created in %s", caseNamespace)
 		// NOTE: assign to the outer apiKey, do NOT use `:=` here.
@@ -58,7 +58,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		// "valid API key (200)" spec to send `Authorization: Bearer `
 		// (no token) and fail with 401.
 		var err error
-		apiKey, err = utils.GetAPIKeyFromSecret(ctx, caseNamespace)
+		apiKey, err = utils.NamespaceAPIKey(ctx, caseNamespace)
 		Expect(err).NotTo(HaveOccurred())
 	})
 

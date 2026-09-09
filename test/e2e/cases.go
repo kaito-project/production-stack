@@ -240,17 +240,13 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 			Model:        presetPhi,
 			Replicas:     2,
 			InstanceType: "Standard_NV36ads_A10_v5",
-			// Disable prefix-cache scoring so identical prompts spread
-			// across replicas instead of sticking to one pod.
-			EPPScorerWeights: &deploy.EPPScorerWeights{PrefixCache: intPtr(0)},
 		},
 		{
-			Name:             "routing-ministral",
-			Namespace:        "e2e-model-routing",
-			Model:            presetMinistral,
-			Replicas:         2,
-			InstanceType:     "Standard_NV36ads_A10_v5",
-			EPPScorerWeights: &deploy.EPPScorerWeights{PrefixCache: intPtr(0)},
+			Name:         "routing-ministral",
+			Namespace:    "e2e-model-routing",
+			Model:        presetMinistral,
+			Replicas:     2,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CasePrefixCache: {

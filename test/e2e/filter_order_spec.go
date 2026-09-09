@@ -87,10 +87,10 @@ var _ = Describe("Filter execution order",
 			// by the apikey-operator from the APIKey CR rendered by the
 			// modelharness chart (see charts/modelharness/templates/apikey.yaml).
 			Eventually(func() (string, error) {
-				return utils.GetAPIKeyFromSecret(ctx, caseNS)
+				return utils.NamespaceAPIKey(ctx, caseNS)
 			}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
 				"API key Secret should be created in %s", caseNS)
-			apiKey, err = utils.GetAPIKeyFromSecret(ctx, caseNS)
+			apiKey, err = utils.NamespaceAPIKey(ctx, caseNS)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -160,8 +160,9 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				bbrNS := "kaito-system"
-				bbrSelector := "app.kubernetes.io/name=body-based-routing"
+				bbrNS, err := utils.BBRNamespace(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				bbrSelector := utils.BBRPodSelector
 				_, err = runningPodLogs(ctx, clientset, bbrNS, bbrSelector, "bbr")
 				Expect(err).NotTo(HaveOccurred())
 
@@ -188,8 +189,9 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				bbrNS := "kaito-system"
-				bbrSelector := "app.kubernetes.io/name=body-based-routing"
+				bbrNS, err := utils.BBRNamespace(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				bbrSelector := utils.BBRPodSelector
 				needle := fmt.Sprintf("a2-bbr-sanity-%d", time.Now().UnixNano())
 
 				// A valid key allows this request to reach BBR. The deliberately
@@ -301,59 +303,65 @@ var _ = Describe("Filter execution order",
 			// of the four filters we care about. This is the strongest
 			// possible assertion because it does not depend on any business
 			// request behaviour: it checks the rendered xDS config itself.
-			It("F1: HCM filter order is ext_authz → bbr → ext_proc → router", func() {
-				gwPod, err := firstRunningPod(ctx, caseNS, gatewayLabel)
-				Expect(err).NotTo(HaveOccurred(),
-					"per-namespace Gateway pod should be Running")
+			//
+			// Reaching the admin port means `kubectl exec` into the gateway
+			// pod, which a managed control plane does not allow — hence
+			// StandardK8sOnly. Every other spec here asserts the same
+			// ordering through request behaviour and stays runnable.
+			It("F1: HCM filter order is ext_authz → bbr → ext_proc → router",
+				utils.GinkgoLabelStandardK8sOnly, func() {
+					gwPod, err := firstRunningPod(ctx, caseNS, gatewayLabel)
+					Expect(err).NotTo(HaveOccurred(),
+						"per-namespace Gateway pod should be Running")
 
-				dump, err := kubectlExec(caseNS, gwPod,
-					"pilot-agent", "request", "GET", "/config_dump")
-				Expect(err).NotTo(HaveOccurred(),
-					"failed to read Envoy admin /config_dump from %s/%s", caseNS, gwPod)
+					dump, err := kubectlExec(caseNS, gwPod,
+						"pilot-agent", "request", "GET", "/config_dump")
+					Expect(err).NotTo(HaveOccurred(),
+						"failed to read Envoy admin /config_dump from %s/%s", caseNS, gwPod)
 
-				filters := extractGatewayHTTPFilterNames(dump)
-				Expect(filters).NotTo(BeEmpty(),
-					"could not parse any HCM http_filters out of /config_dump (first 2k bytes: %s)",
-					truncate(dump, 2000))
+					filters := extractGatewayHTTPFilterNames(dump)
+					Expect(filters).NotTo(BeEmpty(),
+						"could not parse any HCM http_filters out of /config_dump (first 2k bytes: %s)",
+						truncate(dump, 2000))
 
-				idx := func(prefix string) int {
+					idx := func(prefix string) int {
+						for i, f := range filters {
+							if strings.HasPrefix(f, prefix) {
+								return i
+							}
+						}
+						return -1
+					}
+					authIdx := idx("envoy.filters.http.ext_authz")
+					bbrIdx := idx("envoy.filters.http.ext_proc.bbr")
+					eppIdx := -1
+					// EPP ext_proc is named generically; pick the first
+					// `envoy.filters.http.ext_proc*` that is NOT the BBR one.
 					for i, f := range filters {
-						if strings.HasPrefix(f, prefix) {
-							return i
+						if strings.HasPrefix(f, "envoy.filters.http.ext_proc") &&
+							!strings.HasPrefix(f, "envoy.filters.http.ext_proc.bbr") {
+							eppIdx = i
+							break
 						}
 					}
-					return -1
-				}
-				authIdx := idx("envoy.filters.http.ext_authz")
-				bbrIdx := idx("envoy.filters.http.ext_proc.bbr")
-				eppIdx := -1
-				// EPP ext_proc is named generically; pick the first
-				// `envoy.filters.http.ext_proc*` that is NOT the BBR one.
-				for i, f := range filters {
-					if strings.HasPrefix(f, "envoy.filters.http.ext_proc") &&
-						!strings.HasPrefix(f, "envoy.filters.http.ext_proc.bbr") {
-						eppIdx = i
-						break
-					}
-				}
-				routerIdx := idx("envoy.filters.http.router")
+					routerIdx := idx("envoy.filters.http.router")
 
-				Expect(authIdx).To(BeNumerically(">=", 0),
-					"ext_authz must be present on the auth-enabled Gateway; got filters=%v", filters)
-				Expect(bbrIdx).To(BeNumerically(">=", 0),
-					"bbr ext_proc must be present; got filters=%v", filters)
-				Expect(eppIdx).To(BeNumerically(">=", 0),
-					"InferencePool ext_proc must be present; got filters=%v", filters)
-				Expect(routerIdx).To(BeNumerically(">=", 0),
-					"router must be present; got filters=%v", filters)
+					Expect(authIdx).To(BeNumerically(">=", 0),
+						"ext_authz must be present on the auth-enabled Gateway; got filters=%v", filters)
+					Expect(bbrIdx).To(BeNumerically(">=", 0),
+						"bbr ext_proc must be present; got filters=%v", filters)
+					Expect(eppIdx).To(BeNumerically(">=", 0),
+						"InferencePool ext_proc must be present; got filters=%v", filters)
+					Expect(routerIdx).To(BeNumerically(">=", 0),
+						"router must be present; got filters=%v", filters)
 
-				Expect(authIdx).To(BeNumerically("<", bbrIdx),
-					"ext_authz must precede BBR (got %v)", filters)
-				Expect(bbrIdx).To(BeNumerically("<", eppIdx),
-					"BBR must precede InferencePool ext_proc (got %v)", filters)
-				Expect(eppIdx).To(BeNumerically("<", routerIdx),
-					"InferencePool ext_proc must precede router (got %v)", filters)
-			})
+					Expect(authIdx).To(BeNumerically("<", bbrIdx),
+						"ext_authz must precede BBR (got %v)", filters)
+					Expect(bbrIdx).To(BeNumerically("<", eppIdx),
+						"BBR must precede InferencePool ext_proc (got %v)", filters)
+					Expect(eppIdx).To(BeNumerically("<", routerIdx),
+						"InferencePool ext_proc must precede router (got %v)", filters)
+				})
 		})
 
 		// ─────────────────────────────────────────────────────────────────
@@ -454,8 +462,9 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				const bbrNS = "kaito-system"
-				const bbrSelector = "app.kubernetes.io/name=body-based-routing"
+				bbrNS, err := utils.BBRNamespace(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				const bbrSelector = utils.BBRPodSelector
 
 				// BBR runs as an HA Deployment (>= 2 replicas) and the gateway
 				// load-balances the ext_proc call across every replica, so a

@@ -63,7 +63,7 @@ const (
 	probeConnectTimeout = "5s"
 )
 
-var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, Ordered, func() {
+var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, utils.GinkgoLabelStandardK8sOnly, Ordered, func() {
 	var (
 		ctx          context.Context
 		clientset    *kubernetes.Clientset

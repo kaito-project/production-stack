@@ -40,42 +40,51 @@ func TestIsAzureProvider(t *testing.T) {
 	}
 }
 
-func TestDomainFromDNSZoneResourceID(t *testing.T) {
+func TestDomainFromFilterArg(t *testing.T) {
 	tests := []struct {
-		name       string
-		resourceID string
-		want       string
-		wantErr    bool
+		name    string
+		filter  string
+		want    string
+		wantErr bool
 	}{
 		{
-			name:       "Azure DNS zone resource ID",
-			resourceID: "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/dnsZones/6a94eb7ca0631900014b8ab3.australiaeast.aksapp.io",
-			want:       "6a94eb7ca0631900014b8ab3.australiaeast.aksapp.io",
+			name:   "single zone",
+			filter: "6a94eb7ca0631900014b8ab3.australiaeast.aksapp.io",
+			want:   "6a94eb7ca0631900014b8ab3.australiaeast.aksapp.io",
 		},
 		{
-			name:       "case insensitive DNS name",
-			resourceID: "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/dnsZones/Example.AKSApp.io",
-			want:       "Example.AKSApp.io",
+			name:   "comma separated takes the first zone",
+			filter: "first.aksapp.io,second.aksapp.io",
+			want:   "first.aksapp.io",
+		},
+		{
+			name:   "case insensitive DNS name",
+			filter: "Example.AKSApp.io",
+			want:   "Example.AKSApp.io",
+		},
+		{
+			name:   "trailing dot is trimmed",
+			filter: "zone.aksapp.io.",
+			want:   "zone.aksapp.io",
 		},
 		{name: "empty", wantErr: true},
-		{name: "trailing slash", resourceID: "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/dnsZones/", wantErr: true},
-		{name: "invalid zone", resourceID: "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/dnsZones/not_a_domain", wantErr: true},
+		{name: "invalid zone", filter: "not_a_domain", wantErr: true},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := domainFromDNSZoneResourceID(test.resourceID)
+			got, err := domainFromFilterArg(test.filter)
 			if test.wantErr {
 				if err == nil {
-					t.Fatalf("domainFromDNSZoneResourceID(%q) expected an error", test.resourceID)
+					t.Fatalf("domainFromFilterArg(%q) expected an error", test.filter)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("domainFromDNSZoneResourceID(%q): %v", test.resourceID, err)
+				t.Fatalf("domainFromFilterArg(%q): %v", test.filter, err)
 			}
 			if got != test.want {
-				t.Fatalf("domainFromDNSZoneResourceID(%q) = %q, want %q", test.resourceID, got, test.want)
+				t.Fatalf("domainFromFilterArg(%q) = %q, want %q", test.filter, got, test.want)
 			}
 		})
 	}
