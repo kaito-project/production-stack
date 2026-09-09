@@ -24,9 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -47,27 +45,18 @@ func generateNamespace(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, rand.Intn(900000)+100000)
 }
 
-// createNamespace creates a Kubernetes namespace.
-func createNamespace(ctx context.Context, name string) {
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
+// recycleNamespace uninstalls the modeldeployment and then hands the namespace
+// back to the Deployer, which owns it.
+func recycleNamespace(ctx context.Context, deploymentName, namespace string) {
+	if err := utils.CleanupInferenceSetWithRouting(ctx, deploymentName, namespace); err != nil {
+		GinkgoWriter.Printf("Cleanup warning: %v\n", err)
 	}
-	err := utils.TestingCluster.KubeClient.Create(ctx, ns)
-	Expect(err).NotTo(HaveOccurred(), "failed to create namespace %s", name)
-}
-
-// deleteNamespace deletes a Kubernetes namespace.
-func deleteNamespace(ctx context.Context, name string) {
-	ns := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-	}
-	err := utils.TestingCluster.KubeClient.Delete(ctx, ns)
-	if err != nil {
-		GinkgoWriter.Printf("Cleanup warning: failed to delete namespace %s: %v\n", name, err)
+	if err := utils.DeleteNamespace(ctx, namespace); err != nil {
+		GinkgoWriter.Printf("Cleanup warning: failed to delete namespace %s: %v\n", namespace, err)
 	}
 }
 
-var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() {
+var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.GinkgoLabelStandardK8sOnly, func() {
 	var ctx context.Context
 
 	BeforeEach(func() {
@@ -94,21 +83,18 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 			// (and charts/modelharness): when gatewayName is empty,
 			// the chart derives it as "<namespace>-gw".
 			gatewayName = namespace + "-gw"
-			createNamespace(ctx, namespace)
+			Expect(utils.EnsureNamespace(ctx, namespace, caseValues.AuthAPIKeyEnabled)).To(Succeed())
 
 			values := caseValues
 			values.Namespace = namespace
 			By("Installing modeldeployment chart")
-			err := utils.CreateInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, values)
+			err := utils.CreateInferenceSetWithRouting(ctx, values)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
 			By("Uninstalling modeldeployment chart")
-			if err := utils.CleanupInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, deploymentName, namespace); err != nil {
-				GinkgoWriter.Printf("Cleanup warning: %v\n", err)
-			}
-			deleteNamespace(ctx, namespace)
+			recycleNamespace(ctx, deploymentName, namespace)
 		})
 
 		It("should render InferenceSet + HTTPRoute with the expected spec", func() {
@@ -196,7 +182,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 			cl := utils.TestingCluster.KubeClient
 
 			By("Uninstalling modeldeployment chart up-front (AfterEach will be a no-op)")
-			Expect(utils.CleanupInferenceSetWithRouting(ctx, cl, deploymentName, namespace)).To(Succeed())
+			Expect(utils.CleanupInferenceSetWithRouting(ctx, deploymentName, namespace)).To(Succeed())
 
 			By("Verifying InferenceSet is deleted")
 			Eventually(func() bool {
@@ -236,7 +222,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 
 		BeforeEach(func() {
 			namespace = generateNamespace("e2e-autoupgrade")
-			createNamespace(ctx, namespace)
+			Expect(utils.EnsureNamespace(ctx, namespace, baseValues.AuthAPIKeyEnabled)).To(Succeed())
 
 			values := baseValues
 			values.Namespace = namespace
@@ -246,16 +232,13 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 				MaintenanceWindowDuration: "4h",
 			}
 			By("Installing modeldeployment chart with autoUpgrade enabled")
-			err := utils.CreateInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, values)
+			err := utils.CreateInferenceSetWithRouting(ctx, values)
 			Expect(err).NotTo(HaveOccurred())
 		})
 
 		AfterEach(func() {
 			By("Uninstalling modeldeployment chart")
-			if err := utils.CleanupInferenceSetWithRouting(ctx, utils.TestingCluster.KubeClient, deploymentName, namespace); err != nil {
-				GinkgoWriter.Printf("Cleanup warning: %v\n", err)
-			}
-			deleteNamespace(ctx, namespace)
+			recycleNamespace(ctx, deploymentName, namespace)
 		})
 
 		It("should render InferenceSet with spec.autoUpgrade and a maintenance window", func() {

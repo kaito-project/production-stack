@@ -20,11 +20,13 @@ package helm
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
@@ -61,6 +63,11 @@ const (
 	// ownership metadata (see charts/modelharness/templates/namespace.yaml).
 	namespaceDiscoveryLabel = "productionstack.kaito.sh/managed-by"
 	namespaceDiscoveryValue = "modelharness"
+
+	// apiKeySecretName is the Secret the apikey-operator reconciles out of the
+	// APIKey CR the modelharness chart renders when auth is enabled.
+	apiKeySecretName    = "llm-api-key"
+	apiKeySecretDataKey = "apiKey"
 )
 
 func init() {
@@ -197,6 +204,32 @@ func (d *Deployer) UninstallModelHarness(ctx context.Context, namespace string) 
 		return fmt.Errorf("delete namespace %s: %w\n%s", namespace, err, string(out))
 	}
 	return nil
+}
+
+// NamespaceAPIKey reads the plaintext API key from the Secret the
+// apikey-operator reconciles out of the harness's APIKey CR.
+func (d *Deployer) NamespaceAPIKey(ctx context.Context, namespace string) (string, error) {
+	if namespace == "" {
+		return "", fmt.Errorf("modelharness: namespace is required")
+	}
+
+	out, err := d.kubectl(ctx, "get", "secret", apiKeySecretName,
+		"--namespace", namespace, "-o", "jsonpath={.data."+apiKeySecretDataKey+"}")
+	if err != nil {
+		return "", fmt.Errorf("get secret %s/%s: %w\n%s", namespace, apiKeySecretName, err, string(out))
+	}
+
+	encoded := strings.TrimSpace(string(out))
+	if encoded == "" {
+		return "", fmt.Errorf("secret %s/%s does not contain key %q",
+			namespace, apiKeySecretName, apiKeySecretDataKey)
+	}
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("decode secret %s/%s key %q: %w",
+			namespace, apiKeySecretName, apiKeySecretDataKey, err)
+	}
+	return string(key), nil
 }
 
 // InstallModelDeployment runs `helm upgrade --install` for the modeldeployment

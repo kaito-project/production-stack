@@ -20,14 +20,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
@@ -82,39 +80,36 @@ func DeleteNamespace(ctx context.Context, name string) error {
 // longer to schedule + become Ready; `kubectl port-forward` to a Service
 // with no Ready endpoints hangs until those endpoints appear, which
 // causes the 30s port-forward readiness probe to time out.
+//
+// Readiness is read off the Service and its Pods rather than the Gateway's
+// Programmed condition: a managed control plane such as AI Manager grants the
+// caller read access to built-in kinds only, so touching the Gateway CRD would
+// fail with 403. The Service and Pod are what actually have to be up anyway —
+// Programmed only says the controller accepted the Gateway.
+//
+// The Service is found by the gateway-name label rather than by name. Istio
+// names it "<gateway>-<gatewayClassName>", so guessing the name breaks the
+// moment the class is not plain "istio" — on AKS App Routing it is
+// "<gateway>-approuting-istio".
 func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, timeout time.Duration) error {
-	if IsAzureProvider() {
-		cmd := exec.CommandContext(ctx, "kubectl", "wait",
-			"--for=condition=Programmed",
-			"gateway/"+gatewayName,
-			"--namespace", namespace,
-			"--timeout", timeout.String())
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("App Routing Gateway %s/%s was not programmed: %w\n%s",
-				namespace, gatewayName, err, string(out))
-		}
-		return nil
-	}
-
-	GetClusterClient(TestingCluster)
-	cl := TestingCluster.KubeClient
 	clientset, err := GetK8sClientset()
 	if err != nil {
 		return fmt.Errorf("init clientset: %w", err)
 	}
 
 	deadline := time.Now().Add(timeout)
-	svc := &corev1.Service{}
-	svcKey := types.NamespacedName{Namespace: namespace, Name: IstioGatewayServiceName(gatewayName)}
-	podSelector := fmt.Sprintf("gateway.networking.k8s.io/gateway-name=%s", gatewayName)
+	selector := fmt.Sprintf("gateway.networking.k8s.io/gateway-name=%s", gatewayName)
 
 	for time.Now().Before(deadline) {
-		if err := cl.Get(ctx, svcKey, svc); err != nil {
+		svcs, err := clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: selector,
+		})
+		if err != nil || len(svcs.Items) == 0 {
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: podSelector,
+			LabelSelector: selector,
 		})
 		if err == nil {
 			for _, pod := range pods.Items {
@@ -130,14 +125,14 @@ func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, t
 		}
 		time.Sleep(2 * time.Second)
 	}
-	return fmt.Errorf("gateway %s/%s did not become ready within %s (service=%s, pod selector=%q)",
-		namespace, gatewayName, timeout, svcKey.Name, podSelector)
+	return fmt.Errorf("gateway %s/%s did not become ready within %s (selector=%q)",
+		namespace, gatewayName, timeout, selector)
 }
 
 // SetupInferenceSetsWithRouting idempotently installs the modeldeployment
-// Helm chart for each entry in deployments, waits for the InferencePool, EPP,
-// and inference (shadow) pods to be Running, and optionally verifies that
-// the Gateway routing pipeline is returning HTTP 200 for each deployment.
+// Helm chart for each entry in deployments, waits for the EPP and inference
+// (shadow) pods to be Ready, and optionally verifies that the Gateway routing
+// pipeline is returning HTTP 200 for each deployment.
 //
 // The modeldeployment chart inlines all of the per-deployment GAIE artifacts
 // (InferenceSet, InferencePool, EPP Deployment/Service/ConfigMap/RBAC, and
@@ -155,8 +150,6 @@ func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, n
 	ctx := context.Background()
 	GetClusterClient(TestingCluster)
 
-	cl := TestingCluster.KubeClient
-
 	// Apply namespace default eagerly so subsequent waits use the correct ns.
 	resolved := make([]deploy.ModelDeploymentValues, len(deployments))
 	for i, d := range deployments {
@@ -170,71 +163,12 @@ func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, n
 		By(fmt.Sprintf("Installing modeldeployment %s (model=%s) in %s", d.Name, d.Model, d.Namespace))
 		Expect(InstallModelDeployment(ctx, d)).To(Succeed(),
 			"failed to install modeldeployment for %s", d.Name)
-
-		By(fmt.Sprintf("Waiting for InferencePool for %s", d.Name))
-		Expect(WaitForInferenceSetReady(ctx, cl, d.Name, d.Namespace, InferenceSetReadyTimeout)).
-			To(Succeed(), "InferenceSet %s not ready", d.Name)
-	}
-
-	// Wait for KAITO + the chart-rendered EPP Deployment to fully reconcile:
-	// EPP pods, fake nodes, shadow pods, and original pod status patching
-	// must all complete before the gateway can route traffic.
-	clientset, err := GetK8sClientset()
-	Expect(err).NotTo(HaveOccurred())
-
-	for _, d := range resolved {
-		eppName := EPPServiceName(d.Name)
-		By(fmt.Sprintf("Waiting for EPP pods for %s to be Running", d.Name))
-		Eventually(func() error {
-			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
-			})
-			if err != nil {
-				return fmt.Errorf("failed to list EPP pods: %w", err)
-			}
-			var running int
-			for _, pod := range pods.Items {
-				if pod.Status.Phase == "Running" {
-					running++
-				}
-			}
-			if running < 1 {
-				return fmt.Errorf("no running EPP pods for %q (total: %d)", eppName, len(pods.Items))
-			}
-			return nil
-		}, 5*time.Minute, 10*time.Second).Should(Succeed(),
-			"EPP pods for %s should be Running", d.Name)
 	}
 
 	for _, d := range resolved {
-		By(fmt.Sprintf("Waiting for inference pods for %s to be Running", d.Name))
-		Eventually(func() error {
-			pods, err := clientset.CoreV1().Pods(d.Namespace).List(ctx, metav1.ListOptions{
-				LabelSelector: d.InferencePodSelector(),
-			})
-			if err != nil {
-				return fmt.Errorf("failed to list pods: %w", err)
-			}
-
-			items := pods.Items
-
-			if len(items) == 0 {
-				return fmt.Errorf("no inference pods found for %s", d.Name)
-			}
-			for _, pod := range items {
-				if pod.Status.Phase != "Running" {
-					return fmt.Errorf("pod %s is %s, not Running", pod.Name, pod.Status.Phase)
-				}
-				if len(pod.Status.ContainerStatuses) == 0 || !pod.Status.ContainerStatuses[0].Ready {
-					return fmt.Errorf("pod %s container is not Ready yet", pod.Name)
-				}
-				if pod.Status.PodIP == "" {
-					return fmt.Errorf("pod %s has no PodIP yet", pod.Name)
-				}
-			}
-			return nil
-		}, InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),
-			"inference pods for %s should be Running with PodIPs", d.Name)
+		By(fmt.Sprintf("Waiting for modeldeployment %s to become ready", d.Name))
+		Expect(WaitForInferenceSetReady(ctx, d, InferenceSetReadyTimeout)).
+			To(Succeed(), "modeldeployment %s not ready", d.Name)
 	}
 
 	// Wait for the full BBR → EPP ext_proc pipeline to be ready.
@@ -247,9 +181,8 @@ func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, n
 	if gatewayURL != "" {
 		for _, d := range resolved {
 			d := d
-			// When the deployment opts in to API key auth, the chart
-			// renders an APIKey CR; the apikey-operator generates a
-			// Secret named APIKeySecretName in the same namespace. The
+			// When the deployment opts in to API key auth, the backend that
+			// installed the harness is asked for the namespace's key. The
 			// authz service resolves the namespace from the Host header subdomain.
 			var (
 				bearerToken string
@@ -258,10 +191,10 @@ func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, n
 			if d.AuthAPIKeyEnabled {
 				By(fmt.Sprintf("Waiting for API key Secret in %s for deployment %s", d.Namespace, d.Name))
 				Eventually(func() (string, error) {
-					return GetAPIKeyFromSecret(ctx, d.Namespace)
+					return NamespaceAPIKey(ctx, d.Namespace)
 				}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
 					"API key Secret should be created in %s", d.Namespace)
-				key, err := GetAPIKeyFromSecret(ctx, d.Namespace)
+				key, err := NamespaceAPIKey(ctx, d.Namespace)
 				Expect(err).NotTo(HaveOccurred())
 				bearerToken = key
 				hostHeader, err = GatewayHostFor(d.Namespace)
@@ -281,7 +214,7 @@ func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, n
 					// rotated (the operator regenerates the Secret if its
 					// KEYID drifts from the APIKey CR — see operator
 					// "Secret not found, will regenerate" reconciles).
-					freshKey, kerr := GetAPIKeyFromSecret(ctx, d.Namespace)
+					freshKey, kerr := NamespaceAPIKey(ctx, d.Namespace)
 					if kerr != nil {
 						return fmt.Errorf("re-read API key for %s: %w", d.Namespace, kerr)
 					}

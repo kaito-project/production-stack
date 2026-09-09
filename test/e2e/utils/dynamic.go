@@ -69,7 +69,7 @@ var (
 	}
 
 	// APIKeyGVK identifies the KAITO APIKey CR that the apikey-operator
-	// reconciles into a Secret named APIKeySecretName.
+	// reconciles into the Secret the Helm backend serves NamespaceAPIKey from.
 	APIKeyGVK = schema.GroupVersionKind{
 		Group:   "kaito.sh",
 		Version: "v1alpha1",

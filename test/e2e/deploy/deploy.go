@@ -62,6 +62,16 @@ type Deployer interface {
 	// treated as success.
 	UninstallModelHarness(ctx context.Context, namespace string) error
 
+	// NamespaceAPIKey returns the API key that authenticates requests to the
+	// namespace's gateway, for the harnesses installed with AuthEnabled.
+	//
+	// It is part of the interface because where the key lives is a property of
+	// the backend, not of the cluster: the Helm backend reads the Secret the
+	// apikey-operator reconciles from the harness's APIKey CR, while a managed
+	// backend hands out a key its own API mints and never exposes a Secret the
+	// caller may read.
+	NamespaceAPIKey(ctx context.Context, namespace string) (string, error)
+
 	// InstallModelDeployment creates or reconciles a single model deployment
 	// (InferenceSet, InferencePool, EPP artifacts, and HTTPRoute).
 	InstallModelDeployment(ctx context.Context, values ModelDeploymentValues) error
