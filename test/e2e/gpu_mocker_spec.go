@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -43,18 +44,25 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 	suiteDeployments := caseDeployments
 	falconModel := caseDeployments[0].Name
 
-	// caseGatewayURL is the URL routing into this case's dedicated
+	// caseGateway is the URL routing into this case's dedicated
 	// Gateway. Resolved in BeforeAll.
-	var caseGatewayURL string
+	var caseGateway deploy.GatewayEndpoint
 
-	// sendChat forwards to the non-auth helper — the gpu-mocker case
-	// no longer enables the API-key AuthorizationPolicy (see cases.go).
-	sendChat := func(url, model string) (*http.Response, error) {
-		return utils.SendChatCompletion(url, model)
+	// caseAuth carries whatever credential the backend's gateway requires. This
+	// case does not enable the API-key AuthorizationPolicy (see cases.go), but a
+	// managed gateway authenticates every request regardless.
+	var caseAuth []utils.RequestOption
+
+	sendChat := func(url deploy.GatewayEndpoint, model string) (*http.Response, error) {
+		return utils.SendChat(url, model, caseAuth...)
 	}
 
 	BeforeAll(func() {
-		caseGatewayURL = InstallCase(CaseGPUMocker)
+		caseGateway = InstallCase(CaseGPUMocker)
+
+		var err error
+		caseAuth, err = utils.NamespaceRequestOptions(context.Background(), caseNamespace)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterAll(func() {
@@ -74,7 +82,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// Retry with backoff — BBR/EPP ext_proc filters may need time
 				// to establish gRPC connections after cluster setup.
 				Eventually(func() error {
-					resp, err := sendChat(caseGatewayURL, falconModel)
+					resp, err := sendChat(caseGateway, falconModel)
 					if err != nil {
 						return fmt.Errorf("request failed: %w", err)
 					}
@@ -849,7 +857,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// Pod / Service is involved. The gpu-mocker case has
 				// AuthAPIKeyEnabled=false, so no AuthorizationPolicy is
 				// rendered and the probe needs no bearer token.
-				resp, err := utils.SendChatCompletion(caseGatewayURL, "non-existent-model-xyz")
+				resp, err := utils.SendChat(caseGateway, "non-existent-model-xyz")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 

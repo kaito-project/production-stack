@@ -17,13 +17,31 @@ limitations under the License.
 package utils
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"syscall"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
+
+// fakeEndpoint records Reset calls and can hand out a different URL each time,
+// standing in for a tunnel that is rebuilt on a fresh local port.
+type fakeEndpoint struct {
+	urls   []string
+	host   string
+	resets int
+}
+
+func (e *fakeEndpoint) BaseURL() (string, error) {
+	url := e.urls[0]
+	if len(e.urls) > 1 {
+		e.urls = e.urls[1:]
+	}
+	return url, nil
+}
+func (e *fakeEndpoint) Host() string { return e.host }
+func (e *fakeEndpoint) Reset()       { e.resets++ }
 
 func TestChatCompletionRequestSerializesMaxTokens(t *testing.T) {
 	data, err := json.Marshal(ChatCompletionRequest{Model: "model", MaxTokens: 1})
@@ -35,22 +53,62 @@ func TestChatCompletionRequestSerializesMaxTokens(t *testing.T) {
 	}
 }
 
-func TestIsRecoverablePortForwardError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "wrapped EOF", err: fmt.Errorf("post request: %w", io.EOF), want: true},
-		{name: "connection reset", err: syscall.ECONNRESET, want: true},
-		{name: "request deadline", err: context.DeadlineExceeded, want: false},
-	}
+// The endpoint hands out the API root, so helpers must append the relative
+// path. Appending "/v1/..." to a base that already carries it was the failure
+// mode this guards against.
+func TestSendChatPostsToAPIRootWithHostAndAuth(t *testing.T) {
+	var gotPath, gotHost, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotHost, gotAuth = r.URL.Path, r.Host, r.Header.Get("Authorization")
+	}))
+	defer server.Close()
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := isRecoverablePortForwardError(test.err); got != test.want {
-				t.Fatalf("isRecoverablePortForwardError() = %v, want %v", got, test.want)
-			}
-		})
+	gateway := &fakeEndpoint{urls: []string{server.URL + "/v1"}, host: "ns.gw.example.com"}
+	resp, err := SendChat(gateway, "md1", WithAuth(deploy.AuthHeader{Name: "Authorization", Value: "Bearer k"}))
+	if err != nil {
+		t.Fatalf("SendChat: %v", err)
+	}
+	resp.Body.Close()
+
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gotHost != "ns.gw.example.com" {
+		t.Errorf("Host = %q, want ns.gw.example.com", gotHost)
+	}
+	if gotAuth != "Bearer k" {
+		t.Errorf("Authorization = %q, want Bearer k", gotAuth)
+	}
+}
+
+// A tunnel can only be repaired by rebuilding it, so retrying against the same
+// URL would fail identically however many attempts are allowed.
+func TestSendChatWithTransportRetryResetsTheEndpoint(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := dead.URL
+	dead.Close()
+
+	live := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer live.Close()
+
+	gateway := &fakeEndpoint{urls: []string{deadURL + "/v1", live.URL + "/v1"}}
+	resp, err := SendChat(gateway, "md1", WithTransportRetry())
+	if err != nil {
+		t.Fatalf("SendChat: %v", err)
+	}
+	resp.Body.Close()
+
+	if gateway.resets != 1 {
+		t.Fatalf("Reset called %d times, want 1", gateway.resets)
+	}
+}
+
+func TestGatewayOriginDropsTheAPIRoot(t *testing.T) {
+	got, err := GatewayOrigin(&fakeEndpoint{urls: []string{"https://ns.example.com/v1"}})
+	if err != nil {
+		t.Fatalf("GatewayOrigin: %v", err)
+	}
+	if want := "https://ns.example.com"; got != want {
+		t.Fatalf("GatewayOrigin() = %q, want %q", got, want)
 	}
 }

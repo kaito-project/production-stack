@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -69,35 +70,33 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 
 		var (
 			ctx          context.Context
-			caseURL      string
+			caseGateway  deploy.GatewayEndpoint
 			caseNS       string
 			modelName    string
-			hostHeader   string
-			apiKey       string
+			authHeader   deploy.AuthHeader
 			origReplicas int32
 		)
 
 		BeforeAll(func() {
 			ctx = context.Background()
 
-			caseURL = InstallCase(CaseExtAuthzOutage)
+			caseGateway = InstallCase(CaseExtAuthzOutage)
 			caseNS = CaseNamespace(CaseExtAuthzOutage)
 			modelName = CaseDeployments[CaseExtAuthzOutage][0].Name
-			var err error
-			hostHeader, err = utils.GatewayHostFor(caseNS)
-			Expect(err).NotTo(HaveOccurred())
 
-			Eventually(func() (string, error) {
-				return utils.NamespaceAPIKey(ctx, caseNS)
+			Eventually(func() ([]deploy.AuthHeader, error) {
+				utils.ForgetNamespaceAuthHeaders(caseNS)
+				return utils.NamespaceAuthHeaders(ctx, caseNS)
 			}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
-				"API key Secret should be created in %s", caseNS)
-			apiKey, err = utils.NamespaceAPIKey(ctx, caseNS)
-			Expect(err).NotTo(HaveOccurred())
+				"backend should publish an API key for %s", caseNS)
+			headers, herr := utils.NamespaceAuthHeaders(ctx, caseNS)
+			Expect(herr).NotTo(HaveOccurred())
+			authHeader = headers[0]
 
 			// Sanity: an authenticated request must succeed BEFORE we
 			// induce the outage.
 			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletionWithAuth(caseURL, modelName, "hello", apiKey, hostHeader)
+				resp, sErr := utils.SendChat(caseGateway, modelName, utils.WithAuth(authHeader))
 				if sErr != nil {
 					return 0
 				}
@@ -130,7 +129,7 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 
 			By("sending an authenticated request and asserting the outage envelope")
 			Eventually(func(g Gomega) {
-				resp, sErr := utils.SendChatCompletionWithAuth(caseURL, modelName, "hello", apiKey, hostHeader)
+				resp, sErr := utils.SendChat(caseGateway, modelName, utils.WithAuth(authHeader))
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
 				defer resp.Body.Close()
 
@@ -170,7 +169,7 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 
 			By("sending an authenticated request and asserting it succeeds again")
 			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletionWithAuth(caseURL, modelName, "hello", apiKey, hostHeader)
+				resp, sErr := utils.SendChat(caseGateway, modelName, utils.WithAuth(authHeader))
 				if sErr != nil {
 					return 0
 				}

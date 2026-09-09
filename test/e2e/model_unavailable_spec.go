@@ -59,7 +59,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 
 		var (
 			ctx          context.Context
-			caseURL      string
+			caseGateway  deploy.GatewayEndpoint
 			caseNS       string
 			modelName    string
 			caseValues   deploy.ModelDeploymentValues
@@ -78,7 +78,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 		BeforeAll(func() {
 			ctx = context.Background()
 
-			caseURL = InstallCase(CaseModelUnavailable)
+			caseGateway = InstallCase(CaseModelUnavailable)
 			caseNS = CaseNamespace(CaseModelUnavailable)
 			// The InferenceSet is named after the deployment Name (the chart
 			// `.Values.name`), matching the scaling helpers' convention.
@@ -89,7 +89,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 			// Sanity: a valid request must succeed BEFORE we induce the
 			// empty-pool state, otherwise a 503 below would be meaningless.
 			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
+				resp, sErr := utils.SendChat(caseGateway, modelName)
 				if sErr != nil {
 					return 0
 				}
@@ -120,7 +120,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 
 			By("sending a valid chat completion and asserting the model_unavailable envelope")
 			Eventually(func(g Gomega) {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
+				resp, sErr := utils.SendChat(caseGateway, modelName)
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
 				defer resp.Body.Close()
 
@@ -160,7 +160,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 
 			By("sending a valid chat completion and asserting it succeeds again")
 			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
+				resp, sErr := utils.SendChat(caseGateway, modelName)
 				if sErr != nil {
 					return 0
 				}

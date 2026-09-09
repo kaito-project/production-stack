@@ -28,6 +28,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -76,13 +77,13 @@ var _ = Describe("InferenceSet Scaling — Infra",
 		scalingModel := caseDeployments[0].Name
 		scalingNamespace := CaseNamespace(CaseScaling)
 
-		// gatewayURL routes into the CaseScaling deployment's Gateway.
+		// gateway routes into the CaseScaling deployment's Gateway.
 		// Resolved in the outer BeforeAll once per suite run so all nested
 		// Describes (Scale-Up → Scale-Down, Anti-Flapping) share it.
-		var gatewayURL string
+		var gateway deploy.GatewayEndpoint
 
 		BeforeAll(func() {
-			gatewayURL = InstallCase(CaseScaling)
+			gateway = InstallCase(CaseScaling)
 		})
 
 		AfterAll(func() {
@@ -158,10 +159,10 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 					By("Starting low-rate background stream for the scale-down transition window")
 					lowLoad = &utils.LoadGenerator{
-						GatewayURL: gatewayURL,
-						Model:      scalingModel,
-						Prompt:     "hi",
-						Rate:       scalingLowRate,
+						Gateway: gateway,
+						Model:   scalingModel,
+						Prompt:  "hi",
+						Rate:    scalingLowRate,
 					}
 					lowLoad.Start(ctx)
 				})
@@ -190,7 +191,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 				It("A1: queue pressure crosses the KEDA threshold", func() {
 					By(fmt.Sprintf("Starting bulk load at concurrency=%d", scalingPressureConcurrency))
 					bulkLoad = &utils.LoadGenerator{
-						GatewayURL:  gatewayURL,
+						Gateway:     gateway,
 						Model:       scalingModel,
 						Prompt:      "please explain the theory of relativity in as much detail as possible",
 						Concurrency: scalingPressureConcurrency,
@@ -530,7 +531,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 					By("Driving a short moderate-rate burst strictly below threshold")
 					burst := &utils.LoadGenerator{
-						GatewayURL:  gatewayURL,
+						Gateway:     gateway,
 						Model:       scalingModel,
 						Prompt:      "hello",
 						Concurrency: scalingSubThresholdConcurrency,
@@ -620,7 +621,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 				By("Running sub-threshold load")
 				load := &utils.LoadGenerator{
-					GatewayURL:  gatewayURL,
+					Gateway:     gateway,
 					Model:       scalingModel,
 					Prompt:      "hello",
 					Concurrency: scalingSubThresholdConcurrency,
@@ -683,7 +684,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 				By("Scale-Up: driving pressure")
 				bulk := &utils.LoadGenerator{
-					GatewayURL:  gatewayURL,
+					Gateway:     gateway,
 					Model:       scalingModel,
 					Prompt:      "please explain the theory of relativity in as much detail as possible",
 					Concurrency: scalingPressureConcurrency,
@@ -709,7 +710,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 				By("Immediately re-applying pressure and observing the anti-flapping window")
 				post := &utils.LoadGenerator{
-					GatewayURL:  gatewayURL,
+					Gateway:     gateway,
 					Model:       scalingModel,
 					Prompt:      "please explain the theory of relativity in as much detail as possible",
 					Concurrency: scalingPressureConcurrency,

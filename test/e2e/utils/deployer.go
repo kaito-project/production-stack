@@ -91,6 +91,25 @@ func UninstallModelHarness(ctx context.Context, namespace string) error {
 	return d.UninstallModelHarness(ctx, namespace)
 }
 
+// OpenGateway returns the endpoint inference requests for namespace are sent
+// to, allocating whatever transport the active backend needs to reach it.
+func OpenGateway(ctx context.Context, namespace, gatewayName string) (deploy.GatewayEndpoint, error) {
+	d, err := CurrentDeployer()
+	if err != nil {
+		return nil, err
+	}
+	return d.OpenGateway(ctx, namespace, gatewayName)
+}
+
+// CloseGateway releases what OpenGateway allocated for namespace.
+func CloseGateway(ctx context.Context, namespace string) error {
+	d, err := CurrentDeployer()
+	if err != nil {
+		return err
+	}
+	return d.CloseGateway(ctx, namespace)
+}
+
 // InstallModelDeployment creates or reconciles a model deployment
 // (InferenceSet, InferencePool, EPP artifacts, and HTTPRoute) from values.
 // Idempotent: re-running reconciles to the supplied values.
