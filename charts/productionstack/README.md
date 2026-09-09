@@ -80,7 +80,7 @@ actual `EnvoyFilter` that splices `envoy.filters.http.ext_authz` into
 a Gateway pod is rendered **per workload namespace** by
 [`charts/modelharness`](../modelharness/) under
 `templates/envoyfilter-ext-authz.yaml`, gated by `auth.enabled: true`.
-Each modelharness release attaches ext_authz to its own `<namespace>-gw`
+Each modelharness release attaches ext_authz to its namespace-named
 Gateway pod and points it at the cluster-wide `apikey-authz` Service
 installed by this umbrella. To enforce auth in a workload namespace:
 

@@ -15,7 +15,7 @@
     },
     "gatewayName": {
       "type": "string",
-      "description": "Per-namespace Istio Gateway resource name. Empty derives '<namespace>-gw'."
+      "description": "Per-namespace Istio Gateway resource name. Empty defaults to '<namespace>'."
     },
     "gatewayClassName": {
       "type": "string",

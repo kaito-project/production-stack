@@ -225,7 +225,7 @@ keda-kaito-scaler, and apikey-operator.
 Each workload namespace gets **one** `modelharness` release that provisions
 the shared resources every model in that namespace needs:
 
-- the per-namespace Istio `Gateway` `"<namespace>-gw"` that fronts the namespace,
+- the per-namespace Istio `Gateway` `"<namespace>"` that fronts the namespace,
 - the catch-all `EnvoyFilter` (`model-not-found-direct`) that returns an
   OpenAI-compatible `404 model_not_found` straight from Envoy for any
   unknown-model path,

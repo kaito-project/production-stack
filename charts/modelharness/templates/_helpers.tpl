@@ -6,14 +6,13 @@ Resolved namespace. Falls back to .Release.Namespace when .Values.namespace is e
 {{- end }}
 
 {{/*
-Resolved Gateway name. Falls back to "<namespace>-gw" when
-.Values.gatewayName is empty. Keying it off the workload namespace makes it
-self-evident which namespace owns the Gateway; the `-gw` suffix keeps the
-Gateway name distinct from the namespace name.
+Resolved Gateway name. Falls back to the workload namespace when
+.Values.gatewayName is empty. This keeps the derived name within the
+63-byte Kubernetes label-value limit even for 63-character namespaces.
 */}}
 {{- define "modelharness.gatewayName" -}}
 {{- $ns := include "modelharness.namespace" . -}}
-{{- default (printf "%s-gw" $ns) .Values.gatewayName -}}
+{{- default $ns .Values.gatewayName -}}
 {{- end }}
 
 {{/*

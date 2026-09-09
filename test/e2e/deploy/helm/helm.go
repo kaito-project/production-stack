@@ -126,7 +126,7 @@ func (d *Deployer) Name() string { return BackendName }
 
 // InstallModelHarness ensures the workload namespace exists and then runs
 // `helm upgrade --install` for the modelharness chart in it. It provisions the
-// per-namespace Gateway (named "<namespace>-gw" by chart default), the
+// per-namespace Gateway (named "<namespace>" by chart default), the
 // catch-all `model-not-found-direct` EnvoyFilter (Envoy `direct_response`
 // returning 404 + OpenAI-compatible JSON, plus the model-discovery routes),
 // and — when AuthEnabled is true — the per-namespace AuthorizationPolicy +
