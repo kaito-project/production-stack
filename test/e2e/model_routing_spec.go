@@ -452,16 +452,19 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 	// Spreading identical prompts across replicas requires turning prefix-cache
 	// scoring off, which only a backend that can express EPPScorerWeights can
-	// do — hence StandardK8sOnly. The rest of the case routes correctly whatever
-	// the scorer weights are, so it stays runnable everywhere.
+	// do, and then restarting the EPP by hand — hence StandardK8sOnly. The rest
+	// of the case routes correctly whatever the scorer weights are, so it stays
+	// runnable everywhere.
 	Context("Load distribution", utils.GinkgoLabelStandardK8sOnly, func() {
 		const numRequests = 25
 		const maxTrafficFraction = 0.80
 
-		BeforeAll(func() {
-			// The EPP rolls out a new EndpointPickerConfig on every weight change;
-			// wait until each pool serves again so what follows runs against the
-			// weights that were just applied.
+		// Scoped to a BeforeEach rather than a BeforeAll: DeferCleanup from a
+		// BeforeAll runs at the end of the whole Ordered Describe, by which
+		// point AfterAll has already uninstalled the releases this restores.
+		BeforeEach(func() {
+			// A weight change rolls the EPP, and the gateway's ext_proc stream
+			// has to reconnect to the new pod before traffic means anything.
 			waitServing := func() {
 				for _, model := range modelNames {
 					Eventually(func() error {
@@ -484,12 +487,18 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 					values.EPPScorerWeights = weights
 					Expect(utils.UpgradeModelDeployment(ctx, values)).To(Succeed(),
 						"failed to reconcile scorer weights on %s", values.Name)
+					Expect(utils.RestartEPP(ctx, values.Name, caseNamespace)).To(Succeed(),
+						"failed to restart EPP for %s", values.Name)
+				}
+				for _, values := range caseDeployments {
+					Expect(utils.WaitForEPPRollout(ctx, values.Name, caseNamespace, 5*time.Minute)).
+						To(Succeed(), "EPP for %s did not adopt the new scorer weights", values.Name)
 				}
 				waitServing()
 			}
 
-			// nil restores the chart defaults. Without this the weight change would
-			// leak into every later Context of this Ordered Describe.
+			// nil restores the chart defaults. Without this the weight change
+			// would leak into every later spec of this Ordered Describe.
 			DeferCleanup(func() { apply(nil) })
 
 			apply(&deploy.EPPScorerWeights{PrefixCache: intPtr(0)})

@@ -24,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
@@ -114,6 +115,83 @@ func inferenceSetReady(ctx context.Context, clientset kubernetes.Interface, valu
 		if pod.Status.PodIP == "" {
 			return fmt.Errorf("inference pod %s has no PodIP yet", pod.Name)
 		}
+	}
+	return nil
+}
+
+// RestartEPP stamps the EPP pod template the way `kubectl rollout restart`
+// does, forcing the pod to be replaced.
+//
+// The endpoint picker reads --config-file once at startup and the chart puts
+// no ConfigMap checksum on the pod template, so `helm upgrade` alone rewrites
+// the scoring config without the running EPP ever seeing it.
+func RestartEPP(ctx context.Context, name, namespace string) error {
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return fmt.Errorf("init clientset: %w", err)
+	}
+	eppName := EPPServiceName(name)
+	patch := fmt.Sprintf(
+		`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":%q}}}}}`,
+		time.Now().Format(time.RFC3339Nano))
+	if _, err := clientset.AppsV1().Deployments(namespace).Patch(
+		ctx, eppName, types.StrategicMergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		return fmt.Errorf("restart EPP Deployment %s/%s: %w", namespace, eppName, err)
+	}
+	return nil
+}
+
+// WaitForEPPRollout blocks until the pod backing the EPP Deployment is the one
+// the current pod template describes, so a preceding RestartEPP is known to
+// have landed. Serving traffic proves nothing here: the old pod keeps
+// answering with the old config until it is replaced.
+func WaitForEPPRollout(ctx context.Context, name, namespace string, timeout time.Duration) error {
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return fmt.Errorf("init clientset: %w", err)
+	}
+	eppName := EPPServiceName(name)
+
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		if lastErr = eppRolledOut(ctx, clientset, namespace, eppName); lastErr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(PollInterval):
+		}
+	}
+	return fmt.Errorf("timed out after %s waiting for EPP Deployment %s/%s to roll out: %w",
+		timeout, namespace, eppName, lastErr)
+}
+
+func eppRolledOut(ctx context.Context, clientset kubernetes.Interface, namespace, eppName string) error {
+	epp, err := clientset.AppsV1().Deployments(namespace).Get(ctx, eppName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get EPP Deployment %s/%s: %w", namespace, eppName, err)
+	}
+	if epp.Status.ObservedGeneration < epp.Generation {
+		return fmt.Errorf("EPP Deployment %s/%s: generation %d not observed yet (at %d)",
+			namespace, eppName, epp.Generation, epp.Status.ObservedGeneration)
+	}
+	desired := int32(1)
+	if epp.Spec.Replicas != nil {
+		desired = *epp.Spec.Replicas
+	}
+	if epp.Status.UpdatedReplicas < desired {
+		return fmt.Errorf("EPP Deployment %s/%s: %d/%d replicas updated",
+			namespace, eppName, epp.Status.UpdatedReplicas, desired)
+	}
+	if epp.Status.Replicas > epp.Status.UpdatedReplicas {
+		return fmt.Errorf("EPP Deployment %s/%s: %d pod(s) still on the old spec",
+			namespace, eppName, epp.Status.Replicas-epp.Status.UpdatedReplicas)
+	}
+	if epp.Status.AvailableReplicas < desired {
+		return fmt.Errorf("EPP Deployment %s/%s: %d/%d replicas available",
+			namespace, eppName, epp.Status.AvailableReplicas, desired)
 	}
 	return nil
 }
