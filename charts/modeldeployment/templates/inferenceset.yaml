@@ -112,7 +112,8 @@ spec:
       preset:
         name: {{ .Values.model | quote }}
         {{- if .Values.modelAccessSecret }}
-        modelAccessSecret: {{ .Values.modelAccessSecret | quote }}
+        presetOptions:
+          modelAccessSecret: {{ .Values.modelAccessSecret | quote }}
         {{- end }}
   {{- if (.Values.autoUpgrade).enabled }}
   autoUpgrade:
