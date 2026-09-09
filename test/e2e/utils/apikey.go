@@ -18,35 +18,17 @@ package utils
 
 import (
 	"context"
-	"fmt"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const (
-	// APIKeySecretName is the Secret created by the apikey-operator when an APIKey CR exists.
-	APIKeySecretName = "llm-api-key"
-
-	// APIKeySecretDataKey is the key inside the Secret that holds the plaintext API key.
-	APIKeySecretDataKey = "apiKey"
-)
-
-// GetAPIKeyFromSecret reads the plaintext API key from the operator-generated Secret.
-func GetAPIKeyFromSecret(ctx context.Context, namespace string) (string, error) {
-	clientset, err := GetK8sClientset()
+// NamespaceAPIKey returns the API key that authenticates requests to the
+// namespace's gateway, from whichever backend installed the harness.
+//
+// Specs never read the Secret directly: a managed backend mints the key
+// through its own API and does not let the caller read Secrets at all.
+func NamespaceAPIKey(ctx context.Context, namespace string) (string, error) {
+	d, err := CurrentDeployer()
 	if err != nil {
-		return "", fmt.Errorf("failed to create clientset: %w", err)
+		return "", err
 	}
-
-	secret, err := clientset.CoreV1().Secrets(namespace).Get(ctx, APIKeySecretName, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("failed to get secret %s/%s: %w", namespace, APIKeySecretName, err)
-	}
-
-	keyBytes, ok := secret.Data[APIKeySecretDataKey]
-	if !ok {
-		return "", fmt.Errorf("secret %s/%s does not contain key %q", namespace, APIKeySecretName, APIKeySecretDataKey)
-	}
-
-	return string(keyBytes), nil
+	return d.NamespaceAPIKey(ctx, namespace)
 }

@@ -88,10 +88,10 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func() (string, error) {
-				return utils.GetAPIKeyFromSecret(ctx, caseNS)
+				return utils.NamespaceAPIKey(ctx, caseNS)
 			}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
 				"API key Secret should be created in %s", caseNS)
-			apiKey, err = utils.GetAPIKeyFromSecret(ctx, caseNS)
+			apiKey, err = utils.NamespaceAPIKey(ctx, caseNS)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Sanity: an authenticated request must succeed BEFORE we

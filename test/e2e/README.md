@@ -31,7 +31,7 @@ the production App Routing provisioning contract.
 
 - [`setup.go`](utils/setup.go) — `EnsureNamespace` (provisions the workload namespace + modelharness), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
 - [`http.go`](utils/http.go) — multi-gateway port-forward (`GetGatewayURLFor`), `SendChatCompletion`.
-- [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UpgradeModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
+- [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UpgradeModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`, `NamespaceAPIKey` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).
 
@@ -64,18 +64,25 @@ Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into three groups:
 
 `StandardK8sOnly` cuts across the other two. It marks specs that require a
 standard Kubernetes cluster and cannot run on an opinionated managed one such as
-AKS Automatic, because they reshape running workloads directly rather than going
-through the `Deployer` — `ScaleDeployment` on a Deployment's scale subresource
-([`utils/cluster.go`](utils/cluster.go)) or `SetInferenceSetReplicas` patching an
-InferenceSet ([`utils/scaling.go`](utils/scaling.go)). When running against a
-managed cluster:
+AKS Automatic, for either of two reasons: they reshape running workloads
+directly rather than going through the `Deployer` — `ScaleDeployment` on a
+Deployment's scale subresource ([`utils/cluster.go`](utils/cluster.go)) or
+`SetInferenceSetReplicas` patching an InferenceSet
+([`utils/scaling.go`](utils/scaling.go)) — or their assertion only holds under a
+`ModelDeploymentValues` field a managed backend cannot express. When running
+against a managed cluster:
 
 ```bash
 E2E_LABEL='!StandardK8sOnly' make test-e2e
 ```
 
 It currently covers `bbr_outage`, `ext_authz_outage`, `epp_outage`,
-`cluster_filter_ha`, `cluster_status`, `control_plane_error`, and `scaling`.
+`cluster_filter_ha`, `cluster_status`, `control_plane_error`, `scaling`, and the
+`Load distribution` Context of `model_routing` (which turns prefix-cache scoring
+off through `EPPScorerWeights` so identical prompts spread across replicas).
+Label the smallest container that needs it, not the whole file: the rest of
+`model_routing` asserts routing correctness whatever the scorer weights are, and
+stays runnable everywhere.
 Note it describes the MECHANISM, not the blast radius: `model_unavailable`
 empties an inference pool too, but does so through `UpgradeModelDeployment`, so
 any backend can honour it and it stays unlabelled.
@@ -117,6 +124,7 @@ type Deployer interface {
     Name() string
     InstallModelHarness(ctx context.Context, values ModelHarnessValues) error
     UninstallModelHarness(ctx context.Context, namespace string) error
+    NamespaceAPIKey(ctx context.Context, namespace string) (string, error)
     InstallModelDeployment(ctx context.Context, values ModelDeploymentValues) error
     UpgradeModelDeployment(ctx context.Context, values ModelDeploymentValues) error
     UninstallModelDeployment(ctx context.Context, name, namespace string) error
@@ -142,6 +150,10 @@ Two consequences worth knowing when writing a spec:
   hands `.spec.replicas` to KEDA's scale subresource; restoring a live replica
   count there uses `utils.SetInferenceSetReplicas`, which says so in its doc
   comment.
+- **The API key comes from `NamespaceAPIKey`, never from the Secret.** The Helm
+  backend reads the Secret the apikey-operator reconciles out of the harness's
+  APIKey CR; a managed backend mints the key through its own API and does not
+  let the caller read Secrets at all.
 
 `helm` is the only backend in this repo and remains the default, so local runs
 are unchanged. Select a backend with `E2E_DEPLOYMENT_BACKEND=<name>`; the

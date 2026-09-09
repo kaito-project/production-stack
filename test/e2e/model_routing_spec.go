@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -449,9 +450,50 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("Load distribution", func() {
+	// Spreading identical prompts across replicas requires turning prefix-cache
+	// scoring off, which only a backend that can express EPPScorerWeights can
+	// do — hence StandardK8sOnly. The rest of the case routes correctly whatever
+	// the scorer weights are, so it stays runnable everywhere.
+	Context("Load distribution", utils.GinkgoLabelStandardK8sOnly, func() {
 		const numRequests = 25
 		const maxTrafficFraction = 0.80
+
+		BeforeAll(func() {
+			// The EPP rolls out a new EndpointPickerConfig on every weight change;
+			// wait until each pool serves again so what follows runs against the
+			// weights that were just applied.
+			waitServing := func() {
+				for _, model := range modelNames {
+					Eventually(func() error {
+						resp, err := sendChat(caseGatewayURL, model)
+						if err != nil {
+							return err
+						}
+						defer resp.Body.Close()
+						if resp.StatusCode != http.StatusOK {
+							return fmt.Errorf("%s returned %d", model, resp.StatusCode)
+						}
+						return nil
+					}, utils.InferenceSetReadyTimeout, utils.PollInterval).Should(Succeed())
+				}
+			}
+
+			apply := func(weights *deploy.EPPScorerWeights) {
+				for _, values := range caseDeployments {
+					values.Namespace = caseNamespace
+					values.EPPScorerWeights = weights
+					Expect(utils.UpgradeModelDeployment(ctx, values)).To(Succeed(),
+						"failed to reconcile scorer weights on %s", values.Name)
+				}
+				waitServing()
+			}
+
+			// nil restores the chart defaults. Without this the weight change would
+			// leak into every later Context of this Ordered Describe.
+			DeferCleanup(func() { apply(nil) })
+
+			apply(&deploy.EPPScorerWeights{PrefixCache: intPtr(0)})
+		})
 
 		It("should distribute traffic across replicas with no pod receiving zero or >80% of requests", func() {
 			clientset, err := utils.GetK8sClientset()

@@ -24,9 +24,14 @@ import (
 	"sync"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
+)
+
+// The AKS App Routing add-on renders one external-dns Deployment per managed
+// zone; the default zone's carries the domain in its --domain-filter argument.
+const (
+	appRoutingNamespace          = "app-routing-system"
+	appRoutingDefaultDNSWorkload = "default-domain-dns-external-dns"
+	domainFilterArg              = "--domain-filter="
 )
 
 var (
@@ -58,37 +63,48 @@ func getAppRoutingDomain() (string, error) {
 			appRoutingDomain = domain
 			return
 		}
-		appRoutingDomainErr = fmt.Errorf("resolve AKS App Routing default domain from clusterexternaldns/default-domain-dns: %w; set APP_ROUTING_DEFAULT_DOMAIN to override", err)
+		appRoutingDomainErr = fmt.Errorf("resolve AKS App Routing default domain from %s/%s: %w; set APP_ROUTING_DEFAULT_DOMAIN to override",
+			appRoutingNamespace, appRoutingDefaultDNSWorkload, err)
 	})
 	return appRoutingDomain, appRoutingDomainErr
 }
 
+// getAppRoutingDomainFromCluster reads the default zone off the App Routing
+// external-dns Deployment rather than the approuting.kubernetes.azure.com
+// ClusterExternalDNS it was rendered from: a managed control plane such as AI
+// Manager grants read access to built-in kinds only, so touching the CRD would
+// fail with 403.
 func getAppRoutingDomainFromCluster(ctx context.Context) (string, error) {
-	config, err := GetK8sConfig()
+	clientset, err := GetK8sClientset()
 	if err != nil {
 		return "", err
 	}
-	client, err := dynamic.NewForConfig(config)
+	deployment, err := clientset.AppsV1().Deployments(appRoutingNamespace).
+		Get(ctx, appRoutingDefaultDNSWorkload, metav1.GetOptions{})
 	if err != nil {
 		return "", err
 	}
-	resource, err := client.Resource(schema.GroupVersionResource{
-		Group: "approuting.kubernetes.azure.com", Version: "v1alpha1", Resource: "clusterexternaldnses",
-	}).Get(ctx, "default-domain-dns", metav1.GetOptions{})
-	if err != nil {
-		return "", err
+
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		for _, arg := range container.Args {
+			filter, ok := strings.CutPrefix(arg, domainFilterArg)
+			if !ok {
+				continue
+			}
+			return domainFromFilterArg(filter)
+		}
 	}
-	resourceIDs, found, err := unstructured.NestedStringSlice(resource.Object, "spec", "dnsZoneResourceIDs")
-	if err != nil || !found || len(resourceIDs) == 0 {
-		return "", fmt.Errorf("default-domain-dns has no DNS zone resource ID")
-	}
-	return domainFromDNSZoneResourceID(resourceIDs[0])
+	return "", fmt.Errorf("no %s argument on any container of %s/%s",
+		domainFilterArg, appRoutingNamespace, appRoutingDefaultDNSWorkload)
 }
 
-func domainFromDNSZoneResourceID(resourceID string) (string, error) {
-	domain := strings.TrimSpace(resourceID[strings.LastIndex(resourceID, "/")+1:])
+// domainFromFilterArg takes the first zone of an external-dns --domain-filter
+// value, which is a comma-separated list.
+func domainFromFilterArg(filter string) (string, error) {
+	domain := strings.TrimSpace(strings.Split(filter, ",")[0])
+	domain = strings.Trim(domain, ".")
 	if !isDNSName(domain) {
-		return "", fmt.Errorf("DNS zone resource ID %q does not contain a valid domain", resourceID)
+		return "", fmt.Errorf("%s%q does not contain a valid domain", domainFilterArg, filter)
 	}
 	return domain, nil
 }
