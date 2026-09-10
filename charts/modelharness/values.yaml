@@ -171,12 +171,14 @@ auth:
   #             is INSERT_AFTER jwt_authn so the azure-authz server
   #             reads validated Entra claims from jwt_authn's filter
   #             metadata. Only consumed when cloudprovider=azure.
-  #   hybrid  — Lua classifier at head of chain inspects the Authorization
-  #             header: tokens starting `sk-` route to apikey-authz;
+  #   hybrid  — Lua classifier at head of chain checks credentials in
+  #             Authorization, API-Key, X-API-Key precedence order.
+  #             Authorization tokens starting `sk-`, plus API-Key or
+  #             X-API-Key when Authorization is absent, route to apikey-authz;
   #             everything else routes to azure-authz. A strip-authz-header
-  #             Lua removes the Authorization header on the apikey path
-  #             so jwt_authn does not see the API key and reject it as a
-  #             malformed JWT. Only consumed when cloudprovider=azure.
+  #             Lua removes Authorization on the apikey path so jwt_authn
+  #             does not reject a bearer API key as a malformed JWT. Only
+  #             consumed when cloudprovider=azure.
   mode: apikey
   # apiKeyName is the name of the APIKey CR rendered when auth.enabled.
   apiKeyName: "default"
