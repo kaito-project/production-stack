@@ -655,7 +655,7 @@ var _ = Describe("Network Policy", utils.GinkgoLabelNetworkPolicy, utils.GinkgoL
 	// in an external namespace, which exercises the real CNI path the
 	// production N/S traffic would use.
 	It("should ALLOW external-namespace ingress to the gateway pod via Service ClusterIP", func() {
-		gwSvcName := utils.IstioGatewayServiceName(CaseGatewayName(CaseNetworkPolicyA))
+		gwSvcName := CaseGatewayName(CaseNetworkPolicyA) + "-istio"
 		gatewayPort := int32(80)
 		if utils.IsAzureProvider() {
 			gwSvcName = CaseGatewayName(CaseNetworkPolicyA) + "-approuting-istio"

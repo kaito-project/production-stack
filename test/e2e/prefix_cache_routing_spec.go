@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -69,17 +70,23 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 	caseNamespace := CaseNamespace(CasePrefixCache)
 
 	var ctx context.Context
-	var caseGatewayURL string
+	var caseGateway deploy.GatewayEndpoint
 
-	// sendChatWithPrompt forwards to the non-auth helper — the
-	// prefix-cache case no longer enables the API-key
-	// AuthorizationPolicy (see cases.go).
-	sendChatWithPrompt := func(url, model, prompt string) (*http.Response, error) {
-		return utils.SendChatCompletionWithPrompt(url, model, prompt)
+	// caseAuth carries whatever credential the backend's gateway requires. This
+	// case does not enable the API-key AuthorizationPolicy (see cases.go), but a
+	// managed gateway authenticates every request regardless.
+	var caseAuth []utils.RequestOption
+
+	sendChatWithPrompt := func(url deploy.GatewayEndpoint, model, prompt string) (*http.Response, error) {
+		return utils.SendChat(url, model, append(caseAuth, utils.WithPrompt(prompt))...)
 	}
 
 	BeforeAll(func() {
-		caseGatewayURL = InstallCase(CasePrefixCache)
+		caseGateway = InstallCase(CasePrefixCache)
+
+		var err error
+		caseAuth, err = utils.NamespaceRequestOptions(context.Background(), caseNamespace)
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterAll(func() {
@@ -120,7 +127,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 
 			By(fmt.Sprintf("sending the same prompt %d times", numRequests))
 			for i := 0; i < numRequests; i++ {
-				resp, err := sendChatWithPrompt(caseGatewayURL, model, prompt)
+				resp, err := sendChatWithPrompt(caseGateway, model, prompt)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK),
 					"request %d should succeed", i)
@@ -196,7 +203,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 
 			By(fmt.Sprintf("sending category A prompt %d times", numPerCategory))
 			for i := 0; i < numPerCategory; i++ {
-				resp, err := sendChatWithPrompt(caseGatewayURL, model, promptA)
+				resp, err := sendChatWithPrompt(caseGateway, model, promptA)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -222,7 +229,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 0; i < numPerCategory; i++ {
-				resp, err := sendChatWithPrompt(caseGatewayURL, model, promptB)
+				resp, err := sendChatWithPrompt(caseGateway, model, promptB)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -275,7 +282,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			Expect(err).NotTo(HaveOccurred())
 
 			for i := 0; i < 3; i++ {
-				resp, err := sendChatWithPrompt(caseGatewayURL, model, prompt)
+				resp, err := sendChatWithPrompt(caseGateway, model, prompt)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -313,7 +320,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 			}
 
 			Eventually(func() error {
-				resp, err := sendChatWithPrompt(caseGatewayURL, model, prompt)
+				resp, err := sendChatWithPrompt(caseGateway, model, prompt)
 				if err != nil {
 					return err
 				}

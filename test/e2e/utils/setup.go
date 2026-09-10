@@ -61,11 +61,14 @@ func EnsureNamespace(ctx context.Context, name string, authEnabled bool) error {
 // DeleteNamespace removes the modelharness from the namespace, which also
 // deletes the namespace itself and cascades everything left in it.
 func DeleteNamespace(ctx context.Context, name string) error {
-	// Kill any cached kubectl port-forwards targeting this namespace
-	// before the namespace is gone, so subsequent EnsurePortForwards()
-	// healthchecks don't try to restart a forward against a vanished
-	// namespace (which surfaces as a 90s readiness timeout).
-	RemovePortForwardsForNamespace(name)
+	// Release the gateway transport before the namespace is gone, so the
+	// backend does not keep trying to reach one that no longer exists.
+	if err := CloseGateway(ctx, name); err != nil {
+		return fmt.Errorf("close gateway for %s: %w", name, err)
+	}
+	// Case namespaces are named deterministically, so a cached credential
+	// would otherwise be served to the next harness installed under this name.
+	ForgetNamespaceAuthHeaders(name)
 	if err := UninstallModelHarness(ctx, name); err != nil {
 		return fmt.Errorf("uninstall modelharness from %s: %w", name, err)
 	}
@@ -144,9 +147,9 @@ func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, t
 //   - deployments: list of ModelDeploymentValues to install. If an entry's
 //     Namespace is empty, the namespace argument is used as the default.
 //   - namespace: target namespace for entries whose Namespace is unset.
-//   - gatewayURL: if non-empty, performs a warm-up request loop per
+//   - gateway: if non-nil, performs a warm-up request loop per
 //     deployment to wait for the BBR → EPP ext_proc pipeline to be ready.
-func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, namespace, gatewayURL string) {
+func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, namespace string, gateway deploy.GatewayEndpoint) {
 	ctx := context.Background()
 	GetClusterClient(TestingCluster)
 
@@ -178,59 +181,53 @@ func SetupInferenceSetsWithRouting(deployments []deploy.ModelDeploymentValues, n
 	// The HTTPRoute matches X-Gateway-Model-Name against the deployment
 	// name (.Values.name in the chart), so the gateway is exercised by
 	// sending requests with `"model": "<deploymentName>"`.
-	if gatewayURL != "" {
+	if gateway != nil {
 		for _, d := range resolved {
 			d := d
-			// When the deployment opts in to API key auth, the backend that
-			// installed the harness is asked for the namespace's key. The
-			// authz service resolves the namespace from the Host header subdomain.
-			var (
-				bearerToken string
-				hostHeader  string
-			)
+			// Whether the gateway authenticates is the backend's call, not the
+			// case's: a managed gateway enforces a credential on every request
+			// regardless of what the harness values asked for.
 			if d.AuthAPIKeyEnabled {
-				By(fmt.Sprintf("Waiting for API key Secret in %s for deployment %s", d.Namespace, d.Name))
-				Eventually(func() (string, error) {
-					return NamespaceAPIKey(ctx, d.Namespace)
+				By(fmt.Sprintf("Waiting for the API key in %s for deployment %s", d.Namespace, d.Name))
+				Eventually(func() ([]deploy.AuthHeader, error) {
+					ForgetNamespaceAuthHeaders(d.Namespace)
+					return NamespaceAuthHeaders(ctx, d.Namespace)
 				}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
-					"API key Secret should be created in %s", d.Namespace)
-				key, err := NamespaceAPIKey(ctx, d.Namespace)
-				Expect(err).NotTo(HaveOccurred())
-				bearerToken = key
-				hostHeader, err = GatewayHostFor(d.Namespace)
-				Expect(err).NotTo(HaveOccurred())
+					"backend should publish an API key for %s", d.Namespace)
 				// Give Envoy a moment to pick up the AuthorizationPolicy.
 				time.Sleep(5 * time.Second)
 			}
+
+			authHeaders, err := NamespaceAuthHeaders(ctx, d.Namespace)
+			Expect(err).NotTo(HaveOccurred())
+
 			By(fmt.Sprintf("Waiting for gateway routing to be ready for deployment %s (preset %s)", d.Name, d.Model))
 			Eventually(func() error {
-				var (
-					resp *http.Response
-					err  error
-				)
-				if d.AuthAPIKeyEnabled {
-					// Re-read the Secret on each retry so we don't cache
-					// a stale bearer that the apikey-operator has since
-					// rotated (the operator regenerates the Secret if its
-					// KEYID drifts from the APIKey CR — see operator
-					// "Secret not found, will regenerate" reconciles).
-					freshKey, kerr := NamespaceAPIKey(ctx, d.Namespace)
-					if kerr != nil {
-						return fmt.Errorf("re-read API key for %s: %w", d.Namespace, kerr)
+				opts := []RequestOption{}
+				if len(authHeaders) > 0 {
+					// Re-read on each retry so we don't cache a stale
+					// credential that the apikey-operator has since rotated
+					// (it regenerates the Secret if its KEYID drifts from the
+					// APIKey CR — see operator "Secret not found, will
+					// regenerate" reconciles).
+					ForgetNamespaceAuthHeaders(d.Namespace)
+					fresh, herr := NamespaceAuthHeaders(ctx, d.Namespace)
+					if herr != nil {
+						return fmt.Errorf("re-read auth headers for %s: %w", d.Namespace, herr)
 					}
-					bearerToken = freshKey
-					resp, err = SendChatCompletionWithAuth(gatewayURL, d.Name, "hello", bearerToken, hostHeader)
-				} else {
-					resp, err = SendChatCompletion(gatewayURL, d.Name)
+					if len(fresh) > 0 {
+						opts = append(opts, WithAuth(fresh[0]))
+					}
 				}
+				resp, err := SendChat(gateway, d.Name, opts...)
 				if err != nil {
 					return fmt.Errorf("request failed: %w", err)
 				}
 				defer resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {
 					body, _ := ReadResponseBody(resp)
-					return fmt.Errorf("expected 200, got %d (ns=%s deployment=%s host=%q authEnabled=%v): %s",
-						resp.StatusCode, d.Namespace, d.Name, hostHeader, d.AuthAPIKeyEnabled, string(body))
+					return fmt.Errorf("expected 200, got %d (ns=%s deployment=%s host=%q authHeaders=%d): %s",
+						resp.StatusCode, d.Namespace, d.Name, gateway.Host(), len(authHeaders), string(body))
 				}
 				return nil
 			}, InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),

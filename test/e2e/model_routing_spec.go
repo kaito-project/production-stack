@@ -17,7 +17,6 @@ limitations under the License.
 package e2e
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -74,28 +73,37 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 	var ctx context.Context
 
-	// caseGatewayURL routes to this case's dedicated Gateway. Resolved
+	// caseGateway routes to this case's dedicated Gateway. Resolved
 	// in BeforeAll. Per-namespace Gateway + catch-all
 	// `model-not-found-direct` EnvoyFilter are provisioned by the
 	// modelharness chart.
-	var caseGatewayURL string
+	var caseGateway deploy.GatewayEndpoint
+
+	// caseAuth carries whatever credential the backend's gateway requires.
+	// This case does not enable the API-key AuthorizationPolicy (see cases.go),
+	// but a managed gateway authenticates every request regardless, so the
+	// backend — not the case — decides whether anything is attached.
+	var caseAuth []utils.RequestOption
 
 	BeforeAll(func() {
 		ctx = context.Background()
-		caseGatewayURL = InstallCase(CaseModelRouting)
+		caseGateway = InstallCase(CaseModelRouting)
+
+		headers, err := utils.NamespaceRequestOptions(ctx, caseNamespace)
+		Expect(err).NotTo(HaveOccurred())
+		caseAuth = headers
 	})
 
-	// sendChat / sendChatWithRetry / sendChatWithPrompt forward to the
-	// non-auth helpers — the routing case no longer enables the API-key
-	// AuthorizationPolicy (see cases.go).
-	sendChat := func(url, model string) (*http.Response, error) {
-		return utils.SendChatCompletion(url, model)
+	modelsAuth := func() []utils.RequestOption { return caseAuth }
+
+	sendChat := func(url deploy.GatewayEndpoint, model string) (*http.Response, error) {
+		return utils.SendChat(url, model, caseAuth...)
 	}
-	sendChatWithPrompt := func(url, model, prompt string) (*http.Response, error) {
-		return utils.SendChatCompletionWithPrompt(url, model, prompt)
+	sendChatWithPrompt := func(url deploy.GatewayEndpoint, model, prompt string) (*http.Response, error) {
+		return utils.SendChat(url, model, append(caseAuth, utils.WithPrompt(prompt))...)
 	}
-	sendChatWithRetry := func(url, model string) (*http.Response, error) {
-		return utils.SendChatCompletionWithRetry(url, model)
+	sendChatWithRetry := func(url deploy.GatewayEndpoint, model string) (*http.Response, error) {
+		return utils.SendChat(url, model, append(caseAuth, utils.WithTransportRetry())...)
 	}
 
 	AfterAll(func() {
@@ -106,7 +114,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		It("should return the correct model name for falcon", func() {
 			var parsed *utils.ChatCompletionResponse
 			Eventually(func() error {
-				resp, err := sendChat(caseGatewayURL, falconModel)
+				resp, err := sendChat(caseGateway, falconModel)
 				if err != nil {
 					return err
 				}
@@ -128,7 +136,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		It("should return the correct model name for ministral", func() {
 			var parsed *utils.ChatCompletionResponse
 			Eventually(func() error {
-				resp, err := sendChat(caseGatewayURL, ministralModel)
+				resp, err := sendChat(caseGateway, ministralModel)
 				if err != nil {
 					return err
 				}
@@ -155,7 +163,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		// gets no X-Gateway-Model-Name from BBR and falls through to the
 		// catch-all's misleading 400 invalid_request_body.
 		listModels := func() (*utils.ModelList, error) {
-			resp, err := utils.SendModelsRequest(caseGatewayURL, utils.ModelsPath, "", "")
+			resp, err := utils.SendModels(caseGateway, utils.ModelsPath, modelsAuth()...)
 			if err != nil {
 				return nil, err
 			}
@@ -199,8 +207,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, listed := range list.Data {
-				resp, err := utils.SendModelsRequest(
-					caseGatewayURL, utils.ModelRetrievePath(listed.ID), "", "")
+				resp, err := utils.SendModels(caseGateway, utils.ModelRetrievePath(listed.ID), modelsAuth()...)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
@@ -212,8 +219,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return 404 model_not_found for an unknown model id", func() {
-			resp, err := utils.SendModelsRequest(
-				caseGatewayURL, utils.ModelRetrievePath("totally-unknown-model-xyz"), "", "")
+			resp, err := utils.SendModels(caseGateway, utils.ModelRetrievePath("totally-unknown-model-xyz"), modelsAuth()...)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 
@@ -224,8 +230,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should reject non-GET verbs on the discovery endpoints", func() {
-			resp, err := utils.SendModelsRequestWithMethod(
-				http.MethodPost, caseGatewayURL, utils.ModelsPath, "", "")
+			resp, err := utils.SendModels(caseGateway, utils.ModelsPath, append(modelsAuth(), utils.WithMethod(http.MethodPost))...)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusMethodNotAllowed))
@@ -234,7 +239,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		It("should not swallow sibling paths that merely share the prefix", func() {
 			// The route pair is `exact /v1/models` + `prefix /v1/models/`; a bare
 			// `prefix /v1/models` would wrongly capture this path too.
-			resp, err := utils.SendModelsRequest(caseGatewayURL, "/v1/modelsfoo", "", "")
+			resp, err := utils.SendModels(caseGateway, "/v1/modelsfoo", modelsAuth()...)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).NotTo(Equal(http.StatusOK),
@@ -260,7 +265,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
-					resp, err := sendChatWithRetry(caseGatewayURL, model)
+					resp, err := sendChatWithRetry(caseGateway, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
@@ -318,7 +323,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 					go func(idx int) {
 						defer wg.Done()
 						defer GinkgoRecover()
-						resp, err := sendChatWithRetry(caseGatewayURL, model)
+						resp, err := sendChatWithRetry(caseGateway, model)
 						if err != nil {
 							results[idx] = result{model: model, err: err}
 							return
@@ -369,7 +374,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			By("sending requests to known models")
 			for _, model := range modelNames {
 				for i := 0; i < 3; i++ {
-					resp, err := sendChat(caseGatewayURL, model)
+					resp, err := sendChat(caseGateway, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK),
 						"known-model request to %s should not fall through to catch-all 404", model)
@@ -420,7 +425,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			By(fmt.Sprintf("sending %d requests per model", numRequests))
 			for _, model := range modelNames {
 				for i := 0; i < numRequests; i++ {
-					resp, err := sendChat(caseGatewayURL, model)
+					resp, err := sendChat(caseGateway, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					resp.Body.Close()
@@ -468,7 +473,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			waitServing := func() {
 				for _, model := range modelNames {
 					Eventually(func() error {
-						resp, err := sendChat(caseGatewayURL, model)
+						resp, err := sendChat(caseGateway, model)
 						if err != nil {
 							return err
 						}
@@ -517,7 +522,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
-					resp, err := sendChatWithRetry(caseGatewayURL, model)
+					resp, err := sendChatWithRetry(caseGateway, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					resp.Body.Close()
@@ -589,7 +594,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			for _, model := range modelNames {
 				By(fmt.Sprintf("sending a request for %s and checking debug filter logs", model))
 
-				resp, err := sendChat(caseGatewayURL, model)
+				resp, err := sendChat(caseGateway, model)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -631,7 +636,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			// matches, so the PRESENT-but-unmatched half of the split
 			// catch-all (charts/modelharness/templates/envoyfilter-not-found.yaml)
 			// returns 404 model_not_found with x-kaito-error-source: gateway.
-			resp, err := sendChat(caseGatewayURL, "totally-unknown-model-xyz")
+			resp, err := sendChat(caseGateway, "totally-unknown-model-xyz")
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -646,18 +651,10 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return 400 invalid_request_body + x-kaito-error-source: bbr for a missing model field", func() {
-			// Refresh port-forwards before issuing a raw HTTP request so a
-			// kubectl port-forward channel that died between specs gets
-			// rebound; SendChatCompletion* does this internally.
-			Expect(utils.EnsurePortForwards()).To(Succeed())
-			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
-
 			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`{"messages": [{"role": "user", "content": "hello"}]}`)
-			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
-				bytes.NewReader(body))
+			req, err := utils.NewGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
 			Expect(err).NotTo(HaveOccurred())
-			req.Header.Set("Content-Type", "application/json")
 
 			resp, err := client.Do(req)
 			Expect(err).NotTo(HaveOccurred())
@@ -679,15 +676,10 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return a well-formed error for non-string model field", func() {
-			Expect(utils.EnsurePortForwards()).To(Succeed())
-			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
-
 			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`{"model": 42, "messages": [{"role": "user", "content": "hello"}]}`)
-			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
-				bytes.NewReader(body))
+			req, err := utils.NewGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
 			Expect(err).NotTo(HaveOccurred())
-			req.Header.Set("Content-Type", "application/json")
 
 			resp, err := client.Do(req)
 			Expect(err).NotTo(HaveOccurred())
@@ -703,7 +695,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Verify subsequent valid requests still succeed (BBR didn't crash permanently).
 			Eventually(func() int {
-				r, err := sendChat(caseGatewayURL, falconModel)
+				r, err := sendChat(caseGateway, falconModel)
 				if err != nil {
 					return 0
 				}
@@ -714,13 +706,9 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return a well-formed error for non-JSON body", func() {
-			Expect(utils.EnsurePortForwards()).To(Succeed())
-			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
-
 			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`this is not json`)
-			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
-				bytes.NewReader(body))
+			req, err := utils.NewGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
 			Expect(err).NotTo(HaveOccurred())
 			req.Header.Set("Content-Type", "text/plain")
 
@@ -735,7 +723,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Verify subsequent valid requests still succeed (BBR didn't crash).
 			Eventually(func() int {
-				r, err := sendChat(caseGatewayURL, falconModel)
+				r, err := sendChat(caseGateway, falconModel)
 				if err != nil {
 					return 0
 				}
@@ -746,14 +734,17 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should not inject x-gateway-model-name for non-/v1/ paths", func() {
-			Expect(utils.EnsurePortForwards()).To(Succeed())
-			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
-
 			client := &http.Client{Timeout: utils.HTTPTimeout}
 
-			// GET /healthz — should bypass BBR entirely.
-			req, err := http.NewRequest(http.MethodGet, gatewayURL+"/healthz", nil)
+			origin, err := utils.GatewayOrigin(caseGateway)
 			Expect(err).NotTo(HaveOccurred())
+
+			// GET /healthz — should bypass BBR entirely.
+			req, err := http.NewRequest(http.MethodGet, origin+"/healthz", nil)
+			Expect(err).NotTo(HaveOccurred())
+			if host := caseGateway.Host(); host != "" {
+				req.Host = host
+			}
 
 			resp, err := client.Do(req)
 			Expect(err).NotTo(HaveOccurred())
@@ -782,7 +773,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Send the oversized request and verify HTTP 400 with an
 			// OpenAI-compatible JSON error body from vLLM.
-			resp, err := sendChatWithPrompt(caseGatewayURL, model, longPrompt)
+			resp, err := sendChatWithPrompt(caseGateway, model, longPrompt)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -805,7 +796,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			// Verify subsequent valid requests still succeed — the rejection
 			// did not wedge the connection or the ext_proc filter chain.
 			Eventually(func() error {
-				r, err := sendChat(caseGatewayURL, model)
+				r, err := sendChat(caseGateway, model)
 				if err != nil {
 					return err
 				}

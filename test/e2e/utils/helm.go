@@ -129,16 +129,3 @@ func isDNSName(value string) bool {
 func isDNSAlphaNumeric(value byte) bool {
 	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9'
 }
-
-// GatewayHostFor returns the authority used to route requests to a namespace's
-// Gateway in the active E2E gateway mode.
-func GatewayHostFor(namespace string) (string, error) {
-	if IsAzureProvider() {
-		domain, err := getAppRoutingDomain()
-		if err != nil {
-			return "", err
-		}
-		return namespace + "." + domain, nil
-	}
-	return namespace + ".gw.example.com", nil
-}

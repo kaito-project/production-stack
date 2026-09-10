@@ -30,6 +30,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
 
 // ErrNoUsableSessions is returned by LoadTraceSessions when the fixture path
@@ -358,7 +360,7 @@ func StreamTraceShards(path string, fn func(TraceShard) error) error {
 // `model` (the deployment name / X-Gateway-Model-Name), overriding the model
 // recorded in the trace. The caller owns `in` and must close it (or cancel ctx)
 // to terminate the pool.
-func replayFromChannel(ctx context.Context, gatewayURL, model string, in <-chan ReplaySession, concurrency int, honorTiming bool) ReplayStats {
+func replayFromChannel(ctx context.Context, gateway deploy.GatewayEndpoint, model string, in <-chan ReplaySession, concurrency int, honorTiming bool) ReplayStats {
 	if concurrency <= 0 {
 		concurrency = 1
 	}
@@ -414,7 +416,7 @@ func replayFromChannel(ctx context.Context, gatewayURL, model string, in <-chan 
 						time.Sleep(time.Duration(s.PreGaps[turnIdx] * float64(time.Second)))
 					}
 					total.Add(1)
-					resp, err := sendChatCompletionRawWithRecovery(ctx, gatewayURL, ChatCompletionRequest{
+					resp, err := sendChatCompletionRaw(ctx, gateway, ChatCompletionRequest{
 						Model:     model,
 						Messages:  turn,
 						MaxTokens: 1,
@@ -457,7 +459,7 @@ func replayFromChannel(ctx context.Context, gatewayURL, model string, in <-chan 
 // ReplaySessionsConcurrent replays a materialized slice of sessions against the
 // gateway using the shared worker pool. See replayFromChannel for the semantics
 // of concurrency and honorTiming.
-func ReplaySessionsConcurrent(ctx context.Context, gatewayURL, model string, sessions []ReplaySession, concurrency int, honorTiming bool) ReplayStats {
+func ReplaySessionsConcurrent(ctx context.Context, gateway deploy.GatewayEndpoint, model string, sessions []ReplaySession, concurrency int, honorTiming bool) ReplayStats {
 	in := make(chan ReplaySession)
 	go func() {
 		defer close(in)
@@ -469,5 +471,5 @@ func ReplaySessionsConcurrent(ctx context.Context, gatewayURL, model string, ses
 			}
 		}
 	}()
-	return replayFromChannel(ctx, gatewayURL, model, in, concurrency, honorTiming)
+	return replayFromChannel(ctx, gateway, model, in, concurrency, honorTiming)
 }

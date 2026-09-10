@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -61,7 +62,7 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 
 		var (
 			ctx           context.Context
-			caseURL       string
+			caseGateway   deploy.GatewayEndpoint
 			caseNS        string
 			modelName     string
 			eppDeployment string
@@ -71,7 +72,7 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 		BeforeAll(func() {
 			ctx = context.Background()
 
-			caseURL = InstallCase(CaseEPPOutage)
+			caseGateway = InstallCase(CaseEPPOutage)
 			caseNS = CaseNamespace(CaseEPPOutage)
 			modelName = CaseDeployments[CaseEPPOutage][0].Name
 			// The EPP Deployment is named "<name>-inferencepool-epp" by the
@@ -81,7 +82,7 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 			// Sanity: a valid request must succeed BEFORE we induce the
 			// outage, otherwise a 502 below would be meaningless.
 			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
+				resp, sErr := utils.SendChat(caseGateway, modelName)
 				if sErr != nil {
 					return 0
 				}
@@ -116,7 +117,7 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 
 			By("sending a valid chat completion and asserting the outage envelope")
 			Eventually(func(g Gomega) {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
+				resp, sErr := utils.SendChat(caseGateway, modelName)
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
 				defer resp.Body.Close()
 
@@ -156,7 +157,7 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 
 			By("sending a valid chat completion and asserting it succeeds again")
 			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
+				resp, sErr := utils.SendChat(caseGateway, modelName)
 				if sErr != nil {
 					return 0
 				}
