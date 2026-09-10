@@ -85,12 +85,14 @@ func GetK8sClientset() (*kubernetes.Clientset, error) {
 
 // GetPodLogs retrieves the logs of a specific container in a pod.
 func GetPodLogs(coreClient *kubernetes.Clientset, namespace, podName, containerName string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), HTTPTimeout)
+	defer cancel()
 	options := &corev1.PodLogOptions{}
 	if containerName != "" {
 		options.Container = containerName
 	}
 	req := coreClient.CoreV1().Pods(namespace).GetLogs(podName, options)
-	logs, err := req.Stream(context.Background())
+	logs, err := req.Stream(ctx)
 	if err != nil {
 		return "", err
 	}

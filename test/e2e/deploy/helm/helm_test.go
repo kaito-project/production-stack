@@ -711,9 +711,24 @@ func TestOpenGatewayUsesThePublishedDomainWhenTheHarnessDeclaredOne(t *testing.T
 		t.Fatalf("InstallModelHarness: %v", err)
 	}
 
-	gateway, err := d.OpenGateway(ctx, "e2e-ns", "e2e-ns-gw")
+	var readinessCalls [][]string
+	d.kubectl = func(_ context.Context, args ...string) ([]byte, error) {
+		readinessCalls = append(readinessCalls, args)
+		if args[1] == "services" {
+			return []byte(`{"items":[{"metadata":{"name":"gateway-service"}}]}`), nil
+		}
+		return []byte(`{"items":[{"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}`), nil
+	}
+	gateway, err := d.OpenGateway(ctx, "e2e-ns", "e2e-ns")
 	if err != nil {
 		t.Fatalf("OpenGateway: %v", err)
+	}
+	wantCalls := [][]string{
+		{"get", "services", "--namespace", "e2e-ns", "--selector", "gateway.networking.k8s.io/gateway-name=e2e-ns", "-o", "json"},
+		{"get", "pods", "--namespace", "e2e-ns", "--selector", "gateway.networking.k8s.io/gateway-name=e2e-ns", "-o", "json"},
+	}
+	if !reflect.DeepEqual(readinessCalls, wantCalls) {
+		t.Fatalf("readiness calls = %v, want %v", readinessCalls, wantCalls)
 	}
 	base, err := gateway.BaseURL()
 	if err != nil {
@@ -737,5 +752,49 @@ func TestCloseGatewayIsIdempotentForAnUnopenedNamespace(t *testing.T) {
 	}
 	if err := d.CloseGateway(context.Background(), "never-opened"); err != nil {
 		t.Fatalf("CloseGateway: %v", err)
+	}
+}
+
+func TestGatewayReadiness(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		services  string
+		pods      string
+		wantError string
+	}{
+		{name: "missing service", services: `{"items":[]}`, wantError: "gateway service not found"},
+		{name: "missing pods", services: `{"items":[{}]}`, pods: `{"items":[]}`, wantError: "gateway has no Ready pod"},
+		{name: "unready pod", services: `{"items":[{}]}`, pods: `{"items":[{"status":{"phase":"Running","conditions":[{"type":"Ready","status":"False"}]}}]}`, wantError: "gateway has no Ready pod"},
+		{name: "ready pod", services: `{"items":[{}]}`, pods: `{"items":[{"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}]}}]}`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			d, _, _ := newTestDeployerWithKubectl(t, nil, nil)
+			d.kubectl = func(_ context.Context, args ...string) ([]byte, error) {
+				if args[1] == "services" {
+					return []byte(testCase.services), nil
+				}
+				return []byte(testCase.pods), nil
+			}
+			err := d.checkGatewayReady(context.Background(), "ns", "gateway")
+			if testCase.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), testCase.wantError) {
+				t.Fatalf("error = %v, want %q", err, testCase.wantError)
+			}
+		})
+	}
+}
+
+func TestGatewayReadinessHonorsCancellation(t *testing.T) {
+	d, _, _ := newTestDeployerWithKubectl(t, nil, nil)
+	d.kubectl = func(ctx context.Context, _ ...string) ([]byte, error) {
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := d.OpenGateway(ctx, "ns", "gateway"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }

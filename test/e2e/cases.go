@@ -482,15 +482,18 @@ func CaseGatewayName(caseName string) string {
 	return ns
 }
 
-// InstallCase provisions every modeldeployment Helm release owned by the
+// InstallCase provisions every model deployment owned by the
 // given case into its declared namespace (see CaseDeployments) and waits
 // for the EPP / inference pods + gateway routing to be ready. Returns the
-// gateway URL that routes to this case's deployments.
+// gateway endpoint that routes to this case's deployments.
 //
-// EnsureNamespace installs the modelharness chart (Gateway, catch-all
-// HTTPRoute, ReferenceGrant, and auth artifacts) so each case
+// EnsureNamespace provisions the modelharness through the active backend so each case
 // has an isolated dataplane and parallel Ginkgo workers do not contend
 // on a shared gateway.
+//
+// OpenGateway delegates gateway infrastructure readiness to the backend.
+// SetupInferenceSetsWithRouting then installs the models and verifies that
+// inference requests succeed through the gateway.
 //
 // Intended to be called from a Ginkgo Ordered Describe's BeforeAll.
 func InstallCase(caseName string) deploy.GatewayEndpoint {
@@ -501,9 +504,6 @@ func InstallCase(caseName string) deploy.GatewayEndpoint {
 	ctx := context.Background()
 	Expect(utils.EnsureNamespace(ctx, ns)).To(Succeed(),
 		"failed to ensure namespace %s for case %s", ns, caseName)
-
-	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
-		To(Succeed(), "gateway service for %s did not appear", caseName)
 
 	gateway, err := utils.OpenGateway(ctx, ns, gatewayName)
 	Expect(err).NotTo(HaveOccurred(), "failed to open gateway for case %s", caseName)
