@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -98,6 +100,10 @@ func ScaleDeployment(ctx context.Context, namespace, name string, replicas int32
 	if err != nil {
 		return err
 	}
+	return scaleDeployment(ctx, cs, namespace, name, replicas)
+}
+
+func scaleDeployment(ctx context.Context, cs kubernetes.Interface, namespace, name string, replicas int32) error {
 	scale, err := cs.AppsV1().Deployments(namespace).GetScale(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get scale %s/%s: %w", namespace, name, err)
@@ -128,15 +134,88 @@ func GetDeploymentReplicas(ctx context.Context, namespace, name string) (desired
 }
 
 // WaitForDeploymentReplicas blocks until the named Deployment reports at
-// least `want` ready replicas, or the timeout elapses.
+// least `want` ready replicas. For zero, it waits for scale-down to complete.
 func WaitForDeploymentReplicas(ctx context.Context, namespace, name string, want int32, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		_, ready, err := GetDeploymentReplicas(ctx, namespace, name)
-		if err == nil && ready >= want {
-			return nil
-		}
-		time.Sleep(PollInterval)
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("timed out waiting for %s/%s to have >= %d ready replicas", namespace, name, want)
+	return waitForDeploymentReplicas(ctx, clientset, namespace, name, want, timeout, want == 0)
+}
+
+func waitForDeploymentReplicas(ctx context.Context, clientset kubernetes.Interface, namespace, name string, want int32, timeout time.Duration, exact bool) error {
+	return pollUntilReady(ctx, timeout, fmt.Sprintf("deployment %s/%s replicas=%d (exact=%t)", namespace, name, want, exact), func(ctx context.Context) error {
+		deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		return deploymentReplicasReady(deployment, want, exact)
+	})
+}
+
+func deploymentReplicasReady(deployment *appsv1.Deployment, want int32, exact bool) error {
+	if exact {
+		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != want || deployment.Status.ObservedGeneration < deployment.Generation {
+			return fmt.Errorf("target replica count has not been observed")
+		}
+		if deployment.Status.Replicas != want || deployment.Status.ReadyReplicas != want {
+			return fmt.Errorf("replicas=%d ready=%d, want exactly %d", deployment.Status.Replicas, deployment.Status.ReadyReplicas, want)
+		}
+		if deployment.Status.TerminatingReplicas != nil && *deployment.Status.TerminatingReplicas > 0 {
+			return fmt.Errorf("%d replicas are still terminating", *deployment.Status.TerminatingReplicas)
+		}
+	} else if deployment.Status.ReadyReplicas < want {
+		return fmt.Errorf("ready replicas=%d, want at least %d", deployment.Status.ReadyReplicas, want)
+	}
+	return nil
+}
+
+// DeploymentReplicaGuard preserves the replica count across fault injection.
+// Like ScaleDeployment, callers must carry GinkgoLabelStandardK8sOnly.
+type DeploymentReplicaGuard struct {
+	clientset        kubernetes.Interface
+	namespace        string
+	name             string
+	originalReplicas int32
+}
+
+// NewDeploymentReplicaGuard captures the current desired replica count without mutating it.
+func NewDeploymentReplicaGuard(ctx context.Context, namespace, name string) (*DeploymentReplicaGuard, error) {
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return nil, err
+	}
+	return newDeploymentReplicaGuard(ctx, clientset, namespace, name)
+}
+
+func newDeploymentReplicaGuard(ctx context.Context, clientset kubernetes.Interface, namespace, name string) (*DeploymentReplicaGuard, error) {
+	deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("capture replicas for %s/%s: %w", namespace, name, err)
+	}
+	replicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		replicas = *deployment.Spec.Replicas
+	}
+	return &DeploymentReplicaGuard{clientset: clientset, namespace: namespace, name: name, originalReplicas: replicas}, nil
+}
+
+// OriginalReplicas returns the desired count captured before fault injection.
+func (guard *DeploymentReplicaGuard) OriginalReplicas() int32 {
+	return guard.originalReplicas
+}
+
+// ScaleAndWait waits for the exact replica count, including scale-down convergence.
+func (guard *DeploymentReplicaGuard) ScaleAndWait(ctx context.Context, replicas int32, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := scaleDeployment(ctx, guard.clientset, guard.namespace, guard.name, replicas); err != nil {
+		return err
+	}
+	return waitForDeploymentReplicas(ctx, guard.clientset, guard.namespace, guard.name, replicas, timeout, true)
+}
+
+// Restore reapplies the original count and is safe to retry after any failure.
+func (guard *DeploymentReplicaGuard) Restore(ctx context.Context, timeout time.Duration) error {
+	return guard.ScaleAndWait(ctx, guard.originalReplicas, timeout)
 }

@@ -18,6 +18,7 @@ package e2e
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
@@ -216,7 +217,7 @@ const (
 //     spec.template.inference.preset.name.
 //   - Namespace: per-case namespace — the suite installs into this
 //     namespace directly. Each non-default namespace gets its own
-//     dedicated Istio Gateway (named "<namespace>-gw" by chart
+//     dedicated Istio Gateway (named "<namespace>" by chart
 //     convention) so parallel Ginkgo workers can target independent
 //     dataplanes. The Gateway is provisioned by EnsureNamespace via
 //     the modelharness chart during InstallCase.
@@ -268,12 +269,11 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 	},
 	CaseAuth: {
 		{
-			Name:              "auth-phi",
-			Namespace:         "e2e-auth",
-			Model:             presetPhi,
-			Replicas:          2,
-			InstanceType:      "Standard_NV36ads_A10_v5",
-			AuthAPIKeyEnabled: true,
+			Name:         "auth-phi",
+			Namespace:    "e2e-auth",
+			Model:        presetPhi,
+			Replicas:     2,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseNetworkPolicyA: {
@@ -302,12 +302,11 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 			// replicas let the load / endpoint-picker assertions in
 			// filter_order_spec.go observe non-trivial routing
 			// decisions across more than one shadow pod.
-			Name:              "filter-order-phi",
-			Namespace:         "e2e-filter-order",
-			Model:             presetPhi,
-			Replicas:          2,
-			InstanceType:      "Standard_NV36ads_A10_v5",
-			AuthAPIKeyEnabled: true,
+			Name:         "filter-order-phi",
+			Namespace:    "e2e-filter-order",
+			Model:        presetPhi,
+			Replicas:     2,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseBBROutage: {
@@ -321,12 +320,11 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 	},
 	CaseExtAuthzOutage: {
 		{
-			Name:              "ext-authz-outage-phi",
-			Namespace:         "e2e-ext-authz-outage",
-			Model:             presetPhi,
-			Replicas:          1,
-			InstanceType:      "Standard_NV36ads_A10_v5",
-			AuthAPIKeyEnabled: true,
+			Name:         "ext-authz-outage-phi",
+			Namespace:    "e2e-ext-authz-outage",
+			Model:        presetPhi,
+			Replicas:     1,
+			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
 	CaseEPPOutage: {
@@ -474,14 +472,14 @@ func CaseNamespace(caseName string) string {
 }
 
 // CaseGatewayName returns the Gateway name owned by the case namespace.
-// Mirrors the chart convention "<namespace>-gw" (see
+// Mirrors the chart convention "<namespace>" (see
 // charts/modelharness/templates/_helpers.tpl).
 func CaseGatewayName(caseName string) string {
 	ns := CaseNamespace(caseName)
 	if ns == "" {
 		return ""
 	}
-	return ns + "-gw"
+	return ns
 }
 
 // InstallCase provisions every modeldeployment Helm release owned by the
@@ -490,29 +488,28 @@ func CaseGatewayName(caseName string) string {
 // gateway URL that routes to this case's deployments.
 //
 // EnsureNamespace installs the modelharness chart (Gateway, catch-all
-// HTTPRoute, ReferenceGrant, and optional auth artifacts) so each case
+// HTTPRoute, ReferenceGrant, and auth artifacts) so each case
 // has an isolated dataplane and parallel Ginkgo workers do not contend
 // on a shared gateway.
 //
 // Intended to be called from a Ginkgo Ordered Describe's BeforeAll.
-func InstallCase(caseName string) string {
+func InstallCase(caseName string) deploy.GatewayEndpoint {
 	ns := CaseNamespace(caseName)
 	gatewayName := CaseGatewayName(caseName)
 	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", caseName)
 
 	ctx := context.Background()
-	first := CaseDeployments[caseName][0]
-	Expect(utils.EnsureNamespace(ctx, ns, first.AuthAPIKeyEnabled)).To(Succeed(),
+	Expect(utils.EnsureNamespace(ctx, ns)).To(Succeed(),
 		"failed to ensure namespace %s for case %s", ns, caseName)
 
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
 		To(Succeed(), "gateway service for %s did not appear", caseName)
 
-	gatewayURL, err := utils.GetGatewayURLFor(ns, gatewayName)
-	Expect(err).NotTo(HaveOccurred(), "failed to resolve gateway URL for case %s", caseName)
+	gateway, err := utils.OpenGateway(ctx, ns, gatewayName)
+	Expect(err).NotTo(HaveOccurred(), "failed to open gateway for case %s", caseName)
 
-	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gatewayURL)
-	return gatewayURL
+	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gateway)
+	return gateway
 }
 
 // UninstallCase tears down every modeldeployment Helm release owned by the
@@ -525,8 +522,17 @@ func UninstallCase(caseName string) {
 		return
 	}
 	ns := deployments[0].Namespace
-	utils.TeardownInferenceSetsWithRouting(deployments, ns)
-	if err := utils.DeleteNamespace(context.Background(), ns); err != nil {
+	if err := utils.CleanupDeploymentsAndNamespace(context.Background(), deployments, ns); err != nil {
 		GinkgoWriter.Printf("Cleanup warning: %v\n", err)
 	}
+}
+
+func prepareDeploymentOutage(ctx context.Context, namespace, name string) *utils.DeploymentReplicaGuard {
+	guard, err := utils.NewDeploymentReplicaGuard(ctx, namespace, name)
+	Expect(err).NotTo(HaveOccurred(), "failed to capture replicas for %s/%s", namespace, name)
+	Expect(guard.OriginalReplicas()).To(BeNumerically(">", 0), "%s/%s must be healthy before fault injection", namespace, name)
+	DeferCleanup(func(ctx SpecContext) {
+		Expect(guard.Restore(ctx, 3*time.Minute)).To(Succeed(), "failed to restore %s/%s", namespace, name)
+	}, NodeTimeout(4*time.Minute))
+	return guard
 }

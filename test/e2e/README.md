@@ -4,7 +4,7 @@ End-to-end test suite for production-stack, built with [Ginkgo v2](https://onsi.
 
 ## Test cases
 
-Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry carries `Name`, `Namespace`, `Model` (preset), `Replicas`, `InstanceType`. The Gateway name is derived as `<namespace>-gw` by both `charts/modelharness` and `charts/modeldeployment`.
+Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry carries `Name`, `Namespace`, `Model` (preset), `Replicas`, `InstanceType`. The Gateway name defaults to `<namespace>` in both `charts/modelharness` and `charts/modeldeployment`.
 
 | Case key | Test file | Namespace | Gateway | Deployments | Lifecycle |
 | --- | --- | --- | --- | --- | --- |
@@ -30,8 +30,8 @@ the production App Routing provisioning contract.
 `utils/`:
 
 - [`setup.go`](utils/setup.go) — `EnsureNamespace` (provisions the workload namespace + modelharness), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
-- [`http.go`](utils/http.go) — multi-gateway port-forward (`GetGatewayURLFor`), `SendChatCompletion`.
-- [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UpgradeModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`, `NamespaceAPIKey` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
+- [`http.go`](utils/http.go) — authenticated `SendGatewayRequest` with `SendChat` / `SendModels` shortcuts against a `deploy.GatewayEndpoint`, taking `RequestOption`s (`WithPrompt`, `WithAuth`, `WithoutAuth`, `WithHeader`, `WithMethod`, `WithTransportRetry`, `WithOriginPath`, `WithTimeout`).
+- [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UpgradeModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`, `NamespaceAuthHeaders` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).
 
@@ -62,15 +62,20 @@ Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into three groups:
 - **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
 - **Environment** (what kind of cluster a spec needs): `StandardK8sOnly`.
 
+`ModelDiscovery` marks the `/v1/models` listing, retrieval, and authentication
+specs. They remain enabled by default upstream. Consumers whose deployed stack
+does not yet support these endpoints can exclude them with `!ModelDiscovery`.
+
 `StandardK8sOnly` cuts across the other two. It marks specs that require a
 standard Kubernetes cluster and cannot run on an opinionated managed one such as
-AKS Automatic, for either of two reasons: they reshape running workloads
+AKS Automatic: they reshape running workloads
 directly rather than going through the `Deployer` — `ScaleDeployment` on a
 Deployment's scale subresource ([`utils/cluster.go`](utils/cluster.go)) or
 `SetInferenceSetReplicas` patching an InferenceSet
 ([`utils/scaling.go`](utils/scaling.go)) — or their assertion only holds under a
-`ModelDeploymentValues` field a managed backend cannot express. When running
-against a managed cluster:
+`ModelDeploymentValues` field a managed backend cannot express, or they scrape
+metrics through `pods/proxy`, directly or via the helpers in
+[`utils/metrics.go`](utils/metrics.go). When running against a managed cluster:
 
 ```bash
 E2E_LABEL='!StandardK8sOnly' make test-e2e
@@ -80,9 +85,11 @@ It currently covers `bbr_outage`, `ext_authz_outage`, `epp_outage`,
 `cluster_filter_ha`, `cluster_status`, `control_plane_error`, `scaling`, and the
 `Load distribution` Context of `model_routing` (which turns prefix-cache scoring
 off through `EPPScorerWeights` so identical prompts spread across replicas).
-Label the smallest container that needs it, not the whole file: the rest of
-`model_routing` asserts routing correctness whatever the scorer weights are, and
-stays runnable everywhere.
+It also covers `prefix_cache_routing`, `prefix_cache_perf`, the cross-model
+isolation and EPP metrics Contexts and backend 4xx counter assertion in
+`model_routing`, and the full-chain counter assertions in `filter_order`.
+Label the smallest container that needs it, not the whole file: routing and
+filter-order specs that do not require these mechanisms stay runnable everywhere.
 Note it describes the MECHANISM, not the blast radius: `model_unavailable`
 empties an inference pool too, but does so through `UpgradeModelDeployment`, so
 any backend can honour it and it stays unlabelled.
@@ -124,7 +131,9 @@ type Deployer interface {
     Name() string
     InstallModelHarness(ctx context.Context, values ModelHarnessValues) error
     UninstallModelHarness(ctx context.Context, namespace string) error
-    NamespaceAPIKey(ctx context.Context, namespace string) (string, error)
+    AuthHeaders(ctx context.Context, namespace string) ([]AuthHeader, error)
+    OpenGateway(ctx context.Context, namespace, gatewayName string) (GatewayEndpoint, error)
+    CloseGateway(ctx context.Context, namespace string) error
     InstallModelDeployment(ctx context.Context, values ModelDeploymentValues) error
     UpgradeModelDeployment(ctx context.Context, values ModelDeploymentValues) error
     UninstallModelDeployment(ctx context.Context, name, namespace string) error
@@ -135,13 +144,19 @@ Implementations must be idempotent on install (re-running reconciles to the
 supplied values), treat a missing resource as a successful delete, and validate
 values before issuing any remote call.
 
-Two consequences worth knowing when writing a spec:
+Conventions worth knowing when writing a spec:
 
 - **The workload namespace belongs to the harness.** `InstallModelHarness`
   creates it (with the `productionstack.kaito.sh/managed-by: modelharness`
   discovery label) and `UninstallModelHarness` deletes it. Specs never create or
   delete a workload namespace themselves, so a non-Helm backend can provision it
   through its own API.
+- **Every E2E harness enables authentication.** `utils.InstallModelHarness(ctx,
+  namespace)` always supplies `ModelHarnessValues.AuthEnabled=true` to the
+  backend. Neither `EnsureNamespace` nor `ModelDeploymentValues` has an E2E
+  authentication switch. The modelharness chart's default is unchanged.
+  `EnsureNamespace` waits for namespace credentials; routing warmup then waits
+  for authenticated inference to succeed without a fixed policy-propagation sleep.
 - **Changing a deployment's values goes through `UpgradeModelDeployment`.**
   Replicas, scaling thresholds, scorer weights — anything declared in
   `ModelDeploymentValues` — must be changed through it rather than by patching
@@ -150,10 +165,74 @@ Two consequences worth knowing when writing a spec:
   hands `.spec.replicas` to KEDA's scale subresource; restoring a live replica
   count there uses `utils.SetInferenceSetReplicas`, which says so in its doc
   comment.
-- **The API key comes from `NamespaceAPIKey`, never from the Secret.** The Helm
-  backend reads the Secret the apikey-operator reconciles out of the harness's
-  APIKey CR; a managed backend mints the key through its own API and does not
-  let the caller read Secrets at all.
+- **Credentials come from `AuthHeaders`, never from the Secret and never
+  hand-built.** The backend returns complete `name: value` header pairs, because
+  *which* credential the gateway wants and *which header* it reads it from are
+  both backend properties. The Helm backend reads the Secret the apikey-operator
+  reconciles out of the harness's APIKey CR and advertises the same key in
+  `Authorization`, `X-API-Key` and `API-Key`; a managed backend mints the key
+  through its own API, does not let the caller read Secrets, and may classify
+  requests on one specific header. An empty result means credentials are not
+  available yet; it is never cached or treated as permission to send bare requests.
+
+  `utils.OpenGateway` wraps the backend endpoint with its namespace authentication
+  context. Request builders automatically attach the first credential, including
+  load-generator and trace-replay requests. Missing authentication context or
+  credentials fails the request locally. Positive credentials are cached per
+  namespace and invalidated during warmup and namespace cleanup.
+
+  Negative tests must use `WithoutAuth()` to omit authentication, or
+  `WithAuth(deploy.AuthHeader{Name: headerName, Value: "invalid-key"})` to send an
+  invalid key. `WithAuth` replaces default authentication, never supplements it;
+  an empty `WithAuth()` is an error. `WithHeader` only sets ordinary request
+  headers and does not disable default authentication. HTTP 401 responses are
+  returned unchanged, never automatically retried with a valid credential.
+  The former per-case `NamespaceRequestOptions` helper has been removed.
+- **How the gateway is reached comes from `OpenGateway`.** `InstallCase` returns
+  a `GatewayEndpoint`, and specs pass that value around instead of a URL string.
+  A self-hosted stack is only reachable through a kubectl port-forward, which the
+  Helm backend owns end to end — including rebuilding it on a fresh local port
+  when it dies mid-suite, which is why `BaseURL()` is a method and not a field.
+  A managed control plane publishes a routable URL over its own API and denies
+  the `pods/portforward` subresource outright, so it allocates nothing.
+
+  `BaseURL()` is the **OpenAI API root**, `/v1` included. Paths are relative to
+  it (`utils.ChatCompletionsPath`, `utils.ModelsPath`), because a managed
+  endpoint already carries the prefix and a tunnelled one does not. Use
+  `utils.SendGatewayRequest(ctx, gateway, method, path, body, opts...)` for a
+  body `SendChat` cannot express. The raw bytes are sent unchanged, including
+  deliberately malformed JSON. `WithHeader("Content-Type", "text/plain")`
+  overrides the default JSON content type for a non-nil body.
+
+  Use `WithOriginPath()` for a path outside the API root, such as `/healthz`.
+  `WithTimeout(duration)` overrides the per-attempt HTTP timeout; the supplied
+  context controls cancellation across attempts and retry waits. `SendChat`,
+  `SendModels`, and trace replay share the same sender, authentication, and
+  transport-retry implementation. HTTP responses are never retried; only
+  transport failures are retried when `WithTransportRetry()` is explicitly set.
+  The former public request constructors have been removed. Do not build raw
+  HTTP requests from `GatewayOrigin`, which resolves a URL but cannot attach
+  credentials or apply request options.
+
+  Use `SendChatContext` / `SendModelsContext` when the caller owns a context.
+  The original shortcuts remain available and use a background context.
+  Load generation passes its worker context to the sender so `Stop()` cancels
+  in-flight requests and retry waits. `CheckChatSuccess` performs one HTTP 200
+  probe with response diagnostics; specs retain control of `Eventually` timing.
+  All `Parse*Response`, `ParseModelList`, and `ParseModel` helpers consume and
+  close the response body; callers must not read it again after parsing.
+
+- **Share lifecycle operations, not scenario assertions.** Readiness helpers
+  use context-aware polling and retain the last unsuccessful check in timeout
+  errors. `WaitForDeploymentReplicas` accepts at least the requested ready count,
+  except zero, which waits for scale-down convergence. `DeploymentReplicaGuard`
+  captures the original count and provides exact `ScaleAndWait` and repeatable
+  `Restore` operations for `StandardK8sOnly` fault-injection specs.
+  Register case teardown and restoration independently in `BeforeAll`, with
+  restoration registered last so it runs first after the Ordered container.
+  Keep outage attribution, labels, and recovery assertions visible in each spec.
+  `CleanupDeploymentsAndNamespace` attempts all teardown steps and joins errors;
+  a failed gateway close does not prevent credential invalidation or uninstall.
 
 `helm` is the only backend in this repo and remains the default, so local runs
 are unchanged. Select a backend with `E2E_DEPLOYMENT_BACKEND=<name>`; the
@@ -404,7 +483,7 @@ var _ = Describe("My Feature", Ordered, utils.GinkgoLabelMyFeature, func() {
     })
 
     It("routes inference traffic to the case gateway", func() {
-        resp, err := utils.SendChatCompletion(caseGatewayURL, modelName)
+        resp, err := utils.SendChat(caseGateway, modelName)
         Expect(err).NotTo(HaveOccurred())
         defer resp.Body.Close()
         Expect(resp.StatusCode).To(Equal(200))
@@ -460,7 +539,7 @@ test/e2e/
     ├── ginkgo.go                     # Label definitions
     ├── deployer.go                   # Deployer injection + lifecycle helpers
     ├── helm.go                       # Value-type aliases re-exported from deploy
-    ├── http.go                       # Gateway port-forward + chat helpers
+    ├── http.go                       # Gateway request helpers
     ├── inference.go                  # InferenceSet readiness + snapshot/diff
     ├── metrics.go                    # EPP metrics scraping
     ├── traces.go                     # agentic-trace load generator (perf test)

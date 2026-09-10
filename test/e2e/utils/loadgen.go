@@ -22,6 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
 
 // LoadGenStats captures the running counters of a load generator.
@@ -45,7 +47,7 @@ type LoadGenStats struct {
 //
 // Start is idempotent per instance; it must be followed by exactly one Stop.
 type LoadGenerator struct {
-	GatewayURL  string
+	Gateway     deploy.GatewayEndpoint
 	Model       string
 	Prompt      string
 	Concurrency int
@@ -114,7 +116,7 @@ func (lg *LoadGenerator) runWorker(ctx context.Context) {
 			return
 		default:
 		}
-		lg.sendOnce()
+		lg.sendOnce(ctx)
 	}
 }
 
@@ -128,14 +130,17 @@ func (lg *LoadGenerator) runRate(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			lg.sendOnce()
+			lg.sendOnce(ctx)
 		}
 	}
 }
 
-func (lg *LoadGenerator) sendOnce() {
+func (lg *LoadGenerator) sendOnce(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	lg.total.Add(1)
-	resp, err := SendChatCompletionWithPrompt(lg.GatewayURL, lg.Model, lg.Prompt)
+	resp, err := SendChatContext(ctx, lg.Gateway, lg.Model, WithPrompt(lg.Prompt), WithTransportRetry())
 	if err != nil {
 		lg.transportErr.Add(1)
 		return
@@ -152,6 +157,11 @@ func (lg *LoadGenerator) sendOnce() {
 	}
 	// Ensure 429/503 do not starve: brief breath.
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
-		time.Sleep(100 * time.Millisecond)
+		timer := time.NewTimer(100 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
 	}
 }

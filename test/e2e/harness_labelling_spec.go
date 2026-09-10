@@ -56,7 +56,7 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 		// EnsureNamespace stamps the discovery label on the workload
 		// namespace and installs the harness with auth enabled, so this
 		// case exercises the ext-authz EnvoyFilter + APIKey objects too.
-		Expect(utils.EnsureNamespace(ctx, namespace, true)).To(Succeed())
+		Expect(utils.EnsureNamespace(ctx, namespace)).To(Succeed())
 	})
 
 	AfterEach(func() {
@@ -87,7 +87,7 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 	It("stamps kaito.sh/owned-by: modelharness on every harness-owned object",
 		utils.GinkgoLabelStandardK8sOnly, func() {
 			cl := utils.TestingCluster.KubeClient
-			gatewayName := namespace + "-gw"
+			gatewayName := namespace
 
 			// Each entry: a harness-owned object identified by GVK + name.
 			owned := []struct {

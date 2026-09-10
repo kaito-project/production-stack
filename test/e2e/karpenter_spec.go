@@ -80,6 +80,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -144,8 +145,8 @@ func registerKarpenterScenario(s karpenterScenario) {
 		}
 
 		var (
-			// gatewayURL is populated in BeforeAll by InstallCase.
-			gatewayURL string
+			// gateway is populated in BeforeAll by InstallCase.
+			gateway deploy.GatewayEndpoint
 			// provisionedNodeNames holds the distinct GPU nodes that hosted
 			// the inference pods, captured by the provisioning It block and
 			// reused by the scale-to-zero block to assert the Node objects
@@ -158,7 +159,7 @@ func registerKarpenterScenario(s karpenterScenario) {
 		)
 
 		BeforeAll(func() {
-			gatewayURL = InstallCase(s.caseName)
+			gateway = InstallCase(s.caseName)
 		})
 
 		AfterAll(func() {
@@ -319,7 +320,7 @@ func registerKarpenterScenario(s karpenterScenario) {
 				d := d // capture
 				By(fmt.Sprintf("Sending inference request to deployment %s (model=%s)", d.Name, d.Model))
 				Eventually(func() error {
-					resp, err := utils.SendChatCompletion(gatewayURL, d.Name)
+					resp, err := utils.SendChat(gateway, d.Name)
 					if err != nil {
 						return fmt.Errorf("request to %s failed: %w", d.Name, err)
 					}

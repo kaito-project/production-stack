@@ -28,6 +28,8 @@ var (
 	// GinkgoLabelRouting marks tests that verify model-based request routing.
 	GinkgoLabelRouting = g.Label("Routing")
 
+	GinkgoLabelModelDiscovery = g.Label("ModelDiscovery")
+
 	// GinkgoLabelPrefixCache marks tests that verify prefix/KV-cache aware routing.
 	GinkgoLabelPrefixCache = g.Label("PrefixCache")
 
@@ -117,7 +119,7 @@ var (
 	// GinkgoLabelStandardK8sOnly marks tests that require a standard Kubernetes
 	// cluster and cannot run on an opinionated managed one such as AKS Automatic.
 	//
-	// Two things put a spec here:
+	// Three things put a spec here:
 	//
 	//   - It reshapes running workloads directly, bypassing the deploy.Deployer:
 	//     ScaleDeployment on a Deployment's scale subresource (utils/cluster.go)
@@ -125,6 +127,8 @@ var (
 	//   - Its assertion only holds under a ModelDeploymentValues field a managed
 	//     backend cannot express, such as the EPPScorerWeights override the
 	//     load-distribution spec needs to disable prefix-cache scoring.
+	//   - It scrapes pod metrics through the pods/proxy subresource, directly
+	//     or through the helpers in utils/metrics.go.
 	//
 	// It cuts ACROSS the feature-area labels — a spec keeps its own (Outage,
 	// StatusReporter, Scaling, ...) and carries this one in addition, so a run
@@ -135,8 +139,7 @@ var (
 	// Note this is about the MECHANISM, not the blast radius. A spec that empties
 	// an inference pool through the Deployer (model_unavailable_spec.go) is just
 	// as disruptive but stays unlabelled, because any backend can honour it.
-	// Keep the label as tight as the container that actually needs it: the rest
-	// of model_routing_spec.go stays runnable because only its "Load
-	// distribution" Context carries this.
+	// Keep the label as tight as the container that actually needs it: routing
+	// specs that do not require these mechanisms stay runnable everywhere.
 	GinkgoLabelStandardK8sOnly = g.Label("StandardK8sOnly")
 )

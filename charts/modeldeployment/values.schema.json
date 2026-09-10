@@ -140,7 +140,7 @@
     },
     "gatewayName": {
       "type": "string",
-      "description": "Gateway the HTTPRoute attaches to. Empty derives '<namespace>-gw'."
+      "description": "Gateway the HTTPRoute attaches to. Empty defaults to '<namespace>'."
     },
     "autoUpgrade": {
       "type": "object",

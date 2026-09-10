@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -68,72 +69,37 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 		)
 
 		var (
-			ctx          context.Context
-			caseURL      string
-			caseNS       string
-			modelName    string
-			hostHeader   string
-			apiKey       string
-			origReplicas int32
+			ctx         context.Context
+			caseGateway deploy.GatewayEndpoint
+			modelName   string
+			replicas    *utils.DeploymentReplicaGuard
 		)
 
 		BeforeAll(func() {
 			ctx = context.Background()
+			DeferCleanup(UninstallCase, CaseExtAuthzOutage)
 
-			caseURL = InstallCase(CaseExtAuthzOutage)
-			caseNS = CaseNamespace(CaseExtAuthzOutage)
+			caseGateway = InstallCase(CaseExtAuthzOutage)
 			modelName = CaseDeployments[CaseExtAuthzOutage][0].Name
-			var err error
-			hostHeader, err = utils.GatewayHostFor(caseNS)
-			Expect(err).NotTo(HaveOccurred())
-
-			Eventually(func() (string, error) {
-				return utils.NamespaceAPIKey(ctx, caseNS)
-			}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
-				"API key Secret should be created in %s", caseNS)
-			apiKey, err = utils.NamespaceAPIKey(ctx, caseNS)
-			Expect(err).NotTo(HaveOccurred())
+			replicas = prepareDeploymentOutage(ctx, authNamespace, authDeploymentName)
 
 			// Sanity: an authenticated request must succeed BEFORE we
 			// induce the outage.
-			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletionWithAuth(caseURL, modelName, "hello", apiKey, hostHeader)
-				if sErr != nil {
-					return 0
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode
-			}, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(),
 				"baseline authenticated request should succeed before inducing the ext_authz outage")
-		})
-
-		AfterAll(func() {
-			// Always restore apikey-authz so we never leave the shared
-			// cluster filter broken for subsequent (Serial) suites.
-			if origReplicas > 0 {
-				Expect(utils.ScaleDeployment(ctx, authNamespace, authDeploymentName, origReplicas)).
-					To(Succeed(), "failed to restore apikey-authz replicas")
-				Expect(utils.WaitForDeploymentReplicas(ctx, authNamespace, authDeploymentName, origReplicas, 3*time.Minute)).
-					To(Succeed(), "apikey-authz did not return to %d ready replicas", origReplicas)
-			}
-			UninstallCase(CaseExtAuthzOutage)
 		})
 
 		It("maps an ext_authz outage to 502 ext_authz_unavailable (not 404 model_not_found)", func() {
 			By("scaling the apikey-authz Deployment to zero")
-			var err error
-			origReplicas, _, err = utils.GetDeploymentReplicas(ctx, authNamespace, authDeploymentName)
-			Expect(err).NotTo(HaveOccurred(), "failed to read apikey-authz replica count")
-			Expect(origReplicas).To(BeNumerically(">", 0), "apikey-authz should have had >0 replicas before the outage")
-			Expect(utils.ScaleDeployment(ctx, authNamespace, authDeploymentName, 0)).
+			Expect(replicas.ScaleAndWait(ctx, 0, 2*time.Minute)).
 				To(Succeed(), "failed to scale apikey-authz to zero")
 
 			By("sending an authenticated request and asserting the outage envelope")
 			Eventually(func(g Gomega) {
-				resp, sErr := utils.SendChatCompletionWithAuth(caseURL, modelName, "hello", apiKey, hostHeader)
+				resp, sErr := utils.SendChat(caseGateway, modelName)
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
-				defer resp.Body.Close()
-
 				status := resp.StatusCode
 				errSource := resp.Header.Get("x-kaito-error-source")
 				parsed, pErr := utils.ParseErrorResponse(resp)
@@ -161,22 +127,13 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 
 		It("recovers once ext_authz is restored", func() {
 			By("scaling the apikey-authz Deployment back to its original replica count")
-			Expect(origReplicas).To(BeNumerically(">", 0),
-				"previous spec must have captured the original replica count")
-			Expect(utils.ScaleDeployment(ctx, authNamespace, authDeploymentName, origReplicas)).
+			Expect(replicas.Restore(ctx, 3*time.Minute)).
 				To(Succeed(), "failed to restore apikey-authz replicas")
-			Expect(utils.WaitForDeploymentReplicas(ctx, authNamespace, authDeploymentName, origReplicas, 3*time.Minute)).
-				To(Succeed(), "apikey-authz did not return to %d ready replicas", origReplicas)
 
 			By("sending an authenticated request and asserting it succeeds again")
-			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletionWithAuth(caseURL, modelName, "hello", apiKey, hostHeader)
-				if sErr != nil {
-					return 0
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode
-			}, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(),
 				"authenticated requests should succeed again once ext_authz is healthy")
 		})
 	})

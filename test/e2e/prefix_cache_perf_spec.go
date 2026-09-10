@@ -28,6 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -188,14 +189,14 @@ func uniquePrefixSessions(sessions []utils.ReplaySession) []utils.ReplaySession 
 }
 
 var _ = Describe("Prefix Cache Routing Perf",
-	utils.GinkgoLabelPerf, utils.GinkgoLabelPrefixCache, Ordered, func() {
+	utils.GinkgoLabelPerf, utils.GinkgoLabelPrefixCache, utils.GinkgoLabelStandardK8sOnly, Ordered, func() {
 
 		model := CaseDeployments[CasePrefixCachePerf][0].Name
 		caseNamespace := CaseNamespace(CasePrefixCachePerf)
 
 		var (
-			gatewayURL string
-			fixture    string
+			gateway deploy.GatewayEndpoint
+			fixture string
 		)
 
 		// forEachUsableShard streams the fixture shard-by-shard (one shard
@@ -213,8 +214,9 @@ var _ = Describe("Prefix Cache Routing Perf",
 					return nil
 				}
 				By(fmt.Sprintf("shard %s: %d sessions", shardName, len(sh.Sessions)))
-				Expect(utils.RefreshPortForward(gatewayURL)).To(Succeed(),
-					"refreshing gateway port-forward before shard %s", shardName)
+				// Rotate the transport between shards, while no requests
+				// are in flight, so a stale one cannot fail a measured shard.
+				gateway.Reset()
 				fn(shardName, sh.Sessions)
 				return nil
 			})
@@ -256,7 +258,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 					fixture, totalShards, totalSessions))
 			}
 
-			gatewayURL = InstallCase(CasePrefixCachePerf)
+			gateway = InstallCase(CasePrefixCachePerf)
 		})
 
 		AfterAll(func() {
@@ -300,7 +302,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 
 				By(fmt.Sprintf("replaying %d sessions x %d rounds at concurrency %d", len(sessions), perfMeasuredRounds, perfConcurrency))
 				runSessions := repeatSessions(sessions, perfMeasuredRounds)
-				stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, runSessions, perfConcurrency, false)
+				stats := utils.ReplaySessionsConcurrent(ctx, gateway, model, runSessions, perfConcurrency, false)
 				GinkgoWriter.Printf("[perf] shard replay stats: %+v\n", stats)
 				Expect(stats.Total).To(Equal(replayRequestCount(runSessions)),
 					"shared-prefix replay did not attempt every selected turn: %+v", stats)
@@ -424,7 +426,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 				By("running unique-prefix load (per-request unique nonce, no shared prefix)")
 				uniqueSessions := uniquePrefixSessions(sessions)
 				Expect(uniqueSessions).NotTo(BeEmpty(), "no session in shard has room for the unique-prefix nonce")
-				stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, uniqueSessions, perfConcurrency, false)
+				stats := utils.ReplaySessionsConcurrent(ctx, gateway, model, uniqueSessions, perfConcurrency, false)
 				Expect(stats.Total).To(Equal(replayRequestCount(uniqueSessions)),
 					"A/B unique run did not attempt every selected request: %+v", stats)
 				Expect(stats.Success).To(Equal(stats.Total), "A/B unique run must succeed completely: %+v", stats)
@@ -482,7 +484,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 
 				// Prime every selected prefix once under concurrent load so the
 				// sticky pod for each is established.
-				warm := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, prefixes, perfConcurrency, false)
+				warm := utils.ReplaySessionsConcurrent(ctx, gateway, model, prefixes, perfConcurrency, false)
 				Expect(warm.Total).To(Equal(replayRequestCount(prefixes)),
 					"sticky priming did not attempt every selected request: %+v", warm)
 				Expect(warm.Success).To(Equal(warm.Total), "sticky priming must succeed completely: %+v", warm)
@@ -497,7 +499,7 @@ var _ = Describe("Prefix Cache Routing Perf",
 					// the per-pod request delta reflects the routing *decision*
 					// for a single warm prefix rather than worker interleaving.
 					single := []utils.ReplaySession{s}
-					stats := utils.ReplaySessionsConcurrent(ctx, gatewayURL, model, repeatSessions(single, perfStickyMeasuredRequests), 1, false)
+					stats := utils.ReplaySessionsConcurrent(ctx, gateway, model, repeatSessions(single, perfStickyMeasuredRequests), 1, false)
 					Expect(stats.Total).To(Equal(int64(perfStickyMeasuredRequests)),
 						"sticky run did not attempt every request: %+v", stats)
 					Expect(stats.Success).To(Equal(stats.Total), "sticky run must succeed completely: %+v", stats)

@@ -18,6 +18,7 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
@@ -59,25 +60,20 @@ func CurrentDeployer() (deploy.Deployer, error) {
 // InstallModelHarness creates or reconciles the modelharness owning the
 // per-namespace shared resources: the workload namespace itself (stamped with
 // the discovery label the control plane selects on), the Istio Gateway (named
-// "<namespace>-gw" by chart default), the catch-all `model-not-found-direct`
-// EnvoyFilter, and — when authEnabled is true — the AuthorizationPolicy +
+// "<namespace>" by chart default), the catch-all `model-not-found-direct`
+// EnvoyFilter, and the AuthorizationPolicy +
 // APIKey CR that wire the Gateway into the cluster-wide apikey-ext-authz
 // CUSTOM provider.
 //
 // Idempotent: safe to call repeatedly for the same namespace.
-func InstallModelHarness(ctx context.Context, namespace string, authEnabled bool) error {
+func InstallModelHarness(ctx context.Context, namespace string) error {
 	d, err := CurrentDeployer()
-	if err != nil {
-		return err
-	}
-	gateway, err := deploymentGatewayValues()
 	if err != nil {
 		return err
 	}
 	return d.InstallModelHarness(ctx, deploy.ModelHarnessValues{
 		Namespace:   namespace,
-		AuthEnabled: authEnabled,
-		Gateway:     gateway,
+		AuthEnabled: true,
 	})
 }
 
@@ -91,15 +87,50 @@ func UninstallModelHarness(ctx context.Context, namespace string) error {
 	return d.UninstallModelHarness(ctx, namespace)
 }
 
+// OpenGateway returns the endpoint inference requests for namespace are sent
+// to, allocating whatever transport the active backend needs to reach it.
+func OpenGateway(ctx context.Context, namespace, gatewayName string) (deploy.GatewayEndpoint, error) {
+	d, err := CurrentDeployer()
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err := d.OpenGateway(ctx, namespace, gatewayName)
+	if err != nil {
+		return nil, err
+	}
+	return &authenticatedGateway{GatewayEndpoint: endpoint, namespace: namespace}, nil
+}
+
+type authenticatedGateway struct {
+	deploy.GatewayEndpoint
+	namespace string
+}
+
+func (gateway *authenticatedGateway) authHeaders(ctx context.Context) ([]deploy.AuthHeader, error) {
+	headers, err := NamespaceAuthHeaders(ctx, gateway.namespace)
+	if err != nil {
+		return nil, err
+	}
+	if len(headers) == 0 {
+		return nil, fmt.Errorf("no authentication credentials available for namespace %s", gateway.namespace)
+	}
+	return headers, nil
+}
+
+// CloseGateway releases what OpenGateway allocated for namespace.
+func CloseGateway(ctx context.Context, namespace string) error {
+	d, err := CurrentDeployer()
+	if err != nil {
+		return err
+	}
+	return d.CloseGateway(ctx, namespace)
+}
+
 // InstallModelDeployment creates or reconciles a model deployment
 // (InferenceSet, InferencePool, EPP artifacts, and HTTPRoute) from values.
 // Idempotent: re-running reconciles to the supplied values.
 func InstallModelDeployment(ctx context.Context, values deploy.ModelDeploymentValues) error {
 	d, err := CurrentDeployer()
-	if err != nil {
-		return err
-	}
-	values.Gateway, err = deploymentGatewayValues()
 	if err != nil {
 		return err
 	}
@@ -119,26 +150,7 @@ func UpgradeModelDeployment(ctx context.Context, values deploy.ModelDeploymentVa
 	if err != nil {
 		return err
 	}
-	values.Gateway, err = deploymentGatewayValues()
-	if err != nil {
-		return err
-	}
 	return d.UpgradeModelDeployment(ctx, values)
-}
-
-func deploymentGatewayValues() (deploy.GatewayValues, error) {
-	if !IsAzureProvider() {
-		return deploy.GatewayValues{}, nil
-	}
-	domain, err := getAppRoutingDomain()
-	if err != nil {
-		return deploy.GatewayValues{}, err
-	}
-	return deploy.GatewayValues{
-		CloudProvider:    "azure",
-		GatewayClassName: "approuting-istio",
-		DefaultDomain:    domain,
-	}, nil
 }
 
 // UninstallModelDeployment removes the named model deployment. Missing

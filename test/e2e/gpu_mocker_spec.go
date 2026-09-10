@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -43,18 +44,12 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 	suiteDeployments := caseDeployments
 	falconModel := caseDeployments[0].Name
 
-	// caseGatewayURL is the URL routing into this case's dedicated
+	// caseGateway is the URL routing into this case's dedicated
 	// Gateway. Resolved in BeforeAll.
-	var caseGatewayURL string
-
-	// sendChat forwards to the non-auth helper — the gpu-mocker case
-	// no longer enables the API-key AuthorizationPolicy (see cases.go).
-	sendChat := func(url, model string) (*http.Response, error) {
-		return utils.SendChatCompletion(url, model)
-	}
+	var caseGateway deploy.GatewayEndpoint
 
 	BeforeAll(func() {
-		caseGatewayURL = InstallCase(CaseGPUMocker)
+		caseGateway = InstallCase(CaseGPUMocker)
 	})
 
 	AfterAll(func() {
@@ -74,7 +69,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// Retry with backoff — BBR/EPP ext_proc filters may need time
 				// to establish gRPC connections after cluster setup.
 				Eventually(func() error {
-					resp, err := sendChat(caseGatewayURL, falconModel)
+					resp, err := utils.SendChat(caseGateway, falconModel)
 					if err != nil {
 						return fmt.Errorf("request failed: %w", err)
 					}
@@ -846,10 +841,8 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// (installed via EnsureNamespace) and patches an Envoy
 				// `direct_response` (status 404 + OpenAI-compatible JSON) onto
 				// the Gateway's virtual host as a catch-all route. No backend
-				// Pod / Service is involved. The gpu-mocker case has
-				// AuthAPIKeyEnabled=false, so no AuthorizationPolicy is
-				// rendered and the probe needs no bearer token.
-				resp, err := utils.SendChatCompletion(caseGatewayURL, "non-existent-model-xyz")
+				// Pod / Service is involved.
+				resp, err := utils.SendChat(caseGateway, "non-existent-model-xyz")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 

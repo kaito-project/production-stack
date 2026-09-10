@@ -51,7 +51,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `autoUpgrade.enabled`     | optional | `false`                                                             | Opts this InferenceSet into KAITO automatic base image upgrades. Renders `spec.autoUpgrade.enabled: true`. Also requires the `enableBaseImageAutoUpgrade` feature gate on the KAITO controller. |
 | `autoUpgrade.maintenanceWindow.schedule` | optional | _empty_                                             | 5-field cron (UTC) marking when rollouts may begin, e.g. `"0 2 * * 6"`. Empty lets upgrades start at any time (the `maintenanceWindow` block is omitted). Consumed only when `autoUpgrade.enabled=true`. |
 | `autoUpgrade.maintenanceWindow.duration` | optional | _empty_ → `4h`                                      | How long the window stays open once it opens, e.g. `"4h"`. Empty inherits the KAITO controller's `4h` default. Ignored when `schedule` is empty. |
-| `gatewayName`             | optional | _empty_ → `<namespace>-gw`                                          | Gateway the HTTPRoute attaches to. Defaults to the per-namespace Gateway provisioned by `charts/modelharness`. |
+| `gatewayName`             | optional | _empty_ → `<namespace>`                                             | Gateway the HTTPRoute attaches to. Defaults to the per-namespace Gateway provisioned by `charts/modelharness`. |
 | `epp.image.repository`    | optional | `mcr.microsoft.com/oss/v2/llm-d/llm-d-router-endpoint-picker`       | EPP container image.                                                                       |
 | `epp.image.tag`           | optional | `v0.9.0`                                                             | EPP image tag.                                                                             |
 | `epp.image.pullPolicy`    | optional | `IfNotPresent`                                                       | EPP image pull policy.                                                                     |
@@ -74,7 +74,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 
 Install into a workload namespace whose `Gateway` was provisioned by
 [`charts/modelharness`](../modelharness) (Gateway name follows the
-`<namespace>-gw` convention shared by both charts):
+`<namespace>` convention shared by both charts):
 
 ```sh
 helm install qwen ./charts/modeldeployment \

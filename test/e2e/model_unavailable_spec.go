@@ -59,7 +59,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 
 		var (
 			ctx          context.Context
-			caseURL      string
+			caseGateway  deploy.GatewayEndpoint
 			caseNS       string
 			modelName    string
 			caseValues   deploy.ModelDeploymentValues
@@ -77,8 +77,14 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 
 		BeforeAll(func() {
 			ctx = context.Background()
+			DeferCleanup(UninstallCase, CaseModelUnavailable)
+			DeferCleanup(func() {
+				if origReplicas > 0 {
+					Expect(scaleTo(int64(origReplicas))).To(Succeed(), "failed to restore InferenceSet replicas")
+				}
+			})
 
-			caseURL = InstallCase(CaseModelUnavailable)
+			caseGateway = InstallCase(CaseModelUnavailable)
 			caseNS = CaseNamespace(CaseModelUnavailable)
 			// The InferenceSet is named after the deployment Name (the chart
 			// `.Values.name`), matching the scaling helpers' convention.
@@ -88,26 +94,10 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 
 			// Sanity: a valid request must succeed BEFORE we induce the
 			// empty-pool state, otherwise a 503 below would be meaningless.
-			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
-				if sErr != nil {
-					return 0
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode
-			}, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(),
 				"baseline request should succeed before scaling the InferenceSet to zero")
-		})
-
-		AfterAll(func() {
-			// Always restore the InferenceSet so we never leave this
-			// namespace's pool empty for subsequent specs, even if an
-			// assertion above failed.
-			if origReplicas > 0 {
-				Expect(scaleTo(int64(origReplicas))).
-					To(Succeed(), "failed to restore InferenceSet replicas")
-			}
-			UninstallCase(CaseModelUnavailable)
 		})
 
 		It("maps an empty inference pool to 503 model_unavailable (not 404 model_not_found)", func() {
@@ -120,10 +110,8 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 
 			By("sending a valid chat completion and asserting the model_unavailable envelope")
 			Eventually(func(g Gomega) {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
+				resp, sErr := utils.SendChat(caseGateway, modelName)
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
-				defer resp.Body.Close()
-
 				status := resp.StatusCode
 				errSource := resp.Header.Get("x-kaito-error-source")
 				retryAfter := resp.Header.Get("retry-after")
@@ -159,14 +147,9 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 				To(Succeed(), "failed to restore InferenceSet replicas")
 
 			By("sending a valid chat completion and asserting it succeeds again")
-			Eventually(func() int {
-				resp, sErr := utils.SendChatCompletion(caseURL, modelName)
-				if sErr != nil {
-					return 0
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode
-			}, utils.InferenceSetReadyTimeout, 10*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName)
+			}, utils.InferenceSetReadyTimeout, 10*time.Second).Should(Succeed(),
 				"requests should succeed again once the inference pool has ready endpoints")
 		})
 	})

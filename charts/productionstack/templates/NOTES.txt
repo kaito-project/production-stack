@@ -17,7 +17,7 @@ Enabled cluster-level components:
     ext_authz wiring on inference Gateways is owned per workload
     namespace by `charts/modelharness` (set `auth.enabled: true` in
     each modelharness release to attach ext_authz to that namespace's
-    `<namespace>-gw` Gateway pod).
+    `<namespace>` Gateway pod).
 {{- end }}
 
 To inspect rendered resources for a single component, use:

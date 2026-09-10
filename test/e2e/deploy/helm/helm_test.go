@@ -22,6 +22,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -40,6 +41,7 @@ func newTestDeployer(t *testing.T, err error) (*Deployer, *[][]string) {
 // matches kubectlErrVerb, letting tests drive the namespace-missing path.
 func newTestDeployerWithKubectl(t *testing.T, err error, kubectlErrVerbs map[string]error) (*Deployer, *[][]string, *[][]string) {
 	t.Helper()
+	t.Setenv("E2E_PROVIDER", "upstream")
 
 	root := t.TempDir()
 	harnessChart := filepath.Join(root, "modelharness")
@@ -98,6 +100,108 @@ func TestName(t *testing.T) {
 	d, _ := newTestDeployer(t, nil)
 	if got := d.Name(); got != BackendName {
 		t.Fatalf("Name() = %q, want %q", got, BackendName)
+	}
+}
+
+func TestAppRoutingDomainRetriesAndCachesSuccess(t *testing.T) {
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "")
+	var calls int
+	d, err := New(Options{KubectlRunner: func(_ context.Context, args ...string) ([]byte, error) {
+		calls++
+		want := []string{"get", "deployment", appRoutingDefaultDNSWorkload, "--namespace", appRoutingNamespace, "-o", "json"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("kubectl args = %v, want %v", args, want)
+		}
+		if calls == 1 {
+			return nil, errors.New("temporary authorization webhook timeout")
+		}
+		return []byte(`{"spec":{"template":{"spec":{"containers":[{"args":["--domain-filter=example.aksapp.io"]}]}}}}`), nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.getAppRoutingDomain(context.Background()); err == nil {
+		t.Fatal("expected the first discovery attempt to fail")
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		domain, err := d.getAppRoutingDomain(context.Background())
+		if err != nil || domain != "example.aksapp.io" {
+			t.Fatalf("domain = %q, err = %v", domain, err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("kubectl calls = %d, want 2", calls)
+	}
+}
+
+func TestLifecycleResolvesAzureGateway(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+	t.Setenv("E2E_PROVIDER", "")
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "example.aksapp.io")
+	ctx := context.Background()
+	if err := d.InstallModelHarness(ctx, deploy.ModelHarnessValues{Namespace: "e2e-ns"}); err != nil {
+		t.Fatal(err)
+	}
+	values := deploy.ModelDeploymentValues{Name: "phi", Namespace: "e2e-ns", Model: "phi-4-mini-instruct", Replicas: 1}
+	if err := d.InstallModelDeployment(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpgradeModelDeployment(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("helm calls = %d, want 3", len(*calls))
+	}
+	for _, args := range *calls {
+		if value, ok := argValue(args, "--set", "cloudprovider="); !ok || value != "azure" {
+			t.Fatalf("missing Azure provider in %v", args)
+		}
+		if value, ok := argValue(args, "--set-string", "azure.defaultDomain.zoneName="); !ok || value != "example.aksapp.io" {
+			t.Fatalf("missing discovered domain in %v", args)
+		}
+	}
+	gateway, ok := d.harnessGateway("e2e-ns")
+	if !ok || gateway.GatewayClassName != "approuting-istio" || gateway.DefaultDomain != "example.aksapp.io" {
+		t.Fatalf("unexpected harness gateway: %+v", gateway)
+	}
+}
+
+func TestGatewayDomainOverrideRecovery(t *testing.T) {
+	d, _ := newTestDeployer(t, nil)
+	t.Setenv("E2E_PROVIDER", "azure")
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "not_a_domain")
+	if _, err := d.deploymentGatewayValues(context.Background(), deploy.GatewayValues{}); err == nil {
+		t.Fatal("expected an invalid domain override to fail")
+	}
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "example.aksapp.io")
+	if _, err := d.deploymentGatewayValues(context.Background(), deploy.GatewayValues{}); err != nil {
+		t.Fatalf("valid override after failure: %v", err)
+	}
+	explicit := deploy.GatewayValues{CloudProvider: "azure", GatewayClassName: "custom", DefaultDomain: "explicit.aksapp.io"}
+	got, err := d.deploymentGatewayValues(context.Background(), explicit)
+	if err != nil || got != explicit {
+		t.Fatalf("explicit gateway = %+v, err = %v; want %+v", got, err, explicit)
+	}
+}
+
+func TestDomainFromFilterArg(t *testing.T) {
+	for _, test := range []struct {
+		filter string
+		want   string
+	}{
+		{filter: "example.aksapp.io", want: "example.aksapp.io"},
+		{filter: "first.aksapp.io,second.aksapp.io", want: "first.aksapp.io"},
+		{filter: "Example.AKSApp.io", want: "Example.AKSApp.io"},
+		{filter: "zone.aksapp.io.", want: "zone.aksapp.io"},
+		{filter: ""},
+		{filter: "not_a_domain"},
+	} {
+		t.Run(test.filter, func(t *testing.T) {
+			got, err := domainFromFilterArg(test.filter)
+			if (err != nil) != (test.want == "") || got != test.want {
+				t.Fatalf("domainFromFilterArg(%q) = %q, %v; want %q", test.filter, got, err, test.want)
+			}
+		})
 	}
 }
 
@@ -496,7 +600,7 @@ func TestRegisteredAsDefaultBackend(t *testing.T) {
 	}
 }
 
-func TestNamespaceAPIKeyDecodesSecret(t *testing.T) {
+func TestAuthHeadersDecodesSecret(t *testing.T) {
 	var calls [][]string
 	d, err := New(Options{
 		KubectlRunner: func(_ context.Context, args ...string) ([]byte, error) {
@@ -508,12 +612,21 @@ func TestNamespaceAPIKeyDecodesSecret(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	key, err := d.NamespaceAPIKey(context.Background(), "e2e-ns")
+	headers, err := d.AuthHeaders(context.Background(), "e2e-ns")
 	if err != nil {
-		t.Fatalf("NamespaceAPIKey: %v", err)
+		t.Fatalf("AuthHeaders: %v", err)
 	}
-	if key != "s3cret" {
-		t.Fatalf("NamespaceAPIKey = %q, want %q", key, "s3cret")
+
+	// The Helm gateway accepts the same key in three headers. Specs iterate
+	// whatever the backend publishes, so all three must be advertised or the
+	// equivalence they assert on silently stops being covered.
+	want := []deploy.AuthHeader{
+		{Name: "Authorization", Value: "Bearer s3cret"},
+		{Name: "X-API-Key", Value: "s3cret"},
+		{Name: "API-Key", Value: "s3cret"},
+	}
+	if !reflect.DeepEqual(headers, want) {
+		t.Fatalf("AuthHeaders = %+v, want %+v", headers, want)
 	}
 
 	got := strings.Join(calls[0], " ")
@@ -528,14 +641,101 @@ func TestNamespaceAPIKeyDecodesSecret(t *testing.T) {
 	}
 }
 
-func TestNamespaceAPIKeyRejectsMissingKey(t *testing.T) {
+// A missing Secret is not an error: the apikey-operator creates it
+// asynchronously, so callers poll until headers appear. Failing here would turn
+// an ordinary race into a test failure.
+func TestAuthHeadersReturnsNothingWhenSecretIsEmpty(t *testing.T) {
 	d, err := New(Options{
 		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := d.NamespaceAPIKey(context.Background(), "e2e-ns"); err == nil {
-		t.Fatal("expected an error when the Secret has no API key")
+	headers, err := d.AuthHeaders(context.Background(), "e2e-ns")
+	if err != nil {
+		t.Fatalf("AuthHeaders: %v", err)
+	}
+	if len(headers) != 0 {
+		t.Fatalf("AuthHeaders = %+v, want none", headers)
+	}
+}
+
+func TestAuthHeadersReturnsNothingWhenSecretIsAbsent(t *testing.T) {
+	d, err := New(Options{
+		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) {
+			return []byte(`Error from server (NotFound): secrets "llm-api-key" not found`),
+				errors.New("exit status 1")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	headers, err := d.AuthHeaders(context.Background(), "e2e-ns")
+	if err != nil {
+		t.Fatalf("AuthHeaders: %v", err)
+	}
+	if len(headers) != 0 {
+		t.Fatalf("AuthHeaders = %+v, want none", headers)
+	}
+}
+
+// Reporting an unreachable API server as "no credential needed" would send the
+// caller off unauthenticated and surface as a 401 from somewhere else entirely.
+func TestAuthHeadersPropagatesNonNotFoundFailures(t *testing.T) {
+	d, err := New(Options{
+		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) {
+			return []byte("The connection to the server localhost:8080 was refused"),
+				errors.New("exit status 1")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := d.AuthHeaders(context.Background(), "e2e-ns"); err == nil {
+		t.Fatal("expected an error when the API server cannot be reached")
+	}
+}
+
+// A stack fronted by a real DNS zone is reachable directly, so no tunnel is
+// allocated and the URL carries the authority itself.
+func TestOpenGatewayUsesThePublishedDomainWhenTheHarnessDeclaredOne(t *testing.T) {
+	d, _, _ := newTestDeployerWithKubectl(t, nil, nil)
+	ctx := context.Background()
+	if err := d.InstallModelHarness(ctx, deploy.ModelHarnessValues{
+		Namespace: "e2e-ns",
+		Gateway: deploy.GatewayValues{
+			CloudProvider: "azure",
+			DefaultDomain: "zone.example.com",
+		},
+	}); err != nil {
+		t.Fatalf("InstallModelHarness: %v", err)
+	}
+
+	gateway, err := d.OpenGateway(ctx, "e2e-ns", "e2e-ns-gw")
+	if err != nil {
+		t.Fatalf("OpenGateway: %v", err)
+	}
+	base, err := gateway.BaseURL()
+	if err != nil {
+		t.Fatalf("BaseURL: %v", err)
+	}
+	// The API root, not the origin: callers append "/chat/completions".
+	if want := "https://e2e-ns.zone.example.com/v1"; base != want {
+		t.Errorf("BaseURL() = %q, want %q", base, want)
+	}
+	if host := gateway.Host(); host != "" {
+		t.Errorf("Host() = %q, want empty because the URL carries the authority", host)
+	}
+}
+
+func TestCloseGatewayIsIdempotentForAnUnopenedNamespace(t *testing.T) {
+	d, err := New(Options{
+		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.CloseGateway(context.Background(), "never-opened"); err != nil {
+		t.Fatalf("CloseGateway: %v", err)
 	}
 }

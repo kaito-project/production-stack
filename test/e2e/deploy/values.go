@@ -75,12 +75,6 @@ type ModelDeploymentValues struct {
 	// that case (the chart rejects an empty metrics list). Each entry's
 	// UpThreshold MUST be strictly greater than its DownThreshold.
 	ScalingMetrics []ScalingMetric
-	// AuthAPIKeyEnabled signals that this deployment runs behind the
-	// apikey-ext-authz CUSTOM provider. The per-namespace
-	// AuthorizationPolicy and APIKey CR are provisioned by
-	// EnsureNamespace; the warmup loop in SetupInferenceSetsWithRouting
-	// reads the resulting Secret and sends Bearer + Host headers.
-	AuthAPIKeyEnabled bool
 	// AutoUpgrade opts the InferenceSet into KAITO automatic base image
 	// upgrades, wired onto the modeldeployment chart's autoUpgrade.* values
 	// (rendered as spec.autoUpgrade). Only rendered when Enabled is true.

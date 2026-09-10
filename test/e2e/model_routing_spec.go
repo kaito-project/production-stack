@@ -17,7 +17,6 @@ limitations under the License.
 package e2e
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -74,88 +73,54 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 	var ctx context.Context
 
-	// caseGatewayURL routes to this case's dedicated Gateway. Resolved
+	// caseGateway routes to this case's dedicated Gateway. Resolved
 	// in BeforeAll. Per-namespace Gateway + catch-all
 	// `model-not-found-direct` EnvoyFilter are provisioned by the
 	// modelharness chart.
-	var caseGatewayURL string
+	var caseGateway deploy.GatewayEndpoint
 
 	BeforeAll(func() {
 		ctx = context.Background()
-		caseGatewayURL = InstallCase(CaseModelRouting)
+		caseGateway = InstallCase(CaseModelRouting)
 	})
-
-	// sendChat / sendChatWithRetry / sendChatWithPrompt forward to the
-	// non-auth helpers — the routing case no longer enables the API-key
-	// AuthorizationPolicy (see cases.go).
-	sendChat := func(url, model string) (*http.Response, error) {
-		return utils.SendChatCompletion(url, model)
-	}
-	sendChatWithPrompt := func(url, model, prompt string) (*http.Response, error) {
-		return utils.SendChatCompletionWithPrompt(url, model, prompt)
-	}
-	sendChatWithRetry := func(url, model string) (*http.Response, error) {
-		return utils.SendChatCompletionWithRetry(url, model)
-	}
 
 	AfterAll(func() {
 		UninstallCase(CaseModelRouting)
 	})
 
 	Context("Single model request", func() {
+		expectResponseModel := func(model string) {
+			var parsed *utils.ChatCompletionResponse
+			Eventually(func() error {
+				resp, err := utils.SendChatContext(ctx, caseGateway, model)
+				if err != nil {
+					return err
+				}
+				if resp.StatusCode != http.StatusOK {
+					body, _ := utils.ReadResponseBody(resp)
+					return fmt.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
+				}
+				parsed, err = utils.ParseChatCompletionResponse(resp)
+				return err
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+			Expect(parsed.Model).To(Equal(model), "response model should match the requested deployment")
+		}
 		It("should return the correct model name for falcon", func() {
-			var parsed *utils.ChatCompletionResponse
-			Eventually(func() error {
-				resp, err := sendChat(caseGatewayURL, falconModel)
-				if err != nil {
-					return err
-				}
-				if resp.StatusCode != http.StatusOK {
-					body, _ := utils.ReadResponseBody(resp)
-					return fmt.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
-				}
-				p, err := utils.ParseChatCompletionResponse(resp)
-				if err != nil {
-					return err
-				}
-				parsed = p
-				return nil
-			}, 30*time.Second, 2*time.Second).Should(Succeed())
-			Expect(parsed.Model).To(Equal(falconModel),
-				"response model should match the requested falcon model")
+			expectResponseModel(falconModel)
 		})
-
 		It("should return the correct model name for ministral", func() {
-			var parsed *utils.ChatCompletionResponse
-			Eventually(func() error {
-				resp, err := sendChat(caseGatewayURL, ministralModel)
-				if err != nil {
-					return err
-				}
-				if resp.StatusCode != http.StatusOK {
-					body, _ := utils.ReadResponseBody(resp)
-					return fmt.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
-				}
-				p, err := utils.ParseChatCompletionResponse(resp)
-				if err != nil {
-					return err
-				}
-				parsed = p
-				return nil
-			}, 30*time.Second, 2*time.Second).Should(Succeed())
-			Expect(parsed.Model).To(Equal(ministralModel),
-				"response model should match the requested ministral model")
+			expectResponseModel(ministralModel)
 		})
 	})
 
-	Context("Model discovery", func() {
+	Context("Model discovery", utils.GinkgoLabelModelDiscovery, func() {
 		// The namespace's Gateway routes /v1/models to the cluster-wide
 		// productionstack-status-reporter, which aggregates the InferenceSets
 		// registered in this namespace. Without those routes a bodyless GET
 		// gets no X-Gateway-Model-Name from BBR and falls through to the
 		// catch-all's misleading 400 invalid_request_body.
 		listModels := func() (*utils.ModelList, error) {
-			resp, err := utils.SendModelsRequest(caseGatewayURL, utils.ModelsPath, "", "")
+			resp, err := utils.SendModels(caseGateway, utils.ModelsPath)
 			if err != nil {
 				return nil, err
 			}
@@ -199,8 +164,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, listed := range list.Data {
-				resp, err := utils.SendModelsRequest(
-					caseGatewayURL, utils.ModelRetrievePath(listed.ID), "", "")
+				resp, err := utils.SendModels(caseGateway, utils.ModelRetrievePath(listed.ID))
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
@@ -212,8 +176,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return 404 model_not_found for an unknown model id", func() {
-			resp, err := utils.SendModelsRequest(
-				caseGatewayURL, utils.ModelRetrievePath("totally-unknown-model-xyz"), "", "")
+			resp, err := utils.SendModels(caseGateway, utils.ModelRetrievePath("totally-unknown-model-xyz"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 
@@ -224,8 +187,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should reject non-GET verbs on the discovery endpoints", func() {
-			resp, err := utils.SendModelsRequestWithMethod(
-				http.MethodPost, caseGatewayURL, utils.ModelsPath, "", "")
+			resp, err := utils.SendModels(caseGateway, utils.ModelsPath, utils.WithMethod(http.MethodPost))
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).To(Equal(http.StatusMethodNotAllowed))
@@ -234,7 +196,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		It("should not swallow sibling paths that merely share the prefix", func() {
 			// The route pair is `exact /v1/models` + `prefix /v1/models/`; a bare
 			// `prefix /v1/models` would wrongly capture this path too.
-			resp, err := utils.SendModelsRequest(caseGatewayURL, "/v1/modelsfoo", "", "")
+			resp, err := utils.SendModels(caseGateway, "/v1/modelsfoo")
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 			Expect(resp.StatusCode).NotTo(Equal(http.StatusOK),
@@ -242,7 +204,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("Cross-model isolation (serial)", func() {
+	Context("Cross-model isolation (serial)", utils.GinkgoLabelStandardK8sOnly, func() {
 		const numRequests = 5
 
 		It("should route requests to the correct model pool with no cross-contamination", func() {
@@ -260,7 +222,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
-					resp, err := sendChatWithRetry(caseGatewayURL, model)
+					resp, err := utils.SendChatContext(ctx, caseGateway, model, utils.WithTransportRetry())
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
@@ -286,7 +248,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("Cross-model isolation (concurrent)", func() {
+	Context("Cross-model isolation (concurrent)", utils.GinkgoLabelStandardK8sOnly, func() {
 		const numPerModel = 20
 
 		It("should maintain isolation under interleaved concurrent traffic", func() {
@@ -318,7 +280,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 					go func(idx int) {
 						defer wg.Done()
 						defer GinkgoRecover()
-						resp, err := sendChatWithRetry(caseGatewayURL, model)
+						resp, err := utils.SendChatContext(ctx, caseGateway, model, utils.WithTransportRetry())
 						if err != nil {
 							results[idx] = result{model: model, err: err}
 							return
@@ -369,7 +331,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			By("sending requests to known models")
 			for _, model := range modelNames {
 				for i := 0; i < 3; i++ {
-					resp, err := sendChat(caseGatewayURL, model)
+					resp, err := utils.SendChatContext(ctx, caseGateway, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK),
 						"known-model request to %s should not fall through to catch-all 404", model)
@@ -382,7 +344,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("EPP routing success (metrics)", func() {
+	Context("EPP routing success (metrics)", utils.GinkgoLabelStandardK8sOnly, func() {
 		const numRequests = 5
 
 		It("should show EPP scheduler success counts matching requests sent", func() {
@@ -420,7 +382,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			By(fmt.Sprintf("sending %d requests per model", numRequests))
 			for _, model := range modelNames {
 				for i := 0; i < numRequests; i++ {
-					resp, err := sendChat(caseGatewayURL, model)
+					resp, err := utils.SendChatContext(ctx, caseGateway, model)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					resp.Body.Close()
@@ -468,7 +430,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			waitServing := func() {
 				for _, model := range modelNames {
 					Eventually(func() error {
-						resp, err := sendChat(caseGatewayURL, model)
+						resp, err := utils.SendChatContext(ctx, caseGateway, model)
 						if err != nil {
 							return err
 						}
@@ -517,7 +479,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
-					resp, err := sendChatWithRetry(caseGatewayURL, model)
+					resp, err := utils.SendChatContext(ctx, caseGateway, model, utils.WithTransportRetry())
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					resp.Body.Close()
@@ -589,7 +551,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			for _, model := range modelNames {
 				By(fmt.Sprintf("sending a request for %s and checking debug filter logs", model))
 
-				resp, err := sendChat(caseGatewayURL, model)
+				resp, err := utils.SendChatContext(ctx, caseGateway, model)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -631,7 +593,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			// matches, so the PRESENT-but-unmatched half of the split
 			// catch-all (charts/modelharness/templates/envoyfilter-not-found.yaml)
 			// returns 404 model_not_found with x-kaito-error-source: gateway.
-			resp, err := sendChat(caseGatewayURL, "totally-unknown-model-xyz")
+			resp, err := utils.SendChatContext(ctx, caseGateway, "totally-unknown-model-xyz")
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -646,20 +608,8 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return 400 invalid_request_body + x-kaito-error-source: bbr for a missing model field", func() {
-			// Refresh port-forwards before issuing a raw HTTP request so a
-			// kubectl port-forward channel that died between specs gets
-			// rebound; SendChatCompletion* does this internally.
-			Expect(utils.EnsurePortForwards()).To(Succeed())
-			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
-
-			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`{"messages": [{"role": "user", "content": "hello"}]}`)
-			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
-				bytes.NewReader(body))
-			Expect(err).NotTo(HaveOccurred())
-			req.Header.Set("Content-Type", "application/json")
-
-			resp, err := client.Do(req)
+			resp, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -679,17 +629,8 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return a well-formed error for non-string model field", func() {
-			Expect(utils.EnsurePortForwards()).To(Succeed())
-			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
-
-			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`{"model": 42, "messages": [{"role": "user", "content": "hello"}]}`)
-			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
-				bytes.NewReader(body))
-			Expect(err).NotTo(HaveOccurred())
-			req.Header.Set("Content-Type", "application/json")
-
-			resp, err := client.Do(req)
+			resp, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -703,7 +644,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Verify subsequent valid requests still succeed (BBR didn't crash permanently).
 			Eventually(func() int {
-				r, err := sendChat(caseGatewayURL, falconModel)
+				r, err := utils.SendChatContext(ctx, caseGateway, falconModel)
 				if err != nil {
 					return 0
 				}
@@ -714,17 +655,9 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return a well-formed error for non-JSON body", func() {
-			Expect(utils.EnsurePortForwards()).To(Succeed())
-			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
-
-			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`this is not json`)
-			req, err := http.NewRequest(http.MethodPost, gatewayURL+"/v1/chat/completions",
-				bytes.NewReader(body))
-			Expect(err).NotTo(HaveOccurred())
-			req.Header.Set("Content-Type", "text/plain")
-
-			resp, err := client.Do(req)
+			resp, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body,
+				utils.WithHeader("Content-Type", "text/plain"))
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -735,7 +668,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Verify subsequent valid requests still succeed (BBR didn't crash).
 			Eventually(func() int {
-				r, err := sendChat(caseGatewayURL, falconModel)
+				r, err := utils.SendChatContext(ctx, caseGateway, falconModel)
 				if err != nil {
 					return 0
 				}
@@ -746,16 +679,8 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should not inject x-gateway-model-name for non-/v1/ paths", func() {
-			Expect(utils.EnsurePortForwards()).To(Succeed())
-			gatewayURL := utils.ResolveGatewayURL(caseGatewayURL)
-
-			client := &http.Client{Timeout: utils.HTTPTimeout}
-
 			// GET /healthz — should bypass BBR entirely.
-			req, err := http.NewRequest(http.MethodGet, gatewayURL+"/healthz", nil)
-			Expect(err).NotTo(HaveOccurred())
-
-			resp, err := client.Do(req)
+			resp, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodGet, "/healthz", nil, utils.WithOriginPath())
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -765,7 +690,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				"non-/v1/ path should not cause a 5xx error")
 		})
 
-		It("should passthrough backend 4xx when prompt exceeds max context length", func() {
+		It("should passthrough backend 4xx when prompt exceeds max context length", utils.GinkgoLabelStandardK8sOnly, func() {
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -782,7 +707,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 			// Send the oversized request and verify HTTP 400 with an
 			// OpenAI-compatible JSON error body from vLLM.
-			resp, err := sendChatWithPrompt(caseGatewayURL, model, longPrompt)
+			resp, err := utils.SendChatContext(ctx, caseGateway, model, utils.WithPrompt(longPrompt))
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -805,7 +730,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			// Verify subsequent valid requests still succeed — the rejection
 			// did not wedge the connection or the ext_proc filter chain.
 			Eventually(func() error {
-				r, err := sendChat(caseGatewayURL, model)
+				r, err := utils.SendChatContext(ctx, caseGateway, model)
 				if err != nil {
 					return err
 				}
