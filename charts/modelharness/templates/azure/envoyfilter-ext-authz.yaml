@@ -21,10 +21,11 @@ at cluster-wide gRPC Services installed by `charts/productionstack`:
             Entra JWT claims land in envoy.filters.http.jwt_authn's
             filter metadata, which azure-authz consumes).
 
-  hybrid  — Lua classifier at head of chain routes by Authorization
-            header shape (tokens starting `sk-` → apikey, else → azure).
-            Both ext_authz filters render with filter_enabled_metadata
-            gates keyed off the classifier's auth_mode dynamic metadata.
+  hybrid  — Lua classifier at head of chain routes by credential-header
+            precedence: Authorization first (`sk-` tokens → apikey, all other
+            values → azure), then API-Key and X-API-Key → apikey. Both ext_authz
+            filters render with filter_enabled_metadata gates keyed off the
+            classifier's auth_mode dynamic metadata.
             Chain order after INSERT_FIRST reversal:
               Lua → apikey ext_authz → jwt_authn → azure ext_authz → router.
 
@@ -243,18 +244,19 @@ spec:
                   exact: apikey
 
     # ── 4. lua-classify-authmode: INSERT_FIRST — ends up at the head of
-    #      the HCM filter chain. Sole purpose: inspect the inbound
-    #      Authorization header (stripping a case-insensitive `Bearer `
-    #      prefix if present) and classify the request into one of two
-    #      auth backends by writing dynamic metadata under the
-    #      `envoy.filters.http.lua` namespace:
+    #      the HCM filter chain. Sole purpose: inspect inbound credential
+    #      headers in apikey-authz precedence order (Authorization, API-Key,
+    #      X-API-Key) and classify the request into one of two auth backends
+    #      by writing dynamic metadata under the `envoy.filters.http.lua`
+    #      namespace:
     #
-    #        auth_mode = "apikey" — token starts with "sk-" (OpenAI-style
-    #                               API key convention).
-    #        auth_mode = "azure"  — anything else, including no Authorization
-    #                               header (azure-authz will then reject
-    #                               with "no valid JWT claims in filter
-    #                               metadata").
+    #        auth_mode = "apikey" — Authorization contains an OpenAI-style
+    #                               "sk-" token, or Authorization is absent
+    #                               and API-Key / X-API-Key is present.
+    #        auth_mode = "azure"  — Authorization contains any other value,
+    #                               or no credential header is present
+    #                               (azure-authz will then reject requests
+    #                               without valid JWT metadata).
     #
     #      Every downstream filter that needs to know which backend the
     #      request belongs to keys off this dynamic metadata:
@@ -291,9 +293,21 @@ spec:
             default_source_code:
               inline_string: |
                 function envoy_on_request(handle)
-                  local auth = handle:headers():get("authorization") or ""
-                  local token = auth:match("^[Bb][Ee][Aa][Rr][Ee][Rr]%s+(.*)$") or auth
-                  local mode = token:sub(1, 3) == "sk-" and "apikey" or "azure"
+                  local headers = handle:headers()
+                  local auth = headers:get("authorization") or ""
+                  local api_key = headers:get("api-key") or ""
+                  local x_api_key = headers:get("x-api-key") or ""
+                  local mode = "azure"
+
+                  if auth ~= "" then
+                    local token = auth:match("^[Bb][Ee][Aa][Rr][Ee][Rr]%s+(.*)$") or auth
+                    if token:sub(1, 3) == "sk-" then
+                      mode = "apikey"
+                    end
+                  elseif api_key ~= "" or x_api_key ~= "" then
+                    mode = "apikey"
+                  end
+
                   handle:streamInfo():dynamicMetadata():set(
                     "envoy.filters.http.lua", "auth_mode", mode)
                 end
