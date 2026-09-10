@@ -41,6 +41,7 @@ func newTestDeployer(t *testing.T, err error) (*Deployer, *[][]string) {
 // matches kubectlErrVerb, letting tests drive the namespace-missing path.
 func newTestDeployerWithKubectl(t *testing.T, err error, kubectlErrVerbs map[string]error) (*Deployer, *[][]string, *[][]string) {
 	t.Helper()
+	t.Setenv("E2E_PROVIDER", "upstream")
 
 	root := t.TempDir()
 	harnessChart := filepath.Join(root, "modelharness")
@@ -99,6 +100,108 @@ func TestName(t *testing.T) {
 	d, _ := newTestDeployer(t, nil)
 	if got := d.Name(); got != BackendName {
 		t.Fatalf("Name() = %q, want %q", got, BackendName)
+	}
+}
+
+func TestAppRoutingDomainRetriesAndCachesSuccess(t *testing.T) {
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "")
+	var calls int
+	d, err := New(Options{KubectlRunner: func(_ context.Context, args ...string) ([]byte, error) {
+		calls++
+		want := []string{"get", "deployment", appRoutingDefaultDNSWorkload, "--namespace", appRoutingNamespace, "-o", "json"}
+		if !reflect.DeepEqual(args, want) {
+			t.Fatalf("kubectl args = %v, want %v", args, want)
+		}
+		if calls == 1 {
+			return nil, errors.New("temporary authorization webhook timeout")
+		}
+		return []byte(`{"spec":{"template":{"spec":{"containers":[{"args":["--domain-filter=example.aksapp.io"]}]}}}}`), nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.getAppRoutingDomain(context.Background()); err == nil {
+		t.Fatal("expected the first discovery attempt to fail")
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		domain, err := d.getAppRoutingDomain(context.Background())
+		if err != nil || domain != "example.aksapp.io" {
+			t.Fatalf("domain = %q, err = %v", domain, err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("kubectl calls = %d, want 2", calls)
+	}
+}
+
+func TestLifecycleResolvesAzureGateway(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+	t.Setenv("E2E_PROVIDER", "")
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "example.aksapp.io")
+	ctx := context.Background()
+	if err := d.InstallModelHarness(ctx, deploy.ModelHarnessValues{Namespace: "e2e-ns"}); err != nil {
+		t.Fatal(err)
+	}
+	values := deploy.ModelDeploymentValues{Name: "phi", Namespace: "e2e-ns", Model: "phi-4-mini-instruct", Replicas: 1}
+	if err := d.InstallModelDeployment(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpgradeModelDeployment(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("helm calls = %d, want 3", len(*calls))
+	}
+	for _, args := range *calls {
+		if value, ok := argValue(args, "--set", "cloudprovider="); !ok || value != "azure" {
+			t.Fatalf("missing Azure provider in %v", args)
+		}
+		if value, ok := argValue(args, "--set-string", "azure.defaultDomain.zoneName="); !ok || value != "example.aksapp.io" {
+			t.Fatalf("missing discovered domain in %v", args)
+		}
+	}
+	gateway, ok := d.harnessGateway("e2e-ns")
+	if !ok || gateway.GatewayClassName != "approuting-istio" || gateway.DefaultDomain != "example.aksapp.io" {
+		t.Fatalf("unexpected harness gateway: %+v", gateway)
+	}
+}
+
+func TestGatewayDomainOverrideRecovery(t *testing.T) {
+	d, _ := newTestDeployer(t, nil)
+	t.Setenv("E2E_PROVIDER", "azure")
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "not_a_domain")
+	if _, err := d.deploymentGatewayValues(context.Background(), deploy.GatewayValues{}); err == nil {
+		t.Fatal("expected an invalid domain override to fail")
+	}
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "example.aksapp.io")
+	if _, err := d.deploymentGatewayValues(context.Background(), deploy.GatewayValues{}); err != nil {
+		t.Fatalf("valid override after failure: %v", err)
+	}
+	explicit := deploy.GatewayValues{CloudProvider: "azure", GatewayClassName: "custom", DefaultDomain: "explicit.aksapp.io"}
+	got, err := d.deploymentGatewayValues(context.Background(), explicit)
+	if err != nil || got != explicit {
+		t.Fatalf("explicit gateway = %+v, err = %v; want %+v", got, err, explicit)
+	}
+}
+
+func TestDomainFromFilterArg(t *testing.T) {
+	for _, test := range []struct {
+		filter string
+		want   string
+	}{
+		{filter: "example.aksapp.io", want: "example.aksapp.io"},
+		{filter: "first.aksapp.io,second.aksapp.io", want: "first.aksapp.io"},
+		{filter: "Example.AKSApp.io", want: "Example.AKSApp.io"},
+		{filter: "zone.aksapp.io.", want: "zone.aksapp.io"},
+		{filter: ""},
+		{filter: "not_a_domain"},
+	} {
+		t.Run(test.filter, func(t *testing.T) {
+			got, err := domainFromFilterArg(test.filter)
+			if (err != nil) != (test.want == "") || got != test.want {
+				t.Fatalf("domainFromFilterArg(%q) = %q, %v; want %q", test.filter, got, err, test.want)
+			}
+		})
 	}
 }
 

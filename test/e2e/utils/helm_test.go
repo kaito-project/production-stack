@@ -16,7 +16,62 @@ limitations under the License.
 
 package utils
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
+)
+
+type gatewayRecordingDeployer struct {
+	deploy.Deployer
+	gateways []deploy.GatewayValues
+}
+
+func (d *gatewayRecordingDeployer) InstallModelHarness(_ context.Context, values deploy.ModelHarnessValues) error {
+	d.gateways = append(d.gateways, values.Gateway)
+	return nil
+}
+
+func (d *gatewayRecordingDeployer) InstallModelDeployment(_ context.Context, values deploy.ModelDeploymentValues) error {
+	d.gateways = append(d.gateways, values.Gateway)
+	return nil
+}
+
+func (d *gatewayRecordingDeployer) UpgradeModelDeployment(_ context.Context, values deploy.ModelDeploymentValues) error {
+	d.gateways = append(d.gateways, values.Gateway)
+	return nil
+}
+
+func TestLifecycleLeavesGatewayResolutionToBackend(t *testing.T) {
+	t.Setenv("E2E_PROVIDER", "azure")
+	t.Setenv("APP_ROUTING_DEFAULT_DOMAIN", "not_a_domain")
+	deployerMu.Lock()
+	previous := currentDeployer
+	deployerMu.Unlock()
+	t.Cleanup(func() { SetDeployer(previous) })
+	backend := &gatewayRecordingDeployer{}
+	SetDeployer(backend)
+	ctx := context.Background()
+	if err := InstallModelHarness(ctx, "e2e-ns", true); err != nil {
+		t.Fatal(err)
+	}
+	values := deploy.ModelDeploymentValues{Gateway: deploy.GatewayValues{DefaultDomain: "explicit.aksapp.io"}}
+	if err := InstallModelDeployment(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpgradeModelDeployment(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.gateways) != 3 {
+		t.Fatalf("backend calls = %d, want 3", len(backend.gateways))
+	}
+	for index, want := range []deploy.GatewayValues{{}, values.Gateway, values.Gateway} {
+		if got := backend.gateways[index]; got != want {
+			t.Fatalf("gateway for call %d = %+v, want %+v", index, got, want)
+		}
+	}
+}
 
 func TestIsAzureProvider(t *testing.T) {
 	tests := []struct {
@@ -35,56 +90,6 @@ func TestIsAzureProvider(t *testing.T) {
 			t.Setenv("E2E_PROVIDER", test.provider)
 			if got := IsAzureProvider(); got != test.want {
 				t.Fatalf("IsAzureProvider() = %t, want %t for E2E_PROVIDER=%q", got, test.want, test.provider)
-			}
-		})
-	}
-}
-
-func TestDomainFromFilterArg(t *testing.T) {
-	tests := []struct {
-		name    string
-		filter  string
-		want    string
-		wantErr bool
-	}{
-		{
-			name:   "single zone",
-			filter: "6a94eb7ca0631900014b8ab3.australiaeast.aksapp.io",
-			want:   "6a94eb7ca0631900014b8ab3.australiaeast.aksapp.io",
-		},
-		{
-			name:   "comma separated takes the first zone",
-			filter: "first.aksapp.io,second.aksapp.io",
-			want:   "first.aksapp.io",
-		},
-		{
-			name:   "case insensitive DNS name",
-			filter: "Example.AKSApp.io",
-			want:   "Example.AKSApp.io",
-		},
-		{
-			name:   "trailing dot is trimmed",
-			filter: "zone.aksapp.io.",
-			want:   "zone.aksapp.io",
-		},
-		{name: "empty", wantErr: true},
-		{name: "invalid zone", filter: "not_a_domain", wantErr: true},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got, err := domainFromFilterArg(test.filter)
-			if test.wantErr {
-				if err == nil {
-					t.Fatalf("domainFromFilterArg(%q) expected an error", test.filter)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("domainFromFilterArg(%q): %v", test.filter, err)
-			}
-			if got != test.want {
-				t.Fatalf("domainFromFilterArg(%q) = %q, want %q", test.filter, got, test.want)
 			}
 		})
 	}

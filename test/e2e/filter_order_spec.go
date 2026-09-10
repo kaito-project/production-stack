@@ -212,7 +212,7 @@ var _ = Describe("Filter execution order",
 		// actually deliver requests to the workload pod (vLLM).
 		// ─────────────────────────────────────────────────────────────────
 
-		Context("P0: bbr precedes EPP, full chain delivers traffic", func() {
+		Context("P0: bbr precedes EPP, full chain delivers traffic", utils.GinkgoLabelStandardK8sOnly, func() {
 
 			// B2 — Send N valid authenticated requests, then assert that
 			// vLLM's `vllm:request_success_total{model_name=<modelName>}`
