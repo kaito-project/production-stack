@@ -29,7 +29,7 @@ the production App Routing provisioning contract.
 
 `utils/`:
 
-- [`setup.go`](utils/setup.go) — `EnsureNamespace` (provisions the workload namespace + modelharness), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
+- [`setup.go`](utils/setup.go) — `EnsureNamespace` (provisions the workload namespace + modelharness), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`.
 - [`http.go`](utils/http.go) — authenticated `SendGatewayRequest` with `SendChat` / `SendModels` shortcuts against a `deploy.GatewayEndpoint`, taking `RequestOption`s (`WithPrompt`, `WithAuth`, `WithoutAuth`, `WithHeader`, `WithMethod`, `WithTransportRetry`, `WithOriginPath`, `WithTimeout`).
 - [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UpgradeModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`, `NamespaceAuthHeaders` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
@@ -195,6 +195,15 @@ Conventions worth knowing when writing a spec:
   when it dies mid-suite, which is why `BaseURL()` is a method and not a field.
   A managed control plane publishes a routable URL over its own API and denies
   the `pods/portforward` subresource outright, so it allocates nothing.
+
+  Gateway infrastructure readiness belongs to the backend's `OpenGateway`.
+  The Helm backend waits for a matching Service and a Running, Ready gateway
+  Pod before returning a published endpoint or starting a port-forward.
+  Managed backends use their own readiness mechanism; shared case setup does
+  not inspect Istio Services or Pods. Callers no longer need a separate gateway
+  readiness helper. This does not guarantee model-serving readiness:
+  `InstallCase` subsequently uses `SetupInferenceSetsWithRouting` to wait for
+  model workloads and successful inference requests through the gateway.
 
   `BaseURL()` is the **OpenAI API root**, `/v1` included. Paths are relative to
   it (`utils.ChatCompletionsPath`, `utils.ModelsPath`), because a managed

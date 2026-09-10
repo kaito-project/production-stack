@@ -83,6 +83,11 @@ type Deployer interface {
 	// OpenGateway returns the endpoint inference requests for namespace are
 	// sent to, allocating whatever transport the backend needs to reach it.
 	//
+	// The backend owns any gateway infrastructure readiness checks required
+	// before exposing the endpoint. Callers do not separately inspect gateway
+	// Services or Pods. Model-serving and inference-routing readiness are
+	// checked separately after model deployments are installed.
+	//
 	// How the gateway is reachable is a backend property, not a cluster one: a
 	// self-hosted stack is only reachable through a kubectl port-forward, while
 	// a managed control plane publishes a routable URL over its own API and

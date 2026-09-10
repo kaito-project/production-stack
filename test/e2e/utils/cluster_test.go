@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -27,12 +29,56 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
 )
+
+type podLogTransport func(*http.Request) (*http.Response, error)
+
+func (transport podLogTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
+func TestGetPodLogsHasDeadlineAndPreservesNotFound(t *testing.T) {
+	for _, statusCode := range []int{http.StatusOK, http.StatusNotFound} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			clientset, err := kubernetes.NewForConfig(&rest.Config{
+				Host: "https://example.invalid",
+				Transport: podLogTransport(func(request *http.Request) (*http.Response, error) {
+					deadline, ok := request.Context().Deadline()
+					if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > HTTPTimeout {
+						t.Fatalf("expected bounded log request, deadline=%v present=%v", deadline, ok)
+					}
+					if request.URL.Path != "/api/v1/namespaces/test/pods/epp/log" || request.URL.Query().Get("container") != "epp" {
+						t.Fatalf("unexpected log request: %s", request.URL)
+					}
+					return &http.Response{
+						StatusCode: statusCode,
+						Header:     http.Header{"Content-Type": []string{"text/plain"}},
+						Body:       io.NopCloser(strings.NewReader("pod logs")),
+					}, nil
+				}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			logs, err := GetPodLogs(clientset, "test", "epp", "epp")
+			if statusCode == http.StatusNotFound {
+				if !apierrors.IsNotFound(err) {
+					t.Fatalf("expected NotFound, got %v", err)
+				}
+			} else if err != nil || logs != "pod logs" {
+				t.Fatalf("logs=%q error=%v", logs, err)
+			}
+		})
+	}
+}
 
 func TestDeploymentReplicasReady(t *testing.T) {
 	for _, test := range []struct {

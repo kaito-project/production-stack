@@ -28,6 +28,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -403,31 +404,42 @@ var _ = Describe("Filter execution order",
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
 
-				eppPods, err := utils.GetEPPPods(ctx, clientset, modelName, caseNS)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(eppPods).NotTo(BeEmpty())
-				eppPod := eppPods[0].Name
+				Eventually(func() error {
+					eppPods, err := utils.GetEPPPods(ctx, clientset, modelName, caseNS)
+					if err != nil {
+						return err
+					}
+					eppPod := eppPods[0].Name
+					before, err := utils.GetPodLogs(clientset, caseNS, eppPod, "epp")
+					if err != nil {
+						if apierrors.IsNotFound(err) {
+							return err
+						}
+						StopTrying("cannot read EPP baseline logs").Wrap(err).Now()
+					}
 
-				before, err := utils.GetPodLogs(clientset, caseNS, eppPod, "epp")
-				Expect(err).NotTo(HaveOccurred())
-				beforeLen := len(before)
+					needle := fmt.Sprintf("a3-no-epp-%d", time.Now().UnixNano())
+					resp, err := sendAuth(needle, utils.WithoutAuth())
+					Expect(err).NotTo(HaveOccurred())
+					defer resp.Body.Close()
+					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 
-				needle := fmt.Sprintf("a3-no-epp-%d", time.Now().UnixNano())
-				resp, err := sendAuth(needle, utils.WithoutAuth())
-				Expect(err).NotTo(HaveOccurred())
-				defer resp.Body.Close()
-				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
-
-				time.Sleep(3 * time.Second)
-
-				after, err := utils.GetPodLogs(clientset, caseNS, eppPod, "epp")
-				Expect(err).NotTo(HaveOccurred())
-				delta := after
-				if len(after) >= beforeLen {
-					delta = after[beforeLen:]
-				}
-				Expect(delta).NotTo(ContainSubstring(needle),
-					"EPP should not have observed the unauth'd request; needle %q surfaced in new log slice", needle)
+					time.Sleep(3 * time.Second)
+					after, err := utils.GetPodLogs(clientset, caseNS, eppPod, "epp")
+					if err != nil {
+						if apierrors.IsNotFound(err) {
+							return err
+						}
+						StopTrying("cannot read EPP observation logs").Wrap(err).Now()
+					}
+					delta := after
+					if strings.HasPrefix(after, before) {
+						delta = after[len(before):]
+					}
+					Expect(delta).NotTo(ContainSubstring(needle),
+						"EPP should not have observed the unauth'd request; needle %q surfaced in new log slice", needle)
+					return nil
+				}, 3*time.Minute, utils.PollInterval).Should(Succeed(), "observe a stable EPP pod across the unauthenticated request")
 			})
 
 			// D3 — Catch-all path is still preceded by BBR (otherwise we

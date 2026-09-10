@@ -89,6 +89,8 @@ func UninstallModelHarness(ctx context.Context, namespace string) error {
 
 // OpenGateway returns the endpoint inference requests for namespace are sent
 // to, allocating whatever transport the active backend needs to reach it.
+// The backend owns gateway infrastructure readiness; model-serving and
+// inference-routing readiness are checked by SetupInferenceSetsWithRouting.
 func OpenGateway(ctx context.Context, namespace, gatewayName string) (deploy.GatewayEndpoint, error) {
 	d, err := CurrentDeployer()
 	if err != nil {

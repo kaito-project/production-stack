@@ -24,8 +24,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
@@ -82,65 +80,6 @@ func DeleteNamespace(ctx context.Context, name string) error {
 		cleanupErrors = append(cleanupErrors, fmt.Errorf("uninstall modelharness from %s: %w", name, err))
 	}
 	return errors.Join(cleanupErrors...)
-}
-
-// WaitForGatewayService blocks until the Istio Service backing the named
-// Gateway exists AND the gateway Pod has at least one Ready replica, so
-// port-forwards started immediately afterwards do not race the
-// gateway-controller. Istio creates the Service synchronously when it
-// observes the Gateway resource, but the underlying envoy Pod takes
-// longer to schedule + become Ready; `kubectl port-forward` to a Service
-// with no Ready endpoints hangs until those endpoints appear, which
-// causes the 30s port-forward readiness probe to time out.
-//
-// Readiness is read off the Service and its Pods rather than the Gateway's
-// Programmed condition: a managed control plane such as AI Manager grants the
-// caller read access to built-in kinds only, so touching the Gateway CRD would
-// fail with 403. The Service and Pod are what actually have to be up anyway —
-// Programmed only says the controller accepted the Gateway.
-//
-// The Service is found by the gateway-name label rather than by name. Istio
-// names it "<gateway>-<gatewayClassName>", so guessing the name breaks the
-// moment the class is not plain "istio" — on AKS App Routing it is
-// "<gateway>-approuting-istio".
-func WaitForGatewayService(ctx context.Context, namespace, gatewayName string, timeout time.Duration) error {
-	clientset, err := GetK8sClientset()
-	if err != nil {
-		return fmt.Errorf("init clientset: %w", err)
-	}
-
-	selector := fmt.Sprintf("gateway.networking.k8s.io/gateway-name=%s", gatewayName)
-
-	return pollUntilReady(ctx, timeout, fmt.Sprintf("gateway %s/%s to be ready (selector=%q)", namespace, gatewayName, selector), func(ctx context.Context) error {
-		svcs, err := clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: selector,
-		})
-		if err != nil {
-			return err
-		}
-		if len(svcs.Items) == 0 {
-			return fmt.Errorf("gateway service not found")
-		}
-		pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: selector,
-		})
-		if err == nil {
-			for _, pod := range pods.Items {
-				if pod.Status.Phase != corev1.PodRunning {
-					continue
-				}
-				for _, c := range pod.Status.Conditions {
-					if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-						return nil
-					}
-				}
-			}
-		}
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("gateway has no Ready pod")
-	})
 }
 
 // SetupInferenceSetsWithRouting idempotently installs the modeldeployment

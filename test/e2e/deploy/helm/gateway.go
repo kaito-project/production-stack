@@ -29,6 +29,8 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
@@ -148,12 +150,17 @@ const (
 // A stack fronted by a real DNS zone (AKS App Routing) is reachable directly,
 // so no tunnel is allocated. Otherwise the Gateway is cluster-internal and the
 // only way in is a kubectl port-forward to the Service Istio derives from it.
+// Both paths first wait for a matching Service and a Running, Ready gateway
+// Pod. This checks gateway infrastructure, not model-serving readiness.
 func (d *Deployer) OpenGateway(ctx context.Context, namespace, gatewayName string) (deploy.GatewayEndpoint, error) {
 	if namespace == "" {
 		return nil, fmt.Errorf("helm: gateway: namespace is required")
 	}
 	if gatewayName == "" {
 		return nil, fmt.Errorf("helm: gateway: gateway name is required")
+	}
+	if err := d.waitForGatewayService(ctx, namespace, gatewayName); err != nil {
+		return nil, err
 	}
 
 	// The harness install already told us how this namespace's Gateway is
@@ -184,6 +191,52 @@ func (d *Deployer) OpenGateway(ctx context.Context, namespace, gatewayName strin
 	}
 	d.gateways[namespace] = ep
 	return ep, nil
+}
+
+func (d *Deployer) waitForGatewayService(ctx context.Context, namespace, gatewayName string) error {
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, 5*time.Second, 20*time.Minute, true, func(ctx context.Context) (bool, error) {
+		lastErr = d.checkGatewayReady(ctx, namespace, gatewayName)
+		return lastErr == nil, nil
+	})
+	if err != nil {
+		return fmt.Errorf("helm: waiting for gateway %s/%s: %w (last check: %v)", namespace, gatewayName, err, lastErr)
+	}
+	return nil
+}
+
+func (d *Deployer) checkGatewayReady(ctx context.Context, namespace, gatewayName string) error {
+	selector := "gateway.networking.k8s.io/gateway-name=" + gatewayName
+	servicesJSON, err := d.kubectl(ctx, "get", "services", "--namespace", namespace, "--selector", selector, "-o", "json")
+	if err != nil {
+		return fmt.Errorf("get gateway services: %w", err)
+	}
+	var services corev1.ServiceList
+	if err := json.Unmarshal(servicesJSON, &services); err != nil {
+		return fmt.Errorf("parse gateway services: %w", err)
+	}
+	if len(services.Items) == 0 {
+		return fmt.Errorf("gateway service not found")
+	}
+	podsJSON, err := d.kubectl(ctx, "get", "pods", "--namespace", namespace, "--selector", selector, "-o", "json")
+	if err != nil {
+		return fmt.Errorf("get gateway pods: %w", err)
+	}
+	var pods corev1.PodList
+	if err := json.Unmarshal(podsJSON, &pods); err != nil {
+		return fmt.Errorf("parse gateway pods: %w", err)
+	}
+	for _, pod := range pods.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("gateway has no Ready pod")
 }
 
 // CloseGateway implements deploy.Deployer.
