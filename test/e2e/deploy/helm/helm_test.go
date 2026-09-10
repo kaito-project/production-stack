@@ -22,6 +22,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -496,7 +497,7 @@ func TestRegisteredAsDefaultBackend(t *testing.T) {
 	}
 }
 
-func TestNamespaceAPIKeyDecodesSecret(t *testing.T) {
+func TestAuthHeadersDecodesSecret(t *testing.T) {
 	var calls [][]string
 	d, err := New(Options{
 		KubectlRunner: func(_ context.Context, args ...string) ([]byte, error) {
@@ -508,12 +509,21 @@ func TestNamespaceAPIKeyDecodesSecret(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	key, err := d.NamespaceAPIKey(context.Background(), "e2e-ns")
+	headers, err := d.AuthHeaders(context.Background(), "e2e-ns")
 	if err != nil {
-		t.Fatalf("NamespaceAPIKey: %v", err)
+		t.Fatalf("AuthHeaders: %v", err)
 	}
-	if key != "s3cret" {
-		t.Fatalf("NamespaceAPIKey = %q, want %q", key, "s3cret")
+
+	// The Helm gateway accepts the same key in three headers. Specs iterate
+	// whatever the backend publishes, so all three must be advertised or the
+	// equivalence they assert on silently stops being covered.
+	want := []deploy.AuthHeader{
+		{Name: "Authorization", Value: "Bearer s3cret"},
+		{Name: "X-API-Key", Value: "s3cret"},
+		{Name: "API-Key", Value: "s3cret"},
+	}
+	if !reflect.DeepEqual(headers, want) {
+		t.Fatalf("AuthHeaders = %+v, want %+v", headers, want)
 	}
 
 	got := strings.Join(calls[0], " ")
@@ -528,14 +538,101 @@ func TestNamespaceAPIKeyDecodesSecret(t *testing.T) {
 	}
 }
 
-func TestNamespaceAPIKeyRejectsMissingKey(t *testing.T) {
+// A missing Secret is not an error: the apikey-operator creates it
+// asynchronously, so callers poll until headers appear. Failing here would turn
+// an ordinary race into a test failure.
+func TestAuthHeadersReturnsNothingWhenSecretIsEmpty(t *testing.T) {
 	d, err := New(Options{
 		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil },
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, err := d.NamespaceAPIKey(context.Background(), "e2e-ns"); err == nil {
-		t.Fatal("expected an error when the Secret has no API key")
+	headers, err := d.AuthHeaders(context.Background(), "e2e-ns")
+	if err != nil {
+		t.Fatalf("AuthHeaders: %v", err)
+	}
+	if len(headers) != 0 {
+		t.Fatalf("AuthHeaders = %+v, want none", headers)
+	}
+}
+
+func TestAuthHeadersReturnsNothingWhenSecretIsAbsent(t *testing.T) {
+	d, err := New(Options{
+		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) {
+			return []byte(`Error from server (NotFound): secrets "llm-api-key" not found`),
+				errors.New("exit status 1")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	headers, err := d.AuthHeaders(context.Background(), "e2e-ns")
+	if err != nil {
+		t.Fatalf("AuthHeaders: %v", err)
+	}
+	if len(headers) != 0 {
+		t.Fatalf("AuthHeaders = %+v, want none", headers)
+	}
+}
+
+// Reporting an unreachable API server as "no credential needed" would send the
+// caller off unauthenticated and surface as a 401 from somewhere else entirely.
+func TestAuthHeadersPropagatesNonNotFoundFailures(t *testing.T) {
+	d, err := New(Options{
+		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) {
+			return []byte("The connection to the server localhost:8080 was refused"),
+				errors.New("exit status 1")
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := d.AuthHeaders(context.Background(), "e2e-ns"); err == nil {
+		t.Fatal("expected an error when the API server cannot be reached")
+	}
+}
+
+// A stack fronted by a real DNS zone is reachable directly, so no tunnel is
+// allocated and the URL carries the authority itself.
+func TestOpenGatewayUsesThePublishedDomainWhenTheHarnessDeclaredOne(t *testing.T) {
+	d, _, _ := newTestDeployerWithKubectl(t, nil, nil)
+	ctx := context.Background()
+	if err := d.InstallModelHarness(ctx, deploy.ModelHarnessValues{
+		Namespace: "e2e-ns",
+		Gateway: deploy.GatewayValues{
+			CloudProvider: "azure",
+			DefaultDomain: "zone.example.com",
+		},
+	}); err != nil {
+		t.Fatalf("InstallModelHarness: %v", err)
+	}
+
+	gateway, err := d.OpenGateway(ctx, "e2e-ns", "e2e-ns-gw")
+	if err != nil {
+		t.Fatalf("OpenGateway: %v", err)
+	}
+	base, err := gateway.BaseURL()
+	if err != nil {
+		t.Fatalf("BaseURL: %v", err)
+	}
+	// The API root, not the origin: callers append "/chat/completions".
+	if want := "https://e2e-ns.zone.example.com/v1"; base != want {
+		t.Errorf("BaseURL() = %q, want %q", base, want)
+	}
+	if host := gateway.Host(); host != "" {
+		t.Errorf("Host() = %q, want empty because the URL carries the authority", host)
+	}
+}
+
+func TestCloseGatewayIsIdempotentForAnUnopenedNamespace(t *testing.T) {
+	d, err := New(Options{
+		KubectlRunner: func(_ context.Context, _ ...string) ([]byte, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.CloseGateway(context.Background(), "never-opened"); err != nil {
+		t.Fatalf("CloseGateway: %v", err)
 	}
 }

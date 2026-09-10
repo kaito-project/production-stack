@@ -496,7 +496,7 @@ func CaseGatewayName(caseName string) string {
 // on a shared gateway.
 //
 // Intended to be called from a Ginkgo Ordered Describe's BeforeAll.
-func InstallCase(caseName string) string {
+func InstallCase(caseName string) deploy.GatewayEndpoint {
 	ns := CaseNamespace(caseName)
 	gatewayName := CaseGatewayName(caseName)
 	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", caseName)
@@ -509,11 +509,11 @@ func InstallCase(caseName string) string {
 	Expect(utils.WaitForGatewayService(ctx, ns, gatewayName, utils.InferenceSetReadyTimeout)).
 		To(Succeed(), "gateway service for %s did not appear", caseName)
 
-	gatewayURL, err := utils.GetGatewayURLFor(ns, gatewayName)
-	Expect(err).NotTo(HaveOccurred(), "failed to resolve gateway URL for case %s", caseName)
+	gateway, err := utils.OpenGateway(ctx, ns, gatewayName)
+	Expect(err).NotTo(HaveOccurred(), "failed to open gateway for case %s", caseName)
 
-	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gatewayURL)
-	return gatewayURL
+	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gateway)
+	return gateway
 }
 
 // UninstallCase tears down every modeldeployment Helm release owned by the

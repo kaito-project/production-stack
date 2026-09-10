@@ -22,6 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
 
 // LoadGenStats captures the running counters of a load generator.
@@ -45,7 +47,7 @@ type LoadGenStats struct {
 //
 // Start is idempotent per instance; it must be followed by exactly one Stop.
 type LoadGenerator struct {
-	GatewayURL  string
+	Gateway     deploy.GatewayEndpoint
 	Model       string
 	Prompt      string
 	Concurrency int
@@ -135,7 +137,7 @@ func (lg *LoadGenerator) runRate(ctx context.Context) {
 
 func (lg *LoadGenerator) sendOnce() {
 	lg.total.Add(1)
-	resp, err := SendChatCompletionWithPrompt(lg.GatewayURL, lg.Model, lg.Prompt)
+	resp, err := SendChat(lg.Gateway, lg.Model, WithPrompt(lg.Prompt), WithTransportRetry())
 	if err != nil {
 		lg.transportErr.Add(1)
 		return

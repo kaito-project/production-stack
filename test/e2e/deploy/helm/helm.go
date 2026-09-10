@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
@@ -100,6 +101,12 @@ type Deployer struct {
 	modelDeploymentChart string
 	run                  Runner
 	kubectl              Runner
+
+	gatewayMu sync.Mutex
+	gateways  map[string]deploy.GatewayEndpoint
+	// harnessGateways records how each namespace's Gateway was exposed at
+	// install time, so OpenGateway does not have to rediscover it.
+	harnessGateways map[string]deploy.GatewayValues
 }
 
 var _ deploy.Deployer = (*Deployer)(nil)
@@ -111,6 +118,8 @@ func New(opts Options) (*Deployer, error) {
 		modelDeploymentChart: firstNonEmpty(opts.ModelDeploymentChart, os.Getenv(EnvModelDeploymentChart), defaultModelDeploymentChartPath),
 		run:                  opts.Runner,
 		kubectl:              opts.KubectlRunner,
+		gateways:             map[string]deploy.GatewayEndpoint{},
+		harnessGateways:      map[string]deploy.GatewayValues{},
 	}
 	if d.run == nil {
 		d.run = execRunner("helm")
@@ -163,6 +172,9 @@ func (d *Deployer) InstallModelHarness(ctx context.Context, values deploy.ModelH
 		return fmt.Errorf("helm upgrade --install %s in %s failed: %w\n%s",
 			ModelHarnessReleaseName, values.Namespace, err, string(out))
 	}
+	d.gatewayMu.Lock()
+	d.harnessGateways[values.Namespace] = values.Gateway
+	d.gatewayMu.Unlock()
 	return nil
 }
 
@@ -206,30 +218,51 @@ func (d *Deployer) UninstallModelHarness(ctx context.Context, namespace string) 
 	return nil
 }
 
-// NamespaceAPIKey reads the plaintext API key from the Secret the
-// apikey-operator reconciles out of the harness's APIKey CR.
-func (d *Deployer) NamespaceAPIKey(ctx context.Context, namespace string) (string, error) {
+// AuthHeaders reads the plaintext API key from the Secret the apikey-operator
+// reconciles out of the harness's APIKey CR and offers it in each of the three
+// headers apikey-authz accepts. A namespace with no such Secret authenticates
+// nothing, so it yields no headers rather than an error.
+func (d *Deployer) AuthHeaders(ctx context.Context, namespace string) ([]deploy.AuthHeader, error) {
 	if namespace == "" {
-		return "", fmt.Errorf("modelharness: namespace is required")
+		return nil, fmt.Errorf("modelharness: namespace is required")
 	}
 
 	out, err := d.kubectl(ctx, "get", "secret", apiKeySecretName,
 		"--namespace", namespace, "-o", "jsonpath={.data."+apiKeySecretDataKey+"}")
 	if err != nil {
-		return "", fmt.Errorf("get secret %s/%s: %w\n%s", namespace, apiKeySecretName, err, string(out))
+		// Only a missing Secret means the gateway authenticates nothing. An
+		// unreachable API server or a denied read must not be reported as
+		// "no credential needed", or the caller sends bare requests and the
+		// 401 that comes back points at the wrong thing entirely.
+		if isNotFound(out) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get secret %s/%s: %w\n%s", namespace, apiKeySecretName, err, string(out))
 	}
 
 	encoded := strings.TrimSpace(string(out))
 	if encoded == "" {
-		return "", fmt.Errorf("secret %s/%s does not contain key %q",
-			namespace, apiKeySecretName, apiKeySecretDataKey)
+		return nil, nil
 	}
 	key, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
-		return "", fmt.Errorf("decode secret %s/%s key %q: %w",
+		return nil, fmt.Errorf("decode secret %s/%s key %q: %w",
 			namespace, apiKeySecretName, apiKeySecretDataKey, err)
 	}
-	return string(key), nil
+
+	// apikey-authz reads all three; the specs assert every one of them works.
+	return []deploy.AuthHeader{
+		{Name: "Authorization", Value: "Bearer " + string(key)},
+		{Name: "X-API-Key", Value: string(key)},
+		{Name: "API-Key", Value: string(key)},
+	}, nil
+}
+
+// isNotFound reports whether kubectl failed because the object (or its
+// namespace) does not exist, as opposed to any other reason.
+func isNotFound(out []byte) bool {
+	return strings.Contains(string(out), "(NotFound)") ||
+		strings.Contains(string(out), "not found")
 }
 
 // InstallModelDeployment runs `helm upgrade --install` for the modeldeployment

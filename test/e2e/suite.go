@@ -42,13 +42,20 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
+
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
 // Declared here rather than in e2e_test.go so out-of-tree suites that import
-// this package inherit the port-forward cleanup.
+// this package inherit the gateway cleanup.
 var _ = AfterSuite(func() {
-	utils.CleanupPortForward()
+	ctx := context.Background()
+	for caseName := range CaseDeployments {
+		if ns := CaseNamespace(caseName); ns != "" {
+			_ = utils.CloseGateway(ctx, ns)
+		}
+	}
 })

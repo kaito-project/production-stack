@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -69,20 +70,20 @@ var _ = Describe("BBR cluster-filter HA",
 		)
 
 		var (
-			ctx       context.Context
-			caseURL   string
-			modelName string
+			ctx         context.Context
+			caseGateway deploy.GatewayEndpoint
+			modelName   string
 		)
 
 		// sendChat drives a plain (no-auth) chat completion against this
 		// case's Gateway — CaseClusterFilterHA does not enable ext_authz.
 		sendChat := func() (*http.Response, error) {
-			return utils.SendChatCompletionWithRetry(caseURL, modelName)
+			return utils.SendChat(caseGateway, modelName, utils.WithTransportRetry())
 		}
 
 		BeforeAll(func() {
 			ctx = context.Background()
-			caseURL = InstallCase(CaseClusterFilterHA)
+			caseGateway = InstallCase(CaseClusterFilterHA)
 			modelName = CaseDeployments[CaseClusterFilterHA][0].Name
 
 			// BBR must be HA before we start removing replicas.
