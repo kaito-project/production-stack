@@ -96,6 +96,17 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 
 	modelsAuth := func() []utils.RequestOption { return caseAuth }
 
+	sendRequest := func(req *http.Request) (*http.Response, error) {
+		headers, err := utils.NamespaceAuthHeaders(ctx, caseNamespace)
+		if err != nil {
+			return nil, err
+		}
+		if len(headers) > 0 {
+			req.Header.Set(headers[0].Name, headers[0].Value)
+		}
+		return (&http.Client{Timeout: utils.HTTPTimeout}).Do(req)
+	}
+
 	sendChat := func(url deploy.GatewayEndpoint, model string) (*http.Response, error) {
 		return utils.SendChat(url, model, caseAuth...)
 	}
@@ -156,7 +167,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("Model discovery", func() {
+	Context("Model discovery", utils.GinkgoLabelModelDiscovery, func() {
 		// The namespace's Gateway routes /v1/models to the cluster-wide
 		// productionstack-status-reporter, which aggregates the InferenceSets
 		// registered in this namespace. Without those routes a bodyless GET
@@ -247,7 +258,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("Cross-model isolation (serial)", func() {
+	Context("Cross-model isolation (serial)", utils.GinkgoLabelStandardK8sOnly, func() {
 		const numRequests = 5
 
 		It("should route requests to the correct model pool with no cross-contamination", func() {
@@ -291,7 +302,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("Cross-model isolation (concurrent)", func() {
+	Context("Cross-model isolation (concurrent)", utils.GinkgoLabelStandardK8sOnly, func() {
 		const numPerModel = 20
 
 		It("should maintain isolation under interleaved concurrent traffic", func() {
@@ -387,7 +398,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("EPP routing success (metrics)", func() {
+	Context("EPP routing success (metrics)", utils.GinkgoLabelStandardK8sOnly, func() {
 		const numRequests = 5
 
 		It("should show EPP scheduler success counts matching requests sent", func() {
@@ -651,12 +662,11 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return 400 invalid_request_body + x-kaito-error-source: bbr for a missing model field", func() {
-			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`{"messages": [{"role": "user", "content": "hello"}]}`)
 			req, err := utils.NewGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
 			Expect(err).NotTo(HaveOccurred())
 
-			resp, err := client.Do(req)
+			resp, err := sendRequest(req)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -676,12 +686,11 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return a well-formed error for non-string model field", func() {
-			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`{"model": 42, "messages": [{"role": "user", "content": "hello"}]}`)
 			req, err := utils.NewGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
 			Expect(err).NotTo(HaveOccurred())
 
-			resp, err := client.Do(req)
+			resp, err := sendRequest(req)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -706,13 +715,12 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should return a well-formed error for non-JSON body", func() {
-			client := &http.Client{Timeout: utils.HTTPTimeout}
 			body := []byte(`this is not json`)
 			req, err := utils.NewGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
 			Expect(err).NotTo(HaveOccurred())
 			req.Header.Set("Content-Type", "text/plain")
 
-			resp, err := client.Do(req)
+			resp, err := sendRequest(req)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -734,8 +742,6 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should not inject x-gateway-model-name for non-/v1/ paths", func() {
-			client := &http.Client{Timeout: utils.HTTPTimeout}
-
 			origin, err := utils.GatewayOrigin(caseGateway)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -746,7 +752,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				req.Host = host
 			}
 
-			resp, err := client.Do(req)
+			resp, err := sendRequest(req)
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()
 
@@ -756,7 +762,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				"non-/v1/ path should not cause a 5xx error")
 		})
 
-		It("should passthrough backend 4xx when prompt exceeds max context length", func() {
+		It("should passthrough backend 4xx when prompt exceeds max context length", utils.GinkgoLabelStandardK8sOnly, func() {
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
