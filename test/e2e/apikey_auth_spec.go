@@ -121,7 +121,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 	// filter and therefore runs before route selection, so the /v1/models
 	// routes are covered by the same policy as inference traffic. Without
 	// this an unauthenticated caller could enumerate a tenant's models.
-	Context("Model discovery is gated by ext_authz", func() {
+	Context("Model discovery is gated by ext_authz", utils.GinkgoLabelModelDiscovery, func() {
 		modelsPaths := func() []string {
 			return []string{utils.ModelsPath, utils.ModelRetrievePath(modelName)}
 		}

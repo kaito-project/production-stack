@@ -854,10 +854,8 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// (installed via EnsureNamespace) and patches an Envoy
 				// `direct_response` (status 404 + OpenAI-compatible JSON) onto
 				// the Gateway's virtual host as a catch-all route. No backend
-				// Pod / Service is involved. The gpu-mocker case has
-				// AuthAPIKeyEnabled=false, so no AuthorizationPolicy is
-				// rendered and the probe needs no bearer token.
-				resp, err := utils.SendChat(caseGateway, "non-existent-model-xyz")
+				// Pod / Service is involved.
+				resp, err := sendChat(caseGateway, "non-existent-model-xyz")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 

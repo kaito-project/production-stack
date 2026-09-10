@@ -62,15 +62,20 @@ Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into three groups:
 - **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
 - **Environment** (what kind of cluster a spec needs): `StandardK8sOnly`.
 
+`ModelDiscovery` marks the `/v1/models` listing, retrieval, and authentication
+specs. They remain enabled by default upstream. Consumers whose deployed stack
+does not yet support these endpoints can exclude them with `!ModelDiscovery`.
+
 `StandardK8sOnly` cuts across the other two. It marks specs that require a
 standard Kubernetes cluster and cannot run on an opinionated managed one such as
-AKS Automatic, for either of two reasons: they reshape running workloads
+AKS Automatic: they reshape running workloads
 directly rather than going through the `Deployer` — `ScaleDeployment` on a
 Deployment's scale subresource ([`utils/cluster.go`](utils/cluster.go)) or
 `SetInferenceSetReplicas` patching an InferenceSet
 ([`utils/scaling.go`](utils/scaling.go)) — or their assertion only holds under a
-`ModelDeploymentValues` field a managed backend cannot express. When running
-against a managed cluster:
+`ModelDeploymentValues` field a managed backend cannot express, or they scrape
+metrics through `pods/proxy`, directly or via the helpers in
+[`utils/metrics.go`](utils/metrics.go). When running against a managed cluster:
 
 ```bash
 E2E_LABEL='!StandardK8sOnly' make test-e2e
@@ -80,9 +85,11 @@ It currently covers `bbr_outage`, `ext_authz_outage`, `epp_outage`,
 `cluster_filter_ha`, `cluster_status`, `control_plane_error`, `scaling`, and the
 `Load distribution` Context of `model_routing` (which turns prefix-cache scoring
 off through `EPPScorerWeights` so identical prompts spread across replicas).
-Label the smallest container that needs it, not the whole file: the rest of
-`model_routing` asserts routing correctness whatever the scorer weights are, and
-stays runnable everywhere.
+It also covers `prefix_cache_routing`, `prefix_cache_perf`, the cross-model
+isolation and EPP metrics Contexts and backend 4xx counter assertion in
+`model_routing`, and the full-chain counter assertions in `filter_order`.
+Label the smallest container that needs it, not the whole file: routing and
+filter-order specs that do not require these mechanisms stay runnable everywhere.
 Note it describes the MECHANISM, not the blast radius: `model_unavailable`
 empties an inference pool too, but does so through `UpgradeModelDeployment`, so
 any backend can honour it and it stays unlabelled.

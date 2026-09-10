@@ -102,6 +102,9 @@ type Deployer struct {
 	run                  Runner
 	kubectl              Runner
 
+	domainMu         sync.Mutex
+	appRoutingDomain string
+
 	gatewayMu sync.Mutex
 	gateways  map[string]deploy.GatewayEndpoint
 	// harnessGateways records how each namespace's Gateway was exposed at
@@ -146,6 +149,11 @@ func (d *Deployer) Name() string { return BackendName }
 // Idempotent: re-running on an existing release reconciles the values.
 func (d *Deployer) InstallModelHarness(ctx context.Context, values deploy.ModelHarnessValues) error {
 	if err := values.Validate(); err != nil {
+		return err
+	}
+	var err error
+	values.Gateway, err = d.deploymentGatewayValues(ctx, values.Gateway)
+	if err != nil {
 		return err
 	}
 	chart, err := resolveChart(d.modelHarnessChart, EnvModelHarnessChart, "modelharness")
@@ -273,6 +281,11 @@ func (d *Deployer) InstallModelDeployment(ctx context.Context, values deploy.Mod
 	if err := values.Validate(); err != nil {
 		return err
 	}
+	var err error
+	values.Gateway, err = d.deploymentGatewayValues(ctx, values.Gateway)
+	if err != nil {
+		return err
+	}
 	chart, err := resolveChart(d.modelDeploymentChart, EnvModelDeploymentChart, "modeldeployment")
 	if err != nil {
 		return err
@@ -298,6 +311,11 @@ func (d *Deployer) InstallModelDeployment(ctx context.Context, values deploy.Mod
 // onto whatever it previously held.
 func (d *Deployer) UpgradeModelDeployment(ctx context.Context, values deploy.ModelDeploymentValues) error {
 	if err := values.Validate(); err != nil {
+		return err
+	}
+	var err error
+	values.Gateway, err = d.deploymentGatewayValues(ctx, values.Gateway)
+	if err != nil {
 		return err
 	}
 	chart, err := resolveChart(d.modelDeploymentChart, EnvModelDeploymentChart, "modeldeployment")

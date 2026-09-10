@@ -189,7 +189,7 @@ func uniquePrefixSessions(sessions []utils.ReplaySession) []utils.ReplaySession 
 }
 
 var _ = Describe("Prefix Cache Routing Perf",
-	utils.GinkgoLabelPerf, utils.GinkgoLabelPrefixCache, Ordered, func() {
+	utils.GinkgoLabelPerf, utils.GinkgoLabelPrefixCache, utils.GinkgoLabelStandardK8sOnly, Ordered, func() {
 
 		model := CaseDeployments[CasePrefixCachePerf][0].Name
 		caseNamespace := CaseNamespace(CasePrefixCachePerf)
