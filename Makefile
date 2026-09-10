@@ -330,7 +330,10 @@ azure-karpenter-helm: ## Install Azure Karpenter Helm chart (run karpenter-azure
 e2e-up-karpenter: ## One command to set up full local E2E env using real Karpenter (AKS NAP, no gpu-node-mocker).
 	@set -e; \
 	export CLUSTER_NAME=$(E2E_CLUSTER_NAME) RESOURCE_GROUP=$(E2E_RESOURCE_GROUP) LOCATION=eastus KAITO_NODE_PROVISIONER=karpenter KAITO_NODE_CLASS=azure ENABLE_NODE_MOCKER=false; \
-	hack/e2e/scripts/prepare-image.sh; \
+	IMAGE_OUTPUT=$$(hack/e2e/scripts/prepare-image.sh); \
+	STATUS_REPORTER_IMAGE_LINE=$$(printf '%s\n' "$${IMAGE_OUTPUT}" | grep '^status_reporter_image='); \
+	export STATUS_REPORTER_IMAGE=$${STATUS_REPORTER_IMAGE_LINE#status_reporter_image=}; \
+	echo "Using STATUS_REPORTER_IMAGE=$${STATUS_REPORTER_IMAGE}"; \
 	hack/e2e/scripts/run-e2e-local.sh setup; \
 	$(MAKE) karpenter-azure-identity AZURE_CLUSTER_NAME=$(E2E_CLUSTER_NAME) AZURE_RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \
 	$(MAKE) azure-karpenter-helm AZURE_CLUSTER_NAME=$(E2E_CLUSTER_NAME) AZURE_RESOURCE_GROUP=$(E2E_RESOURCE_GROUP); \

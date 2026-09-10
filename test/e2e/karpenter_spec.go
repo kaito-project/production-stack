@@ -21,7 +21,7 @@ limitations under the License.
 //
 //   - Small  (~7B qwen2.5-coder) — single GPU, single A100 node
 //   - Medium (~32B qwen2.5-coder) — single 2-GPU A100 node (tensor parallel)
-//   - Large  (~32B qwen2.5-coder) — two-node A100 InferenceSet deployment
+//   - Large  (~122B Qwen3.5 GPTQ) — two-node A100 InferenceSet deployment
 //
 // KAITO's Karpenter flow for InferenceSet:
 //
@@ -52,12 +52,11 @@ limitations under the License.
 // The Medium scenario runs the curated/ungated qwen2.5-coder-32b-instruct on
 // a single 2-GPU NC48ads_A100_v4 node (160GB total); the model fits one node,
 // so KAITO shards it across both GPUs with tensor parallelism (TP=2) instead
-// of provisioning a second node. The Large scenario runs the same preset on
-// 1-GPU NC24ads_A100_v4 nodes (80GB each); KAITO derives the node count from
-// the preset's total GPU-memory requirement (weights + KV cache + runtime
-// overhead) divided by the 80GB per-node capacity, which for this model on a
-// single-GPU SKU resolves to two nodes, exercising the multi-node distributed
-// inference path. No HuggingFace token is required for either.
+// of provisioning a second node. The Large scenario runs the public
+// Qwen3.5-122B-A10B-GPTQ-Int4 model on 1-GPU NC24ads_A100_v4 nodes (80GB each);
+// KAITO derives two nodes from its ~73GiB weight size plus runtime memory,
+// exercising the multi-node distributed inference path. No HuggingFace token
+// is required for either.
 // --procs=1 is still recommended so a BeforeAll failure in one scenario does
 // not cascade-skip the others (see proc-affinity note above) and to keep peak
 // VM demand predictable:
@@ -120,7 +119,7 @@ var karpenterScenarios = []karpenterScenario{
 	},
 	{
 		caseName:       CaseKarpenterLarge,
-		description:    "Large (~32B qwen2.5-coder, two-node A100 InferenceSet)",
+		description:    "Large (~122B Qwen3.5 GPTQ, two-node A100 InferenceSet)",
 		minGPUsPerNode: 1,
 		expectedNodes:  2,
 	},
