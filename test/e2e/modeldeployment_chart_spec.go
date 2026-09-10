@@ -81,8 +81,8 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.G
 			// Mirror the chart convention defined in
 			// charts/modeldeployment/templates/_helpers.tpl
 			// (and charts/modelharness): when gatewayName is empty,
-			// the chart derives it as "<namespace>-gw".
-			gatewayName = namespace + "-gw"
+			// the chart uses the workload namespace.
+			gatewayName = namespace
 			Expect(utils.EnsureNamespace(ctx, namespace, caseValues.AuthAPIKeyEnabled)).To(Succeed())
 
 			values := caseValues

@@ -87,7 +87,7 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 	It("stamps kaito.sh/owned-by: modelharness on every harness-owned object",
 		utils.GinkgoLabelStandardK8sOnly, func() {
 			cl := utils.TestingCluster.KubeClient
-			gatewayName := namespace + "-gw"
+			gatewayName := namespace
 
 			// Each entry: a harness-owned object identified by GVK + name.
 			owned := []struct {

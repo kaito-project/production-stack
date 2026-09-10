@@ -9,7 +9,7 @@
 Per-namespace ext_authz EnvoyFilter (Azure variant).
 
 Rendered only when `cloudprovider=azure` and `auth.enabled=true`. Splices
-ext_authz into this namespace's Gateway pod (`<namespace>-gw`), pointing
+ext_authz into this namespace's Gateway pod (`<namespace>`), pointing
 at cluster-wide gRPC Services installed by `charts/productionstack`:
   * apikey — apikey-authz (subchart `llm-gateway-apikey`)
   * azure  — azure-authz  (subchart `llm-gateway-azureauth`)
@@ -33,7 +33,7 @@ Why per-namespace and not cluster-wide:
     APIKey / Entra configurations and may opt out of auth entirely.
   - The upstream subchart EnvoyFilters are workloadSelector-scoped to a
     single Gateway in one namespace, so they cannot cover the
-    `<namespace>-gw` Gateways that live in each workload namespace. The
+    namespace-named Gateways that live in each workload namespace. The
     umbrella chart neutralises the upstream cluster-wide EnvoyFilters so
     this template is the sole source of ext_authz wiring on inference
     Gateways.

@@ -4,7 +4,7 @@ End-to-end test suite for production-stack, built with [Ginkgo v2](https://onsi.
 
 ## Test cases
 
-Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry carries `Name`, `Namespace`, `Model` (preset), `Replicas`, `InstanceType`. The Gateway name is derived as `<namespace>-gw` by both `charts/modelharness` and `charts/modeldeployment`.
+Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry carries `Name`, `Namespace`, `Model` (preset), `Replicas`, `InstanceType`. The Gateway name defaults to `<namespace>` in both `charts/modelharness` and `charts/modeldeployment`.
 
 | Case key | Test file | Namespace | Gateway | Deployments | Lifecycle |
 | --- | --- | --- | --- | --- | --- |

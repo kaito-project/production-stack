@@ -59,7 +59,7 @@ func CurrentDeployer() (deploy.Deployer, error) {
 // InstallModelHarness creates or reconciles the modelharness owning the
 // per-namespace shared resources: the workload namespace itself (stamped with
 // the discovery label the control plane selects on), the Istio Gateway (named
-// "<namespace>-gw" by chart default), the catch-all `model-not-found-direct`
+// "<namespace>" by chart default), the catch-all `model-not-found-direct`
 // EnvoyFilter, and — when authEnabled is true — the AuthorizationPolicy +
 // APIKey CR that wire the Gateway into the cluster-wide apikey-ext-authz
 // CUSTOM provider.

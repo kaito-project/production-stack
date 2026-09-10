@@ -99,7 +99,7 @@ gpu-node-mocker:
 # `charts/modelharness` (templates/envoyfilter-ext-authz.yaml) — auth
 # scope in production-stack is per-workload-namespace, so each
 # modelharness release inserts the ext_authz HTTP filter into its own
-# `<namespace>-gw` Gateway pod and points it at the shared
+# namespace-named Gateway pod and points it at the shared
 # apikey-authz Service installed here. The upstream chart's own
 # cluster-wide EnvoyFilter is therefore neutralised below (selector
 # pinned to a label nothing matches and co-located in the LGA
@@ -343,4 +343,3 @@ productionstack-status-reporter:
     bbrNamespace: kaito-system
     gatewayAuthNamespace: llm-gateway-auth
     kedaScalerNamespace: keda
-

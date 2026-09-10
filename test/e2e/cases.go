@@ -217,7 +217,7 @@ const (
 //     spec.template.inference.preset.name.
 //   - Namespace: per-case namespace — the suite installs into this
 //     namespace directly. Each non-default namespace gets its own
-//     dedicated Istio Gateway (named "<namespace>-gw" by chart
+//     dedicated Istio Gateway (named "<namespace>" by chart
 //     convention) so parallel Ginkgo workers can target independent
 //     dataplanes. The Gateway is provisioned by EnsureNamespace via
 //     the modelharness chart during InstallCase.
@@ -475,14 +475,14 @@ func CaseNamespace(caseName string) string {
 }
 
 // CaseGatewayName returns the Gateway name owned by the case namespace.
-// Mirrors the chart convention "<namespace>-gw" (see
+// Mirrors the chart convention "<namespace>" (see
 // charts/modelharness/templates/_helpers.tpl).
 func CaseGatewayName(caseName string) string {
 	ns := CaseNamespace(caseName)
 	if ns == "" {
 		return ""
 	}
-	return ns + "-gw"
+	return ns
 }
 
 // InstallCase provisions every modeldeployment Helm release owned by the

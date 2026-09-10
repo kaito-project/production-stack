@@ -14,7 +14,7 @@
 Per-namespace RequestAuthentication.
 
 Tells Istio's envoy.filters.http.jwt_authn filter how to validate inbound
-Azure Entra ID JWTs on THIS namespace's Gateway pod (`<namespace>-gw`).
+Azure Entra ID JWTs on THIS namespace's Gateway pod (`<namespace>`).
 Validated claims are exposed to downstream HTTP filters (notably
 templates/azure/envoyfilter-ext-authz.yaml's `ext_authz.azure`) under the
 `envoy.filters.http.jwt_authn` metadata namespace.
@@ -22,7 +22,7 @@ templates/azure/envoyfilter-ext-authz.yaml's `ext_authz.azure`) under the
 Adapted from the upstream `llm-gateway-azureauth` chart's
 templates/istio/requestauthentication.yaml — same JWT rule shape, but
 per-workload-namespace and always targeting the gateway rendered by
-modelharness (`<namespace>-gw`) rather than a chart-level
+modelharness (`<namespace>`) rather than a chart-level
 gatewaySelector. Matches the per-namespace ownership model this chart
 already uses for its EnvoyFilters.
 
@@ -53,4 +53,3 @@ spec:
       forwardOriginalToken: false
 {{- end -}}
 {{- end -}}
-

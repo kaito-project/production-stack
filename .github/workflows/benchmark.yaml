@@ -6,7 +6,7 @@ name: ModelDeployment benchmark (manual)
 #      llm-gateway-apikey, gpu-node-mocker, KAITO).
 #   2. Provisions a dedicated workload namespace via the
 #      `charts/modelharness` Helm chart (per-namespace Istio Gateway
-#      `<namespace>-gw`, catch-all HTTPRoute + ReferenceGrant pointing
+#      `<namespace>`, catch-all HTTPRoute + ReferenceGrant pointing
 #      at the cluster-shared `default/model-not-found` Service, plus
 #      the per-namespace `AuthorizationPolicy` + `APIKey` CR when
 #      `auth.enabled=true`).
@@ -44,7 +44,7 @@ env:
   NODE_COUNT: '3'
   NODE_VM_SIZE: Standard_D8s_v5
   # Dedicated workload namespace provisioned by charts/modelharness.
-  # Naming: per-namespace Gateway becomes "<namespace>-gw" by chart
+  # Naming: per-namespace Gateway becomes "<namespace>" by chart
   # default; the per-namespace APIKey Secret (llm-api-key) lives here.
   WORKLOAD_NAMESPACE: benchmark
   GATEWAY_NAME: benchmark-gw
@@ -156,7 +156,7 @@ jobs:
           set -euo pipefail
           echo "── Installing modelharness chart in ${WORKLOAD_NAMESPACE} ──"
           # The chart provisions:
-          #   - per-namespace Istio Gateway "<namespace>-gw"
+          #   - per-namespace Istio Gateway "<namespace>"
           #   - catch-all HTTPRoute → cluster-shared `default/model-not-found`
           #   - ReferenceGrant authorising that cross-ns backendRef
           #   - AuthorizationPolicy wiring the Gateway pod into the
