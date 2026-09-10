@@ -175,28 +175,7 @@ type PodMetricSnapshot map[string]float64
 // pods for the given model in the given namespace and returns a map of
 // podName → counter value.
 func ScrapeRequestSuccessTotal(ctx context.Context, clientset *kubernetes.Clientset, namespace, model string) (PodMetricSnapshot, error) {
-	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
-	if err != nil {
-		return nil, err
-	}
-
-	snapshot := make(PodMetricSnapshot, len(pods))
-	for _, pod := range pods {
-		port := inferenceSimPort(pod)
-		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, port)
-		if err != nil {
-			return nil, fmt.Errorf("scraping %s: %w", pod.Name, err)
-		}
-		val, found := ParseMetricValue(raw, "vllm:request_success_total", map[string]string{
-			"model_name": model,
-		})
-		if !found {
-			// Counter may not exist yet if no requests have been served.
-			val = 0
-		}
-		snapshot[pod.Name] = val
-	}
-	return snapshot, nil
+	return ScrapeModelMetric(ctx, clientset, namespace, model, "vllm:request_success_total")
 }
 
 // GetShadowPodsForModel returns the Running shadow pods in the given
@@ -283,11 +262,7 @@ func ValidateCounterSnapshots(before, after PodMetricSnapshot) error {
 
 // TotalDelta returns the sum of all deltas in a diff snapshot.
 func TotalDelta(diff PodMetricSnapshot) float64 {
-	var total float64
-	for _, v := range diff {
-		total += v
-	}
-	return total
+	return SumSnapshot(diff)
 }
 
 // ScrapeModelMetric scrapes a named metric with a model_name label from all
@@ -295,24 +270,8 @@ func TotalDelta(diff PodMetricSnapshot) float64 {
 // per-pod snapshot. This is used for metrics like vllm:prefix_cache_hits,
 // vllm:prefix_cache_queries, etc.
 func ScrapeModelMetric(ctx context.Context, clientset *kubernetes.Clientset, namespace, model, metricName string) (PodMetricSnapshot, error) {
-	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
-	if err != nil {
-		return nil, err
-	}
-
-	snapshot := make(PodMetricSnapshot, len(pods))
-	for _, pod := range pods {
-		port := inferenceSimPort(pod)
-		raw, err := ScrapePodMetrics(ctx, clientset, namespace, pod.Name, port)
-		if err != nil {
-			return nil, fmt.Errorf("scraping %s: %w", pod.Name, err)
-		}
-		val, _ := ParseMetricValue(raw, metricName, map[string]string{
-			"model_name": model,
-		})
-		snapshot[pod.Name] = val
-	}
-	return snapshot, nil
+	snapshot, _, err := ScrapeModelMetricWithPresence(ctx, clientset, namespace, model, metricName)
+	return snapshot, err
 }
 
 // inferenceSimPort returns the llm-d-inference-sim container's port from the

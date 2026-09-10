@@ -28,6 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -131,36 +132,45 @@ func PrintPodLogsOnFailure(namespace, labelSelector string) {
 
 // WaitForPodReady waits until the given pod name/namespace is in Ready condition.
 func WaitForPodReady(ctx context.Context, cl *kubernetes.Clientset, namespace, podName string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	return pollUntilReady(ctx, timeout, fmt.Sprintf("pod %s/%s to be Ready", namespace, podName), func(ctx context.Context) error {
 		pod, err := cl.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
-			time.Sleep(PollInterval)
-			continue
+			return err
 		}
 		for _, c := range pod.Status.Conditions {
 			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
 				return nil
 			}
 		}
-		time.Sleep(PollInterval)
-	}
-	return fmt.Errorf("timed out waiting for pod %s/%s to be Ready", namespace, podName)
+		return fmt.Errorf("pod is not Ready")
+	})
 }
 
 // WaitForDeploymentReady waits until a deployment has at least 1 available replica.
 func WaitForDeploymentReady(ctx context.Context, cl *kubernetes.Clientset, namespace, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	return pollUntilReady(ctx, timeout, fmt.Sprintf("deployment %s/%s to be available", namespace, name), func(ctx context.Context) error {
 		deploy, err := cl.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
-			time.Sleep(PollInterval)
-			continue
+			return err
 		}
 		if deploy.Status.AvailableReplicas > 0 {
 			return nil
 		}
-		time.Sleep(PollInterval)
+		return fmt.Errorf("deployment has no available replicas")
+	})
+}
+
+func pollUntilReady(ctx context.Context, timeout time.Duration, description string, check func(context.Context) error) error {
+	var lastErr error
+	err := wait.PollUntilContextTimeout(ctx, PollInterval, timeout, true, func(ctx context.Context) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		lastErr = check(ctx)
+		return lastErr == nil, nil
+	})
+	if err != nil {
+		return fmt.Errorf("waiting for %s: %w (last check: %v)", description, err, lastErr)
 	}
-	return fmt.Errorf("timed out waiting for deployment %s/%s to be available", namespace, name)
+	return nil
 }

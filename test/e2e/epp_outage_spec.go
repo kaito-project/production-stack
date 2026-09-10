@@ -61,66 +61,39 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 	utils.GinkgoLabelStandardK8sOnly, func() {
 
 		var (
-			ctx           context.Context
-			caseGateway   deploy.GatewayEndpoint
-			caseNS        string
-			modelName     string
-			eppDeployment string
-			origReplicas  int32
+			ctx         context.Context
+			caseGateway deploy.GatewayEndpoint
+			modelName   string
+			replicas    *utils.DeploymentReplicaGuard
 		)
 
 		BeforeAll(func() {
 			ctx = context.Background()
+			DeferCleanup(UninstallCase, CaseEPPOutage)
 
 			caseGateway = InstallCase(CaseEPPOutage)
-			caseNS = CaseNamespace(CaseEPPOutage)
 			modelName = CaseDeployments[CaseEPPOutage][0].Name
 			// The EPP Deployment is named "<name>-inferencepool-epp" by the
 			// modeldeployment chart (modeldeployment.eppServiceName).
-			eppDeployment = utils.EPPServiceName(modelName)
+			replicas = prepareDeploymentOutage(ctx, CaseNamespace(CaseEPPOutage), utils.EPPServiceName(modelName))
 
 			// Sanity: a valid request must succeed BEFORE we induce the
 			// outage, otherwise a 502 below would be meaningless.
-			Eventually(func() int {
-				resp, sErr := utils.SendChat(caseGateway, modelName)
-				if sErr != nil {
-					return 0
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode
-			}, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(),
 				"baseline request should succeed before inducing the EPP outage")
-		})
-
-		AfterAll(func() {
-			// Always restore the EPP so we never leave this namespace's
-			// request path broken, even if an assertion above failed.
-			if origReplicas > 0 {
-				Expect(utils.ScaleDeployment(ctx, caseNS, eppDeployment, origReplicas)).
-					To(Succeed(), "failed to restore EPP replicas")
-				Expect(utils.WaitForDeploymentReplicas(ctx, caseNS, eppDeployment, origReplicas, 3*time.Minute)).
-					To(Succeed(), "EPP did not return to %d ready replicas", origReplicas)
-			}
-			UninstallCase(CaseEPPOutage)
 		})
 
 		It("maps an EPP outage to 502 epp_unavailable (not 404 model_not_found)", func() {
 			By("scaling the EPP Deployment to zero")
-			var err error
-			origReplicas, _, err = utils.GetDeploymentReplicas(ctx, caseNS, eppDeployment)
-			Expect(err).NotTo(HaveOccurred(), "failed to read EPP replica count")
-			Expect(origReplicas).To(BeNumerically(">", 0), "EPP should have had >0 replicas before the outage")
-			Expect(utils.ScaleDeployment(ctx, caseNS, eppDeployment, 0)).
+			Expect(replicas.ScaleAndWait(ctx, 0, 2*time.Minute)).
 				To(Succeed(), "failed to scale EPP to zero")
-			Expect(utils.WaitForDeploymentReplicas(ctx, caseNS, eppDeployment, 0, 2*time.Minute)).
-				To(Succeed(), "EPP did not scale down to zero ready replicas")
 
 			By("sending a valid chat completion and asserting the outage envelope")
 			Eventually(func(g Gomega) {
 				resp, sErr := utils.SendChat(caseGateway, modelName)
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
-				defer resp.Body.Close()
-
 				status := resp.StatusCode
 				errSource := resp.Header.Get("x-kaito-error-source")
 				parsed, pErr := utils.ParseErrorResponse(resp)
@@ -148,22 +121,13 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 
 		It("recovers once the EPP is restored", func() {
 			By("scaling the EPP Deployment back to its original replica count")
-			Expect(origReplicas).To(BeNumerically(">", 0),
-				"previous spec must have captured the original replica count")
-			Expect(utils.ScaleDeployment(ctx, caseNS, eppDeployment, origReplicas)).
+			Expect(replicas.Restore(ctx, 3*time.Minute)).
 				To(Succeed(), "failed to restore EPP replicas")
-			Expect(utils.WaitForDeploymentReplicas(ctx, caseNS, eppDeployment, origReplicas, 3*time.Minute)).
-				To(Succeed(), "EPP did not return to %d ready replicas", origReplicas)
 
 			By("sending a valid chat completion and asserting it succeeds again")
-			Eventually(func() int {
-				resp, sErr := utils.SendChat(caseGateway, modelName)
-				if sErr != nil {
-					return 0
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode
-			}, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(),
 				"requests should succeed again once the EPP is healthy")
 		})
 	})

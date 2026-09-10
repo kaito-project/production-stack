@@ -38,10 +38,8 @@ import (
 // The deployment Name / Namespace are resolved per-Describe from the
 // CaseDeployments table (see cases.go) — that table is the single source
 // of truth for the model name carried in OpenAI requests and matched by
-// the gateway. CaseScaling does NOT enable AuthAPIKeyEnabled, so the
-// modelharness chart leaves ext_authz off for this namespace and plain
-// SendChatCompletion* / LoadGenerator (no Authorization header) is the
-// correct probe.
+// the gateway. The shared gateway request helpers authenticate both probes
+// and LoadGenerator traffic using this namespace's backend credentials.
 
 const (
 	// Concurrency for queue-pressure workloads. The CaseScaling baseline

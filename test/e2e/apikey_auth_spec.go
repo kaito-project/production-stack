@@ -31,8 +31,7 @@ import (
 )
 
 var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils.GinkgoLabelSmoke, func() {
-	// CaseAuth deployment — AuthAPIKeyEnabled=true causes EnsureNamespace
-	// to provision the per-namespace AuthorizationPolicy and APIKey CR
+	// EnsureNamespace provisions the per-namespace AuthorizationPolicy and APIKey CR
 	// (the cluster-wide MeshConfig provider is installed once by the
 	// llm-gateway-apikey chart).
 	authDeployment := CaseDeployments[CaseAuth][0]
@@ -49,17 +48,10 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		ctx = context.Background()
 		caseGateway = InstallCase(CaseAuth)
 
-		Eventually(func() ([]deploy.AuthHeader, error) {
-			utils.ForgetNamespaceAuthHeaders(caseNamespace)
-			return utils.NamespaceAuthHeaders(ctx, caseNamespace)
-		}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
-			"backend should publish an API key for %s", caseNamespace)
-		// NOTE: assign to the outer authHeaders, do NOT use `:=` here — a
-		// shadowed variable leaves the outer one empty and every "valid key"
-		// spec then sends an unauthenticated request and fails with 401.
 		var err error
 		authHeaders, err = utils.NamespaceAuthHeaders(ctx, caseNamespace)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(authHeaders).NotTo(BeEmpty())
 	})
 
 	AfterAll(func() {
@@ -71,7 +63,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		Eventually(func() int {
 			// Deliberately unauthenticated: attaching the valid key here would
 			// return 200 and mask a policy that is not being enforced.
-			resp, err := utils.SendChat(caseGateway, modelName)
+			resp, err := utils.SendChat(caseGateway, modelName, utils.WithoutAuth())
 			if err != nil {
 				return 0 // treat request errors as non-401 responses to keep retrying
 			}
@@ -86,14 +78,14 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 
 	It("should reject requests with an invalid API key (401)", func() {
 		resp, err := utils.SendChat(caseGateway, modelName,
-			utils.WithHeader("Authorization", "Bearer invalid-key-12345"))
+			utils.WithAuth(deploy.AuthHeader{Name: authHeaders[0].Name, Value: "Bearer invalid-key-12345"}))
 		Expect(err).NotTo(HaveOccurred())
 		defer resp.Body.Close()
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized),
 			fmt.Sprintf("invalid key should be rejected; got status %d", resp.StatusCode))
 	})
 
-	// One spec per header the backend publishes: a gateway that accepts the
+	// Check each header the backend publishes: a gateway that accepts the
 	// credential in several headers is asserted on all of them, and one that
 	// pins a single transport is not failed for the others it never claimed.
 	It("should accept requests carrying a valid API key (200)", func() {
@@ -129,7 +121,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		It("should reject discovery requests without an Authorization header (401)", func() {
 			for _, path := range modelsPaths() {
 				Eventually(func() int {
-					resp, err := utils.SendModels(caseGateway, path)
+					resp, err := utils.SendModels(caseGateway, path, utils.WithoutAuth())
 					if err != nil {
 						return 0
 					}
@@ -143,7 +135,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		It("should reject discovery requests with an invalid API key (401)", func() {
 			for _, path := range modelsPaths() {
 				resp, err := utils.SendModels(caseGateway, path,
-					utils.WithHeader("Authorization", "Bearer invalid-key-12345"))
+					utils.WithAuth(deploy.AuthHeader{Name: authHeaders[0].Name, Value: "Bearer invalid-key-12345"}))
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized),
@@ -153,8 +145,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 
 		It("should list and retrieve the namespace's models with a valid API key (200)", func() {
 			Eventually(func() error {
-				resp, err := utils.SendModels(caseGateway, utils.ModelsPath,
-					utils.WithAuth(authHeaders[0]))
+				resp, err := utils.SendModels(caseGateway, utils.ModelsPath)
 				if err != nil {
 					return fmt.Errorf("request failed: %w", err)
 				}
@@ -172,8 +163,7 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 				return nil
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
-			resp, err := utils.SendModels(caseGateway, utils.ModelRetrievePath(modelName),
-				utils.WithAuth(authHeaders[0]))
+			resp, err := utils.SendModels(caseGateway, utils.ModelRetrievePath(modelName))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 

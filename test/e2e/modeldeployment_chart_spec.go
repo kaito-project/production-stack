@@ -48,11 +48,9 @@ func generateNamespace(prefix string) string {
 // recycleNamespace uninstalls the modeldeployment and then hands the namespace
 // back to the Deployer, which owns it.
 func recycleNamespace(ctx context.Context, deploymentName, namespace string) {
-	if err := utils.CleanupInferenceSetWithRouting(ctx, deploymentName, namespace); err != nil {
+	deployments := []deploy.ModelDeploymentValues{{Name: deploymentName, Namespace: namespace}}
+	if err := utils.CleanupDeploymentsAndNamespace(ctx, deployments, namespace); err != nil {
 		GinkgoWriter.Printf("Cleanup warning: %v\n", err)
-	}
-	if err := utils.DeleteNamespace(ctx, namespace); err != nil {
-		GinkgoWriter.Printf("Cleanup warning: failed to delete namespace %s: %v\n", namespace, err)
 	}
 }
 
@@ -83,7 +81,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.G
 			// (and charts/modelharness): when gatewayName is empty,
 			// the chart uses the workload namespace.
 			gatewayName = namespace
-			Expect(utils.EnsureNamespace(ctx, namespace, caseValues.AuthAPIKeyEnabled)).To(Succeed())
+			Expect(utils.EnsureNamespace(ctx, namespace)).To(Succeed())
 
 			values := caseValues
 			values.Namespace = namespace
@@ -222,7 +220,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.G
 
 		BeforeEach(func() {
 			namespace = generateNamespace("e2e-autoupgrade")
-			Expect(utils.EnsureNamespace(ctx, namespace, baseValues.AuthAPIKeyEnabled)).To(Succeed())
+			Expect(utils.EnsureNamespace(ctx, namespace)).To(Succeed())
 
 			values := baseValues
 			values.Namespace = namespace

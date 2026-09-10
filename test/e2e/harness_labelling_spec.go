@@ -56,7 +56,7 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 		// EnsureNamespace stamps the discovery label on the workload
 		// namespace and installs the harness with auth enabled, so this
 		// case exercises the ext-authz EnvoyFilter + APIKey objects too.
-		Expect(utils.EnsureNamespace(ctx, namespace, true)).To(Succeed())
+		Expect(utils.EnsureNamespace(ctx, namespace)).To(Succeed())
 	})
 
 	AfterEach(func() {
