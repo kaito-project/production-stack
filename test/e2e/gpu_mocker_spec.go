@@ -48,21 +48,8 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 	// Gateway. Resolved in BeforeAll.
 	var caseGateway deploy.GatewayEndpoint
 
-	// caseAuth carries whatever credential the backend's gateway requires. This
-	// case does not enable the API-key AuthorizationPolicy (see cases.go), but a
-	// managed gateway authenticates every request regardless.
-	var caseAuth []utils.RequestOption
-
-	sendChat := func(url deploy.GatewayEndpoint, model string) (*http.Response, error) {
-		return utils.SendChat(url, model, caseAuth...)
-	}
-
 	BeforeAll(func() {
 		caseGateway = InstallCase(CaseGPUMocker)
-
-		var err error
-		caseAuth, err = utils.NamespaceRequestOptions(context.Background(), caseNamespace)
-		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterAll(func() {
@@ -82,7 +69,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// Retry with backoff — BBR/EPP ext_proc filters may need time
 				// to establish gRPC connections after cluster setup.
 				Eventually(func() error {
-					resp, err := sendChat(caseGateway, falconModel)
+					resp, err := utils.SendChat(caseGateway, falconModel)
 					if err != nil {
 						return fmt.Errorf("request failed: %w", err)
 					}
@@ -855,7 +842,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				// `direct_response` (status 404 + OpenAI-compatible JSON) onto
 				// the Gateway's virtual host as a catch-all route. No backend
 				// Pod / Service is involved.
-				resp, err := sendChat(caseGateway, "non-existent-model-xyz")
+				resp, err := utils.SendChat(caseGateway, "non-existent-model-xyz")
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 

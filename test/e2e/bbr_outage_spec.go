@@ -63,59 +63,37 @@ var _ = Describe("BBR outage (fail-closed cluster filter)",
 		)
 
 		var (
-			ctx          context.Context
-			caseGateway  deploy.GatewayEndpoint
-			modelName    string
-			origReplicas int32
+			ctx         context.Context
+			caseGateway deploy.GatewayEndpoint
+			modelName   string
+			replicas    *utils.DeploymentReplicaGuard
 		)
 
 		BeforeAll(func() {
 			ctx = context.Background()
+			DeferCleanup(UninstallCase, CaseBBROutage)
 
 			caseGateway = InstallCase(CaseBBROutage)
 			modelName = CaseDeployments[CaseBBROutage][0].Name
+			replicas = prepareDeploymentOutage(ctx, bbrNamespace, bbrDeploymentName)
 
 			// Sanity: a valid request must succeed BEFORE we induce the
 			// outage, otherwise a 502 below would be meaningless.
-			Eventually(func() int {
-				resp, sErr := utils.SendChat(caseGateway, modelName)
-				if sErr != nil {
-					return 0
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode
-			}, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(),
 				"baseline request should succeed before inducing the BBR outage")
-		})
-
-		AfterAll(func() {
-			// Always restore BBR so we never leave the shared cluster
-			// filter broken for subsequent (Serial) suites, even if an
-			// assertion above failed.
-			if origReplicas > 0 {
-				Expect(utils.ScaleDeployment(ctx, bbrNamespace, bbrDeploymentName, origReplicas)).
-					To(Succeed(), "failed to restore BBR replicas")
-				Expect(utils.WaitForDeploymentReplicas(ctx, bbrNamespace, bbrDeploymentName, origReplicas, 3*time.Minute)).
-					To(Succeed(), "BBR did not return to %d ready replicas", origReplicas)
-			}
-			UninstallCase(CaseBBROutage)
 		})
 
 		It("maps a BBR outage to 502 bbr_unavailable (not 404 model_not_found)", func() {
 			By("scaling the BBR Deployment to zero")
-			var err error
-			origReplicas, _, err = utils.GetDeploymentReplicas(ctx, bbrNamespace, bbrDeploymentName)
-			Expect(err).NotTo(HaveOccurred(), "failed to read BBR replica count")
-			Expect(origReplicas).To(BeNumerically(">", 0), "BBR should have had >0 replicas before the outage")
-			Expect(utils.ScaleDeployment(ctx, bbrNamespace, bbrDeploymentName, 0)).
+			Expect(replicas.ScaleAndWait(ctx, 0, 2*time.Minute)).
 				To(Succeed(), "failed to scale BBR to zero")
 
 			By("sending a valid chat completion and asserting the outage envelope")
 			Eventually(func(g Gomega) {
 				resp, sErr := utils.SendChat(caseGateway, modelName)
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
-				defer resp.Body.Close()
-
 				status := resp.StatusCode
 				errSource := resp.Header.Get("x-kaito-error-source")
 				parsed, pErr := utils.ParseErrorResponse(resp)
@@ -142,22 +120,13 @@ var _ = Describe("BBR outage (fail-closed cluster filter)",
 
 		It("recovers once BBR is restored", func() {
 			By("scaling the BBR Deployment back to its original replica count")
-			Expect(origReplicas).To(BeNumerically(">", 0),
-				"previous spec must have captured the original replica count")
-			Expect(utils.ScaleDeployment(ctx, bbrNamespace, bbrDeploymentName, origReplicas)).
+			Expect(replicas.Restore(ctx, 3*time.Minute)).
 				To(Succeed(), "failed to restore BBR replicas")
-			Expect(utils.WaitForDeploymentReplicas(ctx, bbrNamespace, bbrDeploymentName, origReplicas, 3*time.Minute)).
-				To(Succeed(), "BBR did not return to %d ready replicas", origReplicas)
 
 			By("sending a valid chat completion and asserting it succeeds again")
-			Eventually(func() int {
-				resp, sErr := utils.SendChat(caseGateway, modelName)
-				if sErr != nil {
-					return 0
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode
-			}, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName)
+			}, 2*time.Minute, 5*time.Second).Should(Succeed(),
 				"requests should succeed again once BBR is healthy")
 		})
 	})

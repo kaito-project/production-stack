@@ -228,8 +228,8 @@ func (d *Deployer) UninstallModelHarness(ctx context.Context, namespace string) 
 
 // AuthHeaders reads the plaintext API key from the Secret the apikey-operator
 // reconciles out of the harness's APIKey CR and offers it in each of the three
-// headers apikey-authz accepts. A namespace with no such Secret authenticates
-// nothing, so it yields no headers rather than an error.
+// headers apikey-authz accepts. A namespace with no such Secret yields no
+// headers so callers can wait for the operator to publish credentials.
 func (d *Deployer) AuthHeaders(ctx context.Context, namespace string) ([]deploy.AuthHeader, error) {
 	if namespace == "" {
 		return nil, fmt.Errorf("modelharness: namespace is required")
@@ -238,7 +238,7 @@ func (d *Deployer) AuthHeaders(ctx context.Context, namespace string) ([]deploy.
 	out, err := d.kubectl(ctx, "get", "secret", apiKeySecretName,
 		"--namespace", namespace, "-o", "jsonpath={.data."+apiKeySecretDataKey+"}")
 	if err != nil {
-		// Only a missing Secret means the gateway authenticates nothing. An
+		// Only a missing Secret means credentials have not been published. An
 		// unreachable API server or a denied read must not be reported as
 		// "no credential needed", or the caller sends bare requests and the
 		// 401 that comes back points at the wrong thing entirely.

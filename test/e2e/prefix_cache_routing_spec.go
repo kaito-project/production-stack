@@ -72,21 +72,12 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 	var ctx context.Context
 	var caseGateway deploy.GatewayEndpoint
 
-	// caseAuth carries whatever credential the backend's gateway requires. This
-	// case does not enable the API-key AuthorizationPolicy (see cases.go), but a
-	// managed gateway authenticates every request regardless.
-	var caseAuth []utils.RequestOption
-
 	sendChatWithPrompt := func(url deploy.GatewayEndpoint, model, prompt string) (*http.Response, error) {
-		return utils.SendChat(url, model, append(caseAuth, utils.WithPrompt(prompt))...)
+		return utils.SendChat(url, model, utils.WithPrompt(prompt))
 	}
 
 	BeforeAll(func() {
 		caseGateway = InstallCase(CasePrefixCache)
-
-		var err error
-		caseAuth, err = utils.NamespaceRequestOptions(context.Background(), caseNamespace)
-		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterAll(func() {

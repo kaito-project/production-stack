@@ -30,7 +30,7 @@ the production App Routing provisioning contract.
 `utils/`:
 
 - [`setup.go`](utils/setup.go) — `EnsureNamespace` (provisions the workload namespace + modelharness), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`, `WaitForGatewayService`.
-- [`http.go`](utils/http.go) — `SendChat` / `SendModels` against a `deploy.GatewayEndpoint`, taking `RequestOption`s (`WithPrompt`, `WithAuth`, `WithHeader`, `WithMethod`, `WithTransportRetry`), plus `NewGatewayRequest` / `GatewayOrigin` for specs that need to build a request themselves.
+- [`http.go`](utils/http.go) — authenticated `SendGatewayRequest` with `SendChat` / `SendModels` shortcuts against a `deploy.GatewayEndpoint`, taking `RequestOption`s (`WithPrompt`, `WithAuth`, `WithoutAuth`, `WithHeader`, `WithMethod`, `WithTransportRetry`, `WithOriginPath`, `WithTimeout`).
 - [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UpgradeModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`, `NamespaceAuthHeaders` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
 - [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).
@@ -144,13 +144,19 @@ Implementations must be idempotent on install (re-running reconciles to the
 supplied values), treat a missing resource as a successful delete, and validate
 values before issuing any remote call.
 
-Two consequences worth knowing when writing a spec:
+Conventions worth knowing when writing a spec:
 
 - **The workload namespace belongs to the harness.** `InstallModelHarness`
   creates it (with the `productionstack.kaito.sh/managed-by: modelharness`
   discovery label) and `UninstallModelHarness` deletes it. Specs never create or
   delete a workload namespace themselves, so a non-Helm backend can provision it
   through its own API.
+- **Every E2E harness enables authentication.** `utils.InstallModelHarness(ctx,
+  namespace)` always supplies `ModelHarnessValues.AuthEnabled=true` to the
+  backend. Neither `EnsureNamespace` nor `ModelDeploymentValues` has an E2E
+  authentication switch. The modelharness chart's default is unchanged.
+  `EnsureNamespace` waits for namespace credentials; routing warmup then waits
+  for authenticated inference to succeed without a fixed policy-propagation sleep.
 - **Changing a deployment's values goes through `UpgradeModelDeployment`.**
   Replicas, scaling thresholds, scorer weights — anything declared in
   `ModelDeploymentValues` — must be changed through it rather than by patching
@@ -166,14 +172,22 @@ Two consequences worth knowing when writing a spec:
   reconciles out of the harness's APIKey CR and advertises the same key in
   `Authorization`, `X-API-Key` and `API-Key`; a managed backend mints the key
   through its own API, does not let the caller read Secrets, and may classify
-  requests on one specific header. An empty result means the gateway
-  authenticates nothing.
+  requests on one specific header. An empty result means credentials are not
+  available yet; it is never cached or treated as permission to send bare requests.
 
-  Specs that are not *about* authentication call
-  `utils.NamespaceRequestOptions` and splat the result into their requests, so
-  they authenticate exactly when the backend requires it. Specs that assert on
-  authentication behaviour build their options explicitly, so a deliberately
-  unauthenticated request stays unauthenticated.
+  `utils.OpenGateway` wraps the backend endpoint with its namespace authentication
+  context. Request builders automatically attach the first credential, including
+  load-generator and trace-replay requests. Missing authentication context or
+  credentials fails the request locally. Positive credentials are cached per
+  namespace and invalidated during warmup and namespace cleanup.
+
+  Negative tests must use `WithoutAuth()` to omit authentication, or
+  `WithAuth(deploy.AuthHeader{Name: headerName, Value: "invalid-key"})` to send an
+  invalid key. `WithAuth` replaces default authentication, never supplements it;
+  an empty `WithAuth()` is an error. `WithHeader` only sets ordinary request
+  headers and does not disable default authentication. HTTP 401 responses are
+  returned unchanged, never automatically retried with a valid credential.
+  The former per-case `NamespaceRequestOptions` helper has been removed.
 - **How the gateway is reached comes from `OpenGateway`.** `InstallCase` returns
   a `GatewayEndpoint`, and specs pass that value around instead of a URL string.
   A self-hosted stack is only reachable through a kubectl port-forward, which the
@@ -185,8 +199,40 @@ Two consequences worth knowing when writing a spec:
   `BaseURL()` is the **OpenAI API root**, `/v1` included. Paths are relative to
   it (`utils.ChatCompletionsPath`, `utils.ModelsPath`), because a managed
   endpoint already carries the prefix and a tunnelled one does not. Use
-  `utils.NewGatewayRequest` for a body `SendChat` cannot express, and
-  `utils.GatewayOrigin` for a path outside the API such as `/healthz`.
+  `utils.SendGatewayRequest(ctx, gateway, method, path, body, opts...)` for a
+  body `SendChat` cannot express. The raw bytes are sent unchanged, including
+  deliberately malformed JSON. `WithHeader("Content-Type", "text/plain")`
+  overrides the default JSON content type for a non-nil body.
+
+  Use `WithOriginPath()` for a path outside the API root, such as `/healthz`.
+  `WithTimeout(duration)` overrides the per-attempt HTTP timeout; the supplied
+  context controls cancellation across attempts and retry waits. `SendChat`,
+  `SendModels`, and trace replay share the same sender, authentication, and
+  transport-retry implementation. HTTP responses are never retried; only
+  transport failures are retried when `WithTransportRetry()` is explicitly set.
+  The former public request constructors have been removed. Do not build raw
+  HTTP requests from `GatewayOrigin`, which resolves a URL but cannot attach
+  credentials or apply request options.
+
+  Use `SendChatContext` / `SendModelsContext` when the caller owns a context.
+  The original shortcuts remain available and use a background context.
+  Load generation passes its worker context to the sender so `Stop()` cancels
+  in-flight requests and retry waits. `CheckChatSuccess` performs one HTTP 200
+  probe with response diagnostics; specs retain control of `Eventually` timing.
+  All `Parse*Response`, `ParseModelList`, and `ParseModel` helpers consume and
+  close the response body; callers must not read it again after parsing.
+
+- **Share lifecycle operations, not scenario assertions.** Readiness helpers
+  use context-aware polling and retain the last unsuccessful check in timeout
+  errors. `WaitForDeploymentReplicas` accepts at least the requested ready count,
+  except zero, which waits for scale-down convergence. `DeploymentReplicaGuard`
+  captures the original count and provides exact `ScaleAndWait` and repeatable
+  `Restore` operations for `StandardK8sOnly` fault-injection specs.
+  Register case teardown and restoration independently in `BeforeAll`, with
+  restoration registered last so it runs first after the Ordered container.
+  Keep outage attribution, labels, and recovery assertions visible in each spec.
+  `CleanupDeploymentsAndNamespace` attempts all teardown steps and joins errors;
+  a failed gateway close does not prevent credential invalidation or uninstall.
 
 `helm` is the only backend in this repo and remains the default, so local runs
 are unchanged. Select a backend with `E2E_DEPLOYMENT_BACKEND=<name>`; the

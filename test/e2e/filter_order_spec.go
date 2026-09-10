@@ -80,15 +80,9 @@ var _ = Describe("Filter execution order",
 			modelName = dep.Name
 			gatewayLabel = "gateway.networking.k8s.io/gateway-name=" + CaseGatewayName(CaseFilterOrder)
 
-			// Credential used by every "happy path" request below, in whichever
-			// header the backend's gateway classifies on.
-			Eventually(func() ([]deploy.AuthHeader, error) {
-				utils.ForgetNamespaceAuthHeaders(caseNS)
-				return utils.NamespaceAuthHeaders(ctx, caseNS)
-			}, 60*time.Second, 2*time.Second).ShouldNot(BeEmpty(),
-				"backend should publish an API key for %s", caseNS)
 			headers, err := utils.NamespaceAuthHeaders(ctx, caseNS)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(headers).NotTo(BeEmpty())
 			authHeader = headers[0]
 		})
 
@@ -96,28 +90,17 @@ var _ = Describe("Filter execution order",
 			UninstallCase(CaseFilterOrder)
 		})
 
-		// sendAuth sends an inference request. Pass no options for a
-		// deliberately unauthenticated request, utils.WithAuth(authHeader) for
-		// a valid one.
 		sendAuth := func(model string, opts ...utils.RequestOption) (*http.Response, error) {
 			return utils.SendChat(caseGateway, model, opts...)
 		}
 
-		// sendRaw posts an arbitrary body to the inference endpoint, optionally
-		// attaching a credential. Used by tests that need a malformed body
+		// sendRaw posts an arbitrary body to the authenticated inference endpoint.
+		// Used by tests that need a malformed body
 		// (missing model field, non-JSON, ...) or want to drive the request
 		// without going through SendChat's JSON marshaller.
-		sendRaw := func(body []byte, contentType string, auth *deploy.AuthHeader) (*http.Response, error) {
-			req, err := utils.NewGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
-			if err != nil {
-				return nil, err
-			}
-			req.Header.Set("Content-Type", contentType)
-			if auth != nil {
-				req.Header.Set(auth.Name, auth.Value)
-			}
-			client := &http.Client{Timeout: utils.HTTPTimeout}
-			return client.Do(req)
+		sendRaw := func(body []byte, contentType string) (*http.Response, error) {
+			return utils.SendGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body,
+				utils.WithHeader("Content-Type", contentType))
 		}
 
 		// ─────────────────────────────────────────────────────────────────
@@ -134,7 +117,7 @@ var _ = Describe("Filter execution order",
 			// charts/modelharness/templates/envoyfilter-not-found.yaml.
 			It("A1: unauth'd + unknown model returns 401, not 404", func() {
 				Eventually(func() int {
-					resp, err := sendAuth("does-not-exist-model")
+					resp, err := sendAuth("does-not-exist-model", utils.WithoutAuth())
 					if err != nil {
 						return 0
 					}
@@ -161,7 +144,7 @@ var _ = Describe("Filter execution order",
 
 				// Use a unique model value so we can grep for it after.
 				needle := fmt.Sprintf("a2-no-bbr-%d", time.Now().UnixNano())
-				resp, err := sendAuth(needle)
+				resp, err := sendAuth(needle, utils.WithoutAuth())
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
@@ -190,7 +173,7 @@ var _ = Describe("Filter execution order",
 				// A valid key allows this request to reach BBR. The deliberately
 				// unknown model then falls through to the catch-all after BBR logs
 				// the extracted model value.
-				resp, err := sendAuth(needle, utils.WithAuth(authHeader))
+				resp, err := sendAuth(needle)
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
@@ -232,7 +215,7 @@ var _ = Describe("Filter execution order",
 				Expect(err).NotTo(HaveOccurred())
 
 				for i := 0; i < requestCount; i++ {
-					resp, err := sendAuth(modelName, utils.WithAuth(authHeader))
+					resp, err := sendAuth(modelName)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(resp.StatusCode).To(Equal(http.StatusOK),
 						"valid auth'd request %d should succeed", i)
@@ -261,7 +244,7 @@ var _ = Describe("Filter execution order",
 				before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNS, modelName)
 				Expect(err).NotTo(HaveOccurred())
 
-				resp, err := sendAuth(modelName, utils.WithAuth(authHeader))
+				resp, err := sendAuth(modelName)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(resp.StatusCode).To(Equal(http.StatusOK))
 				resp.Body.Close()
@@ -369,7 +352,7 @@ var _ = Describe("Filter execution order",
 			// previously slipped through to the unauthenticated catch-all.
 			It("D2: invalid API key + unknown model returns 401, not 404", func() {
 				Eventually(func() int {
-					resp, err := sendAuth("does-not-exist-model", utils.WithHeader("Authorization", "Bearer invalid-key-12345"))
+					resp, err := sendAuth("does-not-exist-model", utils.WithAuth(deploy.AuthHeader{Name: authHeader.Name, Value: "Bearer invalid-key-12345"}))
 					if err != nil {
 						return 0
 					}
@@ -392,7 +375,7 @@ var _ = Describe("Filter execution order",
 			// outage (502).
 			It("E1: authed request with missing model field returns 400 invalid_request_body", func() {
 				body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
-				resp, err := sendRaw(body, "application/json", &authHeader)
+				resp, err := sendRaw(body, "application/json")
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 
@@ -430,7 +413,7 @@ var _ = Describe("Filter execution order",
 				beforeLen := len(before)
 
 				needle := fmt.Sprintf("a3-no-epp-%d", time.Now().UnixNano())
-				resp, err := sendAuth(needle)
+				resp, err := sendAuth(needle, utils.WithoutAuth())
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
@@ -493,7 +476,7 @@ var _ = Describe("Filter execution order",
 				beforeLen, err := totalBBRLogLen()
 				Expect(err).NotTo(HaveOccurred())
 
-				resp, err := sendAuth("d3-unknown-model", utils.WithAuth(authHeader))
+				resp, err := sendAuth("d3-unknown-model")
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
@@ -519,7 +502,7 @@ var _ = Describe("Filter execution order",
 			// not asserted to avoid flaking on filter internals.
 			It("E2: non-JSON Content-Type does not cause 5xx", func() {
 				body := []byte(`{"model":"` + modelName + `","messages":[{"role":"user","content":"hi"}]}`)
-				resp, err := sendRaw(body, "text/plain", &authHeader)
+				resp, err := sendRaw(body, "text/plain")
 				Expect(err).NotTo(HaveOccurred())
 				defer resp.Body.Close()
 				Expect(resp.StatusCode).To(BeNumerically("<", 500),

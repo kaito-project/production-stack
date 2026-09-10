@@ -129,14 +129,30 @@ func (e *ErrorResponse) ErrorCode() string {
 	return strings.TrimSpace(string(e.Error.Code))
 }
 
-// RequestOption customises a gateway request built by SendChat or SendModels.
+// RequestOption customises a request sent through the gateway helpers.
 type RequestOption func(*gatewayRequest)
 
 type gatewayRequest struct {
 	prompt         string
 	method         string
 	headers        []deploy.AuthHeader
+	authHeaders    []deploy.AuthHeader
+	explicitAuth   bool
+	withoutAuth    bool
 	transportRetry bool
+	originPath     bool
+	timeout        time.Duration
+	buildBody      func(*gatewayRequest) ([]byte, error)
+}
+
+// WithOriginPath resolves the path against the gateway origin instead of its API root.
+func WithOriginPath() RequestOption {
+	return func(r *gatewayRequest) { r.originPath = true }
+}
+
+// WithTimeout overrides the HTTP client timeout for each request attempt.
+func WithTimeout(timeout time.Duration) RequestOption {
+	return func(r *gatewayRequest) { r.timeout = timeout }
 }
 
 // WithPrompt overrides the "hello" the chat helpers send by default.
@@ -151,11 +167,22 @@ func WithHeader(name, value string) RequestOption {
 	}
 }
 
-// WithAuth adds the credential headers the backend supplied. Passing none
-// leaves the request unauthenticated, which is what the "no credential is
-// rejected" specs assert on.
+// WithAuth replaces automatic authentication with the supplied nonempty headers.
 func WithAuth(headers ...deploy.AuthHeader) RequestOption {
-	return func(r *gatewayRequest) { r.headers = append(r.headers, headers...) }
+	return func(r *gatewayRequest) {
+		r.explicitAuth = true
+		r.withoutAuth = false
+		r.authHeaders = headers
+	}
+}
+
+// WithoutAuth explicitly disables automatic authentication for a negative test.
+func WithoutAuth() RequestOption {
+	return func(r *gatewayRequest) {
+		r.explicitAuth = true
+		r.withoutAuth = true
+		r.authHeaders = nil
+	}
 }
 
 // WithMethod overrides POST, for the specs that assert non-GET verbs are
@@ -173,7 +200,7 @@ func WithTransportRetry() RequestOption {
 }
 
 func newGatewayRequest(method string, opts []RequestOption) *gatewayRequest {
-	r := &gatewayRequest{prompt: "hello", method: method}
+	r := &gatewayRequest{prompt: "hello", method: method, timeout: HTTPTimeout}
 	for _, opt := range opts {
 		opt(r)
 	}
@@ -182,52 +209,100 @@ func newGatewayRequest(method string, opts []RequestOption) *gatewayRequest {
 
 // SendChat posts an OpenAI-compatible chat completion for model to the gateway.
 func SendChat(gateway deploy.GatewayEndpoint, model string, opts ...RequestOption) (*http.Response, error) {
-	r := newGatewayRequest(http.MethodPost, opts)
-	body, err := json.Marshal(ChatCompletionRequest{
-		Model:    model,
-		Messages: []ChatMessage{{Role: "user", Content: r.prompt}},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	return SendChatContext(context.Background(), gateway, model, opts...)
+}
+
+// SendChatContext sends a chat completion with caller-controlled cancellation.
+func SendChatContext(ctx context.Context, gateway deploy.GatewayEndpoint, model string, opts ...RequestOption) (*http.Response, error) {
+	chatBody := func(request *gatewayRequest) {
+		request.buildBody = func(settings *gatewayRequest) ([]byte, error) {
+			return json.Marshal(ChatCompletionRequest{
+				Model:    model,
+				Messages: []ChatMessage{{Role: "user", Content: settings.prompt}},
+			})
+		}
 	}
-	return r.do(gateway, ChatCompletionsPath, body)
+	return SendGatewayRequest(ctx, gateway, http.MethodPost, ChatCompletionsPath, nil,
+		append([]RequestOption{chatBody}, opts...)...)
 }
 
 // SendModels calls one of the OpenAI model-discovery endpoints (ModelsPath or
 // ModelRetrievePath).
 func SendModels(gateway deploy.GatewayEndpoint, path string, opts ...RequestOption) (*http.Response, error) {
-	r := newGatewayRequest(http.MethodGet, opts)
-	return r.do(gateway, path, nil)
+	return SendModelsContext(context.Background(), gateway, path, opts...)
 }
 
-func (r *gatewayRequest) do(gateway deploy.GatewayEndpoint, path string, body []byte) (*http.Response, error) {
+// SendModelsContext sends a model-discovery request with caller-controlled cancellation.
+func SendModelsContext(ctx context.Context, gateway deploy.GatewayEndpoint, path string, opts ...RequestOption) (*http.Response, error) {
+	return SendGatewayRequest(ctx, gateway, http.MethodGet, path, nil, opts...)
+}
+
+// CheckChatSuccess performs one probe, retaining response details on failure.
+func CheckChatSuccess(ctx context.Context, gateway deploy.GatewayEndpoint, model string, opts ...RequestOption) error {
+	response, err := SendChatContext(ctx, gateway, model, opts...)
+	if err != nil {
+		return fmt.Errorf("chat probe for %s: %w", model, err)
+	}
+	body, err := ReadResponseBody(response)
+	if err != nil {
+		return fmt.Errorf("read chat probe for %s (status=%d): %w", model, response.StatusCode, err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("chat probe for %s (host=%q): expected 200, got %d: %s", model, gateway.Host(), response.StatusCode, body)
+	}
+	return nil
+}
+
+// SendGatewayRequest sends an authenticated request, preserving the supplied body.
+// Paths are relative to the API root unless WithOriginPath is specified.
+func SendGatewayRequest(ctx context.Context, gateway deploy.GatewayEndpoint, method, path string, body []byte, opts ...RequestOption) (*http.Response, error) {
+	request := newGatewayRequest(method, opts)
+	if request.buildBody != nil {
+		var err error
+		body, err = request.buildBody(request)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request: %w", err)
+		}
+	}
+	return request.do(ctx, gateway, path, body)
+}
+
+func (r *gatewayRequest) do(ctx context.Context, gateway deploy.GatewayEndpoint, path string, body []byte) (*http.Response, error) {
 	attempts := 1
 	if r.transportRetry {
 		attempts = 3
 	}
 
 	var lastErr error
+	client := &http.Client{Timeout: r.timeout}
 	for i := 0; i < attempts; i++ {
-		req, err := NewGatewayRequest(context.Background(), gateway, r.method, path, body)
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		req, err := r.request(ctx, gateway, path, body)
 		if err != nil {
 			return nil, err
 		}
-		for _, h := range r.headers {
-			if h.Name != "" && h.Value != "" {
-				req.Header.Set(h.Name, h.Value)
-			}
-		}
 
-		resp, err := (&http.Client{Timeout: HTTPTimeout}).Do(req)
+		resp, err := client.Do(req)
 		if err == nil {
 			return resp, nil
 		}
 		lastErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if i < attempts-1 {
 			// The transport may be wedged while its process is still
 			// alive, so retrying against it alone would fail identically.
 			gateway.Reset()
-			time.Sleep(500 * time.Millisecond)
+			timer := time.NewTimer(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 		}
 	}
 	if attempts > 1 {
@@ -236,20 +311,27 @@ func (r *gatewayRequest) do(gateway deploy.GatewayEndpoint, path string, body []
 	return nil, lastErr
 }
 
-// NewGatewayRequest builds a request against the gateway's API root with the
-// Host header the authz services resolve the workload namespace from. Specs
-// that need a body SendChat cannot express — malformed JSON, a wrong
-// Content-Type — build on this rather than assembling the URL themselves.
-func NewGatewayRequest(ctx context.Context, gateway deploy.GatewayEndpoint, method, path string, body []byte) (*http.Request, error) {
+func (r *gatewayRequest) request(ctx context.Context, gateway deploy.GatewayEndpoint, path string, body []byte) (*http.Request, error) {
 	base, err := gateway.BaseURL()
 	if err != nil {
 		return nil, err
 	}
+	if r.originPath {
+		parsed, err := url.Parse(base)
+		if err != nil {
+			return nil, fmt.Errorf("parse gateway URL %q: %w", base, err)
+		}
+		base = parsed.Scheme + "://" + parsed.Host
+	}
+	return newGatewayHTTPRequest(ctx, gateway, base+path, body, r)
+}
+
+func newGatewayHTTPRequest(ctx context.Context, gateway deploy.GatewayEndpoint, target string, body []byte, settings *gatewayRequest) (*http.Request, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, base+path, reader)
+	req, err := http.NewRequestWithContext(ctx, settings.method, target, reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
 	}
@@ -258,6 +340,35 @@ func NewGatewayRequest(ctx context.Context, gateway deploy.GatewayEndpoint, meth
 	}
 	if host := gateway.Host(); host != "" {
 		req.Host = host
+	}
+	headers := settings.authHeaders
+	if settings.explicitAuth && !settings.withoutAuth && len(headers) == 0 {
+		return nil, fmt.Errorf("WithAuth requires credentials; use WithoutAuth for unauthenticated requests")
+	}
+	if !settings.explicitAuth {
+		provider, ok := gateway.(interface {
+			authHeaders(context.Context) ([]deploy.AuthHeader, error)
+		})
+		if !ok {
+			return nil, fmt.Errorf("gateway has no authentication context: use OpenGateway, WithAuth, or WithoutAuth")
+		}
+		headers, err = provider.authHeaders(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(headers) == 0 {
+			return nil, fmt.Errorf("gateway has no authentication credentials")
+		}
+		headers = headers[:1]
+	}
+	for _, header := range headers {
+		if header.Name == "" || header.Value == "" {
+			return nil, fmt.Errorf("gateway authentication header must have a name and value")
+		}
+		req.Header.Set(header.Name, header.Value)
+	}
+	for _, header := range settings.headers {
+		req.Header.Set(header.Name, header.Value)
 	}
 	return req, nil
 }
@@ -277,18 +388,6 @@ func GatewayOrigin(gateway deploy.GatewayEndpoint) (string, error) {
 	return parsed.Scheme + "://" + parsed.Host, nil
 }
 
-func sendChatCompletionRaw(ctx context.Context, gateway deploy.GatewayEndpoint, reqBody ChatCompletionRequest, timeout time.Duration) (*http.Response, error) {
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-	req, err := NewGatewayRequest(ctx, gateway, http.MethodPost, ChatCompletionsPath, bodyBytes)
-	if err != nil {
-		return nil, err
-	}
-	return (&http.Client{Timeout: timeout}).Do(req)
-}
-
 // ReadResponseBody reads the full response body and closes it.
 func ReadResponseBody(resp *http.Response) ([]byte, error) {
 	defer resp.Body.Close()
@@ -298,29 +397,13 @@ func ReadResponseBody(resp *http.Response) ([]byte, error) {
 // ParseChatCompletionResponse reads the response body and unmarshals it into
 // a ChatCompletionResponse. It closes the response body.
 func ParseChatCompletionResponse(resp *http.Response) (*ChatCompletionResponse, error) {
-	body, err := ReadResponseBody(resp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-	var result ChatCompletionResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse response JSON: %w (body: %s)", err, string(body))
-	}
-	return &result, nil
+	return parseJSONResponse[ChatCompletionResponse](resp, "response")
 }
 
 // ParseErrorResponse reads the response body and unmarshals it into an
 // ErrorResponse. It closes the response body.
 func ParseErrorResponse(resp *http.Response) (*ErrorResponse, error) {
-	body, err := ReadResponseBody(resp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-	var result ErrorResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse error response JSON: %w (body: %s)", err, string(body))
-	}
-	return &result, nil
+	return parseJSONResponse[ErrorResponse](resp, "error response")
 }
 
 // ModelsPath is the OpenAI-compatible model listing endpoint served per
@@ -360,27 +443,23 @@ func ModelRetrievePath(id string) string {
 // ParseModelList reads the response body and unmarshals it into a ModelList.
 // It closes the response body.
 func ParseModelList(resp *http.Response) (*ModelList, error) {
-	body, err := ReadResponseBody(resp)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-	var result ModelList
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse model list JSON: %w (body: %s)", err, string(body))
-	}
-	return &result, nil
+	return parseJSONResponse[ModelList](resp, "model list")
 }
 
 // ParseModel reads the response body and unmarshals it into a single Model.
 // It closes the response body.
 func ParseModel(resp *http.Response) (*Model, error) {
+	return parseJSONResponse[Model](resp, "model")
+}
+
+func parseJSONResponse[Response any](resp *http.Response, description string) (*Response, error) {
 	body, err := ReadResponseBody(resp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
-	var result Model
+	var result Response
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse model JSON: %w (body: %s)", err, string(body))
+		return nil, fmt.Errorf("failed to parse %s JSON: %w (body: %s)", description, err, string(body))
 	}
 	return &result, nil
 }

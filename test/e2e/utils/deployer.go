@@ -18,6 +18,7 @@ package utils
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
@@ -60,19 +61,19 @@ func CurrentDeployer() (deploy.Deployer, error) {
 // per-namespace shared resources: the workload namespace itself (stamped with
 // the discovery label the control plane selects on), the Istio Gateway (named
 // "<namespace>" by chart default), the catch-all `model-not-found-direct`
-// EnvoyFilter, and — when authEnabled is true — the AuthorizationPolicy +
+// EnvoyFilter, and the AuthorizationPolicy +
 // APIKey CR that wire the Gateway into the cluster-wide apikey-ext-authz
 // CUSTOM provider.
 //
 // Idempotent: safe to call repeatedly for the same namespace.
-func InstallModelHarness(ctx context.Context, namespace string, authEnabled bool) error {
+func InstallModelHarness(ctx context.Context, namespace string) error {
 	d, err := CurrentDeployer()
 	if err != nil {
 		return err
 	}
 	return d.InstallModelHarness(ctx, deploy.ModelHarnessValues{
 		Namespace:   namespace,
-		AuthEnabled: authEnabled,
+		AuthEnabled: true,
 	})
 }
 
@@ -93,7 +94,27 @@ func OpenGateway(ctx context.Context, namespace, gatewayName string) (deploy.Gat
 	if err != nil {
 		return nil, err
 	}
-	return d.OpenGateway(ctx, namespace, gatewayName)
+	endpoint, err := d.OpenGateway(ctx, namespace, gatewayName)
+	if err != nil {
+		return nil, err
+	}
+	return &authenticatedGateway{GatewayEndpoint: endpoint, namespace: namespace}, nil
+}
+
+type authenticatedGateway struct {
+	deploy.GatewayEndpoint
+	namespace string
+}
+
+func (gateway *authenticatedGateway) authHeaders(ctx context.Context) ([]deploy.AuthHeader, error) {
+	headers, err := NamespaceAuthHeaders(ctx, gateway.namespace)
+	if err != nil {
+		return nil, err
+	}
+	if len(headers) == 0 {
+		return nil, fmt.Errorf("no authentication credentials available for namespace %s", gateway.namespace)
+	}
+	return headers, nil
 }
 
 // CloseGateway releases what OpenGateway allocated for namespace.

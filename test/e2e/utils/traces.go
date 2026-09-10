@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -416,11 +417,19 @@ func replayFromChannel(ctx context.Context, gateway deploy.GatewayEndpoint, mode
 						time.Sleep(time.Duration(s.PreGaps[turnIdx] * float64(time.Second)))
 					}
 					total.Add(1)
-					resp, err := sendChatCompletionRaw(ctx, gateway, ChatCompletionRequest{
+					requestBody, err := json.Marshal(ChatCompletionRequest{
 						Model:     model,
 						Messages:  turn,
 						MaxTokens: 1,
-					}, traceRequestTimeout)
+					})
+					if err != nil {
+						transportErr.Add(1)
+						recordStatus(0)
+						captureSample(0, []byte(err.Error()))
+						continue
+					}
+					resp, err := SendGatewayRequest(ctx, gateway, http.MethodPost, ChatCompletionsPath, requestBody,
+						WithTimeout(traceRequestTimeout))
 					if err != nil {
 						transportErr.Add(1)
 						recordStatus(0)

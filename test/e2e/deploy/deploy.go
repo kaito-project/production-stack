@@ -65,8 +65,9 @@ type Deployer interface {
 	// AuthHeaders returns the header sets that each independently authenticate
 	// a request to the namespace's gateway, in the backend's preferred order.
 	//
-	// An empty result means the gateway does not authenticate, so requests go
-	// bare. More than one entry means the gateway accepts several equivalent
+	// An empty result means no credentials are available. E2E harnesses always
+	// enable authentication, so the suite waits for a nonempty result instead
+	// of sending bare requests. More than one entry means several equivalent
 	// transports; the API-key specs iterate over them rather than hard-coding
 	// header names, so a backend that accepts only one is not failed for the
 	// ones it never claimed to support.

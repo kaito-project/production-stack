@@ -18,7 +18,6 @@ package e2e
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -73,18 +72,20 @@ var _ = Describe("BBR cluster-filter HA",
 			ctx         context.Context
 			caseGateway deploy.GatewayEndpoint
 			modelName   string
+			replicas    *utils.DeploymentReplicaGuard
 		)
 
-		// sendChat drives a plain (no-auth) chat completion against this
-		// case's Gateway — CaseClusterFilterHA does not enable ext_authz.
+		// sendChat authenticates through the shared gateway request helpers.
 		sendChat := func() (*http.Response, error) {
-			return utils.SendChat(caseGateway, modelName, utils.WithTransportRetry())
+			return utils.SendChatContext(ctx, caseGateway, modelName, utils.WithTransportRetry())
 		}
 
 		BeforeAll(func() {
 			ctx = context.Background()
+			DeferCleanup(UninstallCase, CaseClusterFilterHA)
 			caseGateway = InstallCase(CaseClusterFilterHA)
 			modelName = CaseDeployments[CaseClusterFilterHA][0].Name
+			replicas = prepareDeploymentOutage(ctx, bbrNamespace, bbrDeployment)
 
 			// BBR must be HA before we start removing replicas.
 			By("waiting for BBR to reach >= 2 ready replicas")
@@ -97,27 +98,9 @@ var _ = Describe("BBR cluster-filter HA",
 			// Confirm the baseline request path is healthy through BBR.
 			By("confirming the baseline request path returns 200")
 			Eventually(func() error {
-				resp, err := sendChat()
-				if err != nil {
-					return err
-				}
-				defer resp.Body.Close()
-				if resp.StatusCode != http.StatusOK {
-					body, _ := utils.ReadResponseBody(resp)
-					return fmt.Errorf("expected 200, got %d: %s", resp.StatusCode, string(body))
-				}
-				return nil
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName, utils.WithTransportRetry())
 			}, 5*time.Minute, 10*time.Second).Should(Succeed(),
 				"baseline request path through BBR should return 200")
-		})
-
-		AfterAll(func() {
-			// Best-effort: restore BBR to its HA replica count so a failed
-			// spec cannot leave the shared dataplane degraded for the rest
-			// of the suite.
-			_ = utils.ScaleDeployment(ctx, bbrNamespace, bbrDeployment, 2)
-			_ = utils.WaitForDeploymentReplicas(ctx, bbrNamespace, bbrDeployment, 2, 3*time.Minute)
-			UninstallCase(CaseClusterFilterHA)
 		})
 
 		It("renders the BBR Deployment with >= 2 replicas and pod anti-affinity", func() {
@@ -171,16 +154,7 @@ var _ = Describe("BBR cluster-filter HA",
 			// against a single replica. Scaling to 1 deterministically
 			// pins the degraded state for the duration of the burst.
 			By("scaling BBR down to a single replica to hold the degraded state")
-			Expect(utils.ScaleDeployment(ctx, bbrNamespace, bbrDeployment, 1)).To(Succeed())
-
-			// Wait until the cluster is genuinely degraded: exactly one
-			// replica Ready (the second has drained from the Istio EDS
-			// endpoint set), so the burst below is not racing convergence.
-			By("waiting until exactly one BBR replica is ready")
-			Eventually(func() (int32, error) {
-				_, ready, err := utils.GetDeploymentReplicas(ctx, bbrNamespace, bbrDeployment)
-				return ready, err
-			}, 2*time.Minute, utils.PollInterval).Should(Equal(int32(1)),
+			Expect(replicas.ScaleAndWait(ctx, 1, 2*time.Minute)).To(Succeed(),
 				"BBR should hold at exactly one ready replica")
 
 			// With one healthy replica we must NEVER observe:
@@ -231,21 +205,13 @@ var _ = Describe("BBR cluster-filter HA",
 
 		It("recovers to the full replica count after running degraded", func() {
 			By("scaling BBR back to its HA replica count")
-			Expect(utils.ScaleDeployment(ctx, bbrNamespace, bbrDeployment, 2)).To(Succeed())
-			Eventually(func() (int32, error) {
-				_, ready, err := utils.GetDeploymentReplicas(ctx, bbrNamespace, bbrDeployment)
-				return ready, err
-			}, 3*time.Minute, utils.PollInterval).Should(BeNumerically(">=", int32(2)),
+			Expect(replicas.Restore(ctx, 3*time.Minute)).To(Succeed(),
 				"BBR should return to >= 2 ready replicas after scaling back up")
 		})
 
 		It("fails closed (no silent 404) when all BBR replicas are down", func() {
 			By("scaling BBR to zero replicas")
-			Expect(utils.ScaleDeployment(ctx, bbrNamespace, bbrDeployment, 0)).To(Succeed())
-			Eventually(func() (int32, error) {
-				_, ready, err := utils.GetDeploymentReplicas(ctx, bbrNamespace, bbrDeployment)
-				return ready, err
-			}, 2*time.Minute, utils.PollInterval).Should(Equal(int32(0)),
+			Expect(replicas.ScaleAndWait(ctx, 0, 2*time.Minute)).To(Succeed(),
 				"BBR should report zero ready replicas after scaling to zero")
 
 			// With every replica gone and failure_mode_allow: false, the
@@ -268,19 +234,13 @@ var _ = Describe("BBR cluster-filter HA",
 			), "an all-replicas-down BBR must fail closed, not fall through to 404 model_not_found")
 
 			By("restoring BBR to >= 2 replicas")
-			Expect(utils.ScaleDeployment(ctx, bbrNamespace, bbrDeployment, 2)).To(Succeed())
-			Expect(utils.WaitForDeploymentReplicas(ctx, bbrNamespace, bbrDeployment, 2, 3*time.Minute)).
+			Expect(replicas.Restore(ctx, 3*time.Minute)).
 				To(Succeed(), "BBR should return to its HA replica count")
 
 			By("confirming the request path recovers to 200")
-			Eventually(func() (int, error) {
-				resp, err := sendChat()
-				if err != nil {
-					return 0, err
-				}
-				defer resp.Body.Close()
-				return resp.StatusCode, nil
-			}, 3*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(func() error {
+				return utils.CheckChatSuccess(ctx, caseGateway, modelName, utils.WithTransportRetry())
+			}, 3*time.Minute, 5*time.Second).Should(Succeed(),
 				"request path should return 200 once BBR is healthy again")
 		})
 	})

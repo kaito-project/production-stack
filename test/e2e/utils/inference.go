@@ -66,20 +66,9 @@ func WaitForInferenceSetReady(ctx context.Context, values deploy.ModelDeployment
 		return fmt.Errorf("init clientset: %w", err)
 	}
 
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		if lastErr = inferenceSetReady(ctx, clientset, values); lastErr == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(PollInterval):
-		}
-	}
-	return fmt.Errorf("timed out after %s waiting for modeldeployment %s/%s to become ready: %w",
-		timeout, values.Namespace, values.Name, lastErr)
+	return pollUntilReady(ctx, timeout, fmt.Sprintf("modeldeployment %s/%s to become ready", values.Namespace, values.Name), func(ctx context.Context) error {
+		return inferenceSetReady(ctx, clientset, values)
+	})
 }
 
 func inferenceSetReady(ctx context.Context, clientset kubernetes.Interface, values deploy.ModelDeploymentValues) error {
@@ -152,20 +141,9 @@ func WaitForEPPRollout(ctx context.Context, name, namespace string, timeout time
 	}
 	eppName := EPPServiceName(name)
 
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		if lastErr = eppRolledOut(ctx, clientset, namespace, eppName); lastErr == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(PollInterval):
-		}
-	}
-	return fmt.Errorf("timed out after %s waiting for EPP Deployment %s/%s to roll out: %w",
-		timeout, namespace, eppName, lastErr)
+	return pollUntilReady(ctx, timeout, fmt.Sprintf("EPP Deployment %s/%s to roll out", namespace, eppName), func(ctx context.Context) error {
+		return eppRolledOut(ctx, clientset, namespace, eppName)
+	})
 }
 
 func eppRolledOut(ctx context.Context, clientset kubernetes.Interface, namespace, eppName string) error {

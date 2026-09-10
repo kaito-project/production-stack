@@ -30,7 +30,7 @@ var (
 
 // NamespaceAuthHeaders returns the headers that each independently authenticate
 // a request to the namespace's gateway, from whichever backend installed the
-// harness. An empty result means the gateway authenticates nothing.
+// harness. An empty result means credentials are not yet available.
 //
 // Specs never build the header themselves: which credential the gateway wants,
 // and which header it reads it from, are both properties of the backend. A
@@ -53,7 +53,7 @@ func NamespaceAuthHeaders(ctx context.Context, namespace string) ([]deploy.AuthH
 		return nil, err
 	}
 	headers, err := d.AuthHeaders(ctx, namespace)
-	if err != nil {
+	if err != nil || len(headers) == 0 {
 		return nil, err
 	}
 
@@ -69,20 +69,4 @@ func ForgetNamespaceAuthHeaders(namespace string) {
 	authHeadersMu.Lock()
 	delete(authHeadersCache, namespace)
 	authHeadersMu.Unlock()
-}
-
-// NamespaceRequestOptions returns the options a spec must attach so its
-// requests reach the namespace's gateway authenticated, or nil when the gateway
-// authenticates nothing.
-//
-// This is for cases that are not *about* authentication: they want a working
-// request, and whether that needs a credential is the backend's business. Cases
-// that assert on authentication behaviour build their options explicitly so a
-// deliberately unauthenticated request stays unauthenticated.
-func NamespaceRequestOptions(ctx context.Context, namespace string) ([]RequestOption, error) {
-	headers, err := NamespaceAuthHeaders(ctx, namespace)
-	if err != nil || len(headers) == 0 {
-		return nil, err
-	}
-	return []RequestOption{WithAuth(headers[0])}, nil
 }
