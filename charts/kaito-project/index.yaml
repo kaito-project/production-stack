@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   gpu-node-mocker:
   - apiVersion: v2
+    appVersion: 0.4.1
+    created: "2026-09-11T11:16:05.550540395Z"
+    description: GPU Node Mocker controller for KAITO production-stack
+    digest: de64153b7a3153d719f5bbeb73c9bb98ef39cf2342f442d0b99238f3e2d62a22
+    name: gpu-node-mocker
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/gpu-node-mocker-0.4.1.tgz
+    version: 0.4.1
+  - apiVersion: v2
     appVersion: 0.4.0
     created: "2026-08-13T00:21:00.396986626Z"
     description: GPU Node Mocker controller for KAITO production-stack
@@ -72,6 +82,17 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/gpu-node-mocker-0.1.0.tgz
     version: 0.1.0
   modeldeployment:
+  - apiVersion: v2
+    appVersion: 0.4.1
+    created: "2026-09-11T11:16:05.551550677Z"
+    description: 'Deploys a KAITO InferenceSet together with the Istio DestinationRule
+      and Gateway API HTTPRoute required to route inference traffic to it. '
+    digest: bdfc2e4e71b3fdbb8291ee347ea8e12e3d9e193ec276e050ae6b67a47df8fefd
+    name: modeldeployment
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/modeldeployment-0.4.1.tgz
+    version: 0.4.1
   - apiVersion: v2
     appVersion: 0.4.0
     created: "2026-08-13T00:21:00.397809063Z"
@@ -150,6 +171,26 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/modeldeployment-0.1.0.tgz
     version: 0.1.0
   modelharness:
+  - apiVersion: v2
+    appVersion: 0.4.1
+    created: "2026-09-11T11:16:05.553044391Z"
+    description: 'Per-namespace shared resources for production-stack workloads. One
+      modelharness release per workload namespace provisions the artifacts every model
+      deployment in that namespace shares: the Istio Gateway, the per-namespace EnvoyFilters
+      (BBR ext_proc, the unified outage local_reply, and the catch-all direct_response
+      that answers unknown models with an OpenAI-compatible 404), the routes that
+      expose GET /v1/models and GET /v1/models/{id} for this namespace, and — when
+      enabled — the ext_authz wiring plus the APIKey CR that triggers the apikey-operator
+      to mint the per-namespace `llm-api-key` Secret consumed by clients. The cluster-wide
+      components these reference (apikey-authz, BBR, and the model registry served
+      by productionstack-status-reporter) are installed once per cluster by the `productionstack`
+      umbrella chart. '
+    digest: fda68038768edbbcf467708bb782ea86d8ea414ea771c2135f553663da08e609
+    name: modelharness
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/modelharness-0.4.1.tgz
+    version: 0.4.1
   - apiVersion: v2
     appVersion: 0.4.0
     created: "2026-08-13T00:21:00.399031131Z"
@@ -288,6 +329,77 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/modelharness-0.1.0.tgz
     version: 0.1.0
   productionstack:
+  - apiVersion: v2
+    appVersion: 0.4.1
+    created: "2026-09-11T11:16:05.557403126Z"
+    dependencies:
+    - name: body-based-routing
+      repository: ""
+      tags:
+      - gateway
+      - routing
+      version: 0.1.1
+    - name: keda-kaito-scaler
+      repository: ""
+      tags:
+      - autoscaling
+      version: 0.6.2
+    - condition: gpu-node-mocker.enabled
+      name: gpu-node-mocker
+      repository: file://../gpu-node-mocker
+      tags:
+      - node-provisioner
+      - mocker
+      version: 0.4.1
+    - condition: llm-gateway-apikey.enabled
+      name: llm-gateway-apikey
+      repository: oci://mcr.microsoft.com/aks/kaito/helm
+      tags:
+      - gateway
+      - auth
+      version: 0.1.2
+    - condition: llm-gateway-azureauth.enabled
+      name: llm-gateway-azureauth
+      repository: oci://mcr.microsoft.com/aks/kaito/helm
+      tags:
+      - gateway
+      - auth
+      version: 0.1.2
+    - condition: productionstack-status-reporter.enabled
+      name: productionstack-status-reporter
+      repository: ""
+      tags:
+      - observability
+      version: 0.4.1
+    description: 'Umbrella Helm chart that installs all CLUSTER-LEVEL components and
+      CRDs required by the Kaito production stack: body-based routing (BBR), KEDA
+      Kaito scaler, LLM gateway auth, and other shared infrastructure.  This chart
+      is intended to be consumed as a dependency of the top-level `kaito` Helm chart.
+      Each component is shipped as a subchart under `charts/`. body-based-routing
+      and keda-kaito-scaler are mandatory cluster infrastructure and are always installed;
+      optional components (e.g. llm-gateway-apikey) carry a `<component>.enabled`
+      toggle in values.yaml. Component-specific values are passed through by nesting
+      them under the subchart''s name, e.g.:      body-based-routing:       bbr:         replicas:
+      2  Adding a new cluster-level component is a matter of dropping its chart under
+      `charts/` and appending a new entry to the `dependencies` list below. '
+    digest: aae4eaf5f67600efa3dcceb539f8f0ca7e41fc5e65706491b64e8873de5c2799
+    home: https://github.com/kaito-project/production-stack
+    keywords:
+    - kaito
+    - production-stack
+    - inference
+    - gateway-api-inference-extension
+    - keda
+    maintainers:
+    - name: kaito-project
+      url: https://github.com/kaito-project
+    name: productionstack
+    sources:
+    - https://github.com/kaito-project/production-stack
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/productionstack-0.4.1.tgz
+    version: 0.4.1
   - apiVersion: v2
     appVersion: 0.4.0
     created: "2026-08-13T00:21:00.40428129Z"
@@ -642,4 +754,4 @@ entries:
     urls:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/productionstack-0.2.0.tgz
     version: 0.2.0
-generated: "2026-08-13T00:21:00.395848982Z"
+generated: "2026-09-11T11:16:05.549145907Z"
