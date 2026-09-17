@@ -44,7 +44,8 @@ import (
 //	must materialise the following Envoy HTTP filter chain on every
 //	inference request:
 //
-//	    envoy.filters.http.ext_authz            (llm-gateway-apikey)
+//	    kaito.cors                               (browser CORS boundary)
+//	  → envoy.filters.http.ext_authz            (llm-gateway-apikey)
 //	  → envoy.filters.http.ext_proc.bbr          (body-based-routing)
 //	  → envoy.filters.http.ext_proc              (InferencePool/EPP)
 //	  → envoy.filters.http.router                (HTTPRoute → vLLM pod
@@ -277,7 +278,7 @@ var _ = Describe("Filter execution order",
 
 			// F1 — Read the HCM's `http_filters` list directly from the
 			// Gateway pod's Envoy admin port and assert the relative order
-			// of the four filters we care about. This is the strongest
+			// of the five filters we care about. This is the strongest
 			// possible assertion because it does not depend on any business
 			// request behaviour: it checks the rendered xDS config itself.
 			//
@@ -285,7 +286,7 @@ var _ = Describe("Filter execution order",
 			// pod, which a managed control plane does not allow — hence
 			// StandardK8sOnly. Every other spec here asserts the same
 			// ordering through request behaviour and stays runnable.
-			It("F1: HCM filter order is ext_authz → bbr → ext_proc → router",
+			It("F1: HCM filter order is CORS → ext_authz → bbr → ext_proc → router",
 				utils.GinkgoLabelStandardK8sOnly, func() {
 					gwPod, err := firstRunningPod(ctx, caseNS, gatewayLabel)
 					Expect(err).NotTo(HaveOccurred(),
@@ -309,6 +310,7 @@ var _ = Describe("Filter execution order",
 						}
 						return -1
 					}
+					corsIdx := idx("kaito.cors")
 					authIdx := idx("envoy.filters.http.ext_authz")
 					bbrIdx := idx("envoy.filters.http.ext_proc.bbr")
 					eppIdx := -1
@@ -323,6 +325,8 @@ var _ = Describe("Filter execution order",
 					}
 					routerIdx := idx("envoy.filters.http.router")
 
+					Expect(corsIdx).To(BeNumerically(">=", 0),
+						"CORS must be present on the CORS-enabled Gateway; got filters=%v", filters)
 					Expect(authIdx).To(BeNumerically(">=", 0),
 						"ext_authz must be present on the auth-enabled Gateway; got filters=%v", filters)
 					Expect(bbrIdx).To(BeNumerically(">=", 0),
@@ -332,6 +336,8 @@ var _ = Describe("Filter execution order",
 					Expect(routerIdx).To(BeNumerically(">=", 0),
 						"router must be present; got filters=%v", filters)
 
+					Expect(corsIdx).To(BeNumerically("<", authIdx),
+						"CORS must precede ext_authz (got %v)", filters)
 					Expect(authIdx).To(BeNumerically("<", bbrIdx),
 						"ext_authz must precede BBR (got %v)", filters)
 					Expect(bbrIdx).To(BeNumerically("<", eppIdx),

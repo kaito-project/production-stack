@@ -5,6 +5,7 @@ Per-namespace shared resources for production-stack workloads. One `modelharness
 - the Istio `Gateway` that fronts the namespace,
 - the catch-all `EnvoyFilter` (`model-not-found-direct`) that returns an OpenAI-compatible `404 model_not_found` directly from Envoy for any path not matched by a deployment-specific `HTTPRoute`, plus the routes that forward `GET /v1/models` and `GET /v1/models/{id}` to the cluster-wide model registry,
 - the per-namespace `EnvoyFilter` that injects BBR's ext_proc into the Gateway HCM,
+- (when `cors.enabled`) the first-position `gateway-cors` Lua filter that answers allowed browser preflights locally and decorates authenticated `/v1` responses,
 - the unified-error `local_reply` filter that maps fail-closed BBR / ext_authz outages and any other `>= 500` reply onto a consistent OpenAI-compatible error envelope,
 - (when `auth.enabled`) the `AuthorizationPolicy` and `APIKey` CR that wire the Gateway into the cluster-wide `apikey-ext-authz` CUSTOM provider,
 - (when `networkPolicy.enabled`) a `CiliumNetworkPolicy` that locks down East-West ingress to inference workloads in the namespace.
@@ -17,6 +18,7 @@ A namespace may host one or more `modeldeployment` releases, all of which share 
 | ---------------------------------------------- | -------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Gateway`                                      | `gateway.networking.k8s.io/v1`   | always                       | Public entry point for the namespace; `gatewayClassName: istio`, HTTP/80 by default.                                                                                                   |
 | `EnvoyFilter` `bbr-ext-proc`                   | `networking.istio.io/v1alpha3`   | always                       | Injects the cluster-wide BBR ext_proc into the Gateway HCM, scoped via `workloadSelector`. BBR itself ships in `productionstack` / `body-based-routing`.                               |
+| `EnvoyFilter` `gateway-cors`                   | `networking.istio.io/v1alpha3`   | `cors.enabled`               | Inserts `kaito.cors` first in the Gateway HCM. It validates and locally answers allowed `/v1` preflights before auth, rejects disallowed Origin-bearing `/v1` requests, and adds CORS headers to actual responses without bypassing authentication. |
 | `EnvoyFilter` `model-not-found-direct`         | `networking.istio.io/v1alpha3`   | always                       | Patches `direct_response` routes onto the Gateway HCM; returns an OpenAI 404 for any unknown-model path. Required to keep API-key ext_authz running on unknown-model requests. Also carries the two model-discovery routes, ordered **ahead** of the catch-all routes. |
 | `EnvoyFilter` `gateway-filter-outage-local-reply` | `networking.istio.io/v1alpha3` | always                       | Single namespace-scoped `local_reply` that maps fail-closed BBR / ext_authz outages, gateway data-plane health failures, and any remaining 5xx onto the unified error envelope.        |
 | `EnvoyFilter` `apikey-ext-authz`               | `networking.istio.io/v1alpha3`   | `auth.enabled`               | Splices `envoy.filters.http.ext_authz` into the Gateway pod and points it at the cluster-wide `apikey-authz` gRPC Service installed by `productionstack/llm-gateway-apikey`.           |
@@ -50,7 +52,7 @@ helm install modelharness ./charts/modelharness \
   --create-namespace
 ```
 
-Enable API-key auth and customize the allowed ingress namespaces:
+Enable API-key auth, browser access from two exact origins, and customize the allowed ingress namespaces:
 
 ```sh
 helm install modelharness oci://ghcr.io/kaito-project/helm/modelharness \
@@ -58,7 +60,24 @@ helm install modelharness oci://ghcr.io/kaito-project/helm/modelharness \
   --namespace my-models \
   --create-namespace \
   --set auth.enabled=true \
+  --set cors.enabled=true \
+  --set-string 'cors.allowedOrigins[0]=https://app.example.com' \
+  --set-string 'cors.allowedOrigins[1]=http://localhost:3000' \
   --set 'networkPolicy.allowedIngressNamespaces={keda,kaito-system,kube-system,monitoring}'
+```
+
+For non-credentialed browser access from every origin, configure the wildcard as
+its only origin and explicitly disable credentials:
+
+```sh
+helm install modelharness oci://ghcr.io/kaito-project/helm/modelharness \
+  --version <X.Y.Z> \
+  --namespace my-models \
+  --create-namespace \
+  --set auth.enabled=true \
+  --set cors.enabled=true \
+  --set-string 'cors.allowedOrigins[0]=*' \
+  --set cors.allowCredentials=false
 ```
 
 ## Inputs
@@ -75,6 +94,12 @@ Top-level values (see [`values.yaml`](./values.yaml) for the full schema, defaul
 | `bbr.name` / `bbr.namespace` / `bbr.port` | `body-based-router` / `kaito-system` / `9004` | Cluster FQDN coordinates of the BBR Service installed by `productionstack/body-based-routing`. Must match wherever BBR was installed.                                                              |
 | `bbr.envoyFilter.operation` / `anchorSubFilter` | `INSERT_BEFORE` / `envoy.filters.http.ext_proc` | Filter-chain placement so BBR injects `X-Gateway-Model-Name` before the InferencePool / EPP ext_proc and the `HTTPRoute` match run.                                                |
 | `bbr.outlierDetection.*`                  | see `values.yaml`                | Passive outlier detection on the BBR ext_proc upstream cluster so an erroring replica is ejected before tripping the fail-closed `502 bbr_unavailable` path.                                               |
+| `cors.enabled`                            | `false`                          | Render the first-position `gateway-cors` Lua filter for browser access to `/v1` and descendants.                                                                                                           |
+| `cors.allowedOrigins`                     | `[]`                             | Canonical exact HTTP(S) origins with lowercase hosts and optional non-default ports in the range 0–65535, or sole wildcard `*`. Multiple exact origins are supported. Configured `null`, partial wildcards, credentials, paths, queries, fragments, trailing slashes, and explicit default ports are rejected. |
+| `cors.allowedMethods`                     | `[GET, POST]`                    | Requested and actual methods allowed for Origin-bearing `/v1` requests.                                                                                                                                    |
+| `cors.allowedHeaders`                     | `[Authorization, Content-Type, API-Key, X-API-Key]` | Case-insensitive request-header allowlist used to validate preflights.                                                                                                    |
+| `cors.exposedHeaders`                     | `[X-Kaito-Error-Source, X-Kaito-Requested-Model]` | Response headers exposed to browser code.                                                                                                                            |
+| `cors.allowCredentials` / `.maxAgeSeconds` | `true` / `600`                  | Whether exact-origin responses allow browser credentials and how long a browser may cache a successful preflight. Wildcard requires an explicit `false`.                                                       |
 | `auth.enabled`                            | `false`                          | Render the per-namespace API-key auth artifacts (`AuthorizationPolicy`, `APIKey`, `apikey-ext-authz` `EnvoyFilter`).                                                                                       |
 | `auth.apiKeyName`                         | `default`                        | Name of the rendered `APIKey` CR.                                                                                                                                                                          |
 | `auth.extAuthz.*`                         | `apikey-authz` / `llm-gateway-auth` / `9001` / `5s` | Cluster-wide `apikey-authz` gRPC Service coordinates the per-namespace `EnvoyFilter` targets. Defaults match the `llm-gateway-apikey` subchart.                                              |
@@ -82,6 +107,31 @@ Top-level values (see [`values.yaml`](./values.yaml) for the full schema, defaul
 | `networkPolicy.allowedIngressNamespaces`  | `[keda, kaito-system, kube-system, monitoring]` | Cross-namespace ingress allowlist for inference pods. Each entry renders a `fromEndpoints` clause keyed off `k8s:io.kubernetes.pod.namespace`. Empty = strict per-namespace isolation. |
 | `modelsAPI.serviceNamespace` / `.servicePort` | `kube-system` / `8082` | Where the cluster-wide `productionstack-status-reporter` models Service actually runs. The Service *name* is pinned, so only these two need to match the umbrella install. |
 | `modelsAPI.timeout`                       | `10s`                            | Envoy route timeout for the discovery hop. The registry answers from an in-memory cache, so this only has to cover a cold start. |
+
+## Browser CORS
+
+A browser preflights the same URL it will call. With the example configuration above, this request is validated and answered locally by Envoy with `204`; it never reaches JWT validation, `ext_authz`, BBR, EPP, or a model:
+
+```http
+OPTIONS /v1/chat/completions
+Origin: https://app.example.com
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: authorization, content-type
+```
+
+The subsequent `POST /v1/chat/completions` still traverses the complete authentication and model-routing chain. CORS does not replace API-key or Entra authentication, and a request without valid credentials still receives `401`.
+
+When CORS is enabled:
+
+- exact mode accepts one or more canonical origins (lowercase host, no explicit default port), reflects only the matched origin, may emit `Access-Control-Allow-Credentials: true`, and includes `Vary: Origin`;
+- wildcard mode requires `allowedOrigins: ["*"]` and `allowCredentials: false`. It admits every non-empty browser Origin, including opaque `Origin: null`, emits literal `Access-Control-Allow-Origin: *`, never emits `Access-Control-Allow-Credentials`, and omits `Origin` from `Vary`;
+- wildcard preflight responses still vary on `Access-Control-Request-Method` and `Access-Control-Request-Headers`, because those allowlists remain enforced;
+- a configured literal `null`, partial wildcard such as `https://*.example.com`, or wildcard mixed with any exact origin is rejected;
+- an Origin-bearing `/v1` request with a disallowed origin or method receives local `403`;
+- a recognized preflight with a disallowed requested header receives local `403`;
+- a bare `OPTIONS` request is not a preflight and remains subject to authentication;
+- requests without `Origin` continue normally for authenticated CLI and service clients;
+- paths outside `/v1` are unaffected.
 
 ## Model discovery
 

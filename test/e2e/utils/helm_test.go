@@ -138,6 +138,11 @@ func TestLifecycleLeavesGatewayResolutionToBackend(t *testing.T) {
 	if len(backend.harnesses) != 1 || !backend.harnesses[0].AuthEnabled {
 		t.Fatal("E2E harness must enable authentication")
 	}
+	cors := backend.harnesses[0].CORS
+	wantOrigins := []string{E2ECORSAllowedOrigin, E2ECORSAllowedOriginAlternate}
+	if !cors.Enabled || !reflect.DeepEqual(cors.AllowedOrigins, wantOrigins) || cors.AllowCredentials != nil {
+		t.Fatalf("E2E harness CORS = %+v, want enabled origins %v with inherited credentials", cors, wantOrigins)
+	}
 	values := deploy.ModelDeploymentValues{Gateway: deploy.GatewayValues{DefaultDomain: "explicit.aksapp.io"}}
 	if err := InstallModelDeployment(ctx, values); err != nil {
 		t.Fatal(err)
@@ -152,6 +157,36 @@ func TestLifecycleLeavesGatewayResolutionToBackend(t *testing.T) {
 		if got := backend.gateways[index]; got != want {
 			t.Fatalf("gateway for call %d = %+v, want %+v", index, got, want)
 		}
+	}
+}
+
+func TestReconcileModelHarnessCORS(t *testing.T) {
+	const namespace = "e2e-ns"
+	deployerMu.Lock()
+	previous := currentDeployer
+	deployerMu.Unlock()
+	t.Cleanup(func() { SetDeployer(previous) })
+
+	backend := &gatewayRecordingDeployer{}
+	SetDeployer(backend)
+	allowCredentials := false
+	cors := deploy.CORSValues{
+		Enabled:          true,
+		AllowedOrigins:   []string{"*"},
+		AllowCredentials: &allowCredentials,
+	}
+	if err := ReconcileModelHarnessCORS(context.Background(), namespace, cors); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.harnesses) != 1 {
+		t.Fatalf("modelharness reconciliations = %d, want 1", len(backend.harnesses))
+	}
+	values := backend.harnesses[0]
+	if values.Namespace != namespace || !values.AuthEnabled || !values.CORS.Enabled || !reflect.DeepEqual(values.CORS.AllowedOrigins, []string{"*"}) {
+		t.Fatalf("wildcard reconciliation = %+v, want same namespace with auth and enabled one-wildcard CORS", values)
+	}
+	if values.CORS.AllowCredentials == nil || *values.CORS.AllowCredentials {
+		t.Fatalf("wildcard credentials = %v, want explicit false", values.CORS.AllowCredentials)
 	}
 }
 

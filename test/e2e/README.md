@@ -59,7 +59,7 @@ E2E_PARALLEL=4 make test-e2e
 Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into three groups:
 
 - **Cadence** (when a spec runs): `Smoke` (every PR), `Nightly` (long-running, nightly only).
-- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
+- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `CORS`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
 - **Environment** (what kind of cluster a spec needs): `StandardK8sOnly`.
 
 `ModelDiscovery` marks the `/v1/models` listing, retrieval, and authentication
@@ -151,12 +151,20 @@ Conventions worth knowing when writing a spec:
   discovery label) and `UninstallModelHarness` deletes it. Specs never create or
   delete a workload namespace themselves, so a non-Helm backend can provision it
   through its own API.
-- **Every E2E harness enables authentication.** `utils.InstallModelHarness(ctx,
-  namespace)` always supplies `ModelHarnessValues.AuthEnabled=true` to the
-  backend. Neither `EnsureNamespace` nor `ModelDeploymentValues` has an E2E
-  authentication switch. The modelharness chart's default is unchanged.
+- **Every E2E harness enables authentication and CORS coverage.**
+  `utils.InstallModelHarness(ctx, namespace)` always supplies
+  `ModelHarnessValues.AuthEnabled=true` and initially enables CORS for the two
+  reserved exact origins `https://cors.e2e.test` and
+  `http://cors-alt.e2e.test:3000`. Neither `EnsureNamespace` nor
+  `ModelDeploymentValues` has an E2E authentication switch. The modelharness
+  chart defaults (`auth.enabled=false`, `cors.enabled=false`) are unchanged.
   `EnsureNamespace` waits for namespace credentials; routing warmup then waits
   for authenticated inference to succeed without a fixed policy-propagation sleep.
+  In `CORSValues`, a nil `AllowCredentials` inherits the chart default; wildcard
+  mode requires an explicit false pointer. The ordered auth/CORS specs call
+  `ReconcileModelHarnessCORS` on the same namespace after exact-origin coverage,
+  wait for Envoy propagation, and run wildcard coverage last so they neither
+  allocate a second public Gateway nor require reverse reconciliation.
 - **Changing a deployment's values goes through `UpgradeModelDeployment`.**
   Replicas, scaling thresholds, scorer weights — anything declared in
   `ModelDeploymentValues` — must be changed through it rather than by patching
@@ -514,7 +522,7 @@ var GinkgoLabelMyFeature = ginkgo.Label("MyFeature")
 
 ### 5. Add per-namespace resources (rare)
 
-If your case needs additional cluster-side resources beyond what the [`charts/modelharness`](../../charts/modelharness) chart already provisions (Gateway, catch-all `model-not-found-direct` EnvoyFilter, optional `AuthorizationPolicy` + `APIKey`), add them as templates in `charts/modelharness` so every workload namespace picks them up consistently.
+If your case needs additional cluster-side resources beyond what the [`charts/modelharness`](../../charts/modelharness) chart already provisions (Gateway, catch-all `model-not-found-direct` EnvoyFilter, optional CORS EnvoyFilter, optional `AuthorizationPolicy` + `APIKey`), add them as templates in `charts/modelharness` so every workload namespace picks them up consistently.
 
 ### 6. Validate
 

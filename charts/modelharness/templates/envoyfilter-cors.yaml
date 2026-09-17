@@ -1,0 +1,323 @@
+{{- if .Values.cors.enabled }}
+{{- $originPattern := "^https?://(\\[[0-9a-f:.]+\\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)(:(0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$" -}}
+{{- if eq (len .Values.cors.allowedOrigins) 0 -}}
+  {{- fail "modelharness: cors.allowedOrigins must contain at least one origin when cors.enabled=true" -}}
+{{- end -}}
+{{- $wildcardMode := has "*" .Values.cors.allowedOrigins -}}
+{{- if $wildcardMode -}}
+  {{- if ne (len .Values.cors.allowedOrigins) 1 -}}
+    {{- fail "modelharness: cors.allowedOrigins wildcard must be the sole configured origin" -}}
+  {{- end -}}
+  {{- if .Values.cors.allowCredentials -}}
+    {{- fail "modelharness: cors.allowCredentials must be false when cors.allowedOrigins contains wildcard" -}}
+  {{- end -}}
+{{- else -}}
+  {{- range $i, $origin := .Values.cors.allowedOrigins -}}
+    {{- if or (not (regexMatch $originPattern $origin)) (regexMatch "^http://.*:80$" $origin) (regexMatch "^https://.*:443$" $origin) -}}
+      {{- fail (printf "modelharness: cors.allowedOrigins[%d] must be an exact http(s) origin in canonical browser form, with a lowercase host and non-default port in the range 0-65535, without wildcard, credentials, path, query, fragment, or trailing slash: %q" $i $origin) -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- $methodPattern := "^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]*$" -}}
+{{- if eq (len .Values.cors.allowedMethods) 0 -}}
+  {{- fail "modelharness: cors.allowedMethods must contain at least one method when cors.enabled=true" -}}
+{{- end -}}
+{{- range $i, $method := .Values.cors.allowedMethods -}}
+  {{- if not (regexMatch $methodPattern $method) -}}
+    {{- fail (printf "modelharness: cors.allowedMethods[%d] must be an uppercase HTTP method token: %q" $i $method) -}}
+  {{- end -}}
+{{- end -}}
+{{- $headerPattern := "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" -}}
+{{- $seenAllowedHeaders := dict -}}
+{{- range $i, $header := .Values.cors.allowedHeaders -}}
+  {{- if not (regexMatch $headerPattern $header) -}}
+    {{- fail (printf "modelharness: cors.allowedHeaders[%d] must be a valid HTTP header name: %q" $i $header) -}}
+  {{- end -}}
+  {{- $normalized := lower $header -}}
+  {{- if hasKey $seenAllowedHeaders $normalized -}}
+    {{- fail (printf "modelharness: cors.allowedHeaders contains duplicate header name %q (matching is case-insensitive)" $header) -}}
+  {{- end -}}
+  {{- $_ := set $seenAllowedHeaders $normalized true -}}
+{{- end -}}
+{{- $seenExposedHeaders := dict -}}
+{{- range $i, $header := .Values.cors.exposedHeaders -}}
+  {{- if not (regexMatch $headerPattern $header) -}}
+    {{- fail (printf "modelharness: cors.exposedHeaders[%d] must be a valid HTTP header name: %q" $i $header) -}}
+  {{- end -}}
+  {{- $normalized := lower $header -}}
+  {{- if hasKey $seenExposedHeaders $normalized -}}
+    {{- fail (printf "modelharness: cors.exposedHeaders contains duplicate header name %q (matching is case-insensitive)" $header) -}}
+  {{- end -}}
+  {{- $_ := set $seenExposedHeaders $normalized true -}}
+{{- end -}}
+# Browser CORS policy for this namespace's OpenAI-compatible `/v1` API.
+#
+# This Lua filter deliberately runs before every authentication shape. A valid
+# preflight is a credential-less protocol query, so it is validated and answered
+# locally without reaching jwt_authn, ext_authz, BBR, EPP, or a model. Actual
+# requests never bypass auth: allowed origins continue through the complete
+# chain, while disallowed Origin-bearing requests fail locally with 403.
+# Requests without Origin are unchanged for authenticated CLI/service clients.
+#
+# Envoy's native CORS filter is not used because BBR causes route recomputation
+# after extracting the model and the initial inference route can be a
+# direct_response fallback; native CORS explicitly skips direct-response routes.
+# Lua stores an accepted actual request's exact origin or wildcard marker in
+# per-stream metadata and adds response headers during encoding, independent of
+# either route selection.
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: gateway-cors
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  # Matching EnvoyFilters are applied in ascending priority. Existing auth
+  # EnvoyFilters use priority 0; applying this patch later and INSERT_FIRST makes
+  # kaito.cors the deterministic final head of the Gateway HTTP filter chain.
+  priority: 10
+  workloadSelector:
+    labels:
+      gateway.networking.k8s.io/gateway-name: {{ include "modelharness.gatewayName" . | quote }}
+  configPatches:
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: envoy.filters.network.http_connection_manager
+      patch:
+        operation: INSERT_FIRST
+        value:
+          name: kaito.cors
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            default_source_code:
+              inline_string: |
+                local allowed_origins = {
+                {{- range .Values.cors.allowedOrigins }}
+                  {{- if ne . "*" }}
+                  [{{ . | quote }}] = true,
+                  {{- end }}
+                {{- end }}
+                }
+                local wildcard_mode = {{ $wildcardMode }}
+
+                local allowed_methods = {
+                {{- range .Values.cors.allowedMethods }}
+                  [{{ upper . | quote }}] = true,
+                {{- end }}
+                }
+
+                local allowed_headers = {
+                {{- range .Values.cors.allowedHeaders }}
+                  [{{ lower . | quote }}] = true,
+                {{- end }}
+                }
+
+                local allow_methods_value = {{ join ", " .Values.cors.allowedMethods | quote }}
+                local allow_headers_value = {{ join ", " .Values.cors.allowedHeaders | quote }}
+                local expose_headers_value = {{ join ", " .Values.cors.exposedHeaders | quote }}
+                local allow_credentials = {{ .Values.cors.allowCredentials }}
+                local max_age_seconds = {{ .Values.cors.maxAgeSeconds | toString | quote }}
+                local metadata_namespace = "kaito.cors"
+                local forbidden_body = '{"error":{"message":"CORS request is not allowed.","type":"invalid_request_error","param":null,"code":"cors_forbidden"}}'
+                local preflight_vary_value = "Access-Control-Request-Method, Access-Control-Request-Headers"
+                local actual_vary_value = nil
+                if not wildcard_mode then
+                  preflight_vary_value = "Origin, " .. preflight_vary_value
+                  actual_vary_value = "Origin"
+                end
+
+                local function trim(value)
+                  return (value:gsub("^%s*(.-)%s*$", "%1"))
+                end
+
+                local function is_api_path(path)
+                  local path_without_query = path:match("^[^?]*") or path
+                  return path_without_query == "/v1" or
+                    path_without_query:sub(1, 4) == "/v1/"
+                end
+
+                local function origin_is_allowed(origin)
+                  if origin == nil or origin == "" then
+                    return false
+                  end
+                  if wildcard_mode then
+                    return true
+                  end
+                  return allowed_origins[origin] == true
+                end
+
+                local function requested_headers_are_allowed(value)
+                  if value == nil then
+                    return true
+                  end
+                  if trim(value) == "" then
+                    return false
+                  end
+
+                  local start = 1
+                  while true do
+                    local comma = value:find(",", start, true)
+                    local raw
+                    if comma == nil then
+                      raw = value:sub(start)
+                    else
+                      raw = value:sub(start, comma - 1)
+                    end
+
+                    local header = trim(raw):lower()
+                    if header == "" or not allowed_headers[header] then
+                      return false
+                    end
+                    if comma == nil then
+                      return true
+                    end
+                    start = comma + 1
+                  end
+                end
+
+                local function deny(handle, vary)
+                  local response_headers = {
+                    [":status"] = "403",
+                    ["content-type"] = "application/json",
+                    ["x-kaito-error-source"] = "gateway"
+                  }
+                  if vary ~= nil and vary ~= "" then
+                    response_headers["vary"] = vary
+                  end
+                  handle:respond(response_headers, forbidden_body)
+                end
+
+                local function add_vary(headers, token)
+                  local existing = headers:get("vary")
+                  if existing == nil or existing == "" then
+                    headers:add("vary", token)
+                    return
+                  end
+
+                  for value in existing:gmatch("[^,]+") do
+                    if trim(value):lower() == token:lower() then
+                      return
+                    end
+                  end
+                  headers:replace("vary", existing .. ", " .. token)
+                end
+
+                local function remove_vary(headers, token)
+                  local existing = headers:get("vary")
+                  if existing == nil or existing == "" then
+                    return
+                  end
+
+                  local retained = {}
+                  for value in existing:gmatch("[^,]+") do
+                    value = trim(value)
+                    if value ~= "" and value:lower() ~= token:lower() then
+                      table.insert(retained, value)
+                    end
+                  end
+                  if #retained == 0 then
+                    headers:remove("vary")
+                  else
+                    headers:replace("vary", table.concat(retained, ", "))
+                  end
+                end
+
+                function envoy_on_request(handle)
+                  local headers = handle:headers()
+                  local path = headers:get(":path") or ""
+                  if not is_api_path(path) then
+                    return
+                  end
+
+                  local method = (headers:get(":method") or ""):upper()
+                  local origin = headers:get("origin")
+                  local requested_method = headers:get("access-control-request-method")
+
+                  -- Only a complete browser preflight receives the local OPTIONS
+                  -- path. Incomplete/bare OPTIONS continues to auth rather than
+                  -- becoming a generic method bypass.
+                  if method == "OPTIONS" then
+                    if origin == nil or requested_method == nil then
+                      return
+                    end
+
+                    requested_method = trim(requested_method):upper()
+                    local requested_headers = headers:get("access-control-request-headers")
+                    if not origin_is_allowed(origin) or
+                      not allowed_methods[requested_method] or
+                      not requested_headers_are_allowed(requested_headers) then
+                      deny(handle, preflight_vary_value)
+                      return
+                    end
+
+                    local response_headers = {
+                      [":status"] = "204",
+                      ["access-control-allow-origin"] = wildcard_mode and "*" or origin,
+                      ["access-control-allow-methods"] = allow_methods_value,
+                      ["access-control-max-age"] = max_age_seconds,
+                      ["vary"] = preflight_vary_value
+                    }
+                    if allow_headers_value ~= "" then
+                      response_headers["access-control-allow-headers"] = allow_headers_value
+                    end
+                    if allow_credentials and not wildcard_mode then
+                      response_headers["access-control-allow-credentials"] = "true"
+                    end
+                    handle:respond(response_headers, "")
+                    return
+                  end
+
+                  if origin == nil then
+                    return
+                  end
+                  if not origin_is_allowed(origin) or not allowed_methods[method] then
+                    deny(handle, actual_vary_value)
+                    return
+                  end
+
+                  -- Dynamic metadata is per stream. Never keep request state in
+                  -- a shared Lua global: exact mode stores the matched origin;
+                  -- wildcard mode stores only its fixed marker.
+                  handle:streamInfo():dynamicMetadata():set(
+                    metadata_namespace, "allowed_origin", wildcard_mode and "*" or origin)
+                end
+
+                function envoy_on_response(handle)
+                  local metadata = handle:streamInfo():dynamicMetadata():get(metadata_namespace)
+                  if metadata == nil then
+                    return
+                  end
+                  local origin = metadata["allowed_origin"]
+                  if origin == nil then
+                    return
+                  end
+                  if wildcard_mode then
+                    if origin ~= "*" then
+                      return
+                    end
+                  elseif not allowed_origins[origin] then
+                    return
+                  end
+
+                  local headers = handle:headers()
+                  if wildcard_mode then
+                    headers:replace("access-control-allow-origin", "*")
+                    headers:remove("access-control-allow-credentials")
+                    remove_vary(headers, "Origin")
+                  else
+                    headers:replace("access-control-allow-origin", origin)
+                    if allow_credentials then
+                      headers:replace("access-control-allow-credentials", "true")
+                    end
+                    add_vary(headers, "Origin")
+                  end
+                  if expose_headers_value ~= "" then
+                    headers:replace("access-control-expose-headers", expose_headers_value)
+                  end
+                end
+{{- end }}

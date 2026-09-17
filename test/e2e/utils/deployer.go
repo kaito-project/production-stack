@@ -25,6 +25,15 @@ import (
 	_ "github.com/kaito-project/production-stack/test/e2e/deploy/helm" // registers the default "helm" backend
 )
 
+const (
+	// E2ECORSAllowedOrigin and E2ECORSAllowedOriginAlternate are the exact
+	// browser origins enabled on every E2E modelharness. They use the reserved
+	// .test TLD and are carried only in the Origin header; no DNS records are
+	// required.
+	E2ECORSAllowedOrigin          = "https://cors.e2e.test"
+	E2ECORSAllowedOriginAlternate = "http://cors-alt.e2e.test:3000"
+)
+
 var (
 	deployerMu      sync.Mutex
 	currentDeployer deploy.Deployer
@@ -61,12 +70,25 @@ func CurrentDeployer() (deploy.Deployer, error) {
 // per-namespace shared resources: the workload namespace itself (stamped with
 // the discovery label the control plane selects on), the Istio Gateway (named
 // "<namespace>" by chart default), the catch-all `model-not-found-direct`
-// EnvoyFilter, and the AuthorizationPolicy +
-// APIKey CR that wire the Gateway into the cluster-wide apikey-ext-authz
-// CUSTOM provider.
+// EnvoyFilter, the browser CORS EnvoyFilter, and the AuthorizationPolicy +
+// APIKey CR that wire the Gateway into the cluster-wide apikey-ext-authz CUSTOM
+// provider.
 //
 // Idempotent: safe to call repeatedly for the same namespace.
 func InstallModelHarness(ctx context.Context, namespace string) error {
+	return ReconcileModelHarnessCORS(ctx, namespace, deploy.CORSValues{
+		Enabled: true,
+		AllowedOrigins: []string{
+			E2ECORSAllowedOrigin,
+			E2ECORSAllowedOriginAlternate,
+		},
+	})
+}
+
+// ReconcileModelHarnessCORS updates the browser CORS policy on the existing
+// namespace-owned modelharness while preserving E2E authentication. It does not
+// create a second harness lifecycle or Gateway.
+func ReconcileModelHarnessCORS(ctx context.Context, namespace string, cors deploy.CORSValues) error {
 	d, err := CurrentDeployer()
 	if err != nil {
 		return err
@@ -74,6 +96,7 @@ func InstallModelHarness(ctx context.Context, namespace string) error {
 	return d.InstallModelHarness(ctx, deploy.ModelHarnessValues{
 		Namespace:   namespace,
 		AuthEnabled: true,
+		CORS:        cors,
 	})
 }
 
