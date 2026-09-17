@@ -52,6 +52,9 @@ NODE_VM_SIZE="${NODE_VM_SIZE:-Standard_D8d_v4}"
 E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 AKS_PREVIEW_VERSION="${AKS_PREVIEW_VERSION:-21.0.0b9}"
 
+# shellcheck source=lib-provider.sh
+source "${SCRIPT_DIR}/lib-provider.sh"
+
 # Passed per call rather than via `az account set`: the CLI profile is global
 # state and the E2E runner is shared with concurrent jobs.
 AZ_SUB=()
@@ -59,21 +62,8 @@ if [[ -n "${AZURE_SUBSCRIPTION_ID:-}" ]]; then
   AZ_SUB=(--subscription "${AZURE_SUBSCRIPTION_ID}")
 fi
 
-# Optional AKS-managed KEDA add-on toggled by provider.
-#   azure    -> enable managed KEDA in `kube-system`.
-#   upstream -> install KEDA via Helm later.
+# Provider profiles declare optional AKS features such as managed KEDA.
 EXTRA_AKS_ARGS=()
-case "${E2E_PROVIDER}" in
-  azure)
-    EXTRA_AKS_ARGS+=(--enable-keda)
-    ;;
-  upstream)
-    ;;
-  *)
-    echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
-    exit 1
-    ;;
-esac
 
 # Managed Gateway API is enabled on every cluster and requires the aks-preview
 # extension plus the subscription-level ManagedGatewayAPIPreview feature.
@@ -115,7 +105,7 @@ if [[ "${FEATURE_STATE}" != "Registered" ]]; then
   az provider register ${AZ_SUB[@]+"${AZ_SUB[@]}"} --namespace Microsoft.ContainerService >/dev/null || true
 fi
 
-if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+configure_app_routing_cluster() {
   echo "=== Ensuring AKSHTTPCustomFeatures feature flag is registered ==="
   FEATURE_STATE=$(az feature show ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
     --namespace Microsoft.ContainerService \
@@ -141,11 +131,13 @@ if [[ "${E2E_PROVIDER}" == "azure" ]]; then
     az provider register ${AZ_SUB[@]+"${AZ_SUB[@]}"} --namespace Microsoft.ContainerService >/dev/null || true
   fi
   EXTRA_AKS_ARGS+=(
+    --enable-keda
     --enable-app-routing-istio
     --enable-default-domain
     --aks-custom-headers EnableGatewayAPIInferenceExtension=true
   )
-fi
+}
+run_provider_hook configure_cluster
 
 # Karpenter needs cluster OIDC issuer + Workload Identity so a self-managed
 # Karpenter Helm install can obtain federated credentials to call the Azure ARM
@@ -172,7 +164,7 @@ az aks create ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
   --enable-gateway-api \
   --generate-ssh-keys \
   ${AKS_K8S_VERSION:+--kubernetes-version "${AKS_K8S_VERSION}"} \
-  ${EXTRA_AKS_ARGS[@]+"${EXTRA_AKS_ARGS[@]}"}
+  "${EXTRA_AKS_ARGS[@]}"
 
 echo "=== Waiting for AKS provisioningState=Succeeded ==="
 # `az aks create` blocks on the ARM operation, but on retried/throttled CLI
@@ -198,7 +190,7 @@ if [[ "${PROVISIONING_STATE}" != "Succeeded" ]]; then
   exit 1
 fi
 
-if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+verify_managed_gwie() {
   GATEWAY_API_INSTALLATION=$(az aks show ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
     --resource-group "${RESOURCE_GROUP}" \
     --name "${CLUSTER_NAME}" \
@@ -207,7 +199,8 @@ if [[ "${E2E_PROVIDER}" == "azure" ]]; then
     echo "Expected Gateway API installation mode InferenceExtension; found ${GATEWAY_API_INSTALLATION:-<unset>}." >&2
     exit 1
   fi
-fi
+}
+run_provider_hook verify_cluster
 
 echo "=== Fetching kubeconfig ==="
 az aks get-credentials ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
@@ -275,15 +268,6 @@ kubectl -n kube-system wait --for=condition=ready pod \
 : "${KEDA_VERSION:?KEDA_VERSION is not set. Source versions.env or export it before calling this script.}"
 : "${ISTIO_VERSION:?ISTIO_VERSION is not set. Source versions.env or export it before calling this script.}"
 
-# Derive KEDA install namespace from provider when not explicitly provided.
-if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
-  case "${E2E_PROVIDER}" in
-    upstream) KEDA_NAMESPACE="keda" ;;
-    azure)    KEDA_NAMESPACE="kube-system" ;;
-  esac
-fi
-export KEDA_NAMESPACE
-
 # Ensure helm is available for the upstream KEDA install. (Prep is done
 # sequentially before fan-out so all parallel tasks see helm on PATH.)
 if ! command -v helm &>/dev/null; then
@@ -293,14 +277,15 @@ fi
 
 # Ensure istioctl is available before fan-out so the parallel install
 # task does not need to download it under a forked subshell.
-if [[ "${E2E_PROVIDER}" == "upstream" ]] && ! command -v istioctl &>/dev/null; then
-  echo "=== Installing istioctl ${ISTIO_VERSION} ==="
-  curl -L https://istio.io/downloadIstio | ISTIO_VERSION="${ISTIO_VERSION}" sh -
-  export PATH="${PWD}/istio-${ISTIO_VERSION}/bin:${PATH}"
-fi
-if [[ "${E2E_PROVIDER}" == "upstream" ]]; then
+prepare_upstream_istio_cli() {
+  if ! command -v istioctl &>/dev/null; then
+    echo "=== Installing istioctl ${ISTIO_VERSION} ==="
+    curl -L https://istio.io/downloadIstio | ISTIO_VERSION="${ISTIO_VERSION}" sh -
+    export PATH="${PWD}/istio-${ISTIO_VERSION}/bin:${PATH}"
+  fi
   echo "Using istioctl: $(command -v istioctl)"
-fi
+}
+run_provider_hook prepare_istio_cli
 
 # Source the shared run_phase / fmt_dur helpers so KEDA, Gateway API
 # CRDs, and Istio can install concurrently.
@@ -308,27 +293,28 @@ fi
 source "${SCRIPT_DIR}/lib-parallel.sh"
 
 # ── KEDA ──────────────────────────────────────────────────────────────────
-install_keda() {
-  case "${E2E_PROVIDER}" in
-    azure)
-      echo "=== Verifying managed KEDA add-on in ${KEDA_NAMESPACE} ==="
-      kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator --timeout=180s || true
-      kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
-      ;;
-    upstream)
-      echo "=== Installing KEDA ${KEDA_VERSION} via Helm into ${KEDA_NAMESPACE} ==="
-      helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
-      helm repo update kedacore
-      helm upgrade --install keda kedacore/keda \
-        --version "${KEDA_VERSION}" \
-        --namespace "${KEDA_NAMESPACE}" \
-        --create-namespace \
-        --wait --timeout=300s
-      echo "⏳ Waiting for KEDA operator..."
-      kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator --timeout=180s || true
-      kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
-      ;;
-  esac
+verify_managed_keda() {
+  echo "=== Verifying managed KEDA add-on in ${KEDA_NAMESPACE} ==="
+  kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator --timeout=180s || true
+  kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
+}
+
+install_helm_keda() {
+  echo "=== Installing KEDA ${KEDA_VERSION} via Helm into ${KEDA_NAMESPACE} ==="
+  helm repo add kedacore https://kedacore.github.io/charts 2>/dev/null || true
+  helm repo update kedacore
+  helm upgrade --install keda kedacore/keda \
+    --version "${KEDA_VERSION}" \
+    --namespace "${KEDA_NAMESPACE}" \
+    --create-namespace \
+    --wait --timeout=300s
+  echo "⏳ Waiting for KEDA operator..."
+  kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator --timeout=180s || true
+  kubectl -n "${KEDA_NAMESPACE}" rollout status deployment/keda-operator-metrics-apiserver --timeout=180s || true
+}
+
+install_provider_keda() {
+  run_provider_hook install_keda
 }
 
 # ── Gateway API base CRDs ────────────────────────────────────────────────
@@ -427,12 +413,11 @@ install_istio() {
 # Fan out the three independent installs in parallel. They share no
 # runtime state and each writes to a distinct set of API objects, so the
 # longest task gates this phase.
-CLUSTER_PREP_TASKS=(install_keda install_gateway_api_crds)
-if [[ "${E2E_PROVIDER}" == "azure" ]]; then
-  CLUSTER_PREP_TASKS+=(install_app_routing_istio_prereqs)
-else
-  CLUSTER_PREP_TASKS+=(install_istio)
-fi
+setup_provider_istio() {
+  run_provider_hook setup_istio
+}
+
+CLUSTER_PREP_TASKS=(install_provider_keda install_gateway_api_crds setup_provider_istio)
 run_phase cluster-prep "${CLUSTER_PREP_TASKS[@]}"
 
 echo ""
