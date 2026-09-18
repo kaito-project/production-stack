@@ -70,16 +70,17 @@ bbr:
   # BBR ext_proc gRPC port.
   port: 9004
 
-  # Which HTTP lifecycle events Envoy forwards to BBR. Only
-  # requestHeaders + requestBody are required for model extraction; the
-  # rest are kept on for upstream parity.
+  # Which HTTP lifecycle events Envoy forwards to BBR. Model extraction
+  # only requires the request headers and body. Response events are
+  # disabled so Envoy returns model responses directly to the client
+  # without sending them through BBR for inspection or modification.
   supportedEvents:
     requestHeaders: true
     requestBody: true
     requestTrailers: true
-    responseHeaders: true
-    responseBody: true
-    responseTrailers: true
+    responseHeaders: false
+    responseBody: false
+    responseTrailers: false
 
   envoyFilter:
     # Filter-chain placement. Anchor on Istio's auto-injected
