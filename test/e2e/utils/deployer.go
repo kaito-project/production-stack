@@ -76,12 +76,14 @@ func CurrentDeployer() (deploy.Deployer, error) {
 //
 // Idempotent: safe to call repeatedly for the same namespace.
 func InstallModelHarness(ctx context.Context, namespace string) error {
+	allowCredentials := true
 	return ReconcileModelHarnessCORS(ctx, namespace, deploy.CORSValues{
 		Enabled: true,
 		AllowedOrigins: []string{
 			E2ECORSAllowedOrigin,
 			E2ECORSAllowedOriginAlternate,
 		},
+		AllowCredentials: &allowCredentials,
 	})
 }
 

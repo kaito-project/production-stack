@@ -157,10 +157,11 @@ Conventions worth knowing when writing a spec:
   reserved exact origins `https://cors.e2e.test` and
   `http://cors-alt.e2e.test:3000`. Neither `EnsureNamespace` nor
   `ModelDeploymentValues` has an E2E authentication switch. The modelharness
-  chart defaults (`auth.enabled=false`, `cors.enabled=false`) are unchanged.
+  chart defaults are `auth.enabled=false` and `cors.enabled=true`.
   `EnsureNamespace` waits for namespace credentials; routing warmup then waits
   for authenticated inference to succeed without a fixed policy-propagation sleep.
-  In `CORSValues`, a nil `AllowCredentials` inherits the chart default; wildcard
+  The initial exact-origin E2E policy explicitly enables credentials. In
+  `CORSValues`, a nil `AllowCredentials` inherits the chart default; wildcard
   mode requires an explicit false pointer. The ordered auth/CORS specs call
   `ReconcileModelHarnessCORS` on the same namespace after exact-origin coverage,
   wait for Envoy propagation, and run wildcard coverage last so they neither

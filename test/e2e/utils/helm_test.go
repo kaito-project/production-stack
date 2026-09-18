@@ -140,8 +140,8 @@ func TestLifecycleLeavesGatewayResolutionToBackend(t *testing.T) {
 	}
 	cors := backend.harnesses[0].CORS
 	wantOrigins := []string{E2ECORSAllowedOrigin, E2ECORSAllowedOriginAlternate}
-	if !cors.Enabled || !reflect.DeepEqual(cors.AllowedOrigins, wantOrigins) || cors.AllowCredentials != nil {
-		t.Fatalf("E2E harness CORS = %+v, want enabled origins %v with inherited credentials", cors, wantOrigins)
+	if !cors.Enabled || !reflect.DeepEqual(cors.AllowedOrigins, wantOrigins) || cors.AllowCredentials == nil || !*cors.AllowCredentials {
+		t.Fatalf("E2E harness CORS = %+v, want enabled origins %v with explicit credentials", cors, wantOrigins)
 	}
 	values := deploy.ModelDeploymentValues{Gateway: deploy.GatewayValues{DefaultDomain: "explicit.aksapp.io"}}
 	if err := InstallModelDeployment(ctx, values); err != nil {
