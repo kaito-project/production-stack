@@ -356,6 +356,10 @@ func TestInstallModelHarnessMapsAuth(t *testing.T) {
 	if err := d.InstallModelHarness(context.Background(), deploy.ModelHarnessValues{
 		Namespace:   "ns-b",
 		AuthEnabled: true,
+		CORS: deploy.CORSValues{
+			Enabled:        true,
+			AllowedOrigins: []string{"https://app.example.com", "http://localhost:3000"},
+		},
 		Gateway: deploy.GatewayValues{
 			CloudProvider:    "azure",
 			GatewayClassName: "approuting-istio",
@@ -363,6 +367,31 @@ func TestInstallModelHarnessMapsAuth(t *testing.T) {
 		},
 	}); err != nil {
 		t.Fatalf("InstallModelHarness (auth): %v", err)
+	}
+	falseValue := false
+	if err := d.InstallModelHarness(context.Background(), deploy.ModelHarnessValues{
+		Namespace:   "ns-b",
+		AuthEnabled: true,
+		CORS: deploy.CORSValues{
+			Enabled:          true,
+			AllowedOrigins:   []string{"*"},
+			AllowCredentials: &falseValue,
+		},
+	}); err != nil {
+		t.Fatalf("InstallModelHarness (wildcard CORS reconciliation): %v", err)
+	}
+	if err := d.InstallModelHarness(context.Background(), deploy.ModelHarnessValues{
+		Namespace: "ns-c",
+		CORS: deploy.CORSValues{
+			Enabled:          true,
+			AllowedOrigins:   []string{"https://public.example.com"},
+			AllowCredentials: &falseValue,
+		},
+	}); err != nil {
+		t.Fatalf("InstallModelHarness (exact CORS without credentials): %v", err)
+	}
+	if len(*calls) != 4 {
+		t.Fatalf("helm calls = %d, want 4", len(*calls))
 	}
 	args := (*calls)[1]
 	for _, want := range []string{"cloudprovider=azure", "gatewayClassName=approuting-istio"} {
@@ -374,11 +403,33 @@ func TestInstallModelHarnessMapsAuth(t *testing.T) {
 		t.Errorf("App Routing domain not passed via --set-string: %v", args)
 	}
 
-	if got := (*calls)[0]; got[2] != ModelHarnessReleaseName || !hasArg(got, "auth.enabled=false") || !hasArg(got, "namespace=ns-a") {
+	if got := (*calls)[0]; got[2] != ModelHarnessReleaseName || !hasArg(got, "auth.enabled=false") || !hasArg(got, "cors.enabled=false") || !hasArg(got, "namespace=ns-a") {
 		t.Errorf("unexpected args for auth-disabled harness: %v", got)
 	}
-	if got := (*calls)[1]; !hasArg(got, "auth.enabled=true") || !hasArg(got, "namespace=ns-b") {
-		t.Errorf("unexpected args for auth-enabled harness: %v", got)
+	if got := (*calls)[1]; !hasArg(got, "auth.enabled=true") || !hasArg(got, "cors.enabled=true") || !hasArg(got, "namespace=ns-b") {
+		t.Errorf("unexpected args for auth/CORS-enabled harness: %v", got)
+	} else {
+		if origins, ok := argValue(got, "--set-json", "cors.allowedOrigins="); !ok || origins != `["https://app.example.com","http://localhost:3000"]` {
+			t.Errorf("CORS origins JSON = %q (found=%t), want complete exact-origin array; args=%v", origins, ok, got)
+		}
+		if _, ok := argValue(got, "--set", "cors.allowCredentials="); ok {
+			t.Errorf("nil credentials override must inherit the chart default: %v", got)
+		}
+	}
+	if got := (*calls)[2]; !hasArg(got, "auth.enabled=true") || !hasArg(got, "namespace=ns-b") {
+		t.Errorf("unexpected args for wildcard reconciliation: %v", got)
+	} else {
+		if origins, ok := argValue(got, "--set-json", "cors.allowedOrigins="); !ok || origins != `["*"]` {
+			t.Errorf("wildcard origins JSON = %q (found=%t), want a complete one-item replacement; args=%v", origins, ok, got)
+		}
+		if credentials, ok := argValue(got, "--set", "cors.allowCredentials="); !ok || credentials != "false" {
+			t.Errorf("wildcard credentials = %q (found=%t), want false; args=%v", credentials, ok, got)
+		}
+	}
+	if got := (*calls)[3]; !hasArg(got, "namespace=ns-c") {
+		t.Errorf("unexpected args for non-credentialed exact CORS: %v", got)
+	} else if credentials, ok := argValue(got, "--set", "cors.allowCredentials="); !ok || credentials != "false" {
+		t.Errorf("exact-origin credentials = %q (found=%t), want false; args=%v", credentials, ok, got)
 	}
 	// --wait keeps the caller from racing the gateway rollout.
 	if !hasArg((*calls)[0], "--wait") {
@@ -389,8 +440,51 @@ func TestInstallModelHarnessMapsAuth(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Namespace is required") {
 		t.Fatalf("error = %v, want a missing-namespace validation error", err)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("helm was invoked for an invalid harness: %v", *calls)
+
+	trueValue := true
+	for _, test := range []struct {
+		name             string
+		origins          []string
+		allowCredentials *bool
+		wantErr          string
+	}{
+		{name: "empty", wantErr: "must contain at least one origin"},
+		{name: "wildcard without explicit credentials", origins: []string{"*"}, wantErr: "must be explicitly false"},
+		{name: "wildcard with credentials", origins: []string{"*"}, allowCredentials: &trueValue, wantErr: "must be explicitly false"},
+		{name: "wildcard then exact origin", origins: []string{"*", "https://app.example.com"}, allowCredentials: &falseValue, wantErr: "must be the sole configured origin"},
+		{name: "exact origin then wildcard", origins: []string{"https://app.example.com", "*"}, allowCredentials: &falseValue, wantErr: "must be the sole configured origin"},
+		{name: "repeated wildcard", origins: []string{"*", "*"}, allowCredentials: &falseValue, wantErr: "must be the sole configured origin"},
+		{name: "double wildcard", origins: []string{"**"}, allowCredentials: &falseValue, wantErr: "must be an exact http(s) origin"},
+		{name: "subdomain wildcard URL", origins: []string{"https://*.example.com"}, allowCredentials: &falseValue, wantErr: "must be an exact http(s) origin"},
+		{name: "bare subdomain wildcard", origins: []string{"*.example.com"}, allowCredentials: &falseValue, wantErr: "must be an exact http(s) origin"},
+		{name: "null", origins: []string{"null"}, wantErr: "must be an exact http(s) origin"},
+		{name: "credentials", origins: []string{"https://user@example.com"}, wantErr: "must be an exact http(s) origin"},
+		{name: "trailing slash", origins: []string{"https://app.example.com/"}, wantErr: "must be an exact http(s) origin"},
+		{name: "path", origins: []string{"https://app.example.com/path"}, wantErr: "must be an exact http(s) origin"},
+		{name: "uppercase host", origins: []string{"https://App.Example.com"}, wantErr: "must be an exact http(s) origin"},
+		{name: "explicit HTTP default port", origins: []string{"http://app.example.com:80"}, wantErr: "must be an exact http(s) origin"},
+		{name: "explicit HTTPS default port", origins: []string{"https://app.example.com:443"}, wantErr: "must be an exact http(s) origin"},
+		{name: "out-of-range port", origins: []string{"https://app.example.com:65536"}, wantErr: "must be an exact http(s) origin"},
+		{name: "leading-zero port", origins: []string{"https://app.example.com:03000"}, wantErr: "must be an exact http(s) origin"},
+		{name: "duplicate", origins: []string{"https://app.example.com", "https://app.example.com"}, wantErr: "duplicate origin"},
+	} {
+		t.Run("invalid CORS "+test.name, func(t *testing.T) {
+			callsBefore := len(*calls)
+			err := d.InstallModelHarness(context.Background(), deploy.ModelHarnessValues{
+				Namespace: "invalid-cors",
+				CORS: deploy.CORSValues{
+					Enabled:          true,
+					AllowedOrigins:   test.origins,
+					AllowCredentials: test.allowCredentials,
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, test.wantErr)
+			}
+			if len(*calls) != callsBefore {
+				t.Fatalf("helm was invoked despite invalid values: %v", (*calls)[callsBefore:])
+			}
+		})
 	}
 }
 

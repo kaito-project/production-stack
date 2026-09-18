@@ -19,8 +19,10 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -172,4 +174,289 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 			Expect(model.ID).To(Equal(modelName))
 		})
 	})
+
+	Context("Browser CORS", utils.GinkgoLabelCORS, func() {
+		const disallowedOrigin = "https://disallowed.e2e.test"
+
+		sendPreflight := func(origin, method, headers string) (*http.Response, error) {
+			options := []utils.RequestOption{
+				utils.WithoutAuth(),
+				utils.WithHeader("Origin", origin),
+				utils.WithHeader("Access-Control-Request-Method", method),
+			}
+			if headers != "" {
+				options = append(options, utils.WithHeader("Access-Control-Request-Headers", headers))
+			}
+			return utils.SendGatewayRequest(ctx, caseGateway, http.MethodOptions, utils.ChatCompletionsPath, nil, options...)
+		}
+
+		expectActualCORSHeaders := func(response *http.Response, origin string) {
+			Expect(response.Header.Get("Access-Control-Allow-Origin")).To(Equal(origin))
+			Expect(response.Header.Get("Access-Control-Allow-Credentials")).To(Equal("true"))
+			Expect(commaSeparatedHeaderTokens(response, "Access-Control-Expose-Headers")).To(ConsistOf(
+				"x-kaito-error-source", "x-kaito-requested-model"))
+			Expect(commaSeparatedHeaderTokens(response, "Vary")).To(ContainElement("origin"))
+		}
+
+		DescribeTable("answers an allowed credential-less preflight locally",
+			func(origin string) {
+				response, err := sendPreflight(origin, http.MethodPost, "authorization, Content-Type")
+				Expect(err).NotTo(HaveOccurred())
+				defer response.Body.Close()
+
+				Expect(response.StatusCode).To(Equal(http.StatusNoContent))
+				body, err := io.ReadAll(response.Body)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(body).To(BeEmpty())
+				Expect(response.Header.Get("Access-Control-Allow-Origin")).To(Equal(origin))
+				Expect(response.Header.Get("Access-Control-Allow-Credentials")).To(Equal("true"))
+				Expect(response.Header.Get("Access-Control-Max-Age")).To(Equal("600"))
+				Expect(commaSeparatedHeaderTokens(response, "Access-Control-Allow-Methods")).To(ConsistOf("get", "post"))
+				Expect(commaSeparatedHeaderTokens(response, "Access-Control-Allow-Headers")).To(ConsistOf(
+					"authorization", "content-type", "api-key", "x-api-key"))
+				Expect(commaSeparatedHeaderTokens(response, "Vary")).To(ConsistOf(
+					"origin", "access-control-request-method", "access-control-request-headers"))
+			},
+			Entry("primary exact origin", utils.E2ECORSAllowedOrigin),
+			Entry("second exact origin", utils.E2ECORSAllowedOriginAlternate),
+		)
+
+		DescribeTable("rejects disallowed preflights locally",
+			func(origin, method, headers string) {
+				response, err := sendPreflight(origin, method, headers)
+				Expect(err).NotTo(HaveOccurred())
+				defer response.Body.Close()
+				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+				Expect(response.Header.Get("Access-Control-Allow-Origin")).To(BeEmpty())
+			},
+			Entry("origin", disallowedOrigin, http.MethodPost, "authorization,content-type"),
+			Entry("method", utils.E2ECORSAllowedOrigin, http.MethodDelete, "authorization,content-type"),
+			Entry("request header", utils.E2ECORSAllowedOrigin, http.MethodPost, "authorization,x-not-allowed"),
+		)
+
+		It("does not treat a bare OPTIONS request as an auth bypass", func() {
+			response, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodOptions, utils.ChatCompletionsPath, nil,
+				utils.WithoutAuth())
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+		})
+
+		It("does not treat an incomplete preflight as an auth bypass", func() {
+			response, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodOptions, utils.ChatCompletionsPath, nil,
+				utils.WithoutAuth(), utils.WithHeader("Origin", utils.E2ECORSAllowedOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+		})
+
+		It("keeps an allowed-origin actual request behind authentication", func() {
+			response, err := utils.SendChat(caseGateway, modelName,
+				utils.WithoutAuth(), utils.WithHeader("Origin", utils.E2ECORSAllowedOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+			expectActualCORSHeaders(response, utils.E2ECORSAllowedOrigin)
+		})
+
+		It("returns CORS headers after authenticated model routing", func() {
+			response, err := utils.SendChat(caseGateway, modelName,
+				utils.WithHeader("Origin", utils.E2ECORSAllowedOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusOK))
+			expectActualCORSHeaders(response, utils.E2ECORSAllowedOrigin)
+		})
+
+		It("rejects an actual request from a disallowed origin before routing", func() {
+			response, err := utils.SendChat(caseGateway, modelName,
+				utils.WithHeader("Origin", disallowedOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+			Expect(response.Header.Get("Access-Control-Allow-Origin")).To(BeEmpty())
+		})
+
+		It("rejects an actual request with a disallowed method before authentication", func() {
+			response, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodDelete, utils.ChatCompletionsPath, nil,
+				utils.WithoutAuth(), utils.WithHeader("Origin", utils.E2ECORSAllowedOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+			Expect(response.Header.Get("Access-Control-Allow-Origin")).To(BeEmpty())
+		})
+
+		It("adds CORS headers to the authenticated direct-response fallback", func() {
+			response, err := utils.SendChat(caseGateway, "cors-unknown-model",
+				utils.WithHeader("Origin", utils.E2ECORSAllowedOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+			expectActualCORSHeaders(response, utils.E2ECORSAllowedOrigin)
+		})
+	})
+
+	Context("Wildcard browser CORS", utils.GinkgoLabelCORS, func() {
+		const arbitraryOrigin = "https://wildcard.e2e.test"
+
+		sendPreflight := func(origin, method, headers string) (*http.Response, error) {
+			options := []utils.RequestOption{
+				utils.WithoutAuth(),
+				utils.WithHeader("Origin", origin),
+				utils.WithHeader("Access-Control-Request-Method", method),
+			}
+			if headers != "" {
+				options = append(options, utils.WithHeader("Access-Control-Request-Headers", headers))
+			}
+			return utils.SendGatewayRequest(ctx, caseGateway, http.MethodOptions, utils.ChatCompletionsPath, nil, options...)
+		}
+
+		expectActualCORSHeaders := func(response *http.Response) {
+			Expect(response.Header.Values("Access-Control-Allow-Origin")).To(Equal([]string{"*"}))
+			Expect(response.Header.Values("Access-Control-Allow-Credentials")).To(BeEmpty())
+			Expect(commaSeparatedHeaderTokens(response, "Access-Control-Expose-Headers")).To(ConsistOf(
+				"x-kaito-error-source", "x-kaito-requested-model"))
+			Expect(commaSeparatedHeaderTokens(response, "Vary")).NotTo(ContainElement("origin"))
+		}
+
+		BeforeAll(func() {
+			allowCredentials := false
+			By("reconciling the existing modelharness into non-credentialed wildcard mode")
+			Expect(utils.ReconcileModelHarnessCORS(ctx, caseNamespace, deploy.CORSValues{
+				Enabled:          true,
+				AllowedOrigins:   []string{"*"},
+				AllowCredentials: &allowCredentials,
+			})).To(Succeed())
+
+			By("waiting for the wildcard Envoy configuration to reach the Gateway")
+			Eventually(func() error {
+				response, err := sendPreflight(arbitraryOrigin, http.MethodPost, "authorization,content-type")
+				if err != nil {
+					return err
+				}
+				defer response.Body.Close()
+				if response.StatusCode != http.StatusNoContent {
+					return fmt.Errorf("preflight status = %d, want 204", response.StatusCode)
+				}
+				if values := response.Header.Values("Access-Control-Allow-Origin"); !slices.Equal(values, []string{"*"}) {
+					return fmt.Errorf("Access-Control-Allow-Origin = %v, want [*]", values)
+				}
+				if values := response.Header.Values("Access-Control-Allow-Credentials"); len(values) != 0 {
+					return fmt.Errorf("Access-Control-Allow-Credentials = %v, want absent", values)
+				}
+				if vary := commaSeparatedHeaderTokens(response, "Vary"); slices.Contains(vary, "origin") {
+					return fmt.Errorf("Vary = %v, must not contain Origin", vary)
+				}
+				return nil
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
+		DescribeTable("answers wildcard preflights locally",
+			func(origin string) {
+				response, err := sendPreflight(origin, http.MethodPost, "authorization, Content-Type")
+				Expect(err).NotTo(HaveOccurred())
+				defer response.Body.Close()
+
+				Expect(response.StatusCode).To(Equal(http.StatusNoContent))
+				body, err := io.ReadAll(response.Body)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(body).To(BeEmpty())
+				Expect(response.Header.Values("Access-Control-Allow-Origin")).To(Equal([]string{"*"}))
+				Expect(response.Header.Values("Access-Control-Allow-Credentials")).To(BeEmpty())
+				Expect(response.Header.Get("Access-Control-Max-Age")).To(Equal("600"))
+				Expect(commaSeparatedHeaderTokens(response, "Access-Control-Allow-Methods")).To(ConsistOf("get", "post"))
+				Expect(commaSeparatedHeaderTokens(response, "Access-Control-Allow-Headers")).To(ConsistOf(
+					"authorization", "content-type", "api-key", "x-api-key"))
+				Expect(commaSeparatedHeaderTokens(response, "Vary")).To(ConsistOf(
+					"access-control-request-method", "access-control-request-headers"))
+			},
+			Entry("for an arbitrary HTTPS origin", arbitraryOrigin),
+			Entry("for an opaque origin", "null"),
+		)
+
+		DescribeTable("rejects wildcard preflights that violate another allowlist",
+			func(origin, method, headers string) {
+				response, err := sendPreflight(origin, method, headers)
+				Expect(err).NotTo(HaveOccurred())
+				defer response.Body.Close()
+				Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+				Expect(response.Header.Values("Access-Control-Allow-Origin")).To(BeEmpty())
+				Expect(response.Header.Values("Access-Control-Allow-Credentials")).To(BeEmpty())
+				Expect(commaSeparatedHeaderTokens(response, "Vary")).To(ConsistOf(
+					"access-control-request-method", "access-control-request-headers"))
+			},
+			Entry("empty origin", "", http.MethodPost, "authorization,content-type"),
+			Entry("method", arbitraryOrigin, http.MethodDelete, "authorization,content-type"),
+			Entry("request header", arbitraryOrigin, http.MethodPost, "authorization,x-not-allowed"),
+		)
+
+		It("does not treat a bare OPTIONS request as an auth bypass", func() {
+			response, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodOptions, utils.ChatCompletionsPath, nil,
+				utils.WithoutAuth())
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+		})
+
+		It("does not treat an incomplete wildcard preflight as an auth bypass", func() {
+			response, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodOptions, utils.ChatCompletionsPath, nil,
+				utils.WithoutAuth(), utils.WithHeader("Origin", arbitraryOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+		})
+
+		It("keeps a wildcard actual request behind authentication", func() {
+			response, err := utils.SendChat(caseGateway, modelName,
+				utils.WithoutAuth(), utils.WithHeader("Origin", arbitraryOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusUnauthorized))
+			expectActualCORSHeaders(response)
+		})
+
+		DescribeTable("returns wildcard headers after authenticated model routing",
+			func(origin string) {
+				response, err := utils.SendChat(caseGateway, modelName, utils.WithHeader("Origin", origin))
+				Expect(err).NotTo(HaveOccurred())
+				defer response.Body.Close()
+				Expect(response.StatusCode).To(Equal(http.StatusOK))
+				expectActualCORSHeaders(response)
+			},
+			Entry("for an arbitrary HTTPS origin", arbitraryOrigin),
+			Entry("for an opaque origin", "null"),
+		)
+
+		It("adds wildcard headers to the authenticated direct-response fallback", func() {
+			response, err := utils.SendChat(caseGateway, "cors-wildcard-unknown-model",
+				utils.WithHeader("Origin", arbitraryOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusNotFound))
+			expectActualCORSHeaders(response)
+		})
+
+		It("rejects an actual request with a disallowed method without origin variance", func() {
+			response, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodDelete, utils.ChatCompletionsPath, nil,
+				utils.WithoutAuth(), utils.WithHeader("Origin", arbitraryOrigin))
+			Expect(err).NotTo(HaveOccurred())
+			defer response.Body.Close()
+			Expect(response.StatusCode).To(Equal(http.StatusForbidden))
+			Expect(response.Header.Values("Access-Control-Allow-Origin")).To(BeEmpty())
+			Expect(response.Header.Values("Access-Control-Allow-Credentials")).To(BeEmpty())
+			Expect(commaSeparatedHeaderTokens(response, "Vary")).NotTo(ContainElement("origin"))
+		})
+	})
 })
+
+func commaSeparatedHeaderTokens(response *http.Response, name string) []string {
+	var tokens []string
+	for _, value := range response.Header.Values(name) {
+		for token := range strings.SplitSeq(value, ",") {
+			if normalized := strings.ToLower(strings.TrimSpace(token)); normalized != "" {
+				tokens = append(tokens, normalized)
+			}
+		}
+	}
+	return tokens
+}

@@ -49,8 +49,8 @@ type Deployer interface {
 	Name() string
 
 	// InstallModelHarness creates or reconciles the modelharness owning the
-	// per-namespace shared resources (Gateway, catch-all EnvoyFilter, and
-	// optionally the AuthorizationPolicy + APIKey pair).
+	// per-namespace shared resources (Gateway, catch-all EnvoyFilter, optional
+	// browser CORS EnvoyFilter, and optional AuthorizationPolicy + APIKey pair).
 	//
 	// The workload namespace is part of what a modelharness owns, so
 	// implementations create it (carrying whatever discovery labels the
