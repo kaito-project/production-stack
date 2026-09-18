@@ -65,7 +65,7 @@
     "cors": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Opt-in browser CORS policy for /v1 and descendants. Valid preflights are answered locally before authentication; actual requests from allowed origins still traverse the complete auth and routing chain.",
+      "description": "Browser CORS policy for /v1 and descendants. Valid preflights are answered locally before authentication; actual requests from allowed origins still traverse the complete auth and routing chain.",
       "properties": {
         "enabled": {
           "type": "boolean",

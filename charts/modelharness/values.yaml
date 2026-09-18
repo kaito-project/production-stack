@@ -157,7 +157,7 @@ modelsAPI:
 # Access-Control-Request-Method are treated as preflights; a bare OPTIONS request
 # remains subject to authentication.
 cors:
-  enabled: false
+  enabled: true
   # Canonical exact serialized browser origins (scheme + lowercase host +
   # optional non-default port in the range 0-65535), or literal `*` as the sole
   # item when allowCredentials is false. Exact mode reflects the matched origin
@@ -165,7 +165,8 @@ cors:
   # including opaque `null`, emits literal `*`, and omits `Vary: Origin`.
   # Configured `null`, partial wildcards, credentials, paths, queries, fragments,
   # trailing slashes, and explicit default ports (:80/:443) are rejected.
-  allowedOrigins: []
+  allowedOrigins:
+    - "*"
   # Methods browser applications may request. OPTIONS is intentionally absent:
   # it is the preflight transport method, not an actual API method.
   allowedMethods:
@@ -186,9 +187,7 @@ cors:
     - X-Kaito-Requested-Model
   # Exact-origin mode may enable credentialed browser fetches. Wildcard mode
   # requires this to be false and never emits Access-Control-Allow-Credentials.
-  # Because the default is true, configuring `allowedOrigins: ["*"]` without an
-  # explicit false value is rejected.
-  allowCredentials: true
+  allowCredentials: false
   # Browser preflight cache lifetime in seconds.
   maxAgeSeconds: 600
 
