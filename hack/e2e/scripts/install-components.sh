@@ -29,6 +29,9 @@ STATUS_REPORTER_IMAGE="${STATUS_REPORTER_IMAGE:-ghcr.io/kaito-project/production
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 
+# shellcheck source=lib-provider.sh
+source "${SCRIPT_DIR}/lib-provider.sh"
+
 # shellcheck source=lib-parallel.sh
 source "${SCRIPT_DIR}/lib-parallel.sh"
 
@@ -75,23 +78,6 @@ case "${KAITO_NODE_CLASS}" in
     ;;
 esac
 
-# Derive KEDA install namespace from provider:
-#   upstream → `keda` (Helm-installed KEDA)
-#   azure    → `kube-system` (AKS managed KEDA add-on). keda-kaito-scaler
-#              must be co-located with KEDA so KEDA can resolve the
-#              ClusterTriggerAuthentication Secrets it ships.
-if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
-  case "${E2E_PROVIDER}" in
-    upstream) KEDA_NAMESPACE="keda" ;;
-    azure)    KEDA_NAMESPACE="kube-system" ;;
-    *)
-      echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
-      exit 1
-      ;;
-  esac
-fi
-export KEDA_NAMESPACE
-
 echo "=== Component versions ==="
 echo "  E2E_PROVIDER:              ${E2E_PROVIDER}"
 echo "  NODE_PROVISIONER:          ${NODE_PROVISIONER}"
@@ -118,6 +104,19 @@ fi
 # main (e.g. `nodeProvisioner` / the Karpenter node-class args land on main
 # first), so cloning keeps install behavior consistent across provisioners.
 
+prepare_managed_kaito_crds() {
+  # AKS owns inferencepools.inference.networking.k8s.io and rejects any
+  # create/update attempt, including Helm's CRD install. Install the NodeClaim
+  # CRD separately, then skip the chart's crds/ directory.
+  if ! kubectl get crd nodeclaims.karpenter.sh >/dev/null 2>&1; then
+    kubectl apply --server-side \
+      -f "${KAITO_CHART_REF}/crds/karpenter.sh_nodeclaims.yaml"
+  fi
+  kubectl wait --for=condition=Established \
+    crd/nodeclaims.karpenter.sh --timeout=60s
+  KAITO_HELM_ARGS+=(--skip-crds)
+}
+
 install_kaito() {
   echo "=== Installing KAITO workspace operator (image: nightly-latest) ==="
 
@@ -129,20 +128,7 @@ install_kaito() {
   KAITO_CHART_REF="${KAITO_CHART_TMPDIR}/charts/kaito/workspace"
 
   KAITO_HELM_ARGS=()
-  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
-    # AKS owns inferencepools.inference.networking.k8s.io and rejects any
-    # create/update attempt, including Helm's CRD install. Install the
-    # NodeClaim CRD for the mocker path when no Karpenter installation already
-    # owns it, then skip the chart's crds/ directory. This stack does not create
-    # legacy InferenceObjective resources.
-    if ! kubectl get crd nodeclaims.karpenter.sh >/dev/null 2>&1; then
-      kubectl apply --server-side \
-        -f "${KAITO_CHART_REF}/crds/karpenter.sh_nodeclaims.yaml"
-    fi
-    kubectl wait --for=condition=Established \
-      crd/nodeclaims.karpenter.sh --timeout=60s
-    KAITO_HELM_ARGS+=(--skip-crds)
-  fi
+  run_provider_hook prepare_kaito_crds
 
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
@@ -179,7 +165,7 @@ install_kaito() {
   helm upgrade --install kaito "${KAITO_CHART_REF}" \
     --namespace kaito-system \
     --create-namespace \
-    "${KAITO_HELM_ARGS[@]+"${KAITO_HELM_ARGS[@]}"}" \
+    "${KAITO_HELM_ARGS[@]}" \
     --set featureGates.enableInferenceSetController=true \
     --set featureGates.gatewayAPIInferenceExtension=false \
     --set featureGates.enableBaseImageAutoUpgrade=true \
@@ -197,11 +183,14 @@ install_kaito() {
 }
 
 install_gwie_crds() {
-  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
-    echo "=== Using AKS-managed GWIE CRDs ==="
-    return
-  fi
+  run_provider_hook install_gwie
+}
 
+use_managed_gwie() {
+  echo "=== Using AKS-managed GWIE CRDs ==="
+}
+
+install_upstream_gwie() {
   # Use server-side apply: the KAITO chart bundles the same GWIE CRDs and
   # client-side apply races between GET → CREATE-if-missing. Server-side
   # apply is a single atomic POST with --force-conflicts taking ownership.
@@ -244,6 +233,14 @@ install_node_provisioner() {
 }
 
 
+configure_app_routing_productionstack() {
+  PRODUCTIONSTACK_PROVIDER_ARGS=(
+    --set cloudprovider=azure
+    --set azure.defaultDomain.enabled=true
+    --set llm-gateway-apikey.istio.enabled=false
+  )
+}
+
 install_productionstack() {
   # Umbrella chart at charts/productionstack vendors body-based-routing and
   # keda-kaito-scaler as in-tree subcharts and pulls llm-gateway-apikey
@@ -285,16 +282,9 @@ install_productionstack() {
   kubectl create namespace "${KEDA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
   kubectl create namespace llm-gateway-auth  --dry-run=client -o yaml | kubectl apply -f -
 
-  APP_ROUTING_ARGS=()
-  ISTIO_NAMESPACE="istio-system"
-  if [[ "${E2E_PROVIDER}" == "azure" ]]; then
-    ISTIO_NAMESPACE="aks-istio-system"
-    APP_ROUTING_ARGS=(
-      --set cloudprovider=azure
-      --set azure.defaultDomain.enabled=true
-      --set llm-gateway-apikey.istio.enabled=false
-    )
-  fi
+  PRODUCTIONSTACK_PROVIDER_ARGS=()
+  ISTIO_NAMESPACE="${E2E_ISTIO_NAMESPACE}"
+  run_provider_hook configure_productionstack
 
   echo "⏳ Vendoring upstream llm-gateway-apikey OCI dependency..."
   # The llm-gateway-apikey subchart is pulled from oci://mcr.microsoft.com at
@@ -341,7 +331,7 @@ install_productionstack() {
     --set productionstack-status-reporter.controlPlane.kaitoDeployment=kaito-workspace \
     --set productionstack-status-reporter.controlPlane.kedaNamespace="${KEDA_NAMESPACE}" \
     --set productionstack-status-reporter.controlPlane.kedaScalerNamespace="${KEDA_NAMESPACE}" \
-    "${APP_ROUTING_ARGS[@]+"${APP_ROUTING_ARGS[@]}"}" \
+    "${PRODUCTIONSTACK_PROVIDER_ARGS[@]}" \
     --wait --timeout=600s
 
   echo "⏳ Waiting for BBR..."

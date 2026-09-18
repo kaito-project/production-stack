@@ -21,6 +21,7 @@ package helm
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -141,8 +142,8 @@ func (d *Deployer) Name() string { return BackendName }
 // per-namespace Gateway (named "<namespace>" by chart default), the
 // catch-all `model-not-found-direct` EnvoyFilter (Envoy `direct_response`
 // returning 404 + OpenAI-compatible JSON, plus the model-discovery routes),
-// and — when AuthEnabled is true — the per-namespace AuthorizationPolicy +
-// APIKey CR. When the chart's networkPolicy values are enabled it additionally
+// the optional browser CORS EnvoyFilter, and — when AuthEnabled is true — the
+// per-namespace AuthorizationPolicy + APIKey CR. When the chart's networkPolicy values are enabled it additionally
 // renders the CiliumNetworkPolicy that locks down East-West ingress while
 // keeping the gateway pod reachable.
 //
@@ -169,6 +170,17 @@ func (d *Deployer) InstallModelHarness(ctx context.Context, values deploy.ModelH
 		"--namespace", values.Namespace,
 		"--set", "namespace=" + values.Namespace,
 		"--set", "auth.enabled=" + strconv.FormatBool(values.AuthEnabled),
+		"--set", "cors.enabled=" + strconv.FormatBool(values.CORS.Enabled),
+	}
+	if values.CORS.Enabled {
+		originsJSON, err := json.Marshal(values.CORS.AllowedOrigins)
+		if err != nil {
+			return fmt.Errorf("marshal modelharness CORS allowed origins: %w", err)
+		}
+		args = append(args, "--set-json", "cors.allowedOrigins="+string(originsJSON))
+		if values.CORS.AllowCredentials != nil {
+			args = append(args, "--set", "cors.allowCredentials="+strconv.FormatBool(*values.CORS.AllowCredentials))
+		}
 	}
 	args = append(args, gatewaySetArgs(values.Gateway)...)
 	if values.Gateway.GatewayClassName != "" {

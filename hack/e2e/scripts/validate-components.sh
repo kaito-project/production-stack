@@ -7,6 +7,8 @@
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Node-provisioner selection (decoupled from real-vs-mocked):
 #   KAITO_NODE_PROVISIONER — azure-gpu-provisioner | karpenter (default karpenter).
 #   ENABLE_NODE_MOCKER     — true (default): validate gpu-node-mocker; false: real provisioner.
@@ -17,17 +19,8 @@ FAILED=0
 TIMEOUT="${VALIDATE_TIMEOUT:-120s}"
 E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 
-# Derive KEDA namespace from provider when not explicitly provided.
-if [[ -z "${KEDA_NAMESPACE:-}" ]]; then
-  case "${E2E_PROVIDER}" in
-    upstream) KEDA_NAMESPACE="keda" ;;
-    azure)    KEDA_NAMESPACE="kube-system" ;;
-    *)
-      echo "Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
-      exit 1
-      ;;
-  esac
-fi
+# shellcheck source=lib-provider.sh
+source "${SCRIPT_DIR}/lib-provider.sh"
 
 pass() { echo "  ✅ $*"; }
 fail() { echo "  ❌ $*"; FAILED=1; }
@@ -93,10 +86,7 @@ fi
 
 
 # ── Istio (istiod) ──────────────────────────────────────────────────────
-ISTIO_NAMESPACE="istio-system"
-if [[ "${E2E_PROVIDER}" == "azure" ]]; then
-  ISTIO_NAMESPACE="aks-istio-system"
-fi
+ISTIO_NAMESPACE="${E2E_ISTIO_NAMESPACE}"
 
 echo "=== Istio (namespace: ${ISTIO_NAMESPACE}) ==="
 if kubectl -n "${ISTIO_NAMESPACE}" wait --for=condition=ready pod -l app=istiod --timeout="${TIMEOUT}" >/dev/null 2>&1; then
@@ -107,7 +97,7 @@ fi
 kubectl -n "${ISTIO_NAMESPACE}" get pods -l app=istiod
 echo ""
 
-if [[ "${E2E_PROVIDER}" == "azure" ]]; then
+validate_app_routing_istio() {
   echo "=== App Routing Istio ==="
   if kubectl wait --for=condition=Accepted gatewayclass/approuting-istio --timeout="${TIMEOUT}" >/dev/null 2>&1; then
     pass "approuting-istio GatewayClass is Accepted"
@@ -123,7 +113,8 @@ if [[ "${E2E_PROVIDER}" == "azure" ]]; then
   kubectl get gatewayclass approuting-istio
   kubectl -n kube-system get defaultdomaincertificate cert
   echo ""
-fi
+}
+run_provider_hook validate_istio
 
 # ── BBR ──────────────────────────────────────────────────────────────────
 # BBR is a workload-only singleton co-located with the umbrella release

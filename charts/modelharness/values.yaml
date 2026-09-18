@@ -145,6 +145,53 @@ modelsAPI:
   # in-memory informer cache, so this only has to cover a cold start.
   timeout: 10s
 
+# cors configures browser cross-origin access to the public OpenAI-compatible
+# API surface (`/v1` and descendants). It is a Gateway transport policy,
+# independent of the selected auth mode: a valid browser preflight is answered
+# locally before jwt_authn / ext_authz, while every actual request still passes
+# through the complete authentication and model-routing chain.
+#
+# Requests carrying an Origin are strict when CORS is enabled: an origin or
+# actual/requested method outside these allowlists receives a local 403. Requests
+# with no Origin continue normally so authenticated CLI and service clients are
+# unaffected. Only OPTIONS requests carrying BOTH Origin and
+# Access-Control-Request-Method are treated as preflights; a bare OPTIONS request
+# remains subject to authentication.
+cors:
+  enabled: true
+  # Canonical exact serialized browser origins (scheme + lowercase host +
+  # optional non-default port in the range 0-65535), or literal `*` as the sole
+  # item when allowCredentials is false. Exact mode reflects the matched origin
+  # and emits `Vary: Origin`. Wildcard mode admits every non-empty Origin value,
+  # including opaque `null`, emits literal `*`, and omits `Vary: Origin`.
+  # Configured `null`, partial wildcards, credentials, paths, queries, fragments,
+  # trailing slashes, and explicit default ports (:80/:443) are rejected.
+  allowedOrigins:
+    - "*"
+  # Methods browser applications may request. OPTIONS is intentionally absent:
+  # it is the preflight transport method, not an actual API method.
+  allowedMethods:
+    - GET
+    - POST
+  # Non-safelisted request headers a preflight may request. Header matching is
+  # case-insensitive. Defaults cover every authentication transport supported by
+  # this chart plus JSON request bodies.
+  allowedHeaders:
+    - Authorization
+    - Content-Type
+    - API-Key
+    - X-API-Key
+  # Response headers browser code may read in addition to the CORS-safelisted
+  # response headers.
+  exposedHeaders:
+    - X-Kaito-Error-Source
+    - X-Kaito-Requested-Model
+  # Exact-origin mode may enable credentialed browser fetches. Wildcard mode
+  # requires this to be false and never emits Access-Control-Allow-Credentials.
+  allowCredentials: false
+  # Browser preflight cache lifetime in seconds.
+  maxAgeSeconds: 600
+
 # auth toggles the per-namespace API-key authentication artifacts. When
 # enabled, the chart renders:
 #   - APIKey CR: triggers the apikey-operator to reconcile a Secret named

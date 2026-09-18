@@ -4,9 +4,9 @@ description: |
   Per-namespace shared resources for production-stack workloads. One
   modelharness release per workload namespace provisions the artifacts
   every model deployment in that namespace shares: the Istio Gateway, the
-  per-namespace EnvoyFilters (BBR ext_proc, the unified outage
-  local_reply, and the catch-all direct_response that answers unknown
-  models with an OpenAI-compatible 404), the routes that expose
+  per-namespace EnvoyFilters (BBR ext_proc, optional browser CORS, the
+  unified outage local_reply, and the catch-all direct_response that answers
+  unknown models with an OpenAI-compatible 404), the routes that expose
   GET /v1/models and GET /v1/models/{id} for this namespace, and — when
   enabled — the ext_authz wiring plus the APIKey CR that triggers the
   apikey-operator to mint the per-namespace `llm-api-key` Secret consumed

@@ -16,7 +16,34 @@ limitations under the License.
 
 package deploy
 
-import "fmt"
+import (
+	"fmt"
+	"net/url"
+	"regexp"
+	"strconv"
+)
+
+var corsOriginPattern = regexp.MustCompile(`^https?://(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)(:(0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$`)
+
+func isValidExactCORSOrigin(origin string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || !corsOriginPattern.MatchString(origin) || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+
+	port := parsed.Port()
+	if port != "" {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber > 65535 || strconv.Itoa(portNumber) != port {
+			return false
+		}
+		if (parsed.Scheme == "http" && portNumber == 80) || (parsed.Scheme == "https" && portNumber == 443) {
+			return false
+		}
+	}
+
+	return true
+}
 
 // ModelHarnessValues holds the inputs describing one workload namespace's
 // modelharness. Each workload namespace owns exactly one modelharness.
@@ -28,8 +55,20 @@ type ModelHarnessValues struct {
 	// APIKey CR that wire the Gateway into the cluster-wide
 	// apikey-ext-authz CUSTOM provider.
 	AuthEnabled bool
+	// CORS configures browser cross-origin access to the Gateway's /v1 API.
+	CORS CORSValues
 	// Gateway overrides the chart's gateway provider and public domain.
 	Gateway GatewayValues
+}
+
+// CORSValues configures browser cross-origin access for a modelharness.
+// Chart defaults supply methods, headers, and preflight max age. A nil
+// AllowCredentials inherits the chart default; wildcard mode requires an
+// explicit false value.
+type CORSValues struct {
+	Enabled          bool
+	AllowedOrigins   []string
+	AllowCredentials *bool
 }
 
 // GatewayValues configures charts for an externally managed GatewayClass.
@@ -43,6 +82,36 @@ type GatewayValues struct {
 func (v ModelHarnessValues) Validate() error {
 	if v.Namespace == "" {
 		return fmt.Errorf("modelharness: Namespace is required")
+	}
+	if !v.CORS.Enabled {
+		return nil
+	}
+	if len(v.CORS.AllowedOrigins) == 0 {
+		return fmt.Errorf("modelharness: CORS.AllowedOrigins must contain at least one origin when CORS.Enabled is true")
+	}
+
+	for _, origin := range v.CORS.AllowedOrigins {
+		if origin != "*" {
+			continue
+		}
+		if len(v.CORS.AllowedOrigins) != 1 {
+			return fmt.Errorf("modelharness: CORS.AllowedOrigins wildcard must be the sole configured origin")
+		}
+		if v.CORS.AllowCredentials == nil || *v.CORS.AllowCredentials {
+			return fmt.Errorf("modelharness: CORS.AllowCredentials must be explicitly false when CORS.AllowedOrigins contains wildcard")
+		}
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(v.CORS.AllowedOrigins))
+	for i, origin := range v.CORS.AllowedOrigins {
+		if !isValidExactCORSOrigin(origin) {
+			return fmt.Errorf("modelharness: CORS.AllowedOrigins[%d] must be an exact http(s) origin in canonical browser form, with a lowercase host and non-default port in the range 0-65535, without wildcard, credentials, path, query, fragment, or trailing slash: %q", i, origin)
+		}
+		if _, exists := seen[origin]; exists {
+			return fmt.Errorf("modelharness: CORS.AllowedOrigins contains duplicate origin %q", origin)
+		}
+		seen[origin] = struct{}{}
 	}
 	return nil
 }

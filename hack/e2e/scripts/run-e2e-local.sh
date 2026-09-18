@@ -43,27 +43,9 @@ source "${REPO_ROOT}/versions.env"
 [ -n "${_GWAPI}" ] && GATEWAY_API_VERSION="${_GWAPI}"
 [ -n "${_KEDA}" ]  && KEDA_VERSION="${_KEDA}"
 
-# Validate provider value.
-case "${E2E_PROVIDER}" in
-  upstream|azure) ;;
-  *)
-    echo "❌ Invalid E2E_PROVIDER='${E2E_PROVIDER}'. Must be 'upstream' or 'azure'." >&2
-    exit 1
-    ;;
-esac
-
-# Derive KEDA install namespace from provider.
-#   upstream → install KEDA via Helm into the dedicated `keda` namespace.
-#   azure    → KEDA is provided by the AKS managed add-on, which lives in
-#              `kube-system`. The keda-kaito-scaler chart must be installed
-#              in the same namespace as KEDA so KEDA can resolve the
-#              ClusterTriggerAuthentication Secrets it ships.
-if [ -z "${KEDA_NAMESPACE:-}" ]; then
-  case "${E2E_PROVIDER}" in
-    upstream) KEDA_NAMESPACE="keda" ;;
-    azure)    KEDA_NAMESPACE="kube-system" ;;
-  esac
-fi
+# Resolve and validate the provider's shared capabilities and defaults.
+# shellcheck source=lib-provider.sh
+source "${SCRIPT_DIR}/lib-provider.sh"
 
 export E2E_PROVIDER KEDA_NAMESPACE ISTIO_VERSION GATEWAY_API_VERSION KEDA_VERSION LLM_GATEWAY_AUTH_VERSION LLM_GATEWAY_AUTH_IMAGE_TAG AKS_K8S_VERSION
 

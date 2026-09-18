@@ -53,6 +53,10 @@ var (
 	// GinkgoLabelAuth marks tests that verify API key authentication.
 	GinkgoLabelAuth = g.Label("Auth")
 
+	// GinkgoLabelCORS marks tests that verify browser preflight handling and the
+	// CORS/authentication boundary on the namespace Gateway.
+	GinkgoLabelCORS = g.Label("CORS")
+
 	// GinkgoLabelNetworkPolicy marks tests that verify NetworkPolicy enforcement.
 	GinkgoLabelNetworkPolicy = g.Label("NetworkPolicy")
 
