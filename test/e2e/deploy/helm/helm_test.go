@@ -213,6 +213,7 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 		Name:          "phi",
 		Namespace:     "e2e-ns",
 		Model:         "phi-4-mini-instruct",
+		Config:        "phi-inference-config",
 		Replicas:      3,
 		InstanceType:  "Standard_NC24ads_A100_v4",
 		EnableScaling: true,
@@ -272,6 +273,9 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 	}
 	if domain, ok := argValue(args, "--set-string", "azure.defaultDomain.zoneName="); !ok || domain != "example.aksapp.io" {
 		t.Errorf("App Routing domain not passed via --set-string: %v", args)
+	}
+	if config, ok := argValue(args, "--set-string", "config="); !ok || config != "phi-inference-config" {
+		t.Errorf("inference config not passed via --set-string: %v", args)
 	}
 
 	// A zero weight is meaningful and must still be rendered.

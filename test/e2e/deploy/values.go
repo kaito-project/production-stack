@@ -126,6 +126,9 @@ type ModelDeploymentValues struct {
 	Namespace string
 	// Model is the inference preset name (spec.template.inference.preset.name).
 	Model string
+	// Config is the name of a ConfigMap containing custom inference arguments
+	// (spec.template.inference.config).
+	Config string
 	// Replicas is the desired number of InferenceSet replicas. Always
 	// rendered, so 0 is an explicit scale-to-zero rather than "unset" —
 	// UpgradeModelDeployment relies on that to empty an inference pool.

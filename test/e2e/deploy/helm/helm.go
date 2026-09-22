@@ -384,6 +384,9 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 	if v.InstanceType != "" {
 		args = append(args, "--set", "instanceType="+v.InstanceType)
 	}
+	if v.Config != "" {
+		args = append(args, "--set-string", "config="+v.Config)
+	}
 	if v.EnableScaling {
 		args = append(args, "--set", "enableScaling=true")
 		if v.MaxReplicas > 0 {

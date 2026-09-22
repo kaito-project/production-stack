@@ -115,6 +115,9 @@ spec:
         presetOptions:
           modelAccessSecret: {{ .Values.modelAccessSecret | quote }}
         {{- end }}
+      {{- with .Values.config }}
+      config: {{ . | quote }}
+      {{- end }}
   {{- if (.Values.autoUpgrade).enabled }}
   autoUpgrade:
     enabled: true

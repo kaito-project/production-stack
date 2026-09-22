@@ -18,6 +18,10 @@
       "minLength": 1,
       "description": "Inference preset name set on the InferenceSet. MUST be non-empty."
     },
+    "config": {
+      "type": "string",
+      "description": "Name of a ConfigMap in the deployment namespace containing custom inference arguments. Rendered as spec.template.inference.config."
+    },
     "modelAccessSecret": {
       "type": "string",
       "description": "Name of a Kubernetes Secret containing the models access credentials for huggingface. Optional."
