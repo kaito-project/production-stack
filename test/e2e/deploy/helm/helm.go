@@ -398,13 +398,27 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 			if m.Type != "" {
 				args = append(args, "--set", prefix+"type="+m.Type)
 			}
-			args = append(args,
-				"--set", prefix+"upThreshold="+m.UpThreshold,
-				"--set", prefix+"downThreshold="+m.DownThreshold,
-			)
+			if m.Source != "" {
+				args = append(args, "--set", prefix+"source="+m.Source)
+			}
+			if m.UpThreshold != "" {
+				args = append(args, "--set", prefix+"upThreshold="+m.UpThreshold)
+			}
+			if m.DownThreshold != "" {
+				args = append(args, "--set", prefix+"downThreshold="+m.DownThreshold)
+			}
+			if m.ActivationThreshold != "" {
+				args = append(args, "--set", prefix+"activationThreshold="+m.ActivationThreshold)
+			}
+			if m.DeactivationThreshold != "" {
+				args = append(args, "--set", prefix+"deactivationThreshold="+m.DeactivationThreshold)
+			}
 			if m.MetricCacheWindow != "" {
 				args = append(args, "--set", prefix+"metricCacheWindow="+m.MetricCacheWindow)
 			}
+		}
+		if v.CooldownPeriod > 0 {
+			args = append(args, "--set", "scaling.cooldownPeriod="+strconv.FormatInt(v.CooldownPeriod, 10))
 		}
 	}
 	if v.AutoUpgrade.Enabled {

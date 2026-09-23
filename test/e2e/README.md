@@ -50,6 +50,7 @@ make test-e2e
 # Subset by Ginkgo label
 E2E_LABEL=Routing make test-e2e
 E2E_LABEL=PrefixCache make test-e2e
+E2E_LABEL=ScaleToZero E2E_PARALLEL=1 make test-e2e
 E2E_LABEL=Smoke make test-e2e
 
 # Override parallelism
@@ -59,7 +60,7 @@ E2E_PARALLEL=4 make test-e2e
 Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into three groups:
 
 - **Cadence** (when a spec runs): `Smoke` (every PR), `Nightly` (long-running, nightly only).
-- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `CORS`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
+- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `CORS`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `ScaleToZero` (focused `0 <-> 1` activation), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
 - **Environment** (what kind of cluster a spec needs): `StandardK8sOnly`.
 
 `ModelDiscovery` marks the `/v1/models` listing, retrieval, and authentication
@@ -82,7 +83,8 @@ E2E_LABEL='!StandardK8sOnly' make test-e2e
 ```
 
 It currently covers `bbr_outage`, `ext_authz_outage`, `epp_outage`,
-`cluster_filter_ha`, `cluster_status`, `control_plane_error`, `scaling`, and the
+`cluster_filter_ha`, `cluster_status`, `control_plane_error`, `scaling`,
+`scale_to_zero`, and the
 `Load distribution` Context of `model_routing` (which turns prefix-cache scoring
 off through `EPPScorerWeights` so identical prompts spread across replicas).
 It also covers `prefix_cache_routing`, `prefix_cache_perf`, the cross-model

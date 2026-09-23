@@ -99,6 +99,10 @@ const (
 	// background load to assert no 5xx during transitions).
 	CaseScaling = "scaling"
 
+	// CaseScaleToZero covers scale_to_zero_spec.go: warm bootstrap followed by
+	// KEDA-driven 1 -> 0 -> 1 -> 0 activation through the surviving EPP.
+	CaseScaleToZero = "scale-to-zero"
+
 	// CaseKarpenterSmall covers the Karpenter nightly small-model scenario:
 	// a single-GPU, single-node deployment that proves basic NAP provisioning,
 	// readiness, request serving, and scale-back-to-zero.
@@ -375,6 +379,18 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 					DownThreshold: "5",
 				},
 			},
+		},
+	},
+	CaseScaleToZero: {
+		{
+			Name:           "scale-to-zero-phi",
+			Namespace:      "e2e-scale-to-zero",
+			Model:          presetPhi,
+			Replicas:       0,
+			InstanceType:   "Standard_NV36ads_A10_v5",
+			EnableScaling:  true,
+			MaxReplicas:    1,
+			CooldownPeriod: 60,
 		},
 	},
 	CaseKarpenterSmall: {

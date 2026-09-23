@@ -9,6 +9,7 @@
 | | InferenceSet / InferencePool Lifecycle | PR | KAITO controller and routing infrastructure health |
 | | NodeClaim / Fake Node Cleanup | PR | Reverse-path teardown and reconcile idempotency |
 | | InferenceSet Scaling (E2E) | Nightly | End-to-end scale up/down driven by KEDA + traffic verification |
+| | InferenceSet Scale To Zero | Nightly | EPP-driven `1 -> 0 -> 1 -> 0` activation and post-cold-start serving |
 | **Routing** | Model-Based Routing | PR | BBR → HTTPRoute → EPP → Pod routing correctness |
 | | Unknown Model / Malformed Request Handling | PR | Catch-all 404 JSON + BBR malformed-body behaviour |
 | **Performance** | Prefix Cache Aware Routing | PR (core) + Nightly (full) | EPP prefix-cache scorer and KV-cache locality |
@@ -222,6 +223,14 @@ individually so failures can be localised.
 
 * Below-threshold stability — Hold `vllm:num_requests_waiting` strictly below the KEDA threshold for the full polling + cooldown window. Verify `InferenceSet.spec.replicas` does **not** change and no new NodeClaim/fake-node/shadow-pod is created. Guards against false-positive scale-ups from noisy metrics.
 * Cooldown respected — Immediately after a Scale-Down completes, re-apply queue pressure above the threshold. Verify the next Scale-Up does **not** fire until the ScaledObject's cooldown has elapsed and that no intermediate scale oscillations are observed. Flapping is the top production pain point for autoscalers and must be explicitly pinned.
+
+### Scale To Zero — Focused Happy Path
+
+**CI tier:** Nightly. Run with `E2E_LABEL='ScaleToZero && Nightly && StandardK8sOnly' E2E_PARALLEL=1`.
+
+Warm-bootstrap one GPU-mocked replica with EPP flow control enabled, then upgrade the same release to a zero-minimum, one-maximum ScaledObject. Verify the idle model parks at zero while a Ready EPP remains discoverable through its canonical `inferencepool` label. Sustained authenticated requests must activate one replica and hold it through provisioning; cold requests may fail. After readiness, a fresh request must return HTTP 200 with the requested model, and the deployment must return to zero after demand clears.
+
+This scenario intentionally excludes the fake-node, shadow-pod, and `1 <-> N` inventory assertions already covered above.
 
 ## Unknown model / malformed request handling — Routing
 
