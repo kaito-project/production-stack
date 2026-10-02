@@ -43,7 +43,7 @@ static_resources:
                 request_header_mode: "SEND"
                 request_body_mode: "NONE"
                 response_header_mode: "SEND"
-                response_body_mode: "FULL_DUPLEX_STREAMED"
+                response_body_mode: "STREAMED"
                 response_trailer_mode: "SEND"
           # Default router
           - name: envoy.filters.http.router
