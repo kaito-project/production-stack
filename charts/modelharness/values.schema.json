@@ -368,6 +368,30 @@
               }
             }
           }
+        },
+        "podMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "AKS Azure Monitor managed-Prometheus PodMonitor (azmonitoring.coreos.com/v1) scraping every pod in this workload namespace. Rendered only when cloudprovider=azure. See templates/azure/podmonitor.yaml.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Toggles rendering of the PodMonitor."
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 63,
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "description": "PodMonitor resource name."
+            },
+            "interval": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Scrape interval applied to every pod metrics endpoint (e.g. '30s')."
+            }
+          },
+          "required": ["enabled"]
         }
       },
       "required": ["defaultDomain"]
