@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------------------
+# chart-deps.yaml — Dependencies of the productionstack umbrella chart that
+# .github/workflows/bump-chart-deps.yaml keeps up to date via
+# hack/bump-chart-deps.sh. Each group becomes one PR on branch
+# `automation/bump-<group>`. Versions come from the MCR tag list (stable
+# X.Y.Z tags only).
+#
+# A dependency without `image` is an OCI chart: its umbrella dependency
+# version is bumped. A dependency with `image` is an in-tree fork under
+# charts/productionstack/charts/<name>: its image tag (wherever the current
+# appVersion appears in values.yaml, Chart.yaml and README.md), its chart
+# version (the image tag without `v`), and the umbrella dependency version
+# are bumped.
+# ---------------------------------------------------------------------------
+chart: charts/productionstack
+
+groups:
+  - name: llm-gateway
+    dependencies:
+      - name: llm-gateway-apikey
+      - name: llm-gateway-azureauth
+
+  - name: body-based-routing
+    dependencies:
+      - name: body-based-routing
+        image: mcr.microsoft.com/oss/v2/gateway-api-inference-extension/bbr
+
+  - name: keda-kaito-scaler
+    dependencies:
+      - name: keda-kaito-scaler
+        image: mcr.microsoft.com/oss/v2/kaito/keda-kaito-scaler
