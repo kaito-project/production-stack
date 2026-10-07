@@ -318,6 +318,22 @@ azure:
     # charts/modelharness must reference the same name/namespace via
     # `azure.defaultDomain.secretRef`.
     secretName: "cert"
+
+  # amaMetricsSettings renders the cluster-wide
+  # `ama-metrics-settings-configmap` (kube-system) consumed by the AKS
+  # Azure Monitor managed-Prometheus metrics add-on. It enables the
+  # built-in `dcgmexporter` default scrape target so the add-on collects
+  # raw NVIDIA DCGM GPU metrics cluster-wide. The ConfigMap name and
+  # namespace are fixed by the add-on and PINNED in the template.
+  #
+  # Enabled by default (Azure only): the ConfigMap is harmless when the
+  # add-on is not installed — it simply sits unread until the add-on is
+  # enabled. Disable only if an `ama-metrics-settings-configmap` is
+  # already managed on the cluster by the platform or another chart, to
+  # avoid an ownership conflict.
+  # See templates/azure/ama-metrics-settings-configmap.yaml.
+  amaMetricsSettings:
+    enabled: true
 #
 # Control-plane status reporter — the single, leader-elected, read-only
 # producer of the end-to-end error-handling reason catalogue as Kubernetes

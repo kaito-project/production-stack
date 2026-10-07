@@ -1,0 +1,30 @@
+{{- if and (eq .Values.cloudprovider "azure") .Values.azure.amaMetricsSettings.enabled }}
+# ama-metrics-settings-configmap: configures the AKS Azure Monitor
+# managed-Prometheus metrics add-on (ama-metrics). The add-on reads this
+# ConfigMap by its well-known name in kube-system; the name and namespace
+# are therefore PINNED, not tunable. Here we enable the built-in
+# `dcgmexporter` default scrape target so the add-on collects raw NVIDIA
+# DCGM GPU metrics cluster-wide. Rendered once per cluster by the
+# productionstack umbrella (cluster-level shared state), alongside the
+# DefaultDomainCertificate.
+#
+# NOTE: this is cluster-global add-on configuration. If the cluster
+# already has an `ama-metrics-settings-configmap` managed outside this
+# chart, enabling this will conflict — reconcile the two before opting in.
+# Harmless when the Azure Monitor managed Prometheus add-on itself is not
+# installed: the ConfigMap simply sits unread until the add-on is enabled.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ama-metrics-settings-configmap
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    kaito.sh/owned-by: productionstack
+data:
+  schema-version: v1
+  config-version: ver1
+  default-scrape-settings-enabled: |-
+    dcgmexporter = true
+{{- end }}
