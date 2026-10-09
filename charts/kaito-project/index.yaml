@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   gpu-node-mocker:
   - apiVersion: v2
+    appVersion: 0.4.3
+    created: "2026-10-09T08:13:22.302293639Z"
+    description: GPU Node Mocker controller for KAITO production-stack
+    digest: 98f00c2f233aa545eaa9efcf2c71af4e3397399316fa104db87af7eeb363a9df
+    name: gpu-node-mocker
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/gpu-node-mocker-0.4.3.tgz
+    version: 0.4.3
+  - apiVersion: v2
     appVersion: 0.4.2
     created: "2026-09-21T04:40:59.954099266Z"
     description: GPU Node Mocker controller for KAITO production-stack
@@ -92,6 +102,17 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/gpu-node-mocker-0.1.0.tgz
     version: 0.1.0
   modeldeployment:
+  - apiVersion: v2
+    appVersion: 0.4.3
+    created: "2026-10-09T08:13:22.303162208Z"
+    description: 'Deploys a KAITO InferenceSet together with the Istio DestinationRule
+      and Gateway API HTTPRoute required to route inference traffic to it. '
+    digest: 5384efb9d935f4ff1cd5505b8edf81d94bc9047dfd09949005aee63dabcb2e3f
+    name: modeldeployment
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/modeldeployment-0.4.3.tgz
+    version: 0.4.3
   - apiVersion: v2
     appVersion: 0.4.2
     created: "2026-09-21T04:40:59.954929508Z"
@@ -192,6 +213,26 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/modeldeployment-0.1.0.tgz
     version: 0.1.0
   modelharness:
+  - apiVersion: v2
+    appVersion: 0.4.3
+    created: "2026-10-09T08:13:22.304621161Z"
+    description: 'Per-namespace shared resources for production-stack workloads. One
+      modelharness release per workload namespace provisions the artifacts every model
+      deployment in that namespace shares: the Istio Gateway, the per-namespace EnvoyFilters
+      (BBR ext_proc, optional browser CORS, the unified outage local_reply, and the
+      catch-all direct_response that answers unknown models with an OpenAI-compatible
+      404), the routes that expose GET /v1/models and GET /v1/models/{id} for this
+      namespace, and — when enabled — the ext_authz wiring plus the APIKey CR that
+      triggers the apikey-operator to mint the per-namespace `llm-api-key` Secret
+      consumed by clients. The cluster-wide components these reference (apikey-authz,
+      BBR, and the model registry served by productionstack-status-reporter) are installed
+      once per cluster by the `productionstack` umbrella chart. '
+    digest: 770345ebbb9a304b72920acd0d5bcb710c44a0c6c887732acf4dfaaa9d49861e
+    name: modelharness
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/modelharness-0.4.3.tgz
+    version: 0.4.3
   - apiVersion: v2
     appVersion: 0.4.2
     created: "2026-09-21T04:40:59.95666345Z"
@@ -370,6 +411,77 @@ entries:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/modelharness-0.1.0.tgz
     version: 0.1.0
   productionstack:
+  - apiVersion: v2
+    appVersion: 0.4.3
+    created: "2026-10-09T08:13:22.309156765Z"
+    dependencies:
+    - name: body-based-routing
+      repository: ""
+      tags:
+      - gateway
+      - routing
+      version: 1.5.0
+    - name: keda-kaito-scaler
+      repository: ""
+      tags:
+      - autoscaling
+      version: 0.6.2
+    - condition: gpu-node-mocker.enabled
+      name: gpu-node-mocker
+      repository: file://../gpu-node-mocker
+      tags:
+      - node-provisioner
+      - mocker
+      version: 0.4.3
+    - condition: llm-gateway-apikey.enabled
+      name: llm-gateway-apikey
+      repository: oci://mcr.microsoft.com/aks/kaito/helm
+      tags:
+      - gateway
+      - auth
+      version: 0.1.2
+    - condition: llm-gateway-azureauth.enabled
+      name: llm-gateway-azureauth
+      repository: oci://mcr.microsoft.com/aks/kaito/helm
+      tags:
+      - gateway
+      - auth
+      version: 0.1.2
+    - condition: productionstack-status-reporter.enabled
+      name: productionstack-status-reporter
+      repository: ""
+      tags:
+      - observability
+      version: 0.4.3
+    description: 'Umbrella Helm chart that installs all CLUSTER-LEVEL components and
+      CRDs required by the Kaito production stack: body-based routing (BBR), KEDA
+      Kaito scaler, LLM gateway auth, and other shared infrastructure.  This chart
+      is intended to be consumed as a dependency of the top-level `kaito` Helm chart.
+      Each component is shipped as a subchart under `charts/`. body-based-routing
+      and keda-kaito-scaler are mandatory cluster infrastructure and are always installed;
+      optional components (e.g. llm-gateway-apikey) carry a `<component>.enabled`
+      toggle in values.yaml. Component-specific values are passed through by nesting
+      them under the subchart''s name, e.g.:      body-based-routing:       bbr:         replicas:
+      2  Adding a new cluster-level component is a matter of dropping its chart under
+      `charts/` and appending a new entry to the `dependencies` list below. '
+    digest: b91710c6e2c0f63aecea76dbfe7aa4b49f3a9a149f41d3cb34b6572a0e3e4bb9
+    home: https://github.com/kaito-project/production-stack
+    keywords:
+    - kaito
+    - production-stack
+    - inference
+    - gateway-api-inference-extension
+    - keda
+    maintainers:
+    - name: kaito-project
+      url: https://github.com/kaito-project
+    name: productionstack
+    sources:
+    - https://github.com/kaito-project/production-stack
+    type: application
+    urls:
+    - https://kaito-project.github.io/production-stack/charts/kaito-project/productionstack-0.4.3.tgz
+    version: 0.4.3
   - apiVersion: v2
     appVersion: 0.4.2
     created: "2026-09-21T04:40:59.961513984Z"
@@ -866,4 +978,4 @@ entries:
     urls:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/productionstack-0.2.0.tgz
     version: 0.2.0
-generated: "2026-09-21T04:40:59.952882647Z"
+generated: "2026-10-09T08:13:22.300700527Z"
