@@ -7,7 +7,7 @@ dependencies:
   version: 0.6.2
 - name: gpu-node-mocker
   repository: file://../gpu-node-mocker
-  version: 0.4.2
+  version: 0.4.3
 - name: llm-gateway-apikey
   repository: oci://mcr.microsoft.com/aks/kaito/helm
   version: 0.1.2
@@ -16,6 +16,6 @@ dependencies:
   version: 0.1.2
 - name: productionstack-status-reporter
   repository: ""
-  version: 0.4.2
-digest: sha256:abd54648f92b2aa1ccb25a89d2a1bc7b0647dc1468bf348fd13e6234b1a966c0
-generated: "2026-10-06T05:19:43.197720481Z"
+  version: 0.4.3
+digest: sha256:86acc2a67fb8a0287c9359cb32ec2104fc2b174db7c21642f2fbe7c4abe11ff1
+generated: "2026-10-09T16:41:25.927189+11:00"
