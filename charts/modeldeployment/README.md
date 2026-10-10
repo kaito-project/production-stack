@@ -17,7 +17,7 @@ identifying labels `kaito.sh/inferenceset: <name>` and
 deployment.
 
 Chart values are validated by `values.schema.json` at install time
-(`model` non-empty, `replicas` / `maxReplicas` positive, and — when
+(`model` non-empty, `replicas` non-negative, `maxReplicas` positive, and — when
 `enableScaling=true` — at least one `scaling.metrics` entry). The
 cross-field guard `maxReplicas >= replicas` and the non-empty
 `scaling.metrics` requirement (neither expressible in JSON Schema alone)
@@ -26,7 +26,9 @@ are additionally enforced by fail-fast template guards when
 
 The EPP runs the [`llm-d-router-endpoint-picker`](https://github.com/llm-d/llm-d-router/tree/v0.9.0)
 distribution with `--secure-serving=false`, so the Istio Gateway can reach it
-over plaintext gRPC and **no `DestinationRule` is required**.
+over plaintext gRPC and **no `DestinationRule` is required**. Flow control and
+its metric plugins are always enabled so the default EPP queue metric can wake
+an InferenceSet from zero.
 
 ## Inputs
 
@@ -41,15 +43,18 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `replicas`                | required | `1`                                                                  | InferenceSet replicas. Also wired to `scaledobject.kaito.sh/min-replicas`. When `enableScaling=true`, this is the lower bound and `spec.replicas` is omitted because KEDA owns the live replica count. |
 | `enableScaling`           | optional | `false`                                                              | Wired to `scaledobject.kaito.sh/auto-provision`. Gates the entire `scaling` block.         |
 | `maxReplicas`             | optional | `3`                                                                  | Wired to `scaledobject.kaito.sh/max-replicas` (only when `enableScaling=true`).            |
-| `scaling.metrics`         | optional | `vllm:num_requests_waiting` gauge + `vllm:request_queue_time_seconds` histogram | Ordered list of scaling signals combined under the AND policy; rendered as a single `scaledobject.kaito.sh/metrics` annotation (a YAML list). At least one entry is required when `enableScaling=true`. |
+| `scaling.metrics`         | optional | EPP queue activation + `vllm:num_requests_waiting` gauge + `vllm:request_queue_time_seconds` histogram | Ordered list rendered as a single `scaledobject.kaito.sh/metrics` annotation. Activation-only metrics wake zero replicas; metrics with up/down thresholds are combined under the normal scaling AND policy. Callers may omit this value to inherit the complete default policy. |
 | `scaling.metrics[].name`  | required | `vllm:num_requests_waiting`                                         | Prometheus metric family name. Rendered as the `name` field of a `scaledobject.kaito.sh/metrics` entry.            |
 | `scaling.metrics[].type`  | optional | `gauge`                                                             | `gauge` (per-replica average) or `histogram` (per-pod windowed average). Rendered as the `type` field of a `scaledobject.kaito.sh/metrics` entry. |
-| `scaling.metrics[].upThreshold`   | required | `10` (queue depth) / `30` (queue time)                     | Per-replica scale-up threshold. Chart-defaulted per metric; a template guard rejects the install when explicitly set empty (`enableScaling=true`). Rendered as the `upthreshold` field of a `scaledobject.kaito.sh/metrics` entry. |
-| `scaling.metrics[].downThreshold` | required | `1`                                                        | Per-replica scale-down threshold (MUST be `< upThreshold`). Chart-defaulted per metric; a template guard rejects the install when explicitly set empty or `>= upThreshold` (`enableScaling=true`). Rendered as the `downthreshold` field of a `scaledobject.kaito.sh/metrics` entry. |
+| `scaling.metrics[].upThreshold`   | conditional | `10` (queue depth) / `30` (queue time)                  | Per-replica scale-up threshold. Supply with `downThreshold` for normal replica scaling; activation-only metrics omit both. |
+| `scaling.metrics[].downThreshold` | conditional | `1`                                                     | Per-replica scale-down threshold. Supply with `upThreshold` and keep it strictly lower. |
+| `scaling.metrics[].activationThreshold` | optional | `0` on the EPP queue metric                              | Scale-from-zero activation threshold. Requires `source: epp` and `deactivationThreshold`. |
+| `scaling.metrics[].deactivationThreshold` | optional | `0` on the EPP queue and model-pod queue metrics       | Zero-edge inactive threshold. |
 | `scaling.metrics[].metricCacheWindow` | optional | _empty_ → `300`                                    | Rolling cache window (seconds) over which `histogram` metrics are averaged (windowed-avg); ignored for `gauge`. Must be a positive number of seconds. Rendered as the `metriccachewindow` field of a `scaledobject.kaito.sh/metrics` entry. |
 | `scaling.evaluationWindow`| optional | `60`                                                                | Scale-up stabilization window (seconds). Wired to `scaledobject.kaito.sh/evaluationwindow`. |
 | `scaling.scaleUpCooldown` | optional | `300`                                                               | Minimum seconds between scale-up steps. Wired to `scaledobject.kaito.sh/scaleupcooldown`.  |
 | `scaling.scaleDownCooldown` | optional | `300`                                                             | Minimum seconds between scale-down steps. Wired to `scaledobject.kaito.sh/scaledowncooldown`. |
+| `scaling.cooldownPeriod`  | optional | `0` → scaler/KEDA default                                          | Idle cooldown before parking at zero. A non-zero value is wired to `scaledobject.kaito.sh/cooldownperiod`. |
 | `autoUpgrade.enabled`     | optional | `false`                                                             | Opts this InferenceSet into KAITO automatic base image upgrades. Renders `spec.autoUpgrade.enabled: true`. Also requires the `enableBaseImageAutoUpgrade` feature gate on the KAITO controller. |
 | `autoUpgrade.maintenanceWindow.schedule` | optional | _empty_                                             | 5-field cron (UTC) marking when rollouts may begin, e.g. `"0 2 * * 6"`. Empty lets upgrades start at any time (the `maintenanceWindow` block is omitted). Consumed only when `autoUpgrade.enabled=true`. |
 | `autoUpgrade.maintenanceWindow.duration` | optional | _empty_ → `4h`                                      | How long the window stays open once it opens, e.g. `"4h"`. Empty inherits the KAITO controller's `4h` default. Ignored when `schedule` is empty. |
@@ -85,8 +90,7 @@ helm install qwen ./charts/modeldeployment \
   --set model=qwen2-5-coder-7b-instruct \
   --set replicas=2 \
   --set maxReplicas=5 \
-  --set enableScaling=true \
-  --set scalingThreshold=10
+  --set enableScaling=true
 ```
 
 The rendered `HTTPRoute` parents into the `my-models-gw` `Gateway`

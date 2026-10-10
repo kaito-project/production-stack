@@ -10,10 +10,18 @@ data:
   default-plugins.yaml: |
     apiVersion: inference.networking.x-k8s.io/v1alpha1
     kind: EndpointPickerConfig
+    featureGates:
+    - flowControl
     plugins:
     - type: queue-scorer
     - type: kv-cache-utilization-scorer
     - type: prefix-cache-scorer
+    - type: metrics-data-source
+      parameters:
+        scheme: http
+        path: /metrics
+        insecureSkipVerify: true
+    - type: core-metrics-extractor
     schedulingProfiles:
     - name: default
       plugins:

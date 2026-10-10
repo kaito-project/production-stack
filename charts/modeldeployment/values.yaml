@@ -54,21 +54,34 @@ maxReplicas: 3
 # consumed by keda-kaito-scaler. It is read only when enableScaling is
 # true. The `metrics` list is rendered as a single
 # `scaledobject.kaito.sh/metrics` annotation (a YAML list); keda-kaito-scaler
-# builds a single KEDA ScaledObject whose scalingModifiers formula combines
-# them under a conservative AND policy — scale up by one replica only when
-# EVERY metric is above its upThreshold (and newly added pods are Ready),
-# scale down by one replica only when EVERY metric is below its downThreshold,
-# otherwise hold. Each step is capped at ±1 replica per cooldown to protect
-# expensive GPU capacity. A single metric is fully supported; it simply
-# yields a one-signal formula.
+# builds a single KEDA ScaledObject. Metrics with up/down thresholds are
+# combined under a conservative AND policy for normal replica scaling.
+# Activation-only EPP metrics are excluded from that formula and wake a parked
+# deployment from zero. Each normal scaling step is capped at ±1 replica per
+# cooldown to protect expensive GPU capacity.
 scaling:
   # metrics is the ordered list of scaling signals. MUST contain at least
-  # one entry when enableScaling is true.
+  # one entry when enableScaling is true. These defaults support both
+  # scale-from-zero activation and normal positive-replica scaling; callers
+  # only need to override entries when tuning metric policy.
   metrics:
+    # EPP flow-control queue depth remains observable while model replicas are
+    # zero. It is activation-only, so it does not participate in the normal
+    # composite replica formula.
+    - name: "llm_d_epp_flow_control_queue_size"
+      source: "epp"
+      type: "gauge"
+      activationThreshold: "0"
+      deactivationThreshold: "0"
+      metricCacheWindow: ""
       # name is the Prometheus metric family name exposed by each inference
       # (model server) pod. Rendered as the `name` field of a
       # scaledobject.kaito.sh/metrics entry.
     - name: "vllm:num_requests_waiting"
+      # source selects where the scaler scrapes this metric. Empty preserves
+      # the scaler's existing model-pod default; scale-to-zero activation
+      # metrics use "epp" so the signal remains available at zero replicas.
+      source: ""
       # type is the aggregation applied to the metric; it MUST keep the
       # signal replica-count independent:
       #   gauge     -> per-replica average across pods
@@ -88,6 +101,12 @@ scaling:
       # Defaults to "1". Rendered as the
       # `downthreshold` field of a scaledobject.kaito.sh/metrics entry.
       downThreshold: "1"
+      # activationThreshold and deactivationThreshold are optional zero-edge
+      # thresholds. Activation requires both deactivationThreshold and an EPP
+      # source; deactivationThreshold may be supplied alone. Empty preserves
+      # positive-minimum scaling behavior.
+      activationThreshold: ""
+      deactivationThreshold: "0"
       # metricCacheWindow is the rolling cache window in seconds over which
       # keda-kaito-scaler averages a histogram metric's _sum/_count deltas
       # (windowed-avg aggregation) to produce a per-pod value; ignored for
@@ -102,8 +121,11 @@ scaling:
       # to "30" / "1") and reject the install when set empty.
     - name: "vllm:request_queue_time_seconds"
       type: "histogram"
+      source: ""
       upThreshold: "30"
       downThreshold: "1"
+      activationThreshold: ""
+      deactivationThreshold: ""
       metricCacheWindow: "300"
 
   # evaluationWindow is the scale-up stabilization window in seconds.
@@ -118,6 +140,9 @@ scaling:
   # Optional; empty lets keda-kaito-scaler apply its 300s default. Wired to
   # scaledobject.kaito.sh/scaledowncooldown.
   scaleDownCooldown: 300
+  # cooldownPeriod is KEDA's idle cooldown in seconds. Zero omits the
+  # annotation and inherits the scaler/KEDA default.
+  cooldownPeriod: 0
 
 # enableBenchmark toggles KAITO benchmark runs for this InferenceSet. When
 # false, the `kaito.sh/disable-benchmark: "true"` annotation is stamped on
@@ -231,6 +256,8 @@ epp:
   metricsPort: 9090
   # logVerbosity passed as `--v=<n>`.
   logVerbosity: 1
+  # EPP flow control and its metric plugins are always enabled so every
+  # deployment can use the default scale-from-zero activation metric.
   # scorerWeights controls the EPP EndpointPickerConfig plugin weights.
   # Adjust to trade off load distribution vs prefix-cache affinity.
   scorerWeights:

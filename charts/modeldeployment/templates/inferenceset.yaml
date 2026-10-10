@@ -23,20 +23,41 @@ metadata:
     {{- if not $m.name }}
     {{- fail (printf "modeldeployment: scaling.metrics[%d].name is required when enableScaling is true" $i) }}
     {{- end }}
-    {{- if not $m.upThreshold }}
-    {{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold is required when enableScaling is true" $i) }}
+    {{- $hasUp := and (hasKey $m "upThreshold") (ne (toString $m.upThreshold) "") }}
+    {{- $hasDown := and (hasKey $m "downThreshold") (ne (toString $m.downThreshold) "") }}
+    {{- if ne $hasUp $hasDown }}
+    {{- fail (printf "modeldeployment: scaling.metrics[%d] must supply both upThreshold and downThreshold" $i) }}
     {{- end }}
-    {{- if not $m.downThreshold }}
-    {{- fail (printf "modeldeployment: scaling.metrics[%d].downThreshold is required when enableScaling is true" $i) }}
+    {{- $hasActivation := and (hasKey $m "activationThreshold") (ne (toString $m.activationThreshold) "") }}
+    {{- $hasDeactivation := and (hasKey $m "deactivationThreshold") (ne (toString $m.deactivationThreshold) "") }}
+    {{- if and (gt ($.Values.replicas | int) 0) (not $hasUp) (not $hasActivation) }}
+    {{- fail (printf "modeldeployment: scaling.metrics[%d] requires upThreshold/downThreshold or activationThreshold when replicas is greater than zero" $i) }}
     {{- end }}
-    {{- if not (gt (subf $m.upThreshold $m.downThreshold) 0.0) }}
+    {{- if and $hasUp (not (gt (subf $m.upThreshold $m.downThreshold) 0.0)) }}
     {{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold (%v) must be greater than downThreshold (%v) when enableScaling is true" $i $m.upThreshold $m.downThreshold) }}
+    {{- end }}
+    {{- if and $hasActivation (not $hasDeactivation) }}
+    {{- fail (printf "modeldeployment: scaling.metrics[%d].activationThreshold requires deactivationThreshold" $i) }}
+    {{- end }}
+    {{- if and $hasActivation (ne $m.source "epp") }}
+    {{- fail (printf "modeldeployment: scaling.metrics[%d].activationThreshold requires source=epp" $i) }}
     {{- end }}
     {{- $type := default "gauge" $m.type }}
     {{- $lines = append $lines (printf "- name: %s" ($m.name | quote)) }}
     {{- $lines = append $lines (printf "  type: %s" ($type | quote)) }}
+    {{- with $m.source }}
+    {{- $lines = append $lines (printf "  source: %s" (. | quote)) }}
+    {{- end }}
+    {{- if $hasUp }}
     {{- $lines = append $lines (printf "  upthreshold: %v" $m.upThreshold) }}
     {{- $lines = append $lines (printf "  downthreshold: %v" $m.downThreshold) }}
+    {{- end }}
+    {{- if $hasActivation }}
+    {{- $lines = append $lines (printf "  activationthreshold: %v" $m.activationThreshold) }}
+    {{- end }}
+    {{- if $hasDeactivation }}
+    {{- $lines = append $lines (printf "  deactivationthreshold: %v" $m.deactivationThreshold) }}
+    {{- end }}
     {{- if and (eq $type "histogram") $m.metricCacheWindow }}
     {{- $lines = append $lines (printf "  metriccachewindow: %v" $m.metricCacheWindow) }}
     {{- end }}
@@ -51,6 +72,9 @@ metadata:
     {{- end }}
     {{- with (.Values.scaling).scaleDownCooldown }}
     scaledobject.kaito.sh/scaledowncooldown: {{ . | quote }}
+    {{- end }}
+    {{- with (.Values.scaling).cooldownPeriod }}
+    scaledobject.kaito.sh/cooldownperiod: {{ . | quote }}
     {{- end }}
   {{- end }}
 spec:

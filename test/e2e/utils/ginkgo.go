@@ -67,6 +67,9 @@ var (
 	// cooldown windows make these tests take minutes per run.
 	GinkgoLabelScaling = g.Label("Scaling")
 
+	// GinkgoLabelScaleToZero marks the focused 0 <-> 1 activation path.
+	GinkgoLabelScaleToZero = g.Label("ScaleToZero")
+
 	// GinkgoLabelFilterOrder marks tests that verify the Envoy HTTP
 	// filter chain execution order on the per-namespace Gateway:
 	//   ext_authz → ext_proc.bbr → ext_proc (InferencePool/EPP) → router
