@@ -8,6 +8,7 @@ name: E2E tests (nightly)
 # Nightly specs.
 
 on:
+  pull_request: {}
   schedule:
     # 00:00 Sydney time. GitHub cron is UTC; Sydney is UTC+10 (AEST) for
     # most of the year, so 14:00 UTC == 00:00 AEST next day. During AEDT
@@ -48,7 +49,7 @@ env:
   RESOURCE_GROUP: "kaito-nightly-rg-${{ github.run_id }}-${{ github.run_attempt }}"
   CLUSTER_NAME: "kaito-nightly-aks-${{ github.run_id }}-${{ github.run_attempt }}"
   ACR_NAME: "kaitonightly${{ github.run_id }}a${{ github.run_attempt }}acr"
-  LOCATION: eastus
+  LOCATION: swedencentral
   NODE_COUNT: '3'
   NODE_VM_SIZE: Standard_D4d_v4
 
