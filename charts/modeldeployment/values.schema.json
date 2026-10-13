@@ -137,9 +137,12 @@
           "description": "Minimum seconds between scale-down steps. Wired to scaledobject.kaito.sh/scaledowncooldown."
         },
         "cooldownPeriod": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Seconds KEDA waits after the last active trigger reading before parking the deployment at zero. Only rendered (as scaledobject.kaito.sh/cooldownperiod) when minReplicas is 0; ignored otherwise."
+          "anyOf": [
+            {"type": "integer", "minimum": 0, "maximum": 2147483647},
+            {"type": "string", "pattern": "^([0-9]+)?$"},
+            {"type": "null"}
+          ],
+          "description": "Seconds KEDA waits after the last active trigger reading before parking the deployment at zero (0 parks on the first inactive poll). Only rendered (as scaledobject.kaito.sh/cooldownperiod) when minReplicas is 0; ignored otherwise. Empty or null lets keda-kaito-scaler apply its 300s default. MUST fit in int32 (also enforced by a template guard for numeric strings)."
         }
       }
     },

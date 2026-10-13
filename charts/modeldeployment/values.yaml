@@ -60,7 +60,9 @@ enableScaling: false
 # by the next request (0 -> 1). The 0 <-> 1 edge is driven by the
 # activationThreshold / deactivationThreshold of `scaling.metrics`, and the
 # EPP flowControl feature gate is turned on so requests that arrive while
-# parked are held in the EPP (and wake the deployment) instead of failing.
+# parked are queued in the EPP (raising the wake-up signal) instead of
+# failing immediately. Serving those queued requests is best effort, not
+# guaranteed (see the chart README, "Cold-start requests").
 minReplicas: ""
 
 # maxReplicas is the upper bound for autoscaling, wired to the
@@ -200,9 +202,11 @@ scaling:
   # trigger reading before parking the deployment at zero. Only rendered when
   # minReplicas is 0 and silently ignored otherwise. Size it against how
   # often you are willing to pay a cold start (node provisioning + model
-  # load). Defaults to 600, matching the keda-kaito-scaler scale-to-zero
-  # design (kaito-project/keda-kaito-scaler#150); empty lets
-  # keda-kaito-scaler apply its 300s default. Wired to
+  # load). 0 is allowed and parks on the first inactive poll (~15s), which
+  # risks a cold start after every short gap in traffic. Defaults to 600,
+  # matching the keda-kaito-scaler scale-to-zero design
+  # (kaito-project/keda-kaito-scaler#150); empty or null lets
+  # keda-kaito-scaler apply its 300s default. MUST fit in int32. Wired to
   # scaledobject.kaito.sh/cooldownperiod.
   cooldownPeriod: 600
 
@@ -334,11 +338,13 @@ epp:
   tolerations: []
   # flowControl configures the EPP flow-control layer (the `flowControl`
   # feature gate). It is turned on automatically when enableScaling is true
-  # and minReplicas is 0: with no model pods the EPP then holds incoming
-  # requests in its queue (reported as llm_d_epp_flow_control_queue_size,
-  # the default activation metric) and dispatches them once a replica is
-  # Ready, instead of failing them. A held request survives the cold start
-  # only if the client (and gateway) timeouts outlast it.
+  # and minReplicas is 0: with no model pods the EPP then queues incoming
+  # requests (reported as llm_d_epp_flow_control_queue_size, the default
+  # activation metric) instead of failing them immediately, and dispatches
+  # them once a replica is Ready. This is best effort: a queued request fails
+  # if the cold start outlasts defaultRequestTTL or the client timeout, and
+  # requests released right after the first replica turns Ready can still
+  # get 503 model_unavailable until the gateway learns the new endpoint.
   flowControl:
     # enabled forces flow control on even without scale to zero.
     enabled: false
@@ -357,12 +363,15 @@ epp:
     # global cap, leaving the EPP's built-in 1GB-per-priority-band limit.
     maxBytes: "128Mi"
     # defaultRequestTTL bounds how long a request may wait in the queue
-    # before it fails with 503. It must cover a cold start (node provisioning
-    # + model load) for the requests that wake the deployment, and together
-    # with the activationThreshold of llm_d_epp_flow_control_queue_size it
-    # sets the wake-up floor: 600s with a threshold of 10 wakes at about 1
-    # request per minute (kaito-project/keda-kaito-scaler#150). Empty waits
-    # until the client cancels.
+    # before the EPP rejects it (surfaced by the gateway as
+    # 502 epp_unavailable). Queued requests are not guaranteed to be served:
+    # when the cold start (node provisioning + model load) outlasts the TTL
+    # they fail and the client is expected to retry. Together with the
+    # activationThreshold of llm_d_epp_flow_control_queue_size it sets the
+    # wake-up floor: 600s with a threshold of 10 wakes at about 1 request per
+    # minute (kaito-project/keda-kaito-scaler#150), so shortening it raises
+    # the traffic needed to wake a parked deployment. Empty waits until the
+    # client cancels.
     defaultRequestTTL: "600s"
   # modelServerSelector selects the inference pods this InferencePool routes
   # to. KAITO labels each inference pod with

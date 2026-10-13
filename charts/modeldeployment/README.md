@@ -59,7 +59,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `scaling.evaluationWindow`| optional | `60`                                                                | Scale-up stabilization window (seconds). Wired to `scaledobject.kaito.sh/evaluationwindow`. |
 | `scaling.scaleUpCooldown` | optional | `300`                                                               | Minimum seconds between scale-up steps. Wired to `scaledobject.kaito.sh/scaleupcooldown`.  |
 | `scaling.scaleDownCooldown` | optional | `300`                                                             | Minimum seconds between scale-down steps. Wired to `scaledobject.kaito.sh/scaledowncooldown`. |
-| `scaling.cooldownPeriod`  | optional | `600`                                                               | Seconds KEDA waits after the last active trigger reading before parking at zero. Only rendered when `minReplicas=0` and silently ignored otherwise. Wired to `scaledobject.kaito.sh/cooldownperiod`. |
+| `scaling.cooldownPeriod`  | optional | `600`                                                               | Seconds KEDA waits after the last active trigger reading before parking at zero. `0` parks on the first inactive poll (~15s); empty or `null` falls back to keda-kaito-scaler's `300`. Must fit in int32. Only rendered when `minReplicas=0` and silently ignored otherwise. Wired to `scaledobject.kaito.sh/cooldownperiod`. |
 | `autoUpgrade.enabled`     | optional | `false`                                                             | Opts this InferenceSet into KAITO automatic base image upgrades. Renders `spec.autoUpgrade.enabled: true`. Also requires the `enableBaseImageAutoUpgrade` feature gate on the KAITO controller. |
 | `autoUpgrade.maintenanceWindow.schedule` | optional | _empty_                                             | 5-field cron (UTC) marking when rollouts may begin, e.g. `"0 2 * * 6"`. Empty lets upgrades start at any time (the `maintenanceWindow` block is omitted). Consumed only when `autoUpgrade.enabled=true`. |
 | `autoUpgrade.maintenanceWindow.duration` | optional | _empty_ → `4h`                                      | How long the window stays open once it opens, e.g. `"4h"`. Empty inherits the KAITO controller's `4h` default. Ignored when `schedule` is empty. |
@@ -130,16 +130,18 @@ helm install qwen ./charts/modeldeployment \
 ```
 
 With `replicas` left empty the deployment starts with one replica (the CRD
-default) and parks once idle; set `replicas=0` to install it parked. The 1 ↔ N range keeps working exactly as before; scale to zero adds
-the 0 ↔ 1 edge, driven by the default `scaling.metrics` entries:
+default) and parks once idle; set `replicas=0` to install it parked. The
+1 ↔ N range keeps working exactly as before; scale to zero adds the 0 ↔ 1
+edge, driven by the default `scaling.metrics` entries:
 
 - **Wake (0 → 1)** — `llm_d_epp_flow_control_queue_size` (`source: epp`,
   `activationThreshold: 10`). At zero replicas there are no model pods to
   scrape, so the signal comes from this deployment's Endpoint Picker. The
   chart turns on the EPP `flowControl` feature gate whenever `minReplicas=0`:
-  the EPP then **holds** requests that arrive while the pool is empty (rather
-  than failing them), the held requests raise the queue gauge, and they are
-  dispatched once a replica is Ready.
+  the EPP then **queues** requests that arrive while the pool is empty instead
+  of failing them immediately, and the queued requests raise the queue gauge
+  that wakes the deployment. Serving those requests is best effort, not
+  guaranteed: see [Cold-start requests](#cold-start-requests).
 - **Park (1 → 0)** — after `scaling.cooldownPeriod` seconds during which the
   EPP queue is empty **and** both `vllm:num_requests_waiting` and
   `vllm:num_requests_running` are `0` on the model pods, so in-flight
@@ -163,12 +165,31 @@ requests are held in EPP memory; `epp.flowControl.maxBytes` (default `128Mi`)
 caps the queue so it stays within the EPP's memory request, and requests
 beyond it are rejected immediately with 429.
 
+### Cold-start requests
+
+Scale to zero does **not** guarantee that the requests which arrive while the
+deployment is parked succeed. Queuing them exists to produce the wake-up
+signal; serving them is best effort:
+
+- A cold start (GPU node provisioning + model load) can take many minutes and
+  may outlast the queue. Once `epp.flowControl.defaultRequestTTL` (`600s`)
+  expires the EPP rejects the request with `503`, which the modelharness
+  gateway reports as `502 epp_unavailable` (`x-kaito-error-source: epp`); it
+  fails earlier if the client times out or disconnects. Istio also bounds
+  each EPP exchange to 1000s.
+- When the first replica becomes Ready, the EPP (which watches Pods directly)
+  can release the queued requests before the gateway has received the new
+  endpoint (EndpointSlice → istiod → EDS). Requests dispatched in that window
+  fail with `no healthy upstream`, which the modelharness gateway maps to
+  `503 model_unavailable` with `Retry-After: 10`.
+
+Clients should therefore treat `503 model_unavailable` and
+`502 epp_unavailable` from a parked or waking deployment as retryable and
+back off (honouring `Retry-After` when present); once the replica is Ready
+and propagated, retries are served normally.
+
 Things to keep in mind:
 
-- A cold start (GPU node provisioning + model load) can take minutes. A
-  held request only succeeds if both `epp.flowControl.defaultRequestTTL`
-  (`600s`) and the client timeout outlast it; Istio also bounds each EPP
-  exchange to 1000s.
 - keda-kaito-scaler scrapes the EPP pods on `epp.metricsPort` (`9090`) from
   its own namespace, which must be allowed by the modelharness
   `networkPolicy.allowedIngressNamespaces` (`keda` by default).

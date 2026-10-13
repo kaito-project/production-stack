@@ -155,6 +155,9 @@ metadata:
     {{- end }}
     {{- if $scaleToZero }}
     {{- with include "modeldeployment.optionalString" (.Values.scaling).cooldownPeriod }}
+    {{- if gt (. | int64) 2147483647 }}
+    {{- fail (printf "modeldeployment: scaling.cooldownPeriod (%s) must fit in int32 (<= 2147483647)" .) }}
+    {{- end }}
     scaledobject.kaito.sh/cooldownperiod: {{ . | quote }}
     {{- end }}
     {{- end }}
