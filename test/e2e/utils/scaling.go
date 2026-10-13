@@ -159,10 +159,11 @@ func GetInferenceSetReplicas(ctx context.Context, model, namespace string) (int3
 
 // SetInferenceSetReplicas patches the InferenceSet's .spec.replicas directly.
 //
-// Reserved for KEDA-managed deployments (EnableScaling), where the chart
-// deliberately leaves .spec.replicas unset because KEDA owns it through the
-// scale subresource. For those, UpgradeModelDeployment can only move the
-// min-replicas floor and would silently fail to restore the live count.
+// Reserved for KEDA-managed deployments (EnableScaling), where KEDA owns
+// .spec.replicas through the scale subresource. The chart renders the
+// `replicas` value, but Helm only patches .spec.replicas when that value
+// changes between releases, so UpgradeModelDeployment cannot reliably restore
+// the live count; it can only move the min-replicas floor.
 // Everything else must change replicas through UpgradeModelDeployment so the
 // declared configuration stays the source of truth.
 //

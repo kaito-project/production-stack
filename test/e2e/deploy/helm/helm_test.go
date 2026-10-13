@@ -217,6 +217,7 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 		Replicas:      3,
 		InstanceType:  "Standard_NC24ads_A100_v4",
 		EnableScaling: true,
+		MinReplicas:   2,
 		MaxReplicas:   7,
 		ScalingMetrics: []deploy.ScalingMetric{
 			{Name: "vllm:num_requests_waiting", Type: "gauge", UpThreshold: "10", DownThreshold: "1"},
@@ -256,6 +257,7 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 		"replicas=3",
 		"instanceType=Standard_NC24ads_A100_v4",
 		"enableScaling=true",
+		"minReplicas=2",
 		"maxReplicas=7",
 		"scaling.metrics[0].name=vllm:num_requests_waiting",
 		"scaling.metrics[0].type=gauge",
@@ -301,7 +303,7 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 	if err := d.InstallModelDeployment(context.Background(), values); err != nil {
 		t.Fatalf("InstallModelDeployment (scaling off): %v", err)
 	}
-	if args := (*calls)[1]; hasArg(args, "enableScaling=true") || hasArg(args, "maxReplicas=7") {
+	if args := (*calls)[1]; hasArg(args, "enableScaling=true") || hasArg(args, "minReplicas=2") || hasArg(args, "maxReplicas=7") {
 		t.Errorf("scaling args rendered while scaling disabled: %v", args)
 	}
 }
@@ -334,6 +336,30 @@ func TestInstallValidatesBeforeInvokingHelm(t *testing.T) {
 				ScalingMetrics: []deploy.ScalingMetric{{Name: "vllm:num_requests_waiting"}},
 			},
 			wantErr: "UpThreshold is required",
+		},
+		{
+			name: "negative minReplicas",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: -1, MaxReplicas: 3,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "m", UpThreshold: "10", DownThreshold: "1"}},
+			},
+			wantErr: "MinReplicas must not be negative",
+		},
+		{
+			name: "scaling without maxReplicas",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "m", UpThreshold: "10", DownThreshold: "1"}},
+			},
+			wantErr: "EnableScaling requires MaxReplicas >= 1",
+		},
+		{
+			name: "maxReplicas below minReplicas",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: 3, MaxReplicas: 2,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "m", UpThreshold: "10", DownThreshold: "1"}},
+			},
+			wantErr: "MaxReplicas (2) must be >= MinReplicas (3)",
 		},
 	}
 

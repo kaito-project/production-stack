@@ -347,10 +347,10 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 	},
 	CaseScaling: {
 		{
-			// Scaling baseline matches KEDA's minReplicaCount so that
-			// scale-down can converge back to it. With Replicas>1, KEDA's
-			// HPA computes desiredReplicas=ceil(metric/threshold)*1=0 when
-			// the queue drains and clamps to minReplicaCount=1, so the
+			// Scaling baseline matches KEDA's minReplicaCount (MinReplicas)
+			// so that scale-down can converge back to it. With Replicas>1,
+			// KEDA's HPA computes desiredReplicas=ceil(metric/threshold)*1=0
+			// when the queue drains and clamps to minReplicaCount=1, so the
 			// pool would never return to its starting size and Scale-Down
 			// assertions would fail.
 			Name:          "scaling-phi",
@@ -359,6 +359,7 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 			Replicas:      1,
 			InstanceType:  "Standard_NV36ads_A10_v5",
 			EnableScaling: true,
+			MinReplicas:   1,
 			MaxReplicas:   2,
 			// Single gauge signal on the vLLM waiting-queue length. The
 			// up-threshold is deliberately low so the pressure workload

@@ -138,8 +138,12 @@ type ModelDeploymentValues struct {
 	InstanceType string
 	// EnableScaling toggles scaledobject.kaito.sh/* annotations.
 	EnableScaling bool
-	// MaxReplicas is the upper bound for autoscaling. Only used when
-	// EnableScaling is true.
+	// MinReplicas is the lower bound for autoscaling (chart minReplicas).
+	// Always rendered when EnableScaling is true, so 0 is an explicit
+	// scale-to-zero rather than "unset".
+	MinReplicas int64
+	// MaxReplicas is the upper bound for autoscaling (chart maxReplicas).
+	// Required (>= 1 and >= MinReplicas) when EnableScaling is true.
 	MaxReplicas int64
 	// ScalingMetrics is the ordered list of composite scaling signals wired
 	// onto the modeldeployment chart's scaling.metrics[<i>] entries. Only
@@ -233,6 +237,15 @@ func (v ModelDeploymentValues) Validate() error {
 		if m.DownThreshold == "" {
 			return fmt.Errorf("modeldeployment %q: ScalingMetrics[%d] (%s) DownThreshold is required", v.Name, i, m.Name)
 		}
+	}
+	if v.MinReplicas < 0 {
+		return fmt.Errorf("modeldeployment %q: MinReplicas must not be negative (got %d)", v.Name, v.MinReplicas)
+	}
+	if v.MaxReplicas < 1 {
+		return fmt.Errorf("modeldeployment %q: EnableScaling requires MaxReplicas >= 1 (got %d)", v.Name, v.MaxReplicas)
+	}
+	if v.MaxReplicas < v.MinReplicas {
+		return fmt.Errorf("modeldeployment %q: MaxReplicas (%d) must be >= MinReplicas (%d)", v.Name, v.MaxReplicas, v.MinReplicas)
 	}
 	return nil
 }

@@ -13,6 +13,8 @@
 #   SHADOW_CONTROLLER_IMAGE    — gpu-node-mocker image (default: ghcr.io/kaito-project/gpu-node-mocker:latest)
 #   STATUS_REPORTER_IMAGE      — productionstack-status-reporter image
 #                                (default: ghcr.io/kaito-project/productionstack-status-reporter:latest)
+#   KEDA_KAITO_SCALER_IMAGE    — keda-kaito-scaler image, <registry>/<repository>:<tag>
+#                                (default: ghcr.io/kaito-project/keda-kaito-scaler:<chart appVersion without "v">)
 #   INSTALL_PARALLEL           — set to "0" to disable parallelism (default: 1)
 #
 # llm-gateway-apikey chart version + image tag are pinned by
@@ -26,6 +28,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 STATUS_REPORTER_IMAGE="${STATUS_REPORTER_IMAGE:-ghcr.io/kaito-project/productionstack-status-reporter:latest}"
+# The keda-kaito-scaler chart pins its MCR image, which is published some
+# time after the upstream release; E2E pulls the same version from ghcr
+# (published at release time, tagged without the "v" prefix) so a chart bump
+# can be tested before the MCR mirror catches up.
+KEDA_KAITO_SCALER_CHART_VERSION="$(sed -n 's/^appVersion: *"\{0,1\}v\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' \
+  "${SCRIPT_DIR}/../../../charts/productionstack/charts/keda-kaito-scaler/Chart.yaml")"
+KEDA_KAITO_SCALER_IMAGE="${KEDA_KAITO_SCALER_IMAGE:-ghcr.io/kaito-project/keda-kaito-scaler:${KEDA_KAITO_SCALER_CHART_VERSION}}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 
@@ -86,6 +95,7 @@ echo "  KAITO_NODE_CLASS:          ${KAITO_NODE_CLASS} (${NODE_CLASS_GROUP}/${NO
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
 echo "  STATUS_REPORTER_IMAGE:     ${STATUS_REPORTER_IMAGE}"
+echo "  KEDA_KAITO_SCALER_IMAGE:   ${KEDA_KAITO_SCALER_IMAGE}"
 echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
 echo ""
 
@@ -306,7 +316,7 @@ install_productionstack() {
 
   echo "=== Installing productionstack umbrella chart ==="
   echo "    body-based-routing → kaito-system (umbrella release namespace)"
-  echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE}"
+  echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE} (image: ${KEDA_KAITO_SCALER_IMAGE})"
   echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
   echo "    productionstack-status-reporter → kube-system (image: ${STATUS_REPORTER_IMAGE})"
   # productionstack-status-reporter control-plane overrides: the reporter's
@@ -315,10 +325,19 @@ install_productionstack() {
   # into `istio-system` and the KAITO workspace controller into `kaito-system`,
   # so point the reporter's probes at the E2E namespaces. startupGraceSeconds
   # is shortened so findings surface within the test emit timeouts.
+  #
+  # The keda-kaito-scaler chart renders its image as
+  # <registry>/<repository>:<tag>, so KEDA_KAITO_SCALER_IMAGE is split on the
+  # first "/" and the last ":".
+  local keda_scaler_registry="${KEDA_KAITO_SCALER_IMAGE%%/*}"
+  local keda_scaler_path="${KEDA_KAITO_SCALER_IMAGE#*/}"
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
     --namespace kaito-system \
     --create-namespace \
     --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}" \
+    --set keda-kaito-scaler.image.registry="${keda_scaler_registry}" \
+    --set keda-kaito-scaler.image.repository="${keda_scaler_path%:*}" \
+    --set keda-kaito-scaler.image.tag="${keda_scaler_path##*:}" \
     --set llm-gateway-apikey.enabled=true \
     --set llm-gateway-apikey.namespaceOverride=llm-gateway-auth \
     --set productionstack-status-reporter.image.repository="${STATUS_REPORTER_IMAGE%:*}" \

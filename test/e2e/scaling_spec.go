@@ -120,7 +120,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 					// The shared BeforeSuite installs the CaseScaling
 					// InferenceSet via the modeldeployment Helm chart at
-					// Replicas=1 with EnableScaling=true, so KEDA's
+					// Replicas=MinReplicas=1 with EnableScaling=true, so KEDA's
 					// ScaledObject and the baseline pool are already in
 					// place by the time we run. We only need to read the
 					// effective KEDA params and snapshot the baseline

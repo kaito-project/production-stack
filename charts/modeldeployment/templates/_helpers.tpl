@@ -99,3 +99,61 @@ Matches the upstream GAIE chart convention:
 {{- define "modeldeployment.eppSelectorLabels" -}}
 inferencepool: {{ include "modeldeployment.eppServiceName" . }}
 {{- end }}
+
+{{/*
+Optional scalar rendered as a string; "" when the value is unset (nil) or
+empty. Unlike a plain truthiness check, a numeric 0 renders as "0" so a
+threshold of 0 counts as set.
+*/}}
+{{- define "modeldeployment.optionalString" -}}
+{{- if not (kindIs "invalid" .) -}}
+{{- toString . -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Autoscaling lower bound wired to scaledobject.kaito.sh/min-replicas, as a
+string; "" when minReplicas is unset or empty. Required (enforced in
+inferenceset.yaml) whenever enableScaling is true.
+*/}}
+{{- define "modeldeployment.minReplicas" -}}
+{{- include "modeldeployment.optionalString" .Values.minReplicas -}}
+{{- end }}
+
+{{/*
+"true" when autoscaling is enabled with a zero lower bound, i.e.
+keda-kaito-scaler drives the 0 <-> 1 transition.
+*/}}
+{{- define "modeldeployment.scaleToZero" -}}
+{{- if and .Values.enableScaling (eq (include "modeldeployment.minReplicas" .) "0") -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+"true" when the EPP runs with its flowControl feature gate. Scale to zero
+forces it on: with no model pods the EPP must hold incoming requests
+(rather than fail them) so the flow-control queue gauge can wake the
+workload, and the held requests are dispatched once a replica is Ready.
+*/}}
+{{- define "modeldeployment.eppFlowControlEnabled" -}}
+{{- if or ((.Values.epp).flowControl).enabled (include "modeldeployment.scaleToZero" .) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+EPP flow-control settings. Rendered into the EPP ConfigMap and hashed into
+the EPP pod template so a change rolls the EPP (it only reads its config
+file at startup).
+*/}}
+{{- define "modeldeployment.eppFlowControlSettings" -}}
+{{- $fc := (.Values.epp).flowControl | default dict -}}
+maxConcurrency: {{ $fc.maxConcurrency | default 1000000 | int64 }}
+{{- with $fc.maxBytes }}
+maxBytes: {{ . | quote }}
+{{- end }}
+{{- with $fc.defaultRequestTTL }}
+defaultRequestTTL: {{ . | quote }}
+{{- end }}
+{{- end }}

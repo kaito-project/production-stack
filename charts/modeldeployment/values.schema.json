@@ -32,18 +32,32 @@
       "description": "VM instance type used for the underlying GPU nodes."
     },
     "replicas": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Desired number of InferenceSet replicas. MUST be at least 1."
+      "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "pattern": "^([0-9]+)?$"},
+        {"type": "null"}
+      ],
+      "description": "Number of InferenceSet replicas (spec.replicas). Optional: empty leaves spec.replicas unset (CRD default 1; with enableScaling, KEDA moves it into [minReplicas, maxReplicas]). When set with enableScaling it is applied on install and re-applied only when its value changes, and MUST lie within [minReplicas, maxReplicas] (enforced by a template guard)."
+    },
+    "minReplicas": {
+      "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "pattern": "^([0-9]+)?$"},
+        {"type": "null"}
+      ],
+      "description": "Autoscaling lower bound wired to scaledobject.kaito.sh/min-replicas. REQUIRED when enableScaling is true (enforced by a template guard); ignored otherwise. 0 enables scale to zero (0 <-> 1, requires keda-kaito-scaler v0.7.0+) and turns on the EPP flowControl feature gate."
     },
     "enableScaling": {
       "type": "boolean",
-      "description": "Toggles KAITO ScaledObject auto-provisioning. When false, maxReplicas and scalingThreshold are ignored."
+      "description": "Toggles KAITO ScaledObject auto-provisioning. When false, minReplicas, maxReplicas and scaling are ignored."
     },
     "maxReplicas": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Upper bound for autoscaling. Only used when enableScaling is true. MUST be at least 1; the Helm template additionally enforces maxReplicas >= replicas when enableScaling is true."
+      "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "pattern": "^([0-9]+)?$"},
+        {"type": "null"}
+      ],
+      "description": "Autoscaling upper bound wired to scaledobject.kaito.sh/max-replicas. REQUIRED when enableScaling is true (enforced by a template guard); ignored otherwise. When enableScaling is true it MUST be at least 1, >= minReplicas and, when set, >= replicas (template guards)."
     },
     "scalingThreshold": {
       "type": "integer",
@@ -53,34 +67,52 @@
     "scaling": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Composite (multi-metric) autoscaling configuration wired to scaledobject.kaito.sh/* annotations. Consumed only when enableScaling is true; keda-kaito-scaler combines every metric under a conservative AND policy. Misconfiguration here is surfaced as inferencesetScalingMisconfigured.",
+      "description": "Composite (multi-metric) autoscaling configuration wired to scaledobject.kaito.sh/* annotations. Consumed only when enableScaling is true; keda-kaito-scaler combines the up/down bands under a conservative AND policy and, when minReplicas is 0, wakes on ANY activation threshold and parks when EVERY deactivation threshold holds. Misconfiguration here is surfaced as inferencesetScalingMisconfigured.",
       "properties": {
         "metrics": {
           "type": "array",
           "minItems": 1,
-          "description": "Ordered list of scaling signals. Rendered as the scaledobject.kaito.sh/metrics annotation (a YAML list, one entry per metric). MUST contain at least one entry when enableScaling is true (also enforced by a fail-fast template guard).",
+          "description": "Ordered list of scaling signals. Rendered as the scaledobject.kaito.sh/metrics annotation (a YAML list, one entry per metric). MUST contain at least one entry when enableScaling is true (also enforced by a fail-fast template guard). Entries carrying only activationThreshold/deactivationThreshold are skipped when minReplicas >= 1.",
           "items": {
             "type": "object",
             "additionalProperties": true,
-            "required": ["name", "upThreshold", "downThreshold"],
+            "required": ["name"],
             "properties": {
               "name": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Prometheus metric family name exposed by each inference pod. Rendered as the `name` field of a scaledobject.kaito.sh/metrics entry."
+                "description": "Prometheus metric family name exposed by the metric source (model pods or EPP). Rendered as the `name` field of a scaledobject.kaito.sh/metrics entry."
               },
               "type": {
                 "type": "string",
                 "enum": ["gauge", "histogram"],
-                "description": "Aggregation applied to the metric: gauge -> per-replica average; histogram -> per-pod windowed average (rolling _sum/_count delta over metricCacheWindow). Rendered as the `type` field of a scaledobject.kaito.sh/metrics entry. Defaults to gauge."
+                "description": "Aggregation applied to the metric: gauge -> per-replica average (summed across EPP pods for source epp); histogram -> per-pod windowed average (rolling _sum/_count delta over metricCacheWindow). Rendered as the `type` field of a scaledobject.kaito.sh/metrics entry. Defaults to gauge."
+              },
+              "source": {
+                "type": "string",
+                "enum": ["", "modelpod", "epp"],
+                "description": "Where the metric is scraped: modelpod (the model-serving pods, default) or epp (the Endpoint Picker pods, which keep reporting at zero replicas). Rendered as the `source` field when set."
+              },
+              "aggregation": {
+                "type": "string",
+                "enum": ["", "sum", "service-avg", "windowed-avg"],
+                "description": "Overrides the reduction derived from type and source: sum / service-avg (gauge only) or windowed-avg (histogram only). Rendered as the `aggregation` field when set."
               },
               "upThreshold": {
                 "type": ["string", "number"],
-                "description": "Per-replica scale-up threshold (float). REQUIRED when enableScaling is true: chart-defaulted per metric (10 for queue depth, 30 for queue time), and a fail-fast template guard rejects the install when it is explicitly set empty. MUST be strictly greater than downThreshold (also enforced by the template guard). Rendered as the `upthreshold` field of a scaledobject.kaito.sh/metrics entry."
+                "description": "Per-replica scale-up threshold (float) for the 1 <-> N range. REQUIRED (together with downThreshold) when minReplicas >= 1, enforced by a fail-fast template guard; optional when minReplicas is 0. MUST be strictly greater than downThreshold. Rendered as the `upthreshold` field of a scaledobject.kaito.sh/metrics entry."
               },
               "downThreshold": {
                 "type": ["string", "number"],
-                "description": "Per-replica scale-down threshold (float). MUST be strictly less than upThreshold. REQUIRED when enableScaling is true: chart-defaulted to 1, and a fail-fast template guard rejects the install when it is explicitly set empty. Rendered as the `downthreshold` field of a scaledobject.kaito.sh/metrics entry."
+                "description": "Per-replica scale-down threshold (float) for the 1 <-> N range. MUST be strictly less than upThreshold and set together with it (enforced by a fail-fast template guard). Rendered as the `downthreshold` field of a scaledobject.kaito.sh/metrics entry."
+              },
+              "activationThreshold": {
+                "type": ["string", "number"],
+                "description": "Wake threshold for the 0 -> 1 transition (metric > threshold). Only used when minReplicas is 0; requires source epp and a deactivationThreshold on the same metric. Rendered as the `activationthreshold` field."
+              },
+              "deactivationThreshold": {
+                "type": ["string", "number"],
+                "description": "Park threshold for the 1 -> 0 transition (metric <= threshold, ANDed across metrics). Only used when minReplicas is 0; MUST NOT exceed activationThreshold. At least one modelpod metric must carry one. Rendered as the `deactivationthreshold` field."
               },
               "metricCacheWindow": {
                 "type": ["string", "number"],
@@ -103,6 +135,11 @@
           "type": "integer",
           "minimum": 1,
           "description": "Minimum seconds between scale-down steps. Wired to scaledobject.kaito.sh/scaledowncooldown."
+        },
+        "cooldownPeriod": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Seconds KEDA waits after the last active trigger reading before parking the deployment at zero. Only rendered (as scaledobject.kaito.sh/cooldownperiod) when minReplicas is 0; ignored otherwise."
         }
       }
     },
@@ -205,6 +242,30 @@
           "minimum": 1,
           "maximum": 65535,
           "description": "EPP HTTP metrics port."
+        },
+        "flowControl": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "EPP flow-control layer (flowControl feature gate). Turned on automatically when enableScaling is true and minReplicas is 0, so requests are held in the EPP while the deployment is parked.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Forces flow control on even without scale to zero."
+            },
+            "maxConcurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Per-endpoint in-flight request capacity of the concurrency saturation detector. The EPP queues once in-flight requests reach maxConcurrency x endpoints; an empty pool always counts as saturated."
+            },
+            "maxBytes": {
+              "type": ["string", "integer"],
+              "description": "Cap on the total size of request bodies buffered in the flow-control queue, as a Kubernetes quantity (e.g. \"128Mi\"). Requests beyond it are rejected with 429. Empty falls back to the EPP's 1GB-per-priority-band limit."
+            },
+            "defaultRequestTTL": {
+              "type": "string",
+              "description": "Maximum time a request may wait in the flow-control queue, e.g. \"10m\". Empty waits until the client cancels."
+            }
+          }
         }
       }
     },

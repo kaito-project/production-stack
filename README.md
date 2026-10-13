@@ -98,9 +98,9 @@ helm install qwen oci://ghcr.io/kaito-project/helm/modeldeployment \
   --namespace my-models \
   --set name=qwen \
   --set model=qwen2-5-coder-7b-instruct \
-  --set replicas=2 \
-  --set maxReplicas=5 \
-  --set enableScaling=true
+  --set enableScaling=true \
+  --set minReplicas=2 \
+  --set maxReplicas=5
 ```
 
 For the full value schema (EPP image / ports / resources, scaling knobs, naming conventions, KAITO `FeatureFlagGatewayAPIInferenceExtension` compatibility note), see [`charts/modeldeployment/README.md`](charts/modeldeployment/README.md).

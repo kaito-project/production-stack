@@ -389,9 +389,10 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 	}
 	if v.EnableScaling {
 		args = append(args, "--set", "enableScaling=true")
-		if v.MaxReplicas > 0 {
-			args = append(args, "--set", "maxReplicas="+strconv.FormatInt(v.MaxReplicas, 10))
-		}
+		args = append(args,
+			"--set", "minReplicas="+strconv.FormatInt(v.MinReplicas, 10),
+			"--set", "maxReplicas="+strconv.FormatInt(v.MaxReplicas, 10),
+		)
 		for i, m := range v.ScalingMetrics {
 			prefix := fmt.Sprintf("scaling.metrics[%d].", i)
 			args = append(args, "--set", prefix+"name="+m.Name)
