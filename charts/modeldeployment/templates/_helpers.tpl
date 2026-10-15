@@ -112,6 +112,46 @@ threshold of 0 counts as set.
 {{- end }}
 
 {{/*
+Validates an optional whole number of seconds against [min, max] and renders it
+without leading zeros; "" when unset. Input: dict "field" "value" "min" "max".
+Complements values.schema.json, which cannot bound numeric strings (e.g. from
+--set-string), so out-of-range values fail at render time instead of when KEDA
+creates the HPA.
+*/}}
+{{- define "modeldeployment.boundedSeconds" -}}
+{{- $v := include "modeldeployment.optionalString" .value -}}
+{{- if ne $v "" -}}
+{{- if not (regexMatch "^[0-9]+$" $v) -}}
+{{- fail (printf "modeldeployment: %s (%s) must be a whole number of seconds" .field $v) -}}
+{{- end -}}
+{{- $n := regexReplaceAll "^0+(.)" $v "${1}" -}}
+{{- if or (gt (len $n) 10) (lt (atoi $n) .min) (gt (atoi $n) .max) -}}
+{{- fail (printf "modeldeployment: %s (%s) must be between %d and %d seconds" .field $v .min .max) -}}
+{{- end -}}
+{{- $n -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Validates an optional HPA tolerance ratio: a non-negative decimal strictly
+below "max", the ratio at or above which the scaling formula's signal for that
+direction (2.0 up, 0.5 down) falls inside the deadband and never fires; ""
+when unset. Input: dict "field" "value" "max".
+*/}}
+{{- define "modeldeployment.boundedTolerance" -}}
+{{- $v := include "modeldeployment.optionalString" .value -}}
+{{- if ne $v "" -}}
+{{- if not (regexMatch "^[0-9]+(\\.[0-9]+)?$" $v) -}}
+{{- fail (printf "modeldeployment: %s (%s) must be a non-negative decimal" .field $v) -}}
+{{- end -}}
+{{- if ge (float64 $v) .max -}}
+{{- fail (printf "modeldeployment: %s (%s) must be less than %v, otherwise that scaling direction never triggers" .field $v .max) -}}
+{{- end -}}
+{{- $v -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Autoscaling lower bound wired to scaledobject.kaito.sh/min-replicas, as a
 string; "" when minReplicas is unset or empty. Required (enforced in
 inferenceset.yaml) whenever enableScaling is true.

@@ -144,21 +144,33 @@ metadata:
     scaledobject.kaito.sh/max-replicas: {{ .Values.maxReplicas | quote }}
     scaledobject.kaito.sh/metrics: |-
       {{- (join "\n" $lines) | nindent 6 }}
-    {{- with (.Values.scaling).evaluationWindow }}
-    scaledobject.kaito.sh/evaluationwindow: {{ . | quote }}
+    {{- /*
+    Each scaling.hpa field maps to exactly one keda-kaito-scaler annotation;
+    empty or null omits it so keda-kaito-scaler applies its default. Bounds
+    mirror the HPA API (stabilization window 0..3600, policy period 1..1800,
+    tolerance >= 0) plus the tolerance ceiling at which the formula's
+    scale-up (2.0) / scale-down (0.5) signal would never fire.
+    */}}
+    {{- $hpa := default dict (.Values.scaling).hpa }}
+    {{- $hpaUp := default dict $hpa.scaleUp }}
+    {{- $hpaDown := default dict $hpa.scaleDown }}
+    {{- $hpaAnnotations := list
+      (list "scaleupstabilizationwindow" (include "modeldeployment.boundedSeconds" (dict "field" "scaling.hpa.scaleUp.stabilizationWindowSeconds" "value" $hpaUp.stabilizationWindowSeconds "min" 0 "max" 3600)))
+      (list "scaleupcooldown" (include "modeldeployment.boundedSeconds" (dict "field" "scaling.hpa.scaleUp.periodSeconds" "value" $hpaUp.periodSeconds "min" 1 "max" 1800)))
+      (list "scaleuptolerance" (include "modeldeployment.boundedTolerance" (dict "field" "scaling.hpa.scaleUp.tolerance" "value" $hpaUp.tolerance "max" 1.0)))
+      (list "scaledownstabilizationwindow" (include "modeldeployment.boundedSeconds" (dict "field" "scaling.hpa.scaleDown.stabilizationWindowSeconds" "value" $hpaDown.stabilizationWindowSeconds "min" 0 "max" 3600)))
+      (list "scaledowncooldown" (include "modeldeployment.boundedSeconds" (dict "field" "scaling.hpa.scaleDown.periodSeconds" "value" $hpaDown.periodSeconds "min" 1 "max" 1800)))
+      (list "scaledowntolerance" (include "modeldeployment.boundedTolerance" (dict "field" "scaling.hpa.scaleDown.tolerance" "value" $hpaDown.tolerance "max" 0.5))) }}
+    {{- range $pair := $hpaAnnotations }}
+    {{- with index $pair 1 }}
+    scaledobject.kaito.sh/{{ index $pair 0 }}: {{ . | quote }}
     {{- end }}
-    {{- with (.Values.scaling).scaleUpCooldown }}
-    scaledobject.kaito.sh/scaleupcooldown: {{ . | quote }}
-    {{- end }}
-    {{- with (.Values.scaling).scaleDownCooldown }}
-    scaledobject.kaito.sh/scaledowncooldown: {{ . | quote }}
     {{- end }}
     {{- if $scaleToZero }}
-    {{- with include "modeldeployment.optionalString" (.Values.scaling).cooldownPeriod }}
-    {{- if gt (. | int64) 2147483647 }}
-    {{- fail (printf "modeldeployment: scaling.cooldownPeriod (%s) must fit in int32 (<= 2147483647)" .) }}
+    {{- range $field, $suffix := dict "cooldownPeriod" "cooldownperiod" "initialCooldownPeriod" "initialcooldownperiod" }}
+    {{- with include "modeldeployment.boundedSeconds" (dict "field" (printf "scaling.%s" $field) "value" (get $.Values.scaling $field) "min" 0 "max" 2147483647) }}
+    scaledobject.kaito.sh/{{ $suffix }}: {{ . | quote }}
     {{- end }}
-    scaledobject.kaito.sh/cooldownperiod: {{ . | quote }}
     {{- end }}
     {{- end }}
   {{- end }}

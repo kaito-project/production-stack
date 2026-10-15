@@ -56,10 +56,14 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `scaling.metrics[].activationThreshold` | optional² | _empty_                                             | 0 → 1 wake threshold (metric `>` threshold, ORed across metrics). Requires `source: epp` and a `deactivationThreshold` on the same metric. Rendered as the `activationthreshold` field. |
 | `scaling.metrics[].deactivationThreshold` | optional² | _empty_                                           | 1 → 0 park threshold (metric `<=` threshold, ANDed across metrics). MUST NOT exceed `activationThreshold`; at least one `modelpod` metric must carry one. Rendered as the `deactivationthreshold` field. |
 | `scaling.metrics[].metricCacheWindow` | optional | _empty_ → `300`                                    | Rolling cache window (seconds) over which `histogram` metrics are averaged (windowed-avg); ignored for `gauge`. Must be a positive number of seconds. Rendered as the `metriccachewindow` field of a `scaledobject.kaito.sh/metrics` entry. |
-| `scaling.evaluationWindow`| optional | `60`                                                                | Scale-up stabilization window (seconds). Wired to `scaledobject.kaito.sh/evaluationwindow`. |
-| `scaling.scaleUpCooldown` | optional | `300`                                                               | Minimum seconds between scale-up steps. Wired to `scaledobject.kaito.sh/scaleupcooldown`.  |
-| `scaling.scaleDownCooldown` | optional | `300`                                                             | Minimum seconds between scale-down steps. Wired to `scaledobject.kaito.sh/scaledowncooldown`. |
-| `scaling.cooldownPeriod`  | optional | `600`                                                               | Seconds KEDA waits after the last active trigger reading before parking at zero. `0` parks on the first inactive poll (~15s); empty or `null` falls back to keda-kaito-scaler's `300`. Must fit in int32. Only rendered when `minReplicas=0` and silently ignored otherwise. Wired to `scaledobject.kaito.sh/cooldownperiod`. |
+| `scaling.hpa.scaleUp.stabilizationWindowSeconds` | optional | `60` | HPA scale-up stabilization window (0–3600 seconds). InferenceSet annotation: `scaledobject.kaito.sh/scaleupstabilizationwindow`. |
+| `scaling.hpa.scaleUp.periodSeconds` | optional | `900` | Minimum seconds between scale-up steps (HPA Pods policy period, 1–1800). InferenceSet annotation: `scaledobject.kaito.sh/scaleupcooldown`. |
+| `scaling.hpa.scaleUp.tolerance` | optional | `0.1` | HPA scale-up tolerance ratio, `0 ≤ x < 1`; `0` disables the deadband (`>= 1` would stop scale-up from ever firing). InferenceSet annotation: `scaledobject.kaito.sh/scaleuptolerance`. |
+| `scaling.hpa.scaleDown.stabilizationWindowSeconds` | optional | `1800` | HPA scale-down stabilization window (0–3600 seconds), independent of `periodSeconds`. InferenceSet annotation: `scaledobject.kaito.sh/scaledownstabilizationwindow`. |
+| `scaling.hpa.scaleDown.periodSeconds` | optional | `1800` | Minimum seconds between scale-down steps (HPA Pods policy period, 1–1800). InferenceSet annotation: `scaledobject.kaito.sh/scaledowncooldown`. |
+| `scaling.hpa.scaleDown.tolerance` | optional | `0.1` | HPA scale-down tolerance ratio, `0 ≤ x < 0.5`; `0` disables the deadband (`>= 0.5` would stop scale-down from ever firing). InferenceSet annotation: `scaledobject.kaito.sh/scaledowntolerance`. |
+| `scaling.initialCooldownPeriod` | optional | `1800` | Seconds after ScaledObject creation before KEDA applies the scale-to-zero cooldown; does not delay initial scale-up. `0`–`2147483647`; rendered only when `minReplicas=0`. InferenceSet annotation: `scaledobject.kaito.sh/initialcooldownperiod`. |
+| `scaling.cooldownPeriod`  | optional | `1800` | Seconds KEDA waits after the last active trigger reading before parking at zero. `0` parks on the first inactive poll (~15s); empty or `null` lets keda-kaito-scaler apply the same `1800` default. `0`–`2147483647`. Only rendered when `minReplicas=0` and silently ignored otherwise. Wired to `scaledobject.kaito.sh/cooldownperiod`. |
 | `autoUpgrade.enabled`     | optional | `false`                                                             | Opts this InferenceSet into KAITO automatic base image upgrades. Renders `spec.autoUpgrade.enabled: true`. Also requires the `enableBaseImageAutoUpgrade` feature gate on the KAITO controller. |
 | `autoUpgrade.maintenanceWindow.schedule` | optional | _empty_                                             | 5-field cron (UTC) marking when rollouts may begin, e.g. `"0 2 * * 6"`. Empty lets upgrades start at any time (the `maintenanceWindow` block is omitted). Consumed only when `autoUpgrade.enabled=true`. |
 | `autoUpgrade.maintenanceWindow.duration` | optional | _empty_ → `4h`                                      | How long the window stays open once it opens, e.g. `"4h"`. Empty inherits the KAITO controller's `4h` default. Ignored when `schedule` is empty. |
@@ -83,6 +87,40 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 ¹ Required (as a pair) unless `minReplicas=0`, where an entry may carry only an
 activation/deactivation band.
 ² Only used when `minReplicas=0`; ignored otherwise.
+
+### HPA behavior
+
+`scaling.hpa` configures the generated ScaledObject's
+`spec.advanced.horizontalPodAutoscalerConfig.behavior`, which governs 1 ↔ N
+scaling only; the 0 ↔ 1 path is governed by `cooldownPeriod` and
+`initialCooldownPeriod`. Each direction exposes `stabilizationWindowSeconds`,
+`periodSeconds` (the single Pods policy, one pod per period, `selectPolicy:
+Max`) and `tolerance`.
+
+Each field maps to exactly one InferenceSet annotation (see the table above);
+empty or `null` omits it and keda-kaito-scaler applies the same default. The
+defaults react to load within a minute (`stabilizationWindowSeconds: 60`) but
+add at most one replica every 15 minutes, and only remove a replica after 30
+minutes of sustained low load, at most one every 30 minutes, to avoid
+releasing expensive GPU capacity on short traffic dips.
+
+`scaleupstabilizationwindow`, `scaledownstabilizationwindow`,
+`scaleuptolerance`, `scaledowntolerance` and `initialcooldownperiod` require a
+keda-kaito-scaler build that supports them.
+Per-direction tolerance also requires the Kubernetes `HPAConfigurableTolerance`
+feature gate.
+
+The chart enforces the HPA / KEDA limits at install time (schema plus template
+guards, so numeric strings from `--set-string` are checked too), instead of
+letting KEDA fail later when it creates the HPA:
+
+| Field | Range | Source |
+| --- | --- | --- |
+| `hpa.*.stabilizationWindowSeconds` | `0`–`3600` | HPA API |
+| `hpa.*.periodSeconds` | `1`–`1800` | HPA API |
+| `hpa.scaleUp.tolerance` | `0 ≤ x < 1` | HPA API requires `≥ 0`; at `≥ 1` the formula's `2.0` scale-up signal never fires |
+| `hpa.scaleDown.tolerance` | `0 ≤ x < 0.5` | HPA API requires `≥ 0`; at `≥ 0.5` the formula's `0.5` scale-down signal never fires |
+| `initialCooldownPeriod`, `cooldownPeriod` | `0`–`2147483647` | KEDA (`≥ 0`, int32) |
 
 ## Naming conventions
 

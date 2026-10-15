@@ -39,12 +39,12 @@ import (
 //   - PollingInterval default: 30s
 //   - CooldownPeriod default: 300s
 //   - ScaleUp stabilizationWindowSeconds default (set by keda-kaito-scaler):   60s
-//   - ScaleDown stabilizationWindowSeconds default (set by keda-kaito-scaler): 300s
+//   - ScaleDown stabilizationWindowSeconds default (set by keda-kaito-scaler): 1800s
 const (
 	DefaultKEDAPollingInterval    = 30 * time.Second
 	DefaultKEDACooldownPeriod     = 300 * time.Second
 	DefaultKEDAScaleUpStabilize   = 60 * time.Second
-	DefaultKEDAScaleDownStabilize = 300 * time.Second
+	DefaultKEDAScaleDownStabilize = 1800 * time.Second
 )
 
 // KEDAParams captures the dynamic KEDA knobs that drive the scaling test

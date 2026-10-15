@@ -4,6 +4,63 @@
   "description": "Schema for charts/modeldeployment. Validates the per-InferenceSet inputs whose misconfiguration is surfaced by the modeldeployment-level schema reasons in the end-to-end error-handling proposal (e.g. inferencesetScalingMisconfigured). Cross-field guards that JSON Schema cannot express on its own (notably maxReplicas >= replicas) are additionally enforced by a fail-fast Helm template guard at render time.",
   "type": "object",
   "additionalProperties": true,
+  "definitions": {
+    "stabilizationWindowSeconds": {
+      "anyOf": [
+        {"type": "integer", "minimum": 0, "maximum": 3600},
+        {"type": "string", "pattern": "^[0-9]*$"},
+        {"type": "null"}
+      ],
+      "description": "HPA stabilization window in seconds, 0..3600 (HPA API limit; numeric strings are range-checked by a template guard). Defaults to 60 (scaleUp) / 1800 (scaleDown); empty or null lets keda-kaito-scaler apply the same default."
+    },
+    "periodSeconds": {
+      "anyOf": [
+        {"type": "integer", "minimum": 1, "maximum": 1800},
+        {"type": "string", "pattern": "^[0-9]*$"},
+        {"type": "null"}
+      ],
+      "description": "Minimum seconds between scaling steps (HPA Pods policy period, one pod per period), 1..1800 (HPA API limit; numeric strings are range-checked by a template guard). Defaults to 900 (scaleUp) / 1800 (scaleDown); empty or null lets keda-kaito-scaler apply the same default."
+    },
+    "cooldownSeconds": {
+      "anyOf": [
+        {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        {"type": "string", "pattern": "^[0-9]*$"},
+        {"type": "null"}
+      ]
+    },
+    "hpaScaleUpRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stabilizationWindowSeconds": {"$ref": "#/definitions/stabilizationWindowSeconds"},
+        "periodSeconds": {"$ref": "#/definitions/periodSeconds"},
+        "tolerance": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+            {"type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?)?$"},
+            {"type": "null"}
+          ],
+          "description": "HPA scale-up tolerance ratio, 0 <= tolerance < 1. The HPA API only requires >= 0, but at >= 1 the formula's 2.0 scale-up signal never leaves the deadband (numeric strings are range-checked by a template guard). Defaults to 0.1; empty or null lets keda-kaito-scaler apply the same default. 0 disables the deadband. Requires the Kubernetes HPAConfigurableTolerance feature gate."
+        }
+      }
+    },
+    "hpaScaleDownRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stabilizationWindowSeconds": {"$ref": "#/definitions/stabilizationWindowSeconds"},
+        "periodSeconds": {"$ref": "#/definitions/periodSeconds"},
+        "tolerance": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "exclusiveMaximum": 0.5},
+            {"type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?)?$"},
+            {"type": "null"}
+          ],
+          "description": "HPA scale-down tolerance ratio, 0 <= tolerance < 0.5. The HPA API only requires >= 0, but at >= 0.5 the formula's 0.5 scale-down signal never leaves the deadband (numeric strings are range-checked by a template guard). Defaults to 0.1; empty or null lets keda-kaito-scaler apply the same default. 0 disables the deadband. Requires the Kubernetes HPAConfigurableTolerance feature gate."
+        }
+      }
+    }
+  },
   "properties": {
     "name": {
       "type": "string",
@@ -121,28 +178,22 @@
             }
           }
         },
-        "evaluationWindow": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Scale-up stabilization window in seconds. Wired to scaledobject.kaito.sh/evaluationwindow."
+        "hpa": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "HPA behavior of the generated ScaledObject (1 <-> N scaling only). Each field maps to one InferenceSet annotation: scaleUp.stabilizationWindowSeconds -> scaleupstabilizationwindow, scaleUp.periodSeconds -> scaleupcooldown, scaleUp.tolerance -> scaleuptolerance, scaleDown.stabilizationWindowSeconds -> scaledownstabilizationwindow, scaleDown.periodSeconds -> scaledowncooldown, scaleDown.tolerance -> scaledowntolerance (all under scaledobject.kaito.sh/).",
+          "properties": {
+            "scaleUp": {"$ref": "#/definitions/hpaScaleUpRules"},
+            "scaleDown": {"$ref": "#/definitions/hpaScaleDownRules"}
+          }
         },
-        "scaleUpCooldown": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Minimum seconds between scale-up steps. Wired to scaledobject.kaito.sh/scaleupcooldown."
-        },
-        "scaleDownCooldown": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Minimum seconds between scale-down steps. Wired to scaledobject.kaito.sh/scaledowncooldown."
+        "initialCooldownPeriod": {
+          "allOf": [{"$ref": "#/definitions/cooldownSeconds"}],
+          "description": "Seconds after ScaledObject creation before KEDA starts applying the scale-to-zero cooldown. Does not delay initial scale-up. Only rendered as scaledobject.kaito.sh/initialcooldownperiod when minReplicas is 0. Defaults to 1800; empty or null lets keda-kaito-scaler apply the same default. KEDA requires >= 0; MUST fit in int32, 0..2147483647 (numeric strings are range-checked by a template guard)."
         },
         "cooldownPeriod": {
-          "anyOf": [
-            {"type": "integer", "minimum": 0, "maximum": 2147483647},
-            {"type": "string", "pattern": "^([0-9]+)?$"},
-            {"type": "null"}
-          ],
-          "description": "Seconds KEDA waits after the last active trigger reading before parking the deployment at zero (0 parks on the first inactive poll). Only rendered (as scaledobject.kaito.sh/cooldownperiod) when minReplicas is 0; ignored otherwise. Empty or null lets keda-kaito-scaler apply its 300s default. MUST fit in int32 (also enforced by a template guard for numeric strings)."
+          "allOf": [{"$ref": "#/definitions/cooldownSeconds"}],
+          "description": "Seconds KEDA waits after the last active trigger reading before parking the deployment at zero (0 parks on the first inactive poll). Only rendered (as scaledobject.kaito.sh/cooldownperiod) when minReplicas is 0; ignored otherwise. Defaults to 1800; empty or null lets keda-kaito-scaler apply the same default. KEDA requires >= 0; MUST fit in int32, 0..2147483647 (numeric strings are range-checked by a template guard)."
         }
       }
     },

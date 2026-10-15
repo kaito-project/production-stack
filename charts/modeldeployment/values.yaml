@@ -82,7 +82,8 @@ maxReplicas: ""
 # by one replica only when EVERY metric with a band is above its upThreshold
 # (and newly added pods are Ready), scale down by one replica only when EVERY
 # such metric is below its downThreshold, otherwise hold. Each step is capped
-# at ±1 replica per cooldown to protect expensive GPU capacity.
+# at ±1 replica per scaling.hpa.*.periodSeconds to protect
+# expensive GPU capacity.
 #
 # 0 <-> 1 (activationThreshold / deactivationThreshold, only when
 # minReplicas is 0): wake when ANY metric is above its activationThreshold
@@ -186,29 +187,59 @@ scaling:
       type: "gauge"
       deactivationThreshold: "0"
 
-  # evaluationWindow is the scale-up stabilization window in seconds.
-  # Optional; empty lets keda-kaito-scaler apply its 60s default. Wired to
-  # scaledobject.kaito.sh/evaluationwindow.
-  evaluationWindow: 60
-  # scaleUpCooldown is the minimum seconds between scale-up steps.
-  # Optional; empty lets keda-kaito-scaler apply its 300s default. Wired to
-  # scaledobject.kaito.sh/scaleupcooldown.
-  scaleUpCooldown: 300
-  # scaleDownCooldown is the minimum seconds between scale-down steps.
-  # Optional; empty lets keda-kaito-scaler apply its 300s default. Wired to
-  # scaledobject.kaito.sh/scaledowncooldown.
-  scaleDownCooldown: 300
+  # hpa configures the generated ScaledObject's
+  # spec.advanced.horizontalPodAutoscalerConfig.behavior, which governs
+  # 1 <-> N scaling only (0 <-> 1 is governed by cooldownPeriod /
+  # initialCooldownPeriod below). Each policy always allows one pod per
+  # periodSeconds with selectPolicy Max. Empty or null omits the annotation
+  # and lets keda-kaito-scaler apply its default (the same values as below).
+  hpa:
+    scaleUp:
+      # stabilizationWindowSeconds is the HPA scale-up stabilization window
+      # (0..3600 seconds). InferenceSet annotation:
+      # scaledobject.kaito.sh/scaleupstabilizationwindow.
+      stabilizationWindowSeconds: 60
+      # periodSeconds is the minimum seconds between scale-up steps (HPA Pods
+      # policy period, 1..1800). InferenceSet annotation:
+      # scaledobject.kaito.sh/scaleupcooldown.
+      periodSeconds: 900
+      # tolerance is the HPA scale-up tolerance ratio, 0 <= tolerance < 1; 0
+      # disables the deadband. The HPA API only requires >= 0, but at >= 1 the
+      # formula's 2.0 scale-up signal never fires, so the chart rejects it.
+      # Requires the Kubernetes HPAConfigurableTolerance feature gate.
+      # InferenceSet annotation: scaledobject.kaito.sh/scaleuptolerance.
+      tolerance: 0.1
+    scaleDown:
+      # stabilizationWindowSeconds is the HPA scale-down stabilization window
+      # (0..3600 seconds), independent of periodSeconds. InferenceSet
+      # annotation: scaledobject.kaito.sh/scaledownstabilizationwindow.
+      stabilizationWindowSeconds: 1800
+      # periodSeconds is the minimum seconds between scale-down steps (HPA
+      # Pods policy period, 1..1800). InferenceSet annotation:
+      # scaledobject.kaito.sh/scaledowncooldown.
+      periodSeconds: 1800
+      # tolerance is the HPA scale-down tolerance ratio, 0 <= tolerance < 0.5;
+      # 0 disables the deadband. The HPA API only requires >= 0, but at >= 0.5
+      # the formula's 0.5 scale-down signal never fires, so the chart rejects
+      # it. Requires the Kubernetes HPAConfigurableTolerance feature gate.
+      # InferenceSet annotation: scaledobject.kaito.sh/scaledowntolerance.
+      tolerance: 0.1
+  # initialCooldownPeriod delays the start of KEDA's scale-to-zero cooldown
+  # after ScaledObject creation; it does not delay the initial scale-up.
+  # Only rendered when minReplicas is 0. Empty or null lets keda-kaito-scaler
+  # apply the same 1800s default. 0..2147483647 seconds (KEDA requires >= 0,
+  # int32). InferenceSet annotation: scaledobject.kaito.sh/initialcooldownperiod.
+  initialCooldownPeriod: 1800
   # cooldownPeriod is how many seconds KEDA waits after the last active
   # trigger reading before parking the deployment at zero. Only rendered when
   # minReplicas is 0 and silently ignored otherwise. Size it against how
   # often you are willing to pay a cold start (node provisioning + model
   # load). 0 is allowed and parks on the first inactive poll (~15s), which
-  # risks a cold start after every short gap in traffic. Defaults to 600,
-  # matching the keda-kaito-scaler scale-to-zero design
-  # (kaito-project/keda-kaito-scaler#150); empty or null lets
-  # keda-kaito-scaler apply its 300s default. MUST fit in int32. Wired to
+  # risks a cold start after every short gap in traffic. Empty or null lets
+  # keda-kaito-scaler apply the same 1800s default. 0..2147483647 seconds
+  # (KEDA requires >= 0, int32). InferenceSet annotation:
   # scaledobject.kaito.sh/cooldownperiod.
-  cooldownPeriod: 600
+  cooldownPeriod: 1800
 
 # enableBenchmark toggles KAITO benchmark runs for this InferenceSet. When
 # false, the `kaito.sh/disable-benchmark: "true"` annotation is stamped on
