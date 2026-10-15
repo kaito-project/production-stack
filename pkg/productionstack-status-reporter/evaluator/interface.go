@@ -87,7 +87,9 @@ type Finding struct {
 	// StartupGraceExempt marks a finding that must be surfaced immediately,
 	// bypassing the startup grace gate. Set for confirmed (terminal) failures
 	// such as the Workspace / model-pod reasons that already discriminate
-	// failed from in-progress states.
+	// failed from in-progress states, and for findings that aggregate several
+	// subjects whose evaluator already aged each of them against its own
+	// window (e.g. the Workspace-derived modeldeployment reasons).
 	StartupGraceExempt bool
 	// ResourceCreatedAt is the creation time of the resource the finding is
 	// about, used by the startup grace gate for object-age gating. Zero when
