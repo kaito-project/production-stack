@@ -10,12 +10,12 @@ dependencies:
   version: 0.4.3
 - name: llm-gateway-apikey
   repository: oci://mcr.microsoft.com/aks/kaito/helm
-  version: 0.1.2
+  version: 0.1.3
 - name: llm-gateway-azureauth
   repository: oci://mcr.microsoft.com/aks/kaito/helm
-  version: 0.1.2
+  version: 0.1.3
 - name: productionstack-status-reporter
   repository: ""
   version: 0.4.3
-digest: sha256:22f3ff6597ff90be945e074300c55f68c509cb94c32bd4fcd3bdecb5948c5e5e
-generated: "2026-10-13T13:14:50.628443+11:00"
+digest: sha256:e8025c947a3dcb700bd7ba42849b2df9c216af1304f46d5ee70ce92ab67913fd
+generated: "2026-10-15T15:01:28.026668+11:00"
