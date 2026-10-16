@@ -24,6 +24,32 @@ model: ""
 # custom inference arguments. Rendered as spec.template.inference.config.
 config: ""
 
+# adapters configures LoRA adapters that the vLLM runtime loads alongside the
+# base model. Each source name is an additional client-visible model ID: BBR
+# maps requests carrying that ID back to this deployment's `name`, and the
+# models API publishes it alongside the base deployment ID.
+#
+# Adapter names must be unique within this deployment and across the cluster.
+# The cluster-wide BBR cache keys mappings only by adapter name, not namespace.
+# Prefix names with a tenant/deployment identifier when multiple teams share a
+# cluster.
+#
+# vLLM does not support KAITO's adapter `strength` field, so this chart does
+# not expose or render it. Each source must provide exactly one of:
+#   - image: an adapter image whose PEFT files are under /data
+#   - volumeSource: a Kubernetes VolumeSource containing the PEFT files
+adapters: []
+#  - source:
+#      name: "team-a-legal-adapter"
+#      image: "example.azurecr.io/legal-adapter:v1"
+#      imagePullSecrets:
+#        - "adapter-registry"
+#  - source:
+#      name: "team-a-summary-adapter"
+#      volumeSource:
+#        persistentVolumeClaim:
+#          claimName: "summary-adapter"
+
 # modelAccessSecret is the name of a Kubernetes Secret containing the
 # models access credentials for huggingface. Used within the InferenceSet 
 # spec.template.inference.preset.presetOptions.modelAccessSecret field.

@@ -79,6 +79,66 @@
       "type": "string",
       "description": "Name of a ConfigMap in the deployment namespace containing custom inference arguments. Rendered as spec.template.inference.config."
     },
+    "adapters": {
+      "type": "array",
+      "default": [],
+      "description": "LoRA adapters loaded by the vLLM runtime. Each source name is also a client-visible model ID and is published to BBR for adapter-to-base-model routing. Adapter names must be cluster-wide unique because BBR's mapping cache is not namespace-scoped. The vLLM-incompatible strength field is intentionally unsupported.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source"],
+        "properties": {
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 253,
+                "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?)*$",
+                "description": "Unique adapter model ID. Must be a DNS-1123 subdomain and must not equal this deployment's name (the latter is enforced by a Helm template guard)."
+              },
+              "image": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Container image containing PEFT adapter files under /data. Mutually exclusive with volumeSource."
+              },
+              "imagePullSecrets": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Secret names used to pull the adapter image."
+              },
+              "volumeSource": {
+                "type": "object",
+                "minProperties": 1,
+                "description": "Kubernetes VolumeSource containing the adapter files. Mutually exclusive with image.",
+                "additionalProperties": true
+              }
+            },
+            "oneOf": [
+              {
+                "required": ["image"],
+                "not": {"required": ["volumeSource"]}
+              },
+              {
+                "required": ["volumeSource"],
+                "not": {
+                  "anyOf": [
+                    {"required": ["image"]},
+                    {"required": ["imagePullSecrets"]}
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
     "modelAccessSecret": {
       "type": "string",
       "description": "Name of a Kubernetes Secret containing the models access credentials for huggingface. Optional."

@@ -16,9 +16,9 @@ limitations under the License.
 
 // Package modelsapi serves the OpenAI-compatible model discovery surface
 // (`GET /v1/models` and `GET /v1/models/{id}`) for every modelharness-managed
-// workload namespace. The listing is assembled from the KAITO InferenceSets in
-// the caller's own namespace, so the `id` clients discover is exactly the value
-// they send in the `model` field of an inference request.
+// workload namespace. The listing is assembled from the KAITO InferenceSets
+// and their LoRA adapter aliases in the caller's own namespace, so every `id`
+// clients discover is a value they can send in the `model` field.
 //
 // The endpoint is a REGISTRY, not a health check: every InferenceSet in the
 // namespace is listed regardless of whether its pods are currently serving.
@@ -57,9 +57,9 @@ const (
 	ownedBy     = "kaito"
 )
 
-// Model is one entry of an OpenAI-compatible model listing. ID is the
-// InferenceSet name, which is also the `X-Gateway-Model-Name` value the
-// per-deployment HTTPRoute matches — discovery and invocation therefore agree.
+// Model is one entry of an OpenAI-compatible model listing. ID is either the
+// InferenceSet name or one of its LoRA adapter source names. BBR maps adapter
+// IDs to the owning InferenceSet before the per-deployment HTTPRoute matches.
 //
 // The field set is exactly the one OpenAI's own models API returns. vLLM's
 // extra fields (root/parent/permission/max_model_len) are deliberately omitted:
@@ -114,39 +114,79 @@ func (l *Lister) List(ctx context.Context, namespace string) ([]Model, error) {
 	}
 
 	models := make([]Model, 0, len(sets.Items))
+	seen := make(map[string]string)
 	for i := range sets.Items {
-		models = append(models, modelFor(&sets.Items[i]))
+		setModels, err := modelsFor(&sets.Items[i])
+		if err != nil {
+			return nil, err
+		}
+		for _, model := range setModels {
+			if owner, exists := seen[model.ID]; exists {
+				return nil, fmt.Errorf("model id %q is declared by both InferenceSet %s and %s",
+					model.ID, owner, sets.Items[i].GetName())
+			}
+			seen[model.ID] = sets.Items[i].GetName()
+			models = append(models, model)
+		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
 }
 
-// Get returns the model named id in namespace. The bool reports whether it
-// exists; a lookup scoped to a different namespace can never observe it.
+// Get returns the base model or LoRA adapter alias named id in namespace. The
+// bool reports whether it exists; a lookup scoped to a different namespace can
+// never observe it.
 func (l *Lister) Get(ctx context.Context, namespace, id string) (Model, bool, error) {
-	set := &unstructured.Unstructured{}
-	set.SetGroupVersionKind(inferenceSetGVK)
-	err := l.reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: id}, set)
-	if apierrors.IsNotFound(err) {
-		return Model{}, false, nil
-	}
+	models, err := l.List(ctx, namespace)
 	if err != nil {
-		return Model{}, false, fmt.Errorf("get InferenceSet %s/%s: %w", namespace, id, err)
+		return Model{}, false, err
 	}
-	return modelFor(set), true, nil
+	i := sort.Search(len(models), func(i int) bool { return models[i].ID >= id })
+	if i < len(models) && models[i].ID == id {
+		return models[i], true, nil
+	}
+	return Model{}, false, nil
 }
 
-// modelFor projects an InferenceSet onto the OpenAI model shape. Created is the
-// InferenceSet's creation time, which — unlike vLLM's process start time —
-// stays stable across restarts.
-func modelFor(set *unstructured.Unstructured) Model {
-	m := Model{
+// modelsFor projects an InferenceSet and each of its LoRA adapter aliases onto
+// the OpenAI model shape. Created is the InferenceSet's creation time, which —
+// unlike vLLM's process start time — stays stable across restarts.
+func modelsFor(set *unstructured.Unstructured) ([]Model, error) {
+	base := Model{
 		ID:      set.GetName(),
 		Object:  objectModel,
 		OwnedBy: ownedBy,
 	}
 	if created := set.GetCreationTimestamp(); !created.IsZero() {
-		m.Created = created.Unix()
+		base.Created = created.Unix()
 	}
-	return m
+
+	models := []Model{base}
+	adapters, found, err := unstructured.NestedSlice(set.Object, "spec", "template", "inference", "adapters")
+	if err != nil {
+		return nil, fmt.Errorf("read adapters from InferenceSet %s/%s: %w", set.GetNamespace(), set.GetName(), err)
+	}
+	if !found {
+		return models, nil
+	}
+	for i := range adapters {
+		adapter, ok := adapters[i].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("InferenceSet %s/%s adapter %d is not an object",
+				set.GetNamespace(), set.GetName(), i)
+		}
+		name, found, err := unstructured.NestedString(adapter, "source", "name")
+		if err != nil {
+			return nil, fmt.Errorf("read adapter %d name from InferenceSet %s/%s: %w",
+				i, set.GetNamespace(), set.GetName(), err)
+		}
+		if !found || name == "" {
+			return nil, fmt.Errorf("InferenceSet %s/%s adapter %d has no source.name",
+				set.GetNamespace(), set.GetName(), i)
+		}
+		alias := base
+		alias.ID = name
+		models = append(models, alias)
+	}
+	return models, nil
 }
