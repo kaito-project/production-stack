@@ -210,10 +210,21 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 
 	queue, prefix := 5, 0
 	values := deploy.ModelDeploymentValues{
-		Name:          "phi",
-		Namespace:     "e2e-ns",
-		Model:         "phi-4-mini-instruct",
-		Config:        "phi-inference-config",
+		Name:      "phi",
+		Namespace: "e2e-ns",
+		Model:     "phi-4-mini-instruct",
+		Config:    "phi-inference-config",
+		Adapters: []deploy.LoRAAdapter{
+			{
+				Name:             "team-a-legal",
+				Image:            "example.azurecr.io/phi-legal:v1",
+				ImagePullSecrets: []string{"adapter-registry"},
+			},
+			{
+				Name:                  "team-a-summary",
+				PersistentVolumeClaim: "phi-summary-adapter",
+			},
+		},
 		Replicas:      3,
 		InstanceType:  "Standard_NC24ads_A100_v4",
 		EnableScaling: true,
@@ -256,6 +267,11 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 		"model=phi-4-mini-instruct",
 		"replicas=3",
 		"instanceType=Standard_NC24ads_A100_v4",
+		"adapters[0].source.name=team-a-legal",
+		"adapters[0].source.image=example.azurecr.io/phi-legal:v1",
+		"adapters[0].source.imagePullSecrets[0]=adapter-registry",
+		"adapters[1].source.name=team-a-summary",
+		"adapters[1].source.volumeSource.persistentVolumeClaim.claimName=phi-summary-adapter",
 		"enableScaling=true",
 		"minReplicas=2",
 		"maxReplicas=7",
@@ -323,6 +339,43 @@ func TestInstallValidatesBeforeInvokingHelm(t *testing.T) {
 			name:    "missing model",
 			values:  deploy.ModelDeploymentValues{Name: "phi"},
 			wantErr: "Model is required",
+		},
+		{
+			name: "adapter missing source",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi",
+				Adapters: []deploy.LoRAAdapter{{Name: "team-a-adapter"}},
+			},
+			wantErr: "exactly one of Image or PersistentVolumeClaim",
+		},
+		{
+			name: "adapter conflicting sources",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi",
+				Adapters: []deploy.LoRAAdapter{{
+					Name: "team-a-adapter", Image: "example/adapter:v1", PersistentVolumeClaim: "adapter",
+				}},
+			},
+			wantErr: "exactly one of Image or PersistentVolumeClaim",
+		},
+		{
+			name: "adapter repeats deployment name",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi",
+				Adapters: []deploy.LoRAAdapter{{Name: "phi", Image: "example/adapter:v1"}},
+			},
+			wantErr: "must differ from the deployment name",
+		},
+		{
+			name: "duplicate adapter name",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi",
+				Adapters: []deploy.LoRAAdapter{
+					{Name: "team-a-adapter", Image: "example/adapter:v1"},
+					{Name: "team-a-adapter", Image: "example/adapter:v2"},
+				},
+			},
+			wantErr: "is duplicated",
 		},
 		{
 			name:    "scaling without metrics",

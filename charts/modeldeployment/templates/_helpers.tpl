@@ -45,6 +45,15 @@ HTTPRoute name.
 {{- end }}
 
 {{/*
+ConfigMap consumed by BBR's base-model-to-header plugin. The release-scoped
+name is only an object identity; BBR reads the mapping from data.baseModel and
+data.adapters.
+*/}}
+{{- define "modeldeployment.adapterRoutingConfigMapName" -}}
+{{ include "modeldeployment.name" . }}-adapter-routing
+{{- end }}
+
+{{/*
 Common labels applied to managed resources.
 */}}
 {{- define "modeldeployment.labels" -}}

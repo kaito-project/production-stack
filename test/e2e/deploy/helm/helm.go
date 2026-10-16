@@ -387,6 +387,20 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 	if v.Config != "" {
 		args = append(args, "--set-string", "config="+v.Config)
 	}
+	for i, adapter := range v.Adapters {
+		prefix := fmt.Sprintf("adapters[%d].source.", i)
+		args = append(args, "--set-string", prefix+"name="+adapter.Name)
+		if adapter.Image != "" {
+			args = append(args, "--set-string", prefix+"image="+adapter.Image)
+			for j, secret := range adapter.ImagePullSecrets {
+				args = append(args, "--set-string",
+					fmt.Sprintf("%simagePullSecrets[%d]=%s", prefix, j, secret))
+			}
+		} else {
+			args = append(args, "--set-string",
+				prefix+"volumeSource.persistentVolumeClaim.claimName="+adapter.PersistentVolumeClaim)
+		}
+	}
 	if v.EnableScaling {
 		args = append(args, "--set", "enableScaling=true")
 		args = append(args,

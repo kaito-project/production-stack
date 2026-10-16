@@ -156,12 +156,25 @@ The namespace Gateway routes both paths to the cluster-wide `productionstack-sta
 The endpoint is a **registry**, not a health check: a model is listed as soon as its `InferenceSet` exists, whether or not it is currently serving.
 
 * Namespace listing — `GET /v1/models` returns `200` with `{"object":"list","data":[...]}` containing exactly the case namespace's models, sorted by `id`. Each entry carries `object: "model"`, `owned_by: "kaito"`, and a non-zero `created` (the `InferenceSet` creation time). Exact-set equality doubles as the cross-namespace isolation assertion — models from other cases' namespaces must never appear.
-* `id` is the invocation key — Every listed `id` equals the deployment name that `X-Gateway-Model-Name` matches, so discovery and invocation agree (a client can feed a listed `id` straight into the `model` field).
+* `id` is the invocation key — A base model `id` equals the deployment name that `X-Gateway-Model-Name` matches; a LoRA adapter `id` equals its `source.name` and BBR maps it to the deployment through `X-Gateway-Base-Model-Name`. In both cases a client can feed a listed `id` straight into the `model` field.
+* LoRA adapter discovery — For an InferenceSet with vLLM adapters, the listing includes both the base deployment ID and every `spec.template.inference.adapters[*].source.name`, sorted together. Retrieving an adapter ID returns the same object as its listing entry. Duplicate aliases fail the registry closed instead of producing an ambiguous ID.
 * Single-model retrieve — `GET /v1/models/{id}` returns `200` with a **bare** model object (no `data` envelope) that is field-for-field identical to that model's entry in the listing.
 * Unknown model — `GET /v1/models/unknown` returns `404` with `code: model_not_found` and `type: invalid_request_error`, the same envelope the Gateway catch-all uses for an unroutable model, so "model does not exist" has one representation across the data plane.
 * Method enforcement — `POST /v1/models` returns `405` with an `Allow: GET` header.
 * Prefix isolation — `GET /v1/modelsfoo` must NOT be answered by the registry. The route pair is `exact /v1/models` plus `prefix /v1/models/`; a single bare `prefix /v1/models` would wrongly absorb sibling paths.
 * Authentication (see *API Key Authentication*) — with `auth.enabled`, both discovery paths return `401` without a key and with an invalid key, and `200` with a valid one. `ext_authz` is an HTTP filter and therefore runs before route selection, so discovery is covered by the same policy as inference traffic.
+
+### LoRA adapter routing — vLLM
+
+**CI tier:** PR (required). Adapter aliases cross BBR, HTTPRoute, EPP, and vLLM, so a render-only test is insufficient.
+
+Deploy one image-backed and one PVC-backed adapter on a vLLM InferenceSet. Verify the InferenceSet preserves each source under `spec.template.inference.adapters` and that the chart creates a ConfigMap labeled `inference.networking.k8s.io/bbr-managed: "true"` with the deployment name in `data.baseModel` and both aliases in `data.adapters`.
+
+* Image-backed adapter — Send a chat request with the image-backed adapter name in `model`; verify BBR sets `X-Gateway-Base-Model-Name` to the deployment name, the deployment-specific HTTPRoute wins over the catch-all, and the request returns `200`.
+* PVC-backed adapter — Repeat with the PVC-backed adapter alias and verify the same routing contract.
+* Base model regression — Requests carrying the deployment name continue to return `200`.
+* Unknown adapter — An unregistered adapter name returns the standard `404 model_not_found` envelope.
+* Uninstall cleanup — Uninstalling the modeldeployment release deletes its BBR mapping ConfigMap, and the former adapter aliases stop routing.
 
 ## Prefix Cache Aware Routing — PrefixCache
 
