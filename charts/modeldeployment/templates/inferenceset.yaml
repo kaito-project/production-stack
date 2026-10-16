@@ -6,6 +6,18 @@
 {{- $minReplicas := $minReplicasStr | int }}
 {{- $scaleToZero := eq (include "modeldeployment.scaleToZero" .) "true" }}
 {{- $lines := list }}
+{{- $hasAdapters := not (empty .Values.adapters) }}
+{{- $adapterNames := dict }}
+{{- range $i, $adapter := .Values.adapters }}
+{{- $adapterName := $adapter.source.name }}
+{{- if eq $adapterName $name }}
+{{- fail (printf "modeldeployment: adapters[%d].source.name %q must differ from deployment name %q" $i $adapterName $name) }}
+{{- end }}
+{{- if hasKey $adapterNames $adapterName }}
+{{- fail (printf "modeldeployment: adapters[%d].source.name %q is duplicated" $i $adapterName) }}
+{{- end }}
+{{- $_ := set $adapterNames $adapterName true }}
+{{- end }}
 {{- if .Values.enableScaling }}
 {{- if eq $minReplicasStr "" }}
 {{- fail "modeldeployment: minReplicas is required when enableScaling is true" }}
@@ -137,8 +149,12 @@ metadata:
   namespace: {{ $namespace }}
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
-  {{- if .Values.enableScaling }}
+  {{- if or .Values.enableScaling $hasAdapters }}
   annotations:
+    {{- if $hasAdapters }}
+    kaito.sh/runtime: vllm
+    {{- end }}
+    {{- if .Values.enableScaling }}
     scaledobject.kaito.sh/auto-provision: "true"
     scaledobject.kaito.sh/min-replicas: {{ $minReplicas | quote }}
     scaledobject.kaito.sh/max-replicas: {{ .Values.maxReplicas | quote }}
@@ -170,6 +186,7 @@ metadata:
     {{- range $field, $suffix := dict "cooldownPeriod" "cooldownperiod" "initialCooldownPeriod" "initialcooldownperiod" }}
     {{- with include "modeldeployment.boundedSeconds" (dict "field" (printf "scaling.%s" $field) "value" (get $.Values.scaling $field) "min" 0 "max" 2147483647) }}
     scaledobject.kaito.sh/{{ $suffix }}: {{ . | quote }}
+    {{- end }}
     {{- end }}
     {{- end }}
     {{- end }}
@@ -214,8 +231,11 @@ spec:
       {{- if and $disabled $sas }}
       {{- fail "modeldeployment: streaming.disabled and streaming.staticModelMirror are mutually exclusive" }}
       {{- end }}
-      {{- if or (not .Values.enableBenchmark) .Values.performanceMode $disabled $sas }}
+      {{- if or $hasAdapters (not .Values.enableBenchmark) .Values.performanceMode $disabled $sas }}
       annotations:
+        {{- if $hasAdapters }}
+        kaito.sh/runtime: vllm
+        {{- end }}
         {{- if not .Values.enableBenchmark }}
         kaito.sh/disable-benchmark: "true"
         {{- end }}
@@ -258,6 +278,10 @@ spec:
         {{- end }}
       {{- with .Values.config }}
       config: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.adapters }}
+      adapters:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
   {{- if (.Values.autoUpgrade).enabled }}
   autoUpgrade:
