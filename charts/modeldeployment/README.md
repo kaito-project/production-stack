@@ -46,7 +46,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `minReplicas`             | required when `enableScaling=true` | _empty_                                    | Autoscaling lower bound, wired to `scaledobject.kaito.sh/min-replicas`. Ignored when `enableScaling=false`. `0` enables [scale to zero](#scale-to-zero). |
 | `enableScaling`           | optional | `false`                                                              | Wired to `scaledobject.kaito.sh/auto-provision`. Gates `minReplicas`, `maxReplicas` and the entire `scaling` block. |
 | `maxReplicas`             | required when `enableScaling=true` | _empty_                                    | Autoscaling upper bound, wired to `scaledobject.kaito.sh/max-replicas`. Ignored when `enableScaling=false`. Must be `>= 1`, `>= minReplicas` and, when set, `>= replicas`. |
-| `scaling.metrics`         | optional | `vllm:num_requests_waiting` gauge + `vllm:request_queue_time_seconds` histogram (1 ↔ N), plus `llm_d_epp_flow_control_queue_size` (epp, activation `10` / deactivation `0`) and `vllm:num_requests_running` (deactivation `0`) for 0 ↔ 1; `vllm:num_requests_waiting` also carries deactivation `0` | Ordered list of scaling signals; rendered as a single `scaledobject.kaito.sh/metrics` annotation (a YAML list). Up/down bands combine under the AND policy. With `minReplicas >= 1` the activation/deactivation fields are ignored and entries carrying only those fields are skipped, so the defaults work for both modes. |
+| `scaling.metrics`         | optional | `vllm:num_requests_waiting` gauge + `vllm:request_queue_time_seconds` histogram (1 ↔ N), plus `llm_d_epp_flow_control_queue_size` (epp, activation `0` / deactivation `0`) and `vllm:num_requests_running` (deactivation `0`) for 0 ↔ 1; `vllm:num_requests_waiting` also carries deactivation `0` | Ordered list of scaling signals; rendered as a single `scaledobject.kaito.sh/metrics` annotation (a YAML list). Up/down bands combine under the AND policy. With `minReplicas >= 1` the activation/deactivation fields are ignored and entries carrying only those fields are skipped, so the defaults work for both modes. |
 | `scaling.metrics[].name`  | required | `vllm:num_requests_waiting`                                         | Prometheus metric family name. Rendered as the `name` field of a `scaledobject.kaito.sh/metrics` entry.            |
 | `scaling.metrics[].type`  | optional | `gauge`                                                             | `gauge` (per-replica average; summed across EPP pods for `source: epp`) or `histogram` (per-pod windowed average). Rendered as the `type` field. |
 | `scaling.metrics[].source` | optional | _empty_ → `modelpod`                                               | `modelpod` (model-serving pods) or `epp` (Endpoint Picker pods, which keep reporting at zero replicas). Rendered as the `source` field when set. |
@@ -173,8 +173,9 @@ default) and parks once idle; set `replicas=0` to install it parked. The
 edge, driven by the default `scaling.metrics` entries:
 
 - **Wake (0 → 1)** — `llm_d_epp_flow_control_queue_size` (`source: epp`,
-  `activationThreshold: 10`). At zero replicas there are no model pods to
-  scrape, so the signal comes from this deployment's Endpoint Picker. The
+  `activationThreshold: 0`), so the first request wakes the deployment. At
+  zero replicas there are no model pods to scrape, so the signal comes from
+  this deployment's Endpoint Picker. The
   chart turns on the EPP `flowControl` feature gate whenever `minReplicas=0`:
   the EPP then **queues** requests that arrive while the pool is empty instead
   of failing them immediately, and the queued requests raise the queue gauge
@@ -185,16 +186,18 @@ edge, driven by the default `scaling.metrics` entries:
   `vllm:num_requests_running` are `0` on the model pods, so in-flight
   generation is never cut off (`deactivationThreshold: 0` on all three).
 
-The defaults follow the keda-kaito-scaler scale-to-zero design
+The mechanism follows the keda-kaito-scaler scale-to-zero design
 ([kaito-project/keda-kaito-scaler#150](https://github.com/kaito-project/keda-kaito-scaler/issues/150#issuecomment-5404566270)).
-While parked nothing drains the queue, so it holds every request that arrived
-within the wait window (`epp.flowControl.defaultRequestTTL`, `600s` by default,
-or the client timeout if shorter), and the wake condition is roughly
-`QPS > activationThreshold / window`: with the defaults, `10` wakes at about
-1 request per minute. Requests below that rate are buffered rather than
-rejected and fail once they time out, so a deployment whose traffic stays
-below the floor never wakes. Set the activation threshold to `0` to wake on
-the first request.
+The activation threshold defaults to `0` so that any request wakes a parked
+deployment: availability takes precedence over the cost of a cold start.
+Raise it to ignore sporadic requests, at the cost of a traffic floor. While
+parked nothing drains the queue, so it holds every request that arrived within
+the wait window (`epp.flowControl.defaultRequestTTL`, `600s` by default, or the
+client timeout if shorter), and the wake condition becomes roughly
+`QPS > activationThreshold / window`: for example, `10` wakes at about 1
+request per minute. Requests below that rate are buffered rather than rejected
+and fail once they time out, so a deployment whose traffic stays below the
+floor never wakes.
 
 Flow control uses the `concurrency-detector` with a very large
 `epp.flowControl.maxConcurrency`, so it only queues while no replica exists

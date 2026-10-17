@@ -351,7 +351,7 @@ func TestUpgradeModelDeploymentEnablesCapacityWithoutRemovingZeroScaling(t *test
 		InitialCooldownPeriod: ptr.To(int64(60)),
 		ScalingMetrics: []deploy.ScalingMetric{
 			{Name: "vllm:num_requests_waiting", Type: "gauge", Source: "modelpod", UpThreshold: "3", DownThreshold: "1", DeactivationThreshold: "0"},
-			{Name: "llm_d_epp_flow_control_queue_size", Type: "gauge", Source: "epp", ActivationThreshold: "10", DeactivationThreshold: "0"},
+			{Name: "llm_d_epp_flow_control_queue_size", Type: "gauge", Source: "epp", ActivationThreshold: "0", DeactivationThreshold: "0"},
 			{Name: "vllm:num_requests_running", Type: "gauge", Source: "modelpod", DeactivationThreshold: "0"},
 		},
 	}
@@ -369,7 +369,7 @@ func TestUpgradeModelDeploymentEnablesCapacityWithoutRemovingZeroScaling(t *test
 			wantMaximum, "replicas=1", "minReplicas=0", "enableScaling=true",
 			"scaling.cooldownPeriod=60", "scaling.initialCooldownPeriod=60",
 			"scaling.metrics[0].upThreshold=3", "scaling.metrics[0].downThreshold=1",
-			"scaling.metrics[1].activationThreshold=10", "scaling.metrics[1].deactivationThreshold=0",
+			"scaling.metrics[1].activationThreshold=0", "scaling.metrics[1].deactivationThreshold=0",
 			"scaling.metrics[2].name=vllm:num_requests_running", "scaling.metrics[2].deactivationThreshold=0",
 		} {
 			if !hasArg(args, want) {

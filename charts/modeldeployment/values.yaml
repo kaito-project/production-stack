@@ -1,360 +1,161 @@
 # Required inputs.
 
-# name is the deployment name. It is used as:
-#   - the Helm release / InferenceSet name
-#   - the prefix for the InferencePool / EPP / HTTPRoute object names
-#   - the value of the inferenceset.kaito.sh/created-by selector used by
-#     the InferencePool to find inference (shadow) pods
-#   - the value of the X-Gateway-Model-Name header matched by the HTTPRoute
-#     (i.e. the value sent in the `model` field of OpenAI-style requests).
-#     This lets a single namespace host multiple deployments of the same
-#     preset model under distinct deployment names.
-# Defaults to .Release.Name when empty.
+# name is the deployment name, used as the InferenceSet name, the object-name prefix and the `model` value
+# routed by the HTTPRoute; defaults to .Release.Name.
 name: ""
 
-# namespace is the target namespace. Defaults to .Release.Namespace when empty.
+# namespace is the target namespace; defaults to .Release.Namespace.
 namespace: ""
 
-# model is the inference preset name, used only as
-# spec.template.inference.preset.name on the InferenceSet. It is independent
-# of `name` — multiple deployments may share the same preset model. Required.
+# model is the KAITO inference preset name (required); several deployments may share one preset.
 model: ""
 
-# config is the name of a ConfigMap in the deployment namespace containing
-# custom inference arguments. Rendered as spec.template.inference.config.
+# config names a ConfigMap with custom inference arguments (spec.template.inference.config).
 config: ""
 
-# modelAccessSecret is the name of a Kubernetes Secret containing the
-# models access credentials for huggingface. Used within the InferenceSet 
-# spec.template.inference.preset.presetOptions.modelAccessSecret field.
+# modelAccessSecret names the Secret holding the Hugging Face access credentials.
 modelAccessSecret: ""
 
-# instanceType is the VM instance type used for the underlying nodes.
+# instanceType is the VM instance type of the GPU nodes.
 instanceType: "Standard_NV36ads_A10_v5"
 
-# replicas is the number of InferenceSet replicas, rendered as the
-# InferenceSet's spec.replicas. Optional: when empty (the default) the chart
-# leaves spec.replicas unset, so the InferenceSet starts at the CRD default
-# of 1 and, with enableScaling, KEDA moves it into [minReplicas, maxReplicas].
-#
-# When set together with enableScaling, KEDA still owns the live count:
-# `replicas` sets it on install, and an upgrade applies it again only when the
-# value itself changes (Helm patches custom resources with a diff of the
-# previous and the new release manifest), so unrelated upgrades keep what
-# KEDA scaled to. It must then lie within [minReplicas, maxReplicas]; set it
-# to 0 together with minReplicas=0 to install the deployment parked.
+# replicas sets spec.replicas when not empty (otherwise the CRD default of 1); with enableScaling it must lie
+# within [minReplicas, maxReplicas] and is reapplied on upgrade only when its value changes.
 replicas: ""
 
-# enableScaling toggles KAITO ScaledObject auto-provisioning. When false,
-# none of the scaledobject.kaito.sh/* annotations are rendered on the
-# InferenceSet, and minReplicas, maxReplicas and the entire `scaling` block
-# below are ignored.
+# enableScaling turns on KEDA autoscaling via keda-kaito-scaler; when false, minReplicas, maxReplicas and
+# `scaling` are ignored.
 enableScaling: false
 
-# minReplicas is the lower bound for autoscaling, wired to the
-# scaledobject.kaito.sh/min-replicas annotation. REQUIRED when enableScaling
-# is true (an empty value rejects the install); ignored otherwise.
-#
-# Setting it to 0 enables scale to zero (requires keda-kaito-scaler v0.7.0+):
-# the deployment releases its GPU capacity while idle (1 -> 0) and is woken
-# by the next request (0 -> 1). The 0 <-> 1 edge is driven by the
-# activationThreshold / deactivationThreshold of `scaling.metrics`, and the
-# EPP flowControl feature gate is turned on so requests that arrive while
-# parked are queued in the EPP (raising the wake-up signal) instead of
-# failing immediately. Serving those queued requests is best effort, not
-# guaranteed (see the chart README, "Cold-start requests").
+# minReplicas is the autoscaling lower bound (required with enableScaling); 0 enables scale to zero
+# (keda-kaito-scaler v0.7.0+), see the chart README.
 minReplicas: ""
 
-# maxReplicas is the upper bound for autoscaling, wired to the
-# scaledobject.kaito.sh/max-replicas annotation. REQUIRED when enableScaling
-# is true (an empty value rejects the install); ignored otherwise. MUST be at
-# least 1, >= minReplicas and, when set, >= replicas.
+# maxReplicas is the autoscaling upper bound (required with enableScaling); must be >= 1, >= minReplicas and
+# >= replicas.
 maxReplicas: ""
 
-# scaling holds the composite (multi-metric) autoscaling configuration
-# consumed by keda-kaito-scaler. It is read only when enableScaling is
-# true. The `metrics` list is rendered as a single
-# `scaledobject.kaito.sh/metrics` annotation (a YAML list); keda-kaito-scaler
-# builds a single KEDA ScaledObject whose scalingModifiers formula combines
-# them.
-#
-# 1 <-> N (upThreshold / downThreshold): conservative AND policy — scale up
-# by one replica only when EVERY metric with a band is above its upThreshold
-# (and newly added pods are Ready), scale down by one replica only when EVERY
-# such metric is below its downThreshold, otherwise hold. Each step is capped
-# at ±1 replica per scaling.hpa.*.periodSeconds to protect
-# expensive GPU capacity.
-#
-# 0 <-> 1 (activationThreshold / deactivationThreshold, only when
-# minReplicas is 0): wake when ANY metric is above its activationThreshold
-# (OR); park when EVERY metric with a deactivationThreshold is at or below
-# it (AND) for cooldownPeriod seconds. At zero replicas there are no model
-# pods to scrape, so activation must come from the Endpoint Picker
-# (`source: epp`); parking must include at least one model-pod
-# (`source: modelpod`) metric so in-flight generation is never cut off.
-#
-# When minReplicas >= 1 the activation/deactivation fields are ignored and
-# entries that carry only those fields are skipped, so the default list
-# below works unchanged for both modes.
+# scaling configures keda-kaito-scaler (only with enableScaling): 1 <-> N scales up when EVERY metric is above
+# its upThreshold and down when EVERY metric is below its downThreshold; 0 <-> 1 (only with minReplicas=0)
+# wakes when ANY metric is above its activationThreshold and parks when EVERY metric with a
+# deactivationThreshold is at or below it for cooldownPeriod.
 scaling:
-  # metrics is the ordered list of scaling signals. MUST contain at least
-  # one entry with upThreshold/downThreshold when minReplicas >= 1; when
-  # minReplicas is 0 it MUST contain an epp activation metric and a
-  # modelpod deactivation metric.
+  # metrics is the ordered list of scaling signals, rendered as the scaledobject.kaito.sh/metrics annotation.
   metrics:
-      # name is the Prometheus metric family name. Rendered as the `name`
-      # field of a scaledobject.kaito.sh/metrics entry.
+      # name is the Prometheus metric name.
     - name: "vllm:num_requests_waiting"
-      # type is the aggregation applied to the metric; it MUST keep the
-      # signal replica-count independent:
-      #   gauge     -> per-replica average across pods (summed across EPP
-      #                pods for `source: epp`)
-      #   histogram -> per-pod windowed average (rolling _sum/_count delta)
-      # Rendered as the `type` field of a scaledobject.kaito.sh/metrics
-      # entry. Defaults to gauge when empty.
+      # type is `gauge` (per-replica average, summed across EPP pods) or `histogram` (per-pod windowed average).
       type: "gauge"
-      # source selects where the metric is scraped:
-      #   modelpod -> the model-serving (vLLM) pods (default when empty)
-      #   epp      -> the Endpoint Picker pods of this deployment, which keep
-      #               reporting while the deployment is parked at zero
-      # Optional; rendered as the `source` field when set.
+      # source is `modelpod` (vLLM pods, the default) or `epp` (Endpoint Picker pods, observable at zero replicas).
       source: ""
-      # aggregation optionally overrides the reduction derived from type and
-      # source: `sum` or `service-avg` (gauge only), `windowed-avg`
-      # (histogram only). Optional; rendered as the `aggregation` field when
-      # set.
+      # aggregation overrides the reduction: `sum` or `service-avg` (gauge), `windowed-avg` (histogram).
       aggregation: ""
-      # upThreshold is the per-replica scale-up threshold (float, quoted).
-      # REQUIRED (together with downThreshold) when minReplicas >= 1 — an
-      # empty value rejects the Helm install. MUST be strictly greater than
-      # downThreshold. Rendered as the `upthreshold` field of a
-      # scaledobject.kaito.sh/metrics entry.
+      # upThreshold is the per-replica scale-up threshold; must be greater than downThreshold.
       upThreshold: "10"
-      # downThreshold is the per-replica scale-down threshold (float,
-      # quoted). MUST be strictly less than upThreshold and set together
-      # with it. Rendered as the `downthreshold` field of a
-      # scaledobject.kaito.sh/metrics entry.
+      # downThreshold is the per-replica scale-down threshold.
       downThreshold: "1"
-      # activationThreshold wakes a parked deployment (0 -> 1) when the
-      # metric is above it. Only used when minReplicas is 0; requires
-      # `source: epp` and a deactivationThreshold on the same metric.
-      # Rendered as the `activationthreshold` field.
+      # activationThreshold wakes a parked deployment when exceeded; requires `source: epp` and a
+      # deactivationThreshold.
       activationThreshold: ""
-      # deactivationThreshold parks the deployment (1 -> 0) once the metric
-      # is at or below it (ANDed across metrics). Only used when minReplicas
-      # is 0; MUST NOT exceed activationThreshold when both are set.
-      # Rendered as the `deactivationthreshold` field. Defaults to 0 here:
-      # park only once no request is waiting on the model server either.
+      # deactivationThreshold lets the deployment park once the metric is at or below it; must not exceed
+      # activationThreshold.
       deactivationThreshold: "0"
-      # metricCacheWindow is the rolling cache window in seconds over which
-      # keda-kaito-scaler averages a histogram metric's _sum/_count deltas
-      # (windowed-avg aggregation) to produce a per-pod value; ignored for
-      # gauge. Optional; empty lets keda-kaito-scaler apply its 300s default.
-      # Must be a positive number of seconds. Rendered as the
-      # `metriccachewindow` field of a scaledobject.kaito.sh/metrics entry.
+      # metricCacheWindow is the averaging window in seconds for histogram metrics (empty: 300).
       metricCacheWindow: ""
-      # request queue time (histogram). Combined with the metric above
-      # under the AND policy: scale up only when both are above their
-      # upThresholds, scale down only when both are below their
-      # downThresholds.
+      # Request queue time, combined with the metric above for 1 <-> N.
     - name: "vllm:request_queue_time_seconds"
       type: "histogram"
       upThreshold: "30"
       downThreshold: "1"
       metricCacheWindow: "300"
-      # 0 -> 1: requests held in the EPP flow-control queue while the
-      # deployment is parked. Used only when minReplicas is 0 (skipped
-      # otherwise). Defaults follow the keda-kaito-scaler scale-to-zero
-      # design (kaito-project/keda-kaito-scaler#150):
-      #   - activationThreshold 10 wakes once MORE than 10 requests are held.
-      #     Nothing drains the queue while parked, so it holds every request
-      #     that arrived within the wait window (the client timeout, capped
-      #     by epp.flowControl.defaultRequestTTL): waking requires roughly
-      #     QPS > 10 / window. Requests below that rate are buffered, not
-      #     rejected, and fail when they time out. Set "0" to wake on the
-      #     first request.
-      #   - deactivationThreshold 0 parks only once the queue is empty, so
-      #     buffered requests are never stranded. The band (0, 10] gives
-      #     hysteresis: waking is conservative, parking stays strict.
+      # Requests held by the EPP while parked; 0 wakes on the first request (raising it to T needs roughly
+      # QPS > T / defaultRequestTTL to wake, see the chart README).
     - name: "llm_d_epp_flow_control_queue_size"
       type: "gauge"
       source: "epp"
-      activationThreshold: "10"
+      activationThreshold: "0"
       deactivationThreshold: "0"
-      # 1 -> 0: park only once the model server itself is idle. Used only
-      # when minReplicas is 0 (skipped otherwise).
+      # Park only once the model server has no running request.
     - name: "vllm:num_requests_running"
       type: "gauge"
       deactivationThreshold: "0"
 
-  # hpa configures the generated ScaledObject's
-  # spec.advanced.horizontalPodAutoscalerConfig.behavior, which governs
-  # 1 <-> N scaling only (0 <-> 1 is governed by cooldownPeriod /
-  # initialCooldownPeriod below). Each policy always allows one pod per
-  # periodSeconds with selectPolicy Max. Empty or null omits the annotation
-  # and lets keda-kaito-scaler apply its default (the same values as below).
+  # hpa sets the HPA behavior for 1 <-> N scaling (each step adds or removes one replica); empty uses the
+  # keda-kaito-scaler defaults, which equal the values below.
   hpa:
     scaleUp:
-      # stabilizationWindowSeconds is the HPA scale-up stabilization window
-      # (0..3600 seconds). InferenceSet annotation:
-      # scaledobject.kaito.sh/scaleupstabilizationwindow.
+      # stabilizationWindowSeconds is the scale-up stabilization window (0..3600s).
       stabilizationWindowSeconds: 60
-      # periodSeconds is the minimum seconds between scale-up steps (HPA Pods
-      # policy period, 1..1800). InferenceSet annotation:
-      # scaledobject.kaito.sh/scaleupcooldown.
+      # periodSeconds is the minimum interval between scale-up steps (1..1800s).
       periodSeconds: 900
-      # tolerance is the HPA scale-up tolerance ratio, 0 <= tolerance < 1; 0
-      # disables the deadband. The HPA API only requires >= 0, but at >= 1 the
-      # formula's 2.0 scale-up signal never fires, so the chart rejects it.
-      # Requires the Kubernetes HPAConfigurableTolerance feature gate.
-      # InferenceSet annotation: scaledobject.kaito.sh/scaleuptolerance.
+      # tolerance is the scale-up deadband, 0 <= tolerance < 1 (needs the HPAConfigurableTolerance feature gate).
       tolerance: 0.1
     scaleDown:
-      # stabilizationWindowSeconds is the HPA scale-down stabilization window
-      # (0..3600 seconds), independent of periodSeconds. InferenceSet
-      # annotation: scaledobject.kaito.sh/scaledownstabilizationwindow.
+      # stabilizationWindowSeconds is the scale-down stabilization window (0..3600s).
       stabilizationWindowSeconds: 1800
-      # periodSeconds is the minimum seconds between scale-down steps (HPA
-      # Pods policy period, 1..1800). InferenceSet annotation:
-      # scaledobject.kaito.sh/scaledowncooldown.
+      # periodSeconds is the minimum interval between scale-down steps (1..1800s).
       periodSeconds: 1800
-      # tolerance is the HPA scale-down tolerance ratio, 0 <= tolerance < 0.5;
-      # 0 disables the deadband. The HPA API only requires >= 0, but at >= 0.5
-      # the formula's 0.5 scale-down signal never fires, so the chart rejects
-      # it. Requires the Kubernetes HPAConfigurableTolerance feature gate.
-      # InferenceSet annotation: scaledobject.kaito.sh/scaledowntolerance.
+      # tolerance is the scale-down deadband, 0 <= tolerance < 0.5 (needs the HPAConfigurableTolerance feature
+      # gate).
       tolerance: 0.1
-  # initialCooldownPeriod delays the start of KEDA's scale-to-zero cooldown
-  # after ScaledObject creation; it does not delay the initial scale-up.
-  # Only rendered when minReplicas is 0. Empty or null lets keda-kaito-scaler
-  # apply the same 1800s default. 0..2147483647 seconds (KEDA requires >= 0,
-  # int32). InferenceSet annotation: scaledobject.kaito.sh/initialcooldownperiod.
+  # initialCooldownPeriod delays the first park after the ScaledObject is created (seconds, minReplicas=0 only).
   initialCooldownPeriod: 1800
-  # cooldownPeriod is how many seconds KEDA waits after the last active
-  # trigger reading before parking the deployment at zero. Only rendered when
-  # minReplicas is 0 and silently ignored otherwise. Size it against how
-  # often you are willing to pay a cold start (node provisioning + model
-  # load). 0 is allowed and parks on the first inactive poll (~15s), which
-  # risks a cold start after every short gap in traffic. Empty or null lets
-  # keda-kaito-scaler apply the same 1800s default. 0..2147483647 seconds
-  # (KEDA requires >= 0, int32). InferenceSet annotation:
-  # scaledobject.kaito.sh/cooldownperiod.
+  # cooldownPeriod is how long the deployment must stay idle before it parks (seconds, minReplicas=0 only).
   cooldownPeriod: 1800
 
-# enableBenchmark toggles KAITO benchmark runs for this InferenceSet. When
-# false, the `kaito.sh/disable-benchmark: "true"` annotation is stamped on
-# the InferenceSet so the KAITO controller skips benchmark provisioning.
+# enableBenchmark runs KAITO benchmarks for this InferenceSet; false sets `kaito.sh/disable-benchmark: "true"`.
 enableBenchmark: true
 
-# performanceMode, when set, stamps the `kaito.sh/performance-mode: <value>`
-# annotation on the InferenceSet template so the KAITO controller applies
-# the corresponding performance profile. Empty (the default) omits the
-# annotation and the controller falls back to its own default ("balanced").
-# Valid values are "balanced" (default), "interactivity", and "throughput":
-#   - "interactivity": optimizes for low per-request latency (fine-grained
-#     CUDA graphs, latency-oriented kernels, smaller batch sizes).
-#   - "balanced": sensible trade-off between latency and throughput.
-#   - "throughput": maximizes aggregate tokens/sec (larger CUDA graphs, more
-#     aggressive batching, throughput-oriented kernels).
+# performanceMode selects the KAITO performance profile: "balanced" (the default when empty), "interactivity" or
+# "throughput".
 performanceMode: ""
 
-# streaming groups the KAITO model-streaming annotations stamped onto
-# spec.template.metadata.annotations of the InferenceSet (which the KAITO
-# InferenceSet controller clones onto every child Workspace, where the
-# streaming logic reads them).
+# streaming configures KAITO model streaming, stamped as annotations on every Workspace.
 streaming:
-  # disabled, when "true", stamps `kaito.sh/model-streaming: "disabled"` to
-  # force KAITO's normal download-at-runtime path (no SAS, no az://). Any
-  # other value (or empty) leaves streaming enabled. Mutually exclusive with
-  # staticModelMirror.
+  # disabled set to "true" turns model streaming off; mutually exclusive with staticModelMirror.
   disabled: ""
-  # staticModelMirror, when "true", is the gate that activates the SAS
-  # direct-stream path; it stamps `inference.kaito.sh/static-model-mirror:
-  # "true"` and requires datarefsUrl, identityClientId, and sourceType below.
+  # staticModelMirror set to "true" streams the model directly via SAS; requires the three fields below.
   staticModelMirror: ""
-  # datarefsUrl is the SAS-mint endpoint URL. Consumed only when
-  # staticModelMirror is "true".
+  # datarefsUrl is the SAS-mint endpoint URL.
   datarefsUrl: ""
-  # identityClientId is the UAMI client-id GUID, stamped as
-  # `inference.kaito.sh/stream-identity-client-id`. Must match the value sent
-  # to modelharness's serviceAccount.workloadIdentityClientId. Consumed only
-  # when staticModelMirror is "true".
+  # identityClientId is the UAMI client ID; must match the modelharness workloadIdentityClientId.
   identityClientId: ""
-  # sourceType selects the KAITO URL-derivation rule / token audience,
-  # stamped as `inference.kaito.sh/stream-source-type`. The value can only be
-  # "public" or "byo". Consumed only when staticModelMirror is "true".
+  # sourceType is "public" or "byo".
   sourceType: ""
 
-# autoUpgrade configures KAITO's automatic base image upgrades for this
-# InferenceSet, rendered as spec.autoUpgrade. KAITO ships the vLLM base
-# image embedded in the controller; when the controller is upgraded to a
-# release bundling a newer base image, existing replicas keep running the
-# old image until recreated. With auto-upgrade enabled, the controller
-# detects the version drift and rolls replicas onto the new image one at a
-# time — waiting for each replica to become Ready before moving to the
-# next — keeping the service available throughout the rollout.
-#
-# NOTE: auto-upgrade ALSO requires the `enableBaseImageAutoUpgrade` feature
-# gate to be enabled on the KAITO controller (off by default). This chart
-# value only opts the individual InferenceSet in; without the feature gate
-# the controller ignores spec.autoUpgrade.
+# autoUpgrade rolls replicas onto a newer KAITO base image one at a time (also requires the KAITO
+# `enableBaseImageAutoUpgrade` feature gate).
 autoUpgrade:
-  # enabled toggles spec.autoUpgrade.enabled. When false (the default),
-  # the entire spec.autoUpgrade block is omitted and replicas stay pinned
-  # to the base image they were created with until manually recreated.
+  # enabled turns base image auto-upgrade on.
   enabled: false
-  # maintenanceWindow optionally restricts when rollouts may begin. When
-  # `schedule` is empty (the default), upgrades may start at any time.
-  # When set, the controller only starts upgrading replicas while the
-  # current time is inside the window; an upgrade already in progress is
-  # allowed to finish even if the window closes, and the next replica
-  # waits for the following window. Consumed only when enabled is true.
+  # maintenanceWindow restricts when upgrades may start; empty allows any time.
   maintenanceWindow:
-    # schedule is a 5-field cron expression (UTC) marking the start of
-    # each maintenance window, e.g. "0 2 * * 6" (every Saturday at 02:00
-    # UTC). Empty (the default) lets upgrades start at any time; the
-    # maintenanceWindow block is omitted entirely.
+    # schedule is a 5-field UTC cron expression marking each window's start, e.g. "0 2 * * 6".
     schedule: ""
-    # duration is how long the window stays open once it opens, e.g.
-    # "4h". Empty lets the KAITO controller apply its 4h default. Ignored
-    # when `schedule` is empty.
+    # duration is how long each window stays open (empty: 4h).
     duration: ""
 
-# gatewayName is the Gateway resource the HTTPRoute attaches to. When
-# empty (the default), the chart uses the workload namespace so the
-# rendered HTTPRoute parents the per-namespace Gateway provisioned by
-# charts/modelharness. Override only when you need to attach to a
-# Gateway with a business-specific name.
+# gatewayName is the Gateway the HTTPRoute attaches to; empty uses the namespace's modelharness Gateway.
 gatewayName: ""
 
-# ----------------------------------------------------------------------------
-# Endpoint Picker (EPP) configuration.
-#
-# This chart inlines the GAIE InferencePool + EPP artifacts that KAITO
-# normally provisions via Flux + the upstream
-# `oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool`
-# chart. The EPP runs with TLS disabled (`--secure-serving=false`), so the
-# Istio Gateway can reach it over plaintext gRPC without a DestinationRule.
-# ----------------------------------------------------------------------------
+# Endpoint Picker (EPP), inlining the InferencePool + EPP that KAITO would otherwise install via Flux.
 epp:
   image:
     repository: "mcr.microsoft.com/oss/v2/llm-d/llm-d-router-endpoint-picker"
     tag: "v0.9.0"
     pullPolicy: "IfNotPresent"
   replicas: 1
-  # modelServerPort is the port exposed by the inference (model server) pods.
-  # Must match KAITO's PortInferenceServer (5000).
+  # modelServerPort must match KAITO's inference server port.
   modelServerPort: 5000
-  # extProcPort is the EPP gRPC ext_proc port consumed by the Gateway.
+  # extProcPort is the gRPC ext_proc port used by the Gateway.
   extProcPort: 9002
-  # healthPort is the EPP gRPC health-check port.
+  # healthPort is the gRPC health-check port.
   healthPort: 9003
-  # metricsPort is the EPP HTTP metrics port.
+  # metricsPort is the HTTP metrics port.
   metricsPort: 9090
-  # logVerbosity passed as `--v=<n>`.
+  # logVerbosity is passed as `--v=<n>`.
   logVerbosity: 1
-  # scorerWeights controls the EPP EndpointPickerConfig plugin weights.
-  # Adjust to trade off load distribution vs prefix-cache affinity.
+  # scorerWeights trades off load distribution against prefix-cache affinity.
   scorerWeights:
     queue: 2
     kvCacheUtilization: 2
@@ -363,92 +164,31 @@ epp:
     requests:
       cpu: 100m
       memory: 256Mi
-  # tolerations applied to the EPP pod. Empty by default; the caller is
-  # expected to pass any required tolerations (e.g. a CriticalAddonsOnly
-  # toleration for nodes reserved for critical add-ons).
+  # tolerations are applied to the EPP pod.
   tolerations: []
-  # flowControl configures the EPP flow-control layer (the `flowControl`
-  # feature gate). It is turned on automatically when enableScaling is true
-  # and minReplicas is 0: with no model pods the EPP then queues incoming
-  # requests (reported as llm_d_epp_flow_control_queue_size, the default
-  # activation metric) instead of failing them immediately, and dispatches
-  # them once a replica is Ready. This is best effort: a queued request fails
-  # if the cold start outlasts defaultRequestTTL or the client timeout, and
-  # requests released right after the first replica turns Ready can still
-  # get 503 model_unavailable until the gateway learns the new endpoint.
+  # flowControl queues requests in the EPP while no replica exists; it is on automatically with minReplicas=0.
   flowControl:
-    # enabled forces flow control on even without scale to zero.
+    # enabled forces flow control on without scale to zero.
     enabled: false
-    # maxConcurrency is the per-endpoint in-flight request capacity used by
-    # the concurrency saturation detector; the EPP queues requests once the
-    # pool's in-flight requests reach maxConcurrency x endpoints. An empty
-    # pool always counts as saturated. The large default effectively queues
-    # only while no replica exists, leaving 1 <-> N queueing to the model
-    # server (whose metrics drive scale-up).
+    # maxConcurrency is the per-endpoint in-flight capacity; the large default queues only while no replica exists.
     maxConcurrency: 1000000
-    # maxBytes caps the total size of request bodies held in the flow-control
-    # queue (a Kubernetes quantity, e.g. "128Mi"). Queued requests live in EPP
-    # memory, so the default keeps the EPP's ~50Mi baseline plus a full queue
-    # within its 256Mi memory request (~2,600 typical 50KB requests). Requests
-    # beyond the cap are rejected immediately with 429. Empty removes the
-    # global cap, leaving the EPP's built-in 1GB-per-priority-band limit.
+    # maxBytes caps the queued request bodies (beyond it requests get 429); empty uses the EPP's 1GB per band.
     maxBytes: "128Mi"
-    # defaultRequestTTL bounds how long a request may wait in the queue
-    # before the EPP rejects it (surfaced by the gateway as
-    # 502 epp_unavailable). Queued requests are not guaranteed to be served:
-    # when the cold start (node provisioning + model load) outlasts the TTL
-    # they fail and the client is expected to retry. Together with the
-    # activationThreshold of llm_d_epp_flow_control_queue_size it sets the
-    # wake-up floor: 600s with a threshold of 10 wakes at about 1 request per
-    # minute (kaito-project/keda-kaito-scaler#150), so shortening it raises
-    # the traffic needed to wake a parked deployment. Empty waits until the
-    # client cancels.
+    # defaultRequestTTL is how long a request may wait in the queue before it fails; empty waits for the client.
     defaultRequestTTL: "600s"
-  # modelServerSelector selects the inference pods this InferencePool routes
-  # to. KAITO labels each inference pod with
-  # `inferenceset.kaito.sh/created-by: <inferenceset-name>` and (for stateful
-  # deployments) restricts traffic to the pod-index 0 leader.
+  # modelServerSelector selects the inference pods (the pod-index 0 leader) of this InferenceSet.
   modelServerSelector:
     inferenceset.kaito.sh/created-by: ""   # auto-filled with .Values.name when empty
     apps.kubernetes.io/pod-index: "0"
 
-# cloudprovider selects which cloud provider's integrations render.
-# When `cloudprovider=""` (the default), the non-cloud
-# `templates/httproute.yaml` renders (header-only routing, no
-# hostnames). When `cloudprovider=azure`, `templates/httproute.yaml`
-# renders nothing and `templates/azure/httproute.yaml` renders instead
-# (adds `hostnames: [<namespace>.<zoneName>]` matching the modelharness
-# Gateway's Azure default-domain HTTPS listener).
-#
-# Exactly one variant renders for a given cloudprovider — no inline
-# `{{ if }}` blocks inside spec bodies. The `azure` subtree below is
-# ignored unless `cloudprovider=azure`.
+# cloudprovider selects the HTTPRoute variant: "" (header-only routing) or "azure" (adds the default-domain
+# hostname).
 cloudprovider: ""
 
-# azure groups every Azure-specific value used by templates under
-# `templates/azure/`. Consumed only when `cloudprovider=azure`.
+# azure holds the values used only when cloudprovider=azure.
 azure:
-  # defaultDomain drives the `hostnames` field on
-  # templates/azure/httproute.yaml so it attaches to the modelharness
-  # Gateway's HTTPS default-domain listener. The HTTPRoute carries
-  # `hostnames: ["<workload-namespace>.<zoneName>"]` — the SAME
-  # hostname the modelharness Gateway listener uses — so Istio
-  # attaches the route to that listener and requests on the
-  # default-domain hostname reach this InferencePool.
-  #
-  # Header-based routing (X-Gateway-Model-Name matching this
-  # deployment's `name`) still differentiates multiple deployments
-  # sharing the hostname within the namespace.
-  #
-  # `zoneName` MUST match the value used in the corresponding
-  # `modelharness` release's `azure.defaultDomain.zoneName` in the
-  # same namespace.
+  # defaultDomain attaches the HTTPRoute to the modelharness Gateway's default-domain HTTPS listener.
   defaultDomain:
-    # zoneName is the cluster's AKS-issued default-domain zone (without
-    # the `*.` prefix). Required when cloudprovider=azure — the template
-    # `fail`s otherwise. Same value as used in the corresponding
-    # modelharness (and productionstack) release. Fetch with:
-    #   az aks show -g $RG -n $CLUSTER \
-    #     --query 'ingressProfile.webAppRouting.defaultDomain.domainName' \
-    #     -o tsv
+    # zoneName is the AKS default-domain zone (required with azure; must match the modelharness release), see
+    # `az aks show --query ingressProfile.webAppRouting.defaultDomain.domainName`.
     zoneName: ""
