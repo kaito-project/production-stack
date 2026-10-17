@@ -22,6 +22,7 @@ package modeldeployment
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,58 +43,66 @@ import (
 // unstructured.
 var workspaceGVR = schema.GroupVersionResource{Group: "kaito.sh", Version: "v1beta1", Resource: "workspaces"}
 
-// Workspace status condition types and reasons surfaced by the KAITO Workspace
-// controller, consumed to derive the InferenceSet's infra and model-pod health.
+// Workspace (and InferenceSet) status condition types and reasons surfaced by
+// KAITO, consumed to derive the InferenceSet's health.
 const (
-	// workspaceCondNodeClaimReady carries GPU node provisioning health: KAITO
-	// sets it False with the underlying cloud-provider error (quota, capacity,
-	// SKU unavailable) copied from the backing NodeClaim.
-	workspaceCondNodeClaimReady = "NodeClaimReady"
-	// workspaceCondInferenceReady carries model-server readiness: KAITO sets it
-	// False with a classified pod/container failure reason once it detects an
+	// condNodeClaimReady carries GPU node provisioning health: KAITO reports
+	// provisioning progress as NodeClaimNotReady and a failure of the latest
+	// attempt with the reason recorded by Karpenter, the cloud provider or
+	// their Events (quota, capacity, SKU unavailable, asynchronous provisioning
+	// errors), also after the failed NodeClaim was deleted. The failure reasons
+	// are an open set.
+	condNodeClaimReady = "NodeClaimReady"
+	// condNodesReady carries GPU worker-node readiness: KAITO keeps it False
+	// (NodeNotReady / NodePluginsNotReady / NoAvailableGPUNodes) until enough
+	// nodes are Ready and advertise GPU capacity. It is the only signal for a
+	// node whose NodeClaim is Ready but whose GPU device plugin never
+	// registers, and the only node signal in BYO mode, which does not report
+	// NodeClaimReady.
+	condNodesReady = "NodesReady"
+	// condModelConfigReady reports whether a bring-your-own model's
+	// configuration resolved (ModelConfigInvalid / ModelConfigReplaced when
+	// not). KAITO sets it on the InferenceSet, before creating any Workspace,
+	// and on each Workspace.
+	condModelConfigReady = "ModelConfigReady"
+	// condModelMirrorReady reports whether the ModelMirror streaming the model
+	// weights is ready: ModelMirrorPending while the download is in progress
+	// and ModelMirrorDeleting while a previous ModelMirror is torn down before
+	// it is recreated; any other reason is a failure (e.g. DownloadFailed,
+	// JobCreateFailed, ModelMirrorCreateFailed).
+	condModelMirrorReady = "ModelMirrorReady"
+	// condInferenceReady carries model-server readiness: KAITO sets it False
+	// with a classified pod/container failure reason once it detects an
 	// actionable failure.
-	workspaceCondInferenceReady = "InferenceReady"
-
-	// workspaceCondNodesReady carries GPU worker-node health. KAITO appends a
-	// node-pressure warning to its message (leaving the status unchanged) when a
-	// worker node reports kubelet resource pressure.
-	workspaceCondNodesReady = "NodesReady"
-
-	// workspaceInferencePendingReason is the generic InferenceReady=False reason
-	// KAITO sets while the inference workload is still starting within its
-	// StartupProbe budget; any other reason is a classified pod/container failure.
-	workspaceInferencePendingReason = "WorkspaceInferenceStatusPending"
-
-	// nodePressureMarker is the stable phrase KAITO appends to the NodesReady
-	// condition message (via NodePressureWarning) when a worker node reports
-	// kubelet resource pressure (Disk/Memory/PID). KAITO surfaces it only in the
-	// message text, so this substring is the detection contract.
-	nodePressureMarker = "under resource pressure"
+	condInferenceReady = "InferenceReady"
 )
 
-// benignNodeClaimReasons are the NodeClaimReady=False reasons that mean the GPU
-// node is still being provisioned (no actionable cloud-provider error yet), so
-// they are NOT surfaced as inferencesetInfraProvisioningFailed. Any other
-// NodeClaimReady=False reason carries a real provisioning error KAITO copied
-// from the underlying NodeClaim.
-var benignNodeClaimReasons = map[string]bool{
-	"NodeClaimNotReady":      true, // generic "not enough NodeClaims ready yet"
-	"AwaitingReconciliation": true, // karpenter has not acted on the NodeClaim yet
-}
+// infraProvisioningFailureDelay withholds a GPU node provisioning failure until
+// the provisioning attempt has run for this long: Karpenter re-attempts with
+// alternative SKUs/zones, so a failure early in the attempt may still clear
+// within minutes. The attempt starts at the condition's lastTransitionTime,
+// since NodeClaimReady is already False while provisioning and KAITO only
+// changes its reason on a failure.
+const infraProvisioningFailureDelay = 3 * time.Minute
 
-// infraProvisioningGracePeriod debounces a NodeClaimReady=False provisioning
-// failure: karpenter re-attempts VM creation with alternative SKUs/zones, so a
-// transient capacity/quota blip clears within minutes and must not alarm, while
-// a genuine shortage (e.g. zero quota) persists past this window and is
-// surfaced. The finding is anchored on the condition's lastTransitionTime.
-const infraProvisioningGracePeriod = 3 * time.Minute
+// infraProvisioningStallTimeout bounds how long GPU nodes may stay in progress
+// before they are surfaced as stalled: NodeClaimReady=False (NodeClaimNotReady)
+// or, once the NodeClaims are Ready, NodesReady=False. Karpenter times out
+// NodeClaims that fail to launch or register, which KAITO then reports as a
+// failure, but nothing times out a node that never initializes or whose GPU
+// device plugin never registers. The latter only shows on NodesReady: KAITO
+// provisions through a static NodePool whose NodeClaims request no resources,
+// so Karpenter does not wait for the GPU. Both conditions stay False from the
+// start of the provisioning attempt, so their lastTransitionTime anchors the
+// timeout.
+const infraProvisioningStallTimeout = 15 * time.Minute
 
-// nodePressureGracePeriod is a short debounce for inferencesetNodeUnderPressure:
-// node pressure is a leading indicator that should surface quickly, and kubelet's
-// eviction-pressure-transition-period already keeps the node condition sticky for
-// minutes (so no long debounce is needed for anti-flap). Kept below the resync
-// interval so a one-off reading is merely confirmed on the next reconcile.
-const nodePressureGracePeriod = 30 * time.Second
+// maxReportedWorkspaces bounds the Workspaces listed in a finding's message.
+const maxReportedWorkspaces = 5
+
+// maxConditionMessageLen bounds each condition message quoted in a finding,
+// matching the length KAITO truncates provisioning messages to.
+const maxConditionMessageLen = 256
 
 // Evaluator enumerates the InferenceSets in every managed namespace and
 // evaluates every modeldeployment-layer chain reason (§1.2) for each. The
@@ -102,11 +111,12 @@ const nodePressureGracePeriod = 30 * time.Second
 type Evaluator struct {
 	clientset kubernetes.Interface
 	dynamic   dynamic.Interface
+	now       func() time.Time
 }
 
 // New constructs a modeldeployment Evaluator.
 func New(cs kubernetes.Interface, dyn dynamic.Interface) *Evaluator {
-	return &Evaluator{clientset: cs, dynamic: dyn}
+	return &Evaluator{clientset: cs, dynamic: dyn, now: time.Now}
 }
 
 // Name identifies the evaluator for logging.
@@ -120,6 +130,7 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 	if err != nil {
 		return nil, err
 	}
+	now := e.now()
 	var findings []evaluator.Finding
 	for _, ns := range namespaces {
 		sets, err := e.dynamic.Resource(util.InferenceSetGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
@@ -127,97 +138,56 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 			continue
 		}
 		for i := range sets.Items {
-			findings = append(findings, e.evaluateInferenceSet(ctx, ns, &sets.Items[i])...)
+			findings = append(findings, e.evaluateInferenceSet(ctx, ns, &sets.Items[i], now)...)
 		}
 	}
 	return findings, nil
 }
 
-func (e *Evaluator) evaluateInferenceSet(ctx context.Context, namespace string, is *unstructured.Unstructured) []evaluator.Finding {
-	cs := e.clientset
-	dyn := e.dynamic
+func (e *Evaluator) evaluateInferenceSet(ctx context.Context, namespace string, is *unstructured.Unstructured, now time.Time) []evaluator.Finding {
 	name := is.GetName()
-	obj := evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: namespace}
-	groupKey := fmt.Sprintf("inferenceset/%s/%s", namespace, name)
-	var findings []evaluator.Finding
-
-	add := func(r reason.Reason, exempt bool, createdAt time.Time, msg string) {
-		findings = append(findings, evaluator.Finding{
-			Reason:             r,
-			Object:             obj,
-			Message:            msg,
-			WorkloadNamespace:  namespace,
-			GroupKey:           groupKey,
-			StartupGraceExempt: exempt,
-			ResourceCreatedAt:  createdAt,
-		})
-	}
 
 	// The child Workspaces' status conditions are the authoritative source for
-	// both the GPU-node (infra) and model-pod health: the KAITO Workspace
-	// controller already probes the underlying NodeClaims and pods and copies the
-	// classified failure onto its NodeClaimReady / InferenceReady conditions, so
-	// the reporter reads those conditions instead of re-deriving them from the
-	// NodeClaim and Pod objects directly.
-	workspaces := getWorkspaces(ctx, dyn, namespace, name)
-
-	// inferencesetInfraProvisioningFailed — GPU node provisioning failure,
-	// read from the child Workspace's NodeClaimReady condition. KAITO sets it
-	// False and copies the underlying cloud-provider provisioning error (quota,
-	// capacity, SKU unavailable) from the backing NodeClaim; a still-provisioning
-	// Workspace keeps a benign in-progress reason and is not surfaced. Debounced
-	// via infraProvisioningGracePeriod (anchored on the condition transition) so
-	// a transient blip that karpenter recovers from stays silent.
-	if f, ok := infraProvisioningFinding(workspaces, namespace, name, obj, groupKey); ok {
-		findings = append(findings, f)
-	}
-
-	// inferencesetModelPodsNotReady — model-server pod failure, read from the
-	// child Workspace's InferenceReady condition. KAITO sets it False with a
-	// classified pod/container failure reason (ImagePullError, CrashLoopBackOff,
-	// OOMKilled, Unschedulable, ...) once it detects an actionable failure, and
-	// leaves the generic pending reason while the pod is merely still starting
-	// within its StartupProbe budget. Only a classified failure is surfaced, and
-	// it is surfaced immediately since a settled classification is a real failure.
-	if f, ok := modelPodFinding(workspaces, namespace, name, obj, groupKey); ok {
-		findings = append(findings, f)
-	}
-
-	// inferencesetNodeUnderPressure — a worker GPU node reports kubelet resource
-	// pressure (Disk/Memory/PID), read from the child Workspace's NodesReady
-	// condition message (KAITO enriches it there without changing the status). A
-	// leading indicator: sustained pressure precedes pod eviction, which then
-	// surfaces separately as inferencesetModelPodsNotReady. Only a short debounce
-	// is applied so it surfaces promptly; kubelet's transition-period already
-	// keeps the node condition from flapping.
-	if f, ok := nodePressureFinding(workspaces, namespace, name, obj, groupKey); ok {
-		findings = append(findings, f)
-	}
+	// the GPU-node, model and model-pod health: the KAITO Workspace controller
+	// already probes the underlying NodeClaims, ModelMirror and pods and
+	// classifies their state on its conditions, so the reporter reads those
+	// conditions instead of re-deriving them.
+	findings := workspaceFindings(is, getWorkspaces(ctx, e.dynamic, namespace, name), now)
 
 	// inferencesetEPPNotReady — EPP Deployment readiness.
-	if eppName, eppCreatedAt, msg := eppNotReady(ctx, cs, namespace, name); msg != "" {
-		add(reason.InferencesetEPPNotReady, false, eppCreatedAt, fmt.Sprintf(
-			"InferenceSet %s/%s: EPP Deployment %s %s.", namespace, name, eppName, msg))
+	if eppName, eppCreatedAt, msg := eppNotReady(ctx, e.clientset, namespace, name); msg != "" {
+		findings = append(findings, evaluator.Finding{
+			Reason:            reason.InferencesetEPPNotReady,
+			Object:            evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: namespace},
+			Message:           fmt.Sprintf("InferenceSet %s/%s: EPP Deployment %s %s.", namespace, name, eppName, msg),
+			WorkloadNamespace: namespace,
+			GroupKey:          groupKey(namespace, name),
+			ResourceCreatedAt: eppCreatedAt,
+		})
 	}
-
 	return findings
 }
 
-// wsCondition is a Workspace status condition flattened for the reporter, with
-// lastTransitionTime parsed for debounce anchoring.
-type wsCondition struct {
+func groupKey(namespace, name string) string {
+	return fmt.Sprintf("inferenceset/%s/%s", namespace, name)
+}
+
+// statusCondition is a status condition flattened for the reporter, with
+// lastTransitionTime parsed for time anchoring.
+type statusCondition struct {
+	condType       string
 	status         string
 	reason         string
 	message        string
 	lastTransition time.Time
 }
 
-// workspaceCondition extracts status.conditions[type] from a Workspace,
+// findCondition extracts status.conditions[type] from a KAITO object,
 // returning the flattened condition and whether it was present.
-func workspaceCondition(ws *unstructured.Unstructured, condType string) (wsCondition, bool) {
-	conds, ok, _ := unstructured.NestedSlice(ws.Object, "status", "conditions")
+func findCondition(obj *unstructured.Unstructured, condType string) (statusCondition, bool) {
+	conds, ok, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
 	if !ok {
-		return wsCondition{}, false
+		return statusCondition{}, false
 	}
 	for _, c := range conds {
 		m, ok := c.(map[string]interface{})
@@ -227,7 +197,7 @@ func workspaceCondition(ws *unstructured.Unstructured, condType string) (wsCondi
 		if t, _ := m["type"].(string); t != condType {
 			continue
 		}
-		out := wsCondition{}
+		out := statusCondition{condType: condType}
 		out.status, _ = m["status"].(string)
 		out.reason, _ = m["reason"].(string)
 		out.message, _ = m["message"].(string)
@@ -238,95 +208,247 @@ func workspaceCondition(ws *unstructured.Unstructured, condType string) (wsCondi
 		}
 		return out, true
 	}
-	return wsCondition{}, false
+	return statusCondition{}, false
 }
 
-// infraProvisioningFinding derives an inferencesetInfraProvisioningFailed
-// finding from the child Workspaces' NodeClaimReady condition, which KAITO sets
-// False with the underlying cloud-provider provisioning error (quota, capacity,
-// SKU unavailable) copied from the backing NodeClaim. A still-provisioning
-// Workspace (a benign in-progress reason) is not surfaced. The finding is
-// anchored on the condition's lastTransitionTime and debounced via
-// infraProvisioningGracePeriod so a transient blip that karpenter recovers from
-// stays silent while a genuine shortage that persists past the window surfaces.
-func infraProvisioningFinding(workspaces []*unstructured.Unstructured, namespace, name string, obj evaluator.InvolvedObject, groupKey string) (evaluator.Finding, bool) {
-	for _, ws := range workspaces {
-		cond, ok := workspaceCondition(ws, workspaceCondNodeClaimReady)
-		if !ok || cond.status != "False" || benignNodeClaimReasons[cond.reason] {
-			continue
-		}
-		return evaluator.Finding{
-			Reason:              reason.InferencesetInfraProvisioningFailed,
-			Object:              obj,
-			Message:             fmt.Sprintf("InferenceSet %s/%s: GPU node provisioning failed — Workspace %s NodeClaimReady=False (%s): %s.", namespace, name, ws.GetName(), cond.reason, cond.message),
-			WorkloadNamespace:   namespace,
-			GroupKey:            groupKey,
-			ResourceCreatedAt:   cond.lastTransition,
-			GracePeriodOverride: infraProvisioningGracePeriod,
-		}, true
+// lastedAtLeast reports whether a condition that last transitioned at since has
+// held for at least d. An unknown transition time cannot be aged, so it never
+// qualifies.
+func lastedAtLeast(since, now time.Time, d time.Duration) bool {
+	return !since.IsZero() && now.Sub(since) >= d
+}
+
+// conditionRule maps a False Workspace condition onto a reporter reason and
+// decides when it is reported.
+type conditionRule struct {
+	condType string
+	reason   reason.Reason
+	// progressReasons are the reasons that report progress rather than a
+	// failure; nil means every reason is progress.
+	progressReasons map[string]bool
+	// failureDelay withholds a failure until the condition has been False for
+	// this long; zero reports it immediately.
+	failureDelay time.Duration
+	// stallTimeout reports progress as stalled once the condition has been
+	// False for this long; zero never reports progress.
+	stallTimeout time.Duration
+}
+
+func (r conditionRule) inProgress(condReason string) bool {
+	return r.progressReasons == nil || r.progressReasons[condReason]
+}
+
+// prerequisiteRules cover the Workspace conditions that must be True before
+// the inference workload can become ready: the GPU nodes, the custom model
+// configuration and the model weights. They progress independently, so a
+// failure of one is not a consequence of another still progressing.
+var prerequisiteRules = []conditionRule{
+	{
+		condType:        condNodeClaimReady,
+		reason:          reason.InferencesetInfraProvisioningFailed,
+		progressReasons: map[string]bool{"NodeClaimNotReady": true},
+		failureDelay:    infraProvisioningFailureDelay,
+		stallTimeout:    infraProvisioningStallTimeout,
+	},
+	{
+		// Every NodesReady reason is progress, including the BYO
+		// NoAvailableGPUNodes, which KAITO classifies as a failure: the
+		// matching nodes may still be joining the cluster, so it is only
+		// reported once it stalls.
+		condType:     condNodesReady,
+		reason:       reason.InferencesetInfraProvisioningFailed,
+		stallTimeout: infraProvisioningStallTimeout,
+	},
+	{
+		condType:        condModelConfigReady,
+		reason:          reason.InferencesetModelConfigInvalid,
+		progressReasons: map[string]bool{},
+	},
+	{
+		// A slow download is reported by inferencesetWeightDownloadSlow.
+		condType:        condModelMirrorReady,
+		reason:          reason.InferencesetModelMirrorFailed,
+		progressReasons: map[string]bool{"ModelMirrorPending": true, "ModelMirrorDeleting": true},
+	},
+}
+
+// inferenceRule covers InferenceReady, the root cause only once every
+// prerequisite is ready, as its failures (e.g. Unschedulable pods) can be a
+// consequence of a prerequisite still progressing.
+var inferenceRule = conditionRule{
+	condType:        condInferenceReady,
+	reason:          reason.InferencesetModelPodsNotReady,
+	progressReasons: map[string]bool{"WorkspaceInferenceStatusPending": true},
+}
+
+// notReadyCondition returns the condition of the given type when it is False
+// with a reason.
+func notReadyCondition(obj *unstructured.Unstructured, condType string) (statusCondition, bool) {
+	c, ok := findCondition(obj, condType)
+	return c, ok && c.status == "False" && c.reason != ""
+}
+
+// workspaceCause is a Workspace's root cause mapped onto a reporter reason.
+type workspaceCause struct {
+	reason reason.Reason
+	cond   statusCondition
+	// stalled marks progress reported because it exceeded its stall timeout,
+	// as opposed to a failure.
+	stalled bool
+}
+
+// cause maps the rule's False condition onto a workspaceCause, and reports
+// whether it is reportable at now.
+func (r conditionRule) cause(c statusCondition, now time.Time) (workspaceCause, bool) {
+	if r.inProgress(c.reason) {
+		return workspaceCause{reason: r.reason, cond: c, stalled: true},
+			r.stallTimeout > 0 && lastedAtLeast(c.lastTransition, now, r.stallTimeout)
 	}
-	return evaluator.Finding{}, false
+	return workspaceCause{reason: r.reason, cond: c},
+		r.failureDelay == 0 || lastedAtLeast(c.lastTransition, now, r.failureDelay)
 }
 
-// modelPodFinding derives an inferencesetModelPodsNotReady finding from the
-// child Workspaces' InferenceReady condition. KAITO sets it False with a
-// classified pod/container failure reason (ImagePullError, CrashLoopBackOff,
-// OOMKilled, Unschedulable, ...) once it detects an actionable failure, and
-// leaves the generic pending reason while the pod is merely still starting
-// within its StartupProbe budget. Only a classified failure is surfaced, and it
-// is surfaced immediately since a settled classification is a real failure
-// regardless of the startup budget.
-func modelPodFinding(workspaces []*unstructured.Unstructured, namespace, name string, obj evaluator.InvolvedObject, groupKey string) (evaluator.Finding, bool) {
-	for _, ws := range workspaces {
-		cond, ok := workspaceCondition(ws, workspaceCondInferenceReady)
-		if !ok || cond.status != "False" || cond.reason == "" || cond.reason == workspaceInferencePendingReason {
+// rootCause returns why the Workspace is not ready, as KAITO does when it
+// explains why an InferenceSet is not ready: the first failing prerequisite,
+// otherwise the first progressing one, and InferenceReady only once every
+// prerequisite is ready. reportable is false when the Workspace is ready, or
+// when its root cause is progress that has not stalled or a failure that is
+// still within its delay; the Workspace is then not reported under another
+// condition.
+func rootCause(ws *unstructured.Unstructured, now time.Time) (cause workspaceCause, reportable bool) {
+	var progressing *conditionRule
+	var progressingCond statusCondition
+	for i := range prerequisiteRules {
+		rule := &prerequisiteRules[i]
+		c, ok := notReadyCondition(ws, rule.condType)
+		if !ok {
 			continue
 		}
-		return evaluator.Finding{
-			Reason:             reason.InferencesetModelPodsNotReady,
-			Object:             obj,
-			Message:            fmt.Sprintf("InferenceSet %s/%s: model pod not ready — Workspace %s InferenceReady=False (%s): %s.", namespace, name, ws.GetName(), cond.reason, cond.message),
+		if !rule.inProgress(c.reason) {
+			return rule.cause(c, now)
+		}
+		if progressing == nil {
+			progressing, progressingCond = rule, c
+		}
+	}
+	if progressing != nil {
+		return progressing.cause(progressingCond, now)
+	}
+	if c, ok := notReadyCondition(ws, inferenceRule.condType); ok {
+		return inferenceRule.cause(c, now)
+	}
+	return workspaceCause{}, false
+}
+
+// reasonSummaries lead each finding's message, in the order findings are
+// emitted.
+var reasonSummaries = []struct {
+	reason  reason.Reason
+	summary string
+}{
+	{reason.InferencesetInfraProvisioningFailed, "GPU nodes are not ready"},
+	{reason.InferencesetModelConfigInvalid, "model configuration is invalid"},
+	{reason.InferencesetModelMirrorFailed, "model mirror is not ready"},
+	{reason.InferencesetModelPodsNotReady, "model pod not ready"},
+}
+
+// reportedCauses collects the entries of one reporter reason; failures are
+// listed before stalls, each in Workspace name order.
+type reportedCauses struct {
+	failures []string
+	stalls   []string
+}
+
+// workspaceFindings derives one finding per reporter reason from the root
+// causes of the InferenceSet's Workspaces, listing every reportable Workspace
+// in its message. All timing is decided per Workspace from its conditions'
+// lastTransitionTime, so the findings bypass the emitter's startup grace gate.
+//
+// The InferenceSet's own ModelConfigReady takes precedence over the
+// Workspaces': KAITO resolves the model for the whole set before creating any
+// Workspace, so it is the single source while it is False.
+func workspaceFindings(is *unstructured.Unstructured, workspaces []*unstructured.Unstructured, now time.Time) []evaluator.Finding {
+	namespace, name := is.GetNamespace(), is.GetName()
+	sorted := append([]*unstructured.Unstructured(nil), workspaces...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].GetName() < sorted[j].GetName() })
+
+	setModelConfig, setModelConfigInvalid := notReadyCondition(is, condModelConfigReady)
+
+	byReason := map[reason.Reason]*reportedCauses{}
+	causesOf := func(r reason.Reason) *reportedCauses {
+		if byReason[r] == nil {
+			byReason[r] = &reportedCauses{}
+		}
+		return byReason[r]
+	}
+	for _, ws := range sorted {
+		cause, ok := rootCause(ws, now)
+		if !ok || (setModelConfigInvalid && cause.reason == reason.InferencesetModelConfigInvalid) {
+			continue
+		}
+		causes := causesOf(cause.reason)
+		if cause.stalled {
+			causes.stalls = append(causes.stalls, fmt.Sprintf("workspace %s not ready for over %d minutes, %s",
+				ws.GetName(), int(infraProvisioningStallTimeout.Minutes()), describeCondition(cause.cond)))
+			continue
+		}
+		causes.failures = append(causes.failures, "workspace "+ws.GetName()+" "+describeCondition(cause.cond))
+	}
+	if setModelConfigInvalid {
+		causesOf(reason.InferencesetModelConfigInvalid).failures = []string{"InferenceSet " + describeCondition(setModelConfig)}
+	}
+
+	var findings []evaluator.Finding
+	for _, rs := range reasonSummaries {
+		causes := byReason[rs.reason]
+		if causes == nil {
+			continue
+		}
+		findings = append(findings, evaluator.Finding{
+			Reason:             rs.reason,
+			Object:             evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: namespace},
+			Message:            fmt.Sprintf("InferenceSet %s/%s: %s: %s.", namespace, name, rs.summary, joinEntries(append(causes.failures, causes.stalls...))),
 			WorkloadNamespace:  namespace,
-			GroupKey:           groupKey,
+			GroupKey:           groupKey(namespace, name),
 			StartupGraceExempt: true,
-		}, true
+		})
 	}
-	return evaluator.Finding{}, false
+	return findings
 }
 
-// nodePressureFinding derives an inferencesetNodeUnderPressure finding from the
-// child Workspaces' NodesReady condition message: KAITO appends a
-// "...under resource pressure: <node> (DiskPressure, ...)" warning there (via
-// NodePressureWarning) while leaving the condition status unchanged. It is a
-// leading indicator — sustained pressure precedes pod eviction — so it is
-// surfaced with only a short debounce (kubelet's transition-period keeps the
-// node condition from flapping on its own).
-func nodePressureFinding(workspaces []*unstructured.Unstructured, namespace, name string, obj evaluator.InvolvedObject, groupKey string) (evaluator.Finding, bool) {
-	for _, ws := range workspaces {
-		cond, ok := workspaceCondition(ws, workspaceCondNodesReady)
-		if !ok || !strings.Contains(cond.message, nodePressureMarker) {
-			continue
-		}
-		detail := cond.message
-		if i := strings.Index(detail, "warning: "); i >= 0 {
-			detail = detail[i+len("warning: "):]
-		}
-		return evaluator.Finding{
-			Reason:              reason.InferencesetNodeUnderPressure,
-			Object:              obj,
-			Message:             fmt.Sprintf("InferenceSet %s/%s: %s; model pods may be evicted if the pressure persists.", namespace, name, detail),
-			WorkloadNamespace:   namespace,
-			GroupKey:            groupKey,
-			GracePeriodOverride: nodePressureGracePeriod,
-		}, true
+// describeCondition renders a False condition as "<Type>=False (<Reason>): <message>".
+func describeCondition(c statusCondition) string {
+	text := fmt.Sprintf("%s=False (%s)", c.condType, c.reason)
+	if c.message != "" {
+		text += ": " + truncate(c.message, maxConditionMessageLen)
 	}
-	return evaluator.Finding{}, false
+	return text
+}
+
+// joinEntries joins up to maxReportedWorkspaces entries and counts the rest.
+func joinEntries(entries []string) string {
+	if len(entries) <= maxReportedWorkspaces {
+		return strings.Join(entries, "; ")
+	}
+	return fmt.Sprintf("%s; and %d more", strings.Join(entries[:maxReportedWorkspaces], "; "), len(entries)-maxReportedWorkspaces)
+}
+
+// truncate shortens s to at most maxLen runes, marking the cut with "...".
+func truncate(s string, maxLen int) string {
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	return string(r[:maxLen]) + "..."
 }
 
 // getWorkspaces returns the KAITO Workspaces created by the InferenceSet,
 // selected via the inferenceset.kaito.sh/created-by label (child Workspace
 // names are assigned by the KAITO controller and do not match the
-// InferenceSet name). Returns nil when unavailable.
+// InferenceSet name). Workspaces being deleted (e.g. by a scale-down or a
+// rolling upgrade) are skipped, as KAITO does when it explains why an
+// InferenceSet is not ready, so their stale conditions are not reported.
+// Returns nil when unavailable.
 func getWorkspaces(ctx context.Context, dyn dynamic.Interface, namespace, name string) []*unstructured.Unstructured {
 	list, err := dyn.Resource(workspaceGVR).Namespace(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s", evaluator.LabelCreatedBy, name),
@@ -334,9 +456,17 @@ func getWorkspaces(ctx context.Context, dyn dynamic.Interface, namespace, name s
 	if err != nil {
 		return nil
 	}
-	out := make([]*unstructured.Unstructured, 0, len(list.Items))
-	for i := range list.Items {
-		out = append(out, &list.Items[i])
+	return liveWorkspaces(list.Items)
+}
+
+// liveWorkspaces returns the Workspaces that are not being deleted.
+func liveWorkspaces(items []unstructured.Unstructured) []*unstructured.Unstructured {
+	out := make([]*unstructured.Unstructured, 0, len(items))
+	for i := range items {
+		if items[i].GetDeletionTimestamp() != nil {
+			continue
+		}
+		out = append(out, &items[i])
 	}
 	return out
 }
