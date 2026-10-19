@@ -130,7 +130,7 @@ install time instead of surfacing as a skipped ScaledObject.
 {{- end }}
 {{- end }}
 {{- end }}
-apiVersion: kaito.sh/v1alpha1
+apiVersion: kaito.sh/v1beta1
 kind: InferenceSet
 metadata:
   name: {{ $name }}
@@ -232,8 +232,15 @@ spec:
         inference.kaito.sh/stream-source-type: {{ .Values.streaming.sourceType | quote }}
         {{- end }}
       {{- end }}
+    {{- /*
+    Empty instanceType omits the field, which KAITO requires on BYO
+    (nodeProvisioner=byo) clusters where nodes are not auto-provisioned.
+    */}}
     resource:
-      instanceType: {{ .Values.instanceType | quote }}
+      {{- with .Values.instanceType }}
+      instanceType: {{ . | quote }}
+      {{- else }} {}
+      {{- end }}
     inference:
       preset:
         name: {{ .Values.model | quote }}

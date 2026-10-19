@@ -25,7 +25,7 @@ var (
 	// InferenceSetGVR is the GroupVersionResource for KAITO InferenceSet objects.
 	InferenceSetGVR = schema.GroupVersionResource{
 		Group:    "kaito.sh",
-		Version:  "v1alpha1",
+		Version:  "v1beta1",
 		Resource: "inferencesets",
 	}
 

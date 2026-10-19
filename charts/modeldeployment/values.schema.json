@@ -85,8 +85,7 @@
     },
     "instanceType": {
       "type": "string",
-      "minLength": 1,
-      "description": "VM instance type used for the underlying GPU nodes."
+      "description": "VM instance type used for the underlying GPU nodes. Empty omits spec.template.resource.instanceType, as required on BYO-node clusters (KAITO nodeProvisioner=byo)."
     },
     "replicas": {
       "anyOf": [

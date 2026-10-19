@@ -3,7 +3,7 @@
 Helm chart that deploys a complete set of GAIE (Gateway API Inference
 Extension) artifacts for a single model:
 
-- `kaito.sh/v1alpha1` `InferenceSet`
+- `kaito.sh/v1beta1` `InferenceSet`
 - `inference.networking.k8s.io/v1` `InferencePool` (normally provisioned by KAITO via Flux; rendered inline here)
 - Endpoint Picker (EPP) `Deployment` + `Service` + `ServiceAccount` + `Role` + `RoleBinding` + `ConfigMap`
 - `gateway.networking.k8s.io/v1` `HTTPRoute` matching `X-Gateway-Model-Name: <name>`
@@ -41,7 +41,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `model`                   | required | `""`                                                                 | Preset model name. Used only as `spec.template.inference.preset.name`.                     |
 | `config`                  | optional | `""`                                                                 | Name of a ConfigMap in the deployment namespace containing custom inference arguments. Rendered as `spec.template.inference.config`. |
 | `modelAccessSecret`       | optional | `""`                                                                 | Name of a Secret containing Hugging Face model access credentials. Rendered as `spec.template.inference.preset.presetOptions.modelAccessSecret`. |
-| `instanceType`            | required | `Standard_NV36ads_A10_v5`                                            | VM instance type for the underlying nodes.                                                 |
+| `instanceType`            | optional | `Standard_NV36ads_A10_v5`                                            | VM instance type for the underlying nodes. Set `""` to omit `spec.template.resource.instanceType`, as required on BYO-node clusters (KAITO `nodeProvisioner=byo`). |
 | `replicas`                | optional | _empty_                                                              | InferenceSet replicas (`spec.replicas`). Empty leaves `spec.replicas` unset (CRD default `1`; with `enableScaling=true`, KEDA moves it into `[minReplicas, maxReplicas]`). When set with `enableScaling=true` it must lie within `[minReplicas, maxReplicas]` and is re-applied only when its value changes (see [Replica ownership](#replica-ownership)). |
 | `minReplicas`             | required when `enableScaling=true` | _empty_                                    | Autoscaling lower bound, wired to `scaledobject.kaito.sh/min-replicas`. Ignored when `enableScaling=false`. `0` enables [scale to zero](#scale-to-zero). |
 | `enableScaling`           | optional | `false`                                                              | Wired to `scaledobject.kaito.sh/auto-provision`. Gates `minReplicas`, `maxReplicas` and the entire `scaling` block. |
