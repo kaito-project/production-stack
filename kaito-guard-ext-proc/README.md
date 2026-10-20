@@ -28,6 +28,12 @@ python -m pytest
 Runtime dependencies are defined only in `setup.py`. `xds-protos`, published
 by the gRPC project, supplies the generated Envoy protobuf messages and service.
 
+## CI
+
+The `kaito-guard-ext-proc` job in the repository's CI workflow installs
+`.[dev]` with Python 3.11, runs pytest, and builds the container image.
+The image is not published, and this job does not test real Envoy integration.
+
 ## Container
 
 Build from the repository root using
