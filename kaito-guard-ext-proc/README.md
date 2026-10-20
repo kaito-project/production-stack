@@ -13,9 +13,10 @@ traffic and must not be used as an active guardrail.
 
 ## Run and test
 
-Requires Python 3.11 or newer. From this directory:
+Requires Python 3.11 or newer. From the repository root:
 
 ```sh
+cd kaito-guard-ext-proc
 python -m pip install -e '.[dev]'
 python -m ext_proc.server
 ```
@@ -29,7 +30,10 @@ by the gRPC project, supplies the generated Envoy protobuf messages and service.
 
 ## Container
 
+Build from the repository root using
+[`docker/Dockerfile.kaito-guard-ext-proc`](../docker/Dockerfile.kaito-guard-ext-proc):
+
 ```sh
-docker build -t kaito-guard-ext-proc .
+docker build -f docker/Dockerfile.kaito-guard-ext-proc -t kaito-guard-ext-proc .
 docker run --rm -p 9000:9000 kaito-guard-ext-proc
 ```

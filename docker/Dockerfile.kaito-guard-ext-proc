@@ -2,8 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY setup.py .
-COPY ext_proc/ ./ext_proc/
+COPY kaito-guard-ext-proc/setup.py .
+COPY kaito-guard-ext-proc/ext_proc/ ./ext_proc/
 RUN pip install --no-cache-dir .
 
 EXPOSE 9000
