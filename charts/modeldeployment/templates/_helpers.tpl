@@ -99,3 +99,101 @@ Matches the upstream GAIE chart convention:
 {{- define "modeldeployment.eppSelectorLabels" -}}
 inferencepool: {{ include "modeldeployment.eppServiceName" . }}
 {{- end }}
+
+{{/*
+Optional scalar rendered as a string; "" when the value is unset (nil) or
+empty. Unlike a plain truthiness check, a numeric 0 renders as "0" so a
+threshold of 0 counts as set.
+*/}}
+{{- define "modeldeployment.optionalString" -}}
+{{- if not (kindIs "invalid" .) -}}
+{{- toString . -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Validates an optional whole number of seconds against [min, max] and renders it
+without leading zeros; "" when unset. Input: dict "field" "value" "min" "max".
+Complements values.schema.json, which cannot bound numeric strings (e.g. from
+--set-string), so out-of-range values fail at render time instead of when KEDA
+creates the HPA.
+*/}}
+{{- define "modeldeployment.boundedSeconds" -}}
+{{- $v := include "modeldeployment.optionalString" .value -}}
+{{- if ne $v "" -}}
+{{- if not (regexMatch "^[0-9]+$" $v) -}}
+{{- fail (printf "modeldeployment: %s (%s) must be a whole number of seconds" .field $v) -}}
+{{- end -}}
+{{- $n := regexReplaceAll "^0+(.)" $v "${1}" -}}
+{{- if or (gt (len $n) 10) (lt (atoi $n) .min) (gt (atoi $n) .max) -}}
+{{- fail (printf "modeldeployment: %s (%s) must be between %d and %d seconds" .field $v .min .max) -}}
+{{- end -}}
+{{- $n -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Validates an optional HPA tolerance ratio: a non-negative decimal strictly
+below "max", the ratio at or above which the scaling formula's signal for that
+direction (2.0 up, 0.5 down) falls inside the deadband and never fires; ""
+when unset. Input: dict "field" "value" "max".
+*/}}
+{{- define "modeldeployment.boundedTolerance" -}}
+{{- $v := include "modeldeployment.optionalString" .value -}}
+{{- if ne $v "" -}}
+{{- if not (regexMatch "^[0-9]+(\\.[0-9]+)?$" $v) -}}
+{{- fail (printf "modeldeployment: %s (%s) must be a non-negative decimal" .field $v) -}}
+{{- end -}}
+{{- if ge (float64 $v) .max -}}
+{{- fail (printf "modeldeployment: %s (%s) must be less than %v, otherwise that scaling direction never triggers" .field $v .max) -}}
+{{- end -}}
+{{- $v -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Autoscaling lower bound wired to scaledobject.kaito.sh/min-replicas, as a
+string; "" when minReplicas is unset or empty. Required (enforced in
+inferenceset.yaml) whenever enableScaling is true.
+*/}}
+{{- define "modeldeployment.minReplicas" -}}
+{{- include "modeldeployment.optionalString" .Values.minReplicas -}}
+{{- end }}
+
+{{/*
+"true" when autoscaling is enabled with a zero lower bound, i.e.
+keda-kaito-scaler drives the 0 <-> 1 transition.
+*/}}
+{{- define "modeldeployment.scaleToZero" -}}
+{{- if and .Values.enableScaling (eq (include "modeldeployment.minReplicas" .) "0") -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+"true" when the EPP runs with its flowControl feature gate. Scale to zero
+forces it on: with no model pods the EPP must hold incoming requests
+(rather than fail them) so the flow-control queue gauge can wake the
+workload, and the held requests are dispatched once a replica is Ready.
+*/}}
+{{- define "modeldeployment.eppFlowControlEnabled" -}}
+{{- if or ((.Values.epp).flowControl).enabled (include "modeldeployment.scaleToZero" .) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+EPP flow-control settings. Rendered into the EPP ConfigMap and hashed into
+the EPP pod template so a change rolls the EPP (it only reads its config
+file at startup).
+*/}}
+{{- define "modeldeployment.eppFlowControlSettings" -}}
+{{- $fc := (.Values.epp).flowControl | default dict -}}
+maxConcurrency: {{ $fc.maxConcurrency | default 1000000 | int64 }}
+{{- with $fc.maxBytes }}
+maxBytes: {{ . | quote }}
+{{- end }}
+{{- with $fc.defaultRequestTTL }}
+defaultRequestTTL: {{ . | quote }}
+{{- end }}
+{{- end }}

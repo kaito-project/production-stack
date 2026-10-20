@@ -25,6 +25,16 @@ spec:
         Deployment recreate on existing installs.
         */}}
         {{- include "modeldeployment.ownerLabel" . | nindent 8 }}
+      {{- if eq (include "modeldeployment.eppFlowControlEnabled" .) "true" }}
+      annotations:
+        {{- /*
+        The EPP reads its config file only at startup, so roll it when flow
+        control is toggled or its settings change. Scoped to the flow-control
+        settings so installs without flow control keep an unchanged pod
+        template.
+        */}}
+        checksum/epp-flow-control: {{ include "modeldeployment.eppFlowControlSettings" . | sha256sum }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "modeldeployment.eppServiceName" . }}
       terminationGracePeriodSeconds: 130

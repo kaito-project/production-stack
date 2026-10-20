@@ -164,6 +164,10 @@ test-e2e: ## Run e2e tests against a live cluster (requires KUBECONFIG).
 test-e2e-karpenter: ## Run the Karpenter nightly scale-from-zero scenarios with safe swedencentral defaults.
 	$(MAKE) test-e2e E2E_LABEL='Karpenter' E2E_PARALLEL=1 E2E_TIMEOUT=180m
 
+.PHONY: test-e2e-scaling
+test-e2e-scaling: ## Run the KEDA Scaling specs (1<->2, 0<->1) serially. On real GPUs set E2E_SCALING_INSTANCE_TYPE (e.g. Standard_NC40ads_H100_v5).
+	$(MAKE) test-e2e E2E_LABEL='Scaling' E2E_PARALLEL=1 E2E_TIMEOUT=240m E2E_JSON_REPORT=ginkgo-report-scaling.json
+
 .PHONY: test-e2e-perf
 test-e2e-perf: ## Run prefix-cache perf specs serially. Override E2E_TRACE_FIXTURE and E2E_PERF_TIMEOUT as needed.
 	$(MAKE) test-e2e E2E_LABEL='Perf' E2E_PARALLEL=1 E2E_TIMEOUT=$(E2E_PERF_TIMEOUT)

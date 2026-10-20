@@ -387,24 +387,54 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 	if v.Config != "" {
 		args = append(args, "--set-string", "config="+v.Config)
 	}
+	if v.DisableBenchmark {
+		args = append(args, "--set", "enableBenchmark=false")
+	}
 	if v.EnableScaling {
 		args = append(args, "--set", "enableScaling=true")
-		if v.MaxReplicas > 0 {
-			args = append(args, "--set", "maxReplicas="+strconv.FormatInt(v.MaxReplicas, 10))
-		}
+		args = append(args,
+			"--set", "minReplicas="+strconv.FormatInt(v.MinReplicas, 10),
+			"--set", "maxReplicas="+strconv.FormatInt(v.MaxReplicas, 10),
+		)
 		for i, m := range v.ScalingMetrics {
 			prefix := fmt.Sprintf("scaling.metrics[%d].", i)
 			args = append(args, "--set", prefix+"name="+m.Name)
 			if m.Type != "" {
 				args = append(args, "--set", prefix+"type="+m.Type)
 			}
-			args = append(args,
-				"--set", prefix+"upThreshold="+m.UpThreshold,
-				"--set", prefix+"downThreshold="+m.DownThreshold,
-			)
+			if m.Source != "" {
+				args = append(args, "--set", prefix+"source="+m.Source)
+			}
+			if m.UpThreshold != "" {
+				args = append(args, "--set", prefix+"upThreshold="+m.UpThreshold)
+			}
+			if m.DownThreshold != "" {
+				args = append(args, "--set", prefix+"downThreshold="+m.DownThreshold)
+			}
+			if m.ActivationThreshold != "" {
+				args = append(args, "--set", prefix+"activationThreshold="+m.ActivationThreshold)
+			}
+			if m.DeactivationThreshold != "" {
+				args = append(args, "--set", prefix+"deactivationThreshold="+m.DeactivationThreshold)
+			}
 			if m.MetricCacheWindow != "" {
 				args = append(args, "--set", prefix+"metricCacheWindow="+m.MetricCacheWindow)
 			}
+		}
+		if v.CooldownPeriod > 0 {
+			args = append(args, "--set", "scaling.cooldownPeriod="+strconv.FormatInt(v.CooldownPeriod, 10))
+		}
+		if v.InitialCooldownPeriod != nil {
+			args = append(args, "--set", "scaling.initialCooldownPeriod="+strconv.FormatInt(*v.InitialCooldownPeriod, 10))
+		}
+		if v.ScaleDownStabilizationWindow != nil {
+			args = append(args, "--set", "scaling.hpa.scaleDown.stabilizationWindowSeconds="+strconv.FormatInt(*v.ScaleDownStabilizationWindow, 10))
+		}
+		if v.ScaleUpPeriodSeconds != nil {
+			args = append(args, "--set", "scaling.hpa.scaleUp.periodSeconds="+strconv.FormatInt(*v.ScaleUpPeriodSeconds, 10))
+		}
+		if v.ScaleDownPeriodSeconds != nil {
+			args = append(args, "--set", "scaling.hpa.scaleDown.periodSeconds="+strconv.FormatInt(*v.ScaleDownPeriodSeconds, 10))
 		}
 	}
 	if v.AutoUpgrade.Enabled {

@@ -1,0 +1,177 @@
+name: Bump chart dependencies
+
+# Daily check of the productionstack umbrella chart dependencies listed in
+# hack/chart-deps.yaml. For each group with a newer stable version in its
+# registry, opens (or refreshes) one PR on `automation/bump-<group>` via
+# hack/bump-chart-deps.sh.
+#
+# PRs are opened with GITHUB_TOKEN, which does not trigger `pull_request`
+# workflows, so this workflow dispatches ci.yaml and e2e.yaml on the PR
+# branch itself. The resulting checks are reported on the PR head commit.
+# CI is dispatched when a PR is created or moves to a new version, not on
+# plain rebases. If a PR branch has manual (non-bot, non-merge) commits, the
+# branch is left untouched and a comment announces the newer version instead.
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  BOT_NAME: github-actions[bot]
+  BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      groups: ${{ steps.groups.outputs.groups }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: List dependency groups
+        id: groups
+        run: |
+          groups="$(yq -o=json -I=0 '[.groups[].name]' hack/chart-deps.yaml)"
+          echo "groups=${groups}" >> "${GITHUB_OUTPUT}"
+          echo "${groups}"
+
+  bump:
+    needs: discover
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.discover.outputs.groups) }}
+    env:
+      GROUP: ${{ matrix.group }}
+      BRANCH: automation/bump-${{ matrix.group }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Helm
+        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        with:
+          version: v3.20.2
+
+      - name: Bump ${{ matrix.group }}
+        id: bump
+        run: ./hack/bump-chart-deps.sh "${GROUP}"
+
+      - name: Inspect existing PR
+        id: existing
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          VERSIONS: ${{ steps.bump.outputs.versions }}
+          BASE: ${{ github.ref_name }}
+        run: |
+          title="chore: bump ${GROUP} to ${VERSIONS}"
+          echo "title=${title}" >> "${GITHUB_OUTPUT}"
+
+          number="$(gh pr list --head "${BRANCH}" --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "${number}" ]]; then
+            echo "No open PR for ${BRANCH}"
+            exit 0
+          fi
+          old_title="$(gh pr view "${number}" --json title --jq .title)"
+
+          # Merge commits (e.g. GitHub's "Update branch") are ignored; any other
+          # commit not authored by the bot is a manual change to preserve.
+          manual="$(gh api "repos/${GH_REPO}/compare/${BASE}...${BRANCH}" --jq \
+            "[.commits[] | select((.parents | length) == 1)
+              | select(.commit.author.email != \"${BOT_EMAIL}\")] | length")"
+
+          {
+            echo "number=${number}"
+            echo "old_title=${old_title}"
+            echo "manual=$([[ "${manual}" -gt 0 ]] && echo true || echo false)"
+          } >> "${GITHUB_OUTPUT}"
+          echo "PR #${number} '${old_title}' has ${manual} manual commit(s)"
+
+      - name: Announce new version on PR with manual commits
+        if: steps.existing.outputs.manual == 'true' && steps.existing.outputs.old_title != steps.existing.outputs.title
+        env:
+          NUMBER: ${{ steps.existing.outputs.number }}
+          VERSIONS: ${{ steps.bump.outputs.versions }}
+          SUMMARY: ${{ steps.bump.outputs.summary }}
+        run: |
+          marker="<!-- bump-chart-deps: ${GROUP} ${VERSIONS} -->"
+          if gh api "repos/${GH_REPO}/issues/${NUMBER}/comments" --paginate --jq '.[].body' | grep -qF "${marker}"; then
+            echo "Already announced ${VERSIONS} on #${NUMBER}"
+            exit 0
+          fi
+          gh pr comment "${NUMBER}" --body "${marker}
+          A newer version is available, but this branch has manual commits, so it was not updated automatically:
+
+          ${SUMMARY}
+
+          Apply the bump on this branch with \`hack/bump-chart-deps.sh ${GROUP}\`, or close this PR to let the next run recreate it."
+
+      - name: Create or update pull request
+        id: cpr
+        if: steps.bump.outputs.bumped == 'true' && steps.existing.outputs.manual != 'true'
+        uses: peter-evans/create-pull-request@271a8d0340265f705b14b6d32b9829c1cb33d45e # v7.0.8
+        with:
+          token: ${{ github.token }}
+          branch: ${{ env.BRANCH }}
+          add-paths: charts/productionstack
+          author: ${{ env.BOT_NAME }} <${{ env.BOT_EMAIL }}>
+          committer: ${{ env.BOT_NAME }} <${{ env.BOT_EMAIL }}>
+          signoff: true
+          sign-commits: true
+          delete-branch: true
+          commit-message: ${{ steps.existing.outputs.title }}
+          title: ${{ steps.existing.outputs.title }}
+          body: |
+            **Reason for Change**:
+            Automated dependency bump of the `productionstack` umbrella chart:
+
+            ${{ steps.bump.outputs.summary }}
+
+            Generated by the [Bump chart dependencies](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) workflow (`hack/bump-chart-deps.sh ${{ matrix.group }}`, configured in `hack/chart-deps.yaml`).
+
+            **Requirements**
+
+            - [ ] added unit tests and e2e tests (if applicable).
+
+            **Issue Fixed**:
+
+            **Notes for Reviewers**:
+            `ci.yaml` and `e2e.yaml` are dispatched on this branch by the bump workflow when the PR is created or moves to a new version. Review the upstream release notes for breaking changes or new values keys. If the upgrade needs template changes, push them to this branch; the workflow will then stop rewriting it and comment when newer versions appear.
+
+      - name: Dispatch CI on PR branch
+        if: >-
+          steps.cpr.outputs.pull-request-operation == 'created' ||
+          (steps.cpr.outputs.pull-request-operation == 'updated' &&
+           steps.existing.outputs.old_title != steps.existing.outputs.title)
+        run: |
+          gh workflow run ci.yaml --ref "${BRANCH}"
+          gh workflow run e2e.yaml --ref "${BRANCH}" -f branch="${BRANCH}"

@@ -1,67 +1,193 @@
+{{- $name := include "modeldeployment.name" . }}
+{{- $namespace := include "modeldeployment.namespace" . }}
+{{- $replicasStr := include "modeldeployment.optionalString" .Values.replicas }}
+{{- $minReplicasStr := include "modeldeployment.minReplicas" . }}
+{{- $maxReplicasStr := include "modeldeployment.optionalString" .Values.maxReplicas }}
+{{- $minReplicas := $minReplicasStr | int }}
+{{- $scaleToZero := eq (include "modeldeployment.scaleToZero" .) "true" }}
+{{- $lines := list }}
 {{- if .Values.enableScaling }}
-{{- if lt ((.Values.maxReplicas | int)) ((.Values.replicas | int)) }}
-{{- fail (printf "modeldeployment: maxReplicas (%d) must be >= replicas (%d) when enableScaling is true" (.Values.maxReplicas | int) (.Values.replicas | int)) }}
+{{- if eq $minReplicasStr "" }}
+{{- fail "modeldeployment: minReplicas is required when enableScaling is true" }}
+{{- end }}
+{{- if eq $maxReplicasStr "" }}
+{{- fail "modeldeployment: maxReplicas is required when enableScaling is true" }}
+{{- end }}
+{{- $maxReplicas := $maxReplicasStr | int }}
+{{- if lt $maxReplicas 1 }}
+{{- fail (printf "modeldeployment: maxReplicas (%d) must be at least 1 when enableScaling is true" $maxReplicas) }}
+{{- end }}
+{{- if lt $maxReplicas $minReplicas }}
+{{- fail (printf "modeldeployment: maxReplicas (%d) must be >= minReplicas (%d) when enableScaling is true" $maxReplicas $minReplicas) }}
+{{- end }}
+{{- if ne $replicasStr "" }}
+{{- $replicas := $replicasStr | int }}
+{{- if lt $maxReplicas $replicas }}
+{{- fail (printf "modeldeployment: maxReplicas (%d) must be >= replicas (%d) when enableScaling is true" $maxReplicas $replicas) }}
+{{- end }}
+{{- if lt $replicas $minReplicas }}
+{{- fail (printf "modeldeployment: replicas (%d) must be >= minReplicas (%d) when enableScaling is true" $replicas $minReplicas) }}
+{{- end }}
 {{- end }}
 {{- if not (.Values.scaling).metrics }}
 {{- fail "modeldeployment: scaling.metrics must contain at least one entry when enableScaling is true" }}
 {{- end }}
+{{- /*
+Each scaling.metrics entry may carry an up/down band (1 <-> N) and/or, when
+minReplicas is 0, an activation/deactivation band (0 <-> 1). With
+minReplicas >= 1 the zero band is dropped and entries that carry only a zero
+band are skipped, so the default metrics list works for both modes. The
+checks below mirror keda-kaito-scaler v0.7.0 so misconfiguration fails at
+install time instead of surfacing as a skipped ScaledObject.
+*/}}
+{{- $hasActivation := false }}
+{{- $hasBackendDeactivation := false }}
+{{- range $i, $m := .Values.scaling.metrics }}
+{{- if not $m.name }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d].name is required when enableScaling is true" $i) }}
 {{- end }}
-apiVersion: kaito.sh/v1alpha1
+{{- $type := default "gauge" $m.type }}
+{{- $source := default "modelpod" $m.source }}
+{{- $up := include "modeldeployment.optionalString" $m.upThreshold }}
+{{- $down := include "modeldeployment.optionalString" $m.downThreshold }}
+{{- $activation := include "modeldeployment.optionalString" $m.activationThreshold }}
+{{- $deactivation := include "modeldeployment.optionalString" $m.deactivationThreshold }}
+{{- $render := true }}
+{{- if not $scaleToZero }}
+{{- $activation = "" }}
+{{- $deactivation = "" }}
+{{- if and (not $up) (not $down) (or (include "modeldeployment.optionalString" $m.activationThreshold) (include "modeldeployment.optionalString" $m.deactivationThreshold)) }}
+{{- $render = false }}
+{{- else }}
+{{- if not $up }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold is required when enableScaling is true" $i) }}
+{{- end }}
+{{- if not $down }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d].downThreshold is required when enableScaling is true" $i) }}
+{{- end }}
+{{- end }}
+{{- else }}
+{{- if not (or $up $down $activation $deactivation) }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d] must set at least one of upThreshold, downThreshold, activationThreshold or deactivationThreshold when minReplicas is 0" $i) }}
+{{- end }}
+{{- if ne (empty $up) (empty $down) }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold and downThreshold must be set together" $i) }}
+{{- end }}
+{{- if $activation }}
+{{- if ne $source "epp" }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d].activationThreshold requires source \"epp\" (the only source observable at zero replicas), got %q" $i $source) }}
+{{- end }}
+{{- if not $deactivation }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d].activationThreshold requires a deactivationThreshold on the same metric" $i) }}
+{{- end }}
+{{- if gt (subf $deactivation $activation) 0.0 }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d].deactivationThreshold (%s) must not exceed activationThreshold (%s)" $i $deactivation $activation) }}
+{{- end }}
+{{- $hasActivation = true }}
+{{- end }}
+{{- if and $deactivation (eq $source "modelpod") }}
+{{- $hasBackendDeactivation = true }}
+{{- end }}
+{{- end }}
+{{- if and $render $up }}
+{{- if not (gt (subf $up $down) 0.0) }}
+{{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold (%s) must be greater than downThreshold (%s) when enableScaling is true" $i $up $down) }}
+{{- end }}
+{{- end }}
+{{- if $render }}
+{{- $lines = append $lines (printf "- name: %s" ($m.name | quote)) }}
+{{- $lines = append $lines (printf "  type: %s" ($type | quote)) }}
+{{- with $m.source }}
+{{- $lines = append $lines (printf "  source: %s" (. | quote)) }}
+{{- end }}
+{{- with $m.aggregation }}
+{{- $lines = append $lines (printf "  aggregation: %s" (. | quote)) }}
+{{- end }}
+{{- if $up }}
+{{- $lines = append $lines (printf "  upthreshold: %s" $up) }}
+{{- $lines = append $lines (printf "  downthreshold: %s" $down) }}
+{{- end }}
+{{- if $activation }}
+{{- $lines = append $lines (printf "  activationthreshold: %s" $activation) }}
+{{- end }}
+{{- if $deactivation }}
+{{- $lines = append $lines (printf "  deactivationthreshold: %s" $deactivation) }}
+{{- end }}
+{{- if and (eq $type "histogram") $m.metricCacheWindow }}
+{{- $lines = append $lines (printf "  metriccachewindow: %v" $m.metricCacheWindow) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if not $lines }}
+{{- fail "modeldeployment: scaling.metrics must contain at least one entry with upThreshold and downThreshold when minReplicas >= 1" }}
+{{- end }}
+{{- if $scaleToZero }}
+{{- if not $hasActivation }}
+{{- fail "modeldeployment: minReplicas=0 requires at least one scaling.metrics entry with an activationThreshold (source \"epp\"), otherwise the workload can never wake" }}
+{{- end }}
+{{- if not $hasBackendDeactivation }}
+{{- fail "modeldeployment: minReplicas=0 requires at least one modelpod-sourced scaling.metrics entry with a deactivationThreshold, so parking observes backend occupancy" }}
+{{- end }}
+{{- end }}
+{{- end }}
+apiVersion: kaito.sh/v1beta1
 kind: InferenceSet
 metadata:
-  name: {{ include "modeldeployment.name" . }}
-  namespace: {{ include "modeldeployment.namespace" . }}
+  name: {{ $name }}
+  namespace: {{ $namespace }}
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
   {{- if .Values.enableScaling }}
   annotations:
     scaledobject.kaito.sh/auto-provision: "true"
-    scaledobject.kaito.sh/min-replicas: {{ .Values.replicas | quote }}
+    scaledobject.kaito.sh/min-replicas: {{ $minReplicas | quote }}
     scaledobject.kaito.sh/max-replicas: {{ .Values.maxReplicas | quote }}
-    {{- $lines := list }}
-    {{- range $i, $m := .Values.scaling.metrics }}
-    {{- if not $m.name }}
-    {{- fail (printf "modeldeployment: scaling.metrics[%d].name is required when enableScaling is true" $i) }}
-    {{- end }}
-    {{- if not $m.upThreshold }}
-    {{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold is required when enableScaling is true" $i) }}
-    {{- end }}
-    {{- if not $m.downThreshold }}
-    {{- fail (printf "modeldeployment: scaling.metrics[%d].downThreshold is required when enableScaling is true" $i) }}
-    {{- end }}
-    {{- if not (gt (subf $m.upThreshold $m.downThreshold) 0.0) }}
-    {{- fail (printf "modeldeployment: scaling.metrics[%d].upThreshold (%v) must be greater than downThreshold (%v) when enableScaling is true" $i $m.upThreshold $m.downThreshold) }}
-    {{- end }}
-    {{- $type := default "gauge" $m.type }}
-    {{- $lines = append $lines (printf "- name: %s" ($m.name | quote)) }}
-    {{- $lines = append $lines (printf "  type: %s" ($type | quote)) }}
-    {{- $lines = append $lines (printf "  upthreshold: %v" $m.upThreshold) }}
-    {{- $lines = append $lines (printf "  downthreshold: %v" $m.downThreshold) }}
-    {{- if and (eq $type "histogram") $m.metricCacheWindow }}
-    {{- $lines = append $lines (printf "  metriccachewindow: %v" $m.metricCacheWindow) }}
-    {{- end }}
-    {{- end }}
     scaledobject.kaito.sh/metrics: |-
       {{- (join "\n" $lines) | nindent 6 }}
-    {{- with (.Values.scaling).evaluationWindow }}
-    scaledobject.kaito.sh/evaluationwindow: {{ . | quote }}
+    {{- /*
+    Each scaling.hpa field maps to exactly one keda-kaito-scaler annotation;
+    empty or null omits it so keda-kaito-scaler applies its default. Bounds
+    mirror the HPA API (stabilization window 0..3600, policy period 1..1800,
+    tolerance >= 0) plus the tolerance ceiling at which the formula's
+    scale-up (2.0) / scale-down (0.5) signal would never fire.
+    */}}
+    {{- $hpa := default dict (.Values.scaling).hpa }}
+    {{- $hpaUp := default dict $hpa.scaleUp }}
+    {{- $hpaDown := default dict $hpa.scaleDown }}
+    {{- $hpaAnnotations := list
+      (list "scaleupstabilizationwindow" (include "modeldeployment.boundedSeconds" (dict "field" "scaling.hpa.scaleUp.stabilizationWindowSeconds" "value" $hpaUp.stabilizationWindowSeconds "min" 0 "max" 3600)))
+      (list "scaleupcooldown" (include "modeldeployment.boundedSeconds" (dict "field" "scaling.hpa.scaleUp.periodSeconds" "value" $hpaUp.periodSeconds "min" 1 "max" 1800)))
+      (list "scaleuptolerance" (include "modeldeployment.boundedTolerance" (dict "field" "scaling.hpa.scaleUp.tolerance" "value" $hpaUp.tolerance "max" 1.0)))
+      (list "scaledownstabilizationwindow" (include "modeldeployment.boundedSeconds" (dict "field" "scaling.hpa.scaleDown.stabilizationWindowSeconds" "value" $hpaDown.stabilizationWindowSeconds "min" 0 "max" 3600)))
+      (list "scaledowncooldown" (include "modeldeployment.boundedSeconds" (dict "field" "scaling.hpa.scaleDown.periodSeconds" "value" $hpaDown.periodSeconds "min" 1 "max" 1800)))
+      (list "scaledowntolerance" (include "modeldeployment.boundedTolerance" (dict "field" "scaling.hpa.scaleDown.tolerance" "value" $hpaDown.tolerance "max" 0.5))) }}
+    {{- range $pair := $hpaAnnotations }}
+    {{- with index $pair 1 }}
+    scaledobject.kaito.sh/{{ index $pair 0 }}: {{ . | quote }}
     {{- end }}
-    {{- with (.Values.scaling).scaleUpCooldown }}
-    scaledobject.kaito.sh/scaleupcooldown: {{ . | quote }}
     {{- end }}
-    {{- with (.Values.scaling).scaleDownCooldown }}
-    scaledobject.kaito.sh/scaledowncooldown: {{ . | quote }}
+    {{- if $scaleToZero }}
+    {{- range $field, $suffix := dict "cooldownPeriod" "cooldownperiod" "initialCooldownPeriod" "initialcooldownperiod" }}
+    {{- with include "modeldeployment.boundedSeconds" (dict "field" (printf "scaling.%s" $field) "value" (get $.Values.scaling $field) "min" 0 "max" 2147483647) }}
+    scaledobject.kaito.sh/{{ $suffix }}: {{ . | quote }}
+    {{- end }}
+    {{- end }}
     {{- end }}
   {{- end }}
 spec:
   {{- /*
-  When scaling is enabled, KEDA owns the live replica count: keda-kaito-scaler
-  drives it through the InferenceSet's scale subresource, whose specpath is
-  .spec.replicas, so the chart leaves that field unset. The lower bound reaches
-  KEDA through the scaledobject.kaito.sh/min-replicas annotation above.
+  Rendered only when `replicas` is set; otherwise the field is left to the
+  CRD default (1) and, with enableScaling, to KEDA. When set, it is rendered
+  even under autoscaling, where KEDA owns the live count through the
+  InferenceSet's scale subresource (specpath .spec.replicas): Helm 3 upgrades
+  custom resources with a two-way merge patch between the previous and the
+  new release manifest, so .spec.replicas is only patched when the
+  `replicas` value itself changes and every other upgrade keeps the count
+  KEDA scaled to. KEDA in turn enforces the scaledobject.kaito.sh/min-replicas
+  floor annotated above.
   */}}
-  {{- if not .Values.enableScaling }}
-  replicas: {{ .Values.replicas }}
+  {{- if ne $replicasStr "" }}
+  replicas: {{ $replicasStr | int }}
   {{- end }}
   labelSelector:
     matchLabels:
@@ -106,8 +232,15 @@ spec:
         inference.kaito.sh/stream-source-type: {{ .Values.streaming.sourceType | quote }}
         {{- end }}
       {{- end }}
+    {{- /*
+    Empty instanceType omits the field, which KAITO requires on BYO
+    (nodeProvisioner=byo) clusters where nodes are not auto-provisioned.
+    */}}
     resource:
-      instanceType: {{ .Values.instanceType | quote }}
+      {{- with .Values.instanceType }}
+      instanceType: {{ . | quote }}
+      {{- else }} {}
+      {{- end }}
     inference:
       preset:
         name: {{ .Values.model | quote }}
