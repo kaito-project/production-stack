@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="kaito-guardrail-ext-proc",
+    name="kaito-guard-ext-proc",
     version="0.1.0",
     description="Python ext_proc for KAITO guardrailing in Envoy",
     author="KAITO Team",
