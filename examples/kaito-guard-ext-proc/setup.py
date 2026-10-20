@@ -1,5 +1,3 @@
-"""Setup configuration for KAITO guardrail ext_proc."""
-
 from setuptools import setup, find_packages
 
 setup(
