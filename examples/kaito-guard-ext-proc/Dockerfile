@@ -2,14 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+COPY setup.py .
 COPY ext_proc/ ./ext_proc/
-COPY streaming/ ./streaming/
-COPY guard/ ./guard/
-COPY scanners/ ./scanners/
-COPY config/ ./config/
+RUN pip install --no-cache-dir .
 
 EXPOSE 9000
 

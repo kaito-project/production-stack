@@ -5,20 +5,16 @@ setup(
     version="0.1.0",
     description="Python ext_proc for KAITO guardrailing in Envoy",
     author="KAITO Team",
-    packages=find_packages(),
+    packages=find_packages(include=["ext_proc", "ext_proc.*"]),
     python_requires=">=3.11",
     install_requires=[
-        "grpcio>=1.57.0",
-        "protobuf>=4.24.0",
-        "pydantic>=2.0.0",
-        "pyyaml>=6.0",
-        "tiktoken>=0.5.0",
+        "grpcio==1.84.0",
+        "xds-protos==1.84.0",
     ],
     extras_require={
         "dev": [
             "pytest>=7.4.0",
             "pytest-asyncio>=0.21.0",
-            "pytest-cov>=4.1.0",
         ],
     },
 )
