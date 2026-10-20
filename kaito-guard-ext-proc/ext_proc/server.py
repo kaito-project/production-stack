@@ -1,5 +1,3 @@
-"""Envoy external processor skeleton for the KAITO guardrail adapter."""
-
 import asyncio
 import logging
 from collections.abc import AsyncIterator
