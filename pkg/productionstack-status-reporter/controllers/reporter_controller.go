@@ -18,7 +18,7 @@ limitations under the License.
 // single producer of the §1.2 control-plane reason catalogue as Kubernetes
 // Events in kube-system. On every resync it asks the evaluator package to
 // evaluate every reason across the cluster, modelharness, and modeldeployment
-// layers (install-time misconfig + post-install drift), and emits the result
+// layers (install-time failures + post-install runtime regressions), and emits the result
 // as Events whose involvedObject is always a cluster-scoped resource (a
 // Namespace or a CustomResourceDefinition).
 package controllers
@@ -78,25 +78,31 @@ type StatusReporter struct {
 // NewStatusReporter constructs a StatusReporter and the layer evaluators it
 // drives.
 func NewStatusReporter(cs kubernetes.Interface, dyn dynamic.Interface, cfg config.Config) *StatusReporter {
-	clock := time.Now
+	return newStatusReporter(cs, dyn, cfg, time.Now)
+}
+
+// newStatusReporter is NewStatusReporter with an injectable clock, so tests can
+// advance time across the startup grace and the Event refresh interval.
+func newStatusReporter(cs kubernetes.Interface, dyn dynamic.Interface, cfg config.Config, clock func() time.Time) *StatusReporter {
 	grace := cfg.StartupGracePeriod
+	refresh := cfg.EventRefreshInterval
 	r := &StatusReporter{cfg: cfg}
 	r.layers = map[layerID]layer{
 		layerCluster: {
 			eval:    cluster.New(cs, cfg),
-			emitter: emit.NewEmitter(cs, clock, grace, "cluster"),
+			emitter: emit.NewEmitter(cs, clock, grace, refresh, "cluster"),
 		},
 		layerHarness: {
 			eval:    harness.New(cs, dyn),
-			emitter: emit.NewEmitter(cs, clock, grace, "harness"),
+			emitter: emit.NewEmitter(cs, clock, grace, refresh, "harness"),
 		},
 		layerModeldeployment: {
 			eval:    modeldeployment.New(cs, dyn),
-			emitter: emit.NewEmitter(cs, clock, grace, "modeldeployment"),
+			emitter: emit.NewEmitter(cs, clock, grace, refresh, "modeldeployment"),
 		},
 		layerWeightDownload: {
 			eval:    weightdownload.New(cs, dyn, cfg),
-			emitter: emit.NewEmitter(cs, clock, grace, "inferencesetWeightDownloadSlow"),
+			emitter: emit.NewEmitter(cs, clock, grace, refresh, "modeldownload"),
 		},
 	}
 	return r

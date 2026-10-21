@@ -20,9 +20,9 @@ limitations under the License.
 package config
 
 import (
+	"fmt"
 	"time"
 
-	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/scraper"
 	"github.com/kaito-project/production-stack/pkg/util/window"
 )
 
@@ -37,19 +37,18 @@ const (
 	// (§1.1: always kube-system).
 	ReportingNamespace = "kube-system"
 
-	// defaultReleaseNamespace is the umbrella chart's default release Namespace,
-	// also where every control-plane Event is published (§1.1: kube-system).
+	// defaultReleaseNamespace is the umbrella chart's default release Namespace.
 	defaultReleaseNamespace = "kube-system"
-)
 
-// NodeProvisionerRef registers the node-provisioner Deployment the cluster
-// evaluator probes for clusterNodeProvisionerNotReady. When Name is empty the
-// check is skipped (treated as Ready) so clusters that pre-provision GPU nodes
-// are not penalised (§1.2).
-type NodeProvisionerRef struct {
-	Name      string
-	Namespace string
-}
+	// DefaultMetricName is the Prometheus gauge (bytes/s) a not-yet-Ready vLLM
+	// model pod exposes while it downloads its weights.
+	DefaultMetricName = "kaito_model_download_speed_bytes_per_second"
+
+	// maxEventRefreshInterval bounds EventRefreshInterval below half of the
+	// default kube-apiserver --event-ttl (1h), so an active Event never ages
+	// out between refreshes (§1.1).
+	maxEventRefreshInterval = 30 * time.Minute
+)
 
 // AzureAuthzRef registers the optional azure-authz ext_authz Deployment the
 // cluster evaluator probes for clusterGatewayAuthNotReady. azure-authz is
@@ -63,11 +62,20 @@ type AzureAuthzRef struct {
 	Namespace string
 }
 
+// LocalCSIDriverRef registers the local CSI driver installed by the KAITO
+// workspace chart, probed for clusterLocalCSIDriverNotReady. An empty
+// Namespace disables the check; an empty ManagerDeployment or NodeDaemonSet
+// skips that half of it (§1.2).
+type LocalCSIDriverRef struct {
+	Namespace         string
+	ManagerDeployment string
+	NodeDaemonSet     string
+}
+
 // Config holds the evaluator tunables, wired from command-line flags / the
 // Helm chart values.
 type Config struct {
-	// ReleaseNamespace is the umbrella chart's release Namespace, used as the
-	// involvedObject of the positive clusterReady event (§1.2).
+	// ReleaseNamespace is the umbrella chart's release Namespace.
 	ReleaseNamespace string
 
 	// Component install namespaces probed for the cluster-layer reasons.
@@ -79,29 +87,41 @@ type Config struct {
 	KedaScalerNamespace  string
 
 	// Deployment names probed for cluster-layer readiness. GatewayAuthDeployment
-	// is the apikey-authz ext_authz backend (present only for apikey/hybrid auth);
-	// leave it empty on a pure-azure cluster so its absence is not flagged.
-	IstiodDeployment      string
-	KaitoDeployment       string
-	BBRDeployment         string
-	KedaScalerDeployment  string
-	GatewayAuthDeployment string
-
-	// NodeProvisioner is the optional node-provisioner Deployment to probe.
-	NodeProvisioner NodeProvisionerRef
+	// is the apikey-authz ext_authz backend and GatewayAuthOperatorDeployment the
+	// apikey-operator that reconciles APIKey CRs (both present only for
+	// apikey/hybrid auth); leave them empty on a pure-azure cluster so their
+	// absence is not flagged.
+	IstiodDeployment              string
+	KaitoDeployment               string
+	BBRDeployment                 string
+	KedaScalerDeployment          string
+	GatewayAuthDeployment         string
+	GatewayAuthOperatorDeployment string
 
 	// AzureAuthz is the optional azure-authz ext_authz Deployment to probe as a
-	// second backend of the clusterGatewayAuthNotReady reason.
+	// further backend of the clusterGatewayAuthNotReady reason.
 	AzureAuthz AzureAuthzRef
 
-	// WeightDownload configures the inferencesetWeightDownloadSlow window.
+	// LocalCSIDriver is the local CSI driver probed for
+	// clusterLocalCSIDriverNotReady.
+	LocalCSIDriver LocalCSIDriverRef
+
+	// WeightDownload configures the inferencesetModelDownloadSlow window.
 	WeightDownload window.Config
-	// MetricName / MetricPort configure the throughput scrape.
+	// MetricName / MetricPort configure the vLLM model-pod throughput scrape.
 	MetricName string
 	MetricPort int
+	// ModelStreamingEnabled mirrors KAITO's ModelStreaming feature gate, which
+	// is not visible on any Kubernetes object. It selects the ModelMirror
+	// downloader for InferenceSets that do not opt out of streaming (§1.4).
+	ModelStreamingEnabled bool
 
 	// ResyncInterval is how often every reason is re-evaluated.
 	ResyncInterval time.Duration
+
+	// EventRefreshInterval is the minimum interval between two writes of the
+	// same active Event (§1.1).
+	EventRefreshInterval time.Duration
 
 	// ModelsAPIBindAddress is where the OpenAI-compatible model discovery
 	// endpoint (`GET /v1/models`, `GET /v1/models/{id}`) listens. Empty
@@ -109,39 +129,63 @@ type Config struct {
 	ModelsAPIBindAddress string
 
 	// StartupGracePeriod is the window during which transient startup states
-	// are not surfaced as Warning events. Cluster/harness/EPP/route findings
-	// are withheld while the backing resource is younger than this window
-	// (object-age gating) or, for findings without a backing object, until the
-	// problem has persisted this long (debounce). Workspace/model-pod findings
-	// bypass it and instead discriminate terminal failures from in-progress
-	// states (GPU provisioning / weight download legitimately take a while).
-	// Set to 0 to disable.
+	// are not surfaced as Warning events. Findings are withheld while the
+	// backing resource (or condition transition) is younger than this window
+	// (object-age gating) or, for findings without a timestamp, until the
+	// problem has persisted this long (debounce). Findings may override the
+	// window, and terminal failures bypass it. Set to 0 to disable.
 	StartupGracePeriod time.Duration
 }
 
 // DefaultConfig returns a Config populated with the proposal defaults.
 func DefaultConfig() Config {
 	return Config{
-		ReleaseNamespace:      defaultReleaseNamespace,
-		IstioNamespace:        "istio-system",
-		KaitoNamespace:        "kaito-system",
-		KedaNamespace:         "keda",
-		GatewayAuthNamespace:  "llm-gateway-auth",
-		BBRNamespace:          "kaito-system",
-		KedaScalerNamespace:   "keda",
-		IstiodDeployment:      "istiod",
-		KaitoDeployment:       "kaito-workspace",
-		BBRDeployment:         "body-based-router",
-		KedaScalerDeployment:  "keda-kaito-scaler",
-		GatewayAuthDeployment: "apikey-authz",
+		ReleaseNamespace:              defaultReleaseNamespace,
+		IstioNamespace:                "istio-system",
+		KaitoNamespace:                "kaito-workspace",
+		KedaNamespace:                 "keda",
+		GatewayAuthNamespace:          "llm-gateway-auth",
+		BBRNamespace:                  "kaito-system",
+		KedaScalerNamespace:           "keda",
+		IstiodDeployment:              "istiod",
+		KaitoDeployment:               "kaito-workspace",
+		BBRDeployment:                 "body-based-router",
+		KedaScalerDeployment:          "keda-kaito-scaler",
+		GatewayAuthDeployment:         "apikey-authz",
+		GatewayAuthOperatorDeployment: "apikey-operator",
+		LocalCSIDriver: LocalCSIDriverRef{
+			Namespace:         "kube-system",
+			ManagerDeployment: "csi-local-manager",
+			NodeDaemonSet:     "csi-local-node",
+		},
 		WeightDownload: window.Config{
 			WindowDuration: 60 * time.Second,
 			MinMBps:        20,
 		},
-		MetricName:           scraper.DefaultMetricName,
-		MetricPort:           5000,
-		ResyncInterval:       1 * time.Minute,
-		StartupGracePeriod:   60 * time.Second,
-		ModelsAPIBindAddress: ":8082",
+		MetricName:            DefaultMetricName,
+		MetricPort:            5000,
+		ModelStreamingEnabled: true,
+		ResyncInterval:        1 * time.Minute,
+		EventRefreshInterval:  5 * time.Minute,
+		StartupGracePeriod:    60 * time.Second,
+		ModelsAPIBindAddress:  ":8082",
 	}
+}
+
+// Validate rejects tunables that would break the §1.1 Event lifecycle or the
+// §1.2 model-download window.
+func (c Config) Validate() error {
+	if c.ResyncInterval <= 0 {
+		return fmt.Errorf("resync interval must be positive, got %s", c.ResyncInterval)
+	}
+	if c.EventRefreshInterval <= 0 || c.EventRefreshInterval >= maxEventRefreshInterval {
+		return fmt.Errorf("event refresh interval must be in (0, %s), got %s", maxEventRefreshInterval, c.EventRefreshInterval)
+	}
+	if c.WeightDownload.WindowDuration <= 0 {
+		return fmt.Errorf("weight-download window must be positive, got %s", c.WeightDownload.WindowDuration)
+	}
+	if c.WeightDownload.MinMBps <= 0 {
+		return fmt.Errorf("weight-download threshold must be positive, got %v MB/s", c.WeightDownload.MinMBps)
+	}
+	return nil
 }

@@ -136,3 +136,19 @@ func EnsureNoReporterEventSince(ctx context.Context, reason, objectName string, 
 	}
 	return nil
 }
+
+// ReporterEventsForObjectSince returns the reporter Events whose involvedObject
+// name is objectName and whose LastTimestamp is after since.
+func ReporterEventsForObjectSince(ctx context.Context, objectName string, since metav1.Time) ([]corev1.Event, error) {
+	events, err := ListReporterEvents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []corev1.Event
+	for _, ev := range events {
+		if ev.InvolvedObject.Name == objectName && ev.LastTimestamp.After(since.Time) {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}

@@ -28,17 +28,17 @@ import (
 )
 
 // RBAC markers — the reporter has READ-ONLY access to every resource it
-// evaluates, plus permission to create/aggregate Events in kube-system. No
-// write access to any watched resource is requested (§3 "read-only API
-// access"). The set is scoped to resources the reporter actually reads as
-// objects: KAITO NodeClaim health is read from Workspace.status (not NodeClaim
-// objects), so it is not listed here.
+// evaluates, plus permission to create/refresh Events in kube-system. No write
+// access to any watched resource is requested (§3 "read-only API access"). The
+// set is scoped to resources the reporter actually reads as objects: KAITO
+// failures are read from InferenceSet.status, so Workspaces and NodeClaims are
+// not listed here. Nodes are read only to recognise gpu-node-mocker nodes.
 //
-// +kubebuilder:rbac:groups="",resources=namespaces;pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces;pods;nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods/proxy,verbs=get
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
-// +kubebuilder:rbac:groups=kaito.sh,resources=inferencesets;workspaces,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments;daemonsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kaito.sh,resources=inferencesets;modelmirrors,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
 

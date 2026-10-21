@@ -92,6 +92,49 @@ func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, name
 	return false, false, "", time.Time{}
 }
 
+// DaemonSetPodUnavailable probes a DaemonSet the same way
+// DeploymentPodUnavailable probes a Deployment, but per node: it reports the
+// first DaemonSet pod that is not Ready (or still Pending), together with the
+// node it runs on. Pods on nodes for which skipNode returns true are ignored,
+// so simulated nodes that can never run the DaemonSet do not flag it. A
+// DaemonSet with no pods is not flagged: it may legitimately have no eligible
+// node. A transient API error reports nothing.
+func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode func(string) bool) (missing, unavailable bool, cause, nodeName string, notReadySince time.Time) {
+	ds, err := cs.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return true, false, "", "", time.Time{}
+		}
+		return false, false, "", "", time.Time{}
+	}
+	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: metav1.FormatLabelSelector(ds.Spec.Selector),
+	})
+	if err != nil {
+		return false, false, "", "", time.Time{}
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.DeletionTimestamp != nil {
+			continue
+		}
+		if skipNode != nil && p.Spec.NodeName != "" && skipNode(p.Spec.NodeName) {
+			continue
+		}
+		if ready := PodReadyCondition(p); ready != nil {
+			if ready.Status == corev1.ConditionFalse {
+				return false, true, PodNotReadyCause(p, *ready), p.Spec.NodeName, ready.LastTransitionTime.Time
+			}
+			continue
+		}
+		if p.Status.Phase == corev1.PodPending {
+			since, hint := pendingCause(p)
+			return false, true, hint, p.Spec.NodeName, since
+		}
+	}
+	return false, false, "", "", time.Time{}
+}
+
 // PodReadyCondition returns the pod's Ready condition, or nil when it is absent
 // (an unscheduled/Pending pod has no Ready condition until the kubelet adds it).
 func PodReadyCondition(p *corev1.Pod) *corev1.PodCondition {

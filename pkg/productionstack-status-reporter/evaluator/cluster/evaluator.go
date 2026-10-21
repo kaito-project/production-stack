@@ -22,6 +22,7 @@ import (
 	"context"
 	"fmt"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/config"
@@ -70,16 +71,21 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 		{reason.ClusterKedaNotReady, cfg.KedaNamespace, "keda-operator", "KEDA control-plane"},
 		{reason.ClusterKedaNotReady, cfg.KedaNamespace, "keda-operator-metrics-apiserver", "KEDA control-plane"},
 	}
-	// clusterGatewayAuthNotReady — the fail-closed ext_authz data plane. Which
-	// backend Deployment exists depends on the per-namespace auth.mode the
-	// gateway-auth subcharts were installed for: apikey-authz (apikey/hybrid)
-	// and/or azure-authz (azure/hybrid). Both share this one reason and are
-	// probed only when configured, so a pure-azure cluster (no apikey-authz) or
-	// a pure-apikey cluster (no azure-authz) is not penalised for the absent
-	// backend; the active-map dedup below reports the shared reason at most once.
+	// clusterGatewayAuthNotReady — the llm-gateway-auth components. Which
+	// Deployments exist depends on the per-namespace auth.mode the gateway-auth
+	// subcharts were installed for: apikey-authz and apikey-operator
+	// (apikey/hybrid) and/or azure-authz (azure/hybrid). They share this one
+	// reason and are probed only when configured, so a pure-azure or pure-apikey
+	// cluster is not penalised for an absent component; the active-map dedup
+	// below reports the shared reason at most once.
 	if cfg.GatewayAuthDeployment != "" {
 		checks = append(checks, depReason{
 			reason.ClusterGatewayAuthNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthDeployment, "apikey-authz ext_authz",
+		})
+	}
+	if cfg.GatewayAuthOperatorDeployment != "" {
+		checks = append(checks, depReason{
+			reason.ClusterGatewayAuthNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthOperatorDeployment, "apikey-operator",
 		})
 	}
 	if cfg.AzureAuthz.Name != "" {
@@ -87,10 +93,11 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 			reason.ClusterGatewayAuthNotReady, cfg.AzureAuthz.Namespace, cfg.AzureAuthz.Name, "azure-authz ext_authz",
 		})
 	}
-	// clusterNodeProvisionerNotReady — checked only when a provisioner is registered.
-	if cfg.NodeProvisioner.Name != "" {
+	// clusterLocalCSIDriverNotReady — the manager half of the local CSI driver;
+	// the node DaemonSet half is probed below.
+	if cfg.LocalCSIDriver.Namespace != "" && cfg.LocalCSIDriver.ManagerDeployment != "" {
 		checks = append(checks, depReason{
-			reason.ClusterNodeProvisionerNotReady, cfg.NodeProvisioner.Namespace, cfg.NodeProvisioner.Name, "node-provisioner",
+			reason.ClusterLocalCSIDriverNotReady, cfg.LocalCSIDriver.Namespace, cfg.LocalCSIDriver.ManagerDeployment, "local CSI driver manager",
 		})
 	}
 	for _, chk := range checks {
@@ -125,5 +132,61 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 		}
 	}
 
+	if f, ok := e.localCSINodeFinding(ctx); ok && !active[f.Reason] {
+		findings = append(findings, f)
+	}
+
 	return findings, nil
+}
+
+// fakeNodeLabel is stamped by gpu-node-mocker on every simulated Node. Such
+// nodes have no kubelet, so the local CSI node DaemonSet can never run there.
+const fakeNodeLabel = "kaito.sh/fake-node"
+
+// localCSINodeFinding probes the local CSI driver node DaemonSet: any of its
+// pods that is not Ready flags clusterLocalCSIDriverNotReady, except pods on
+// gpu-node-mocker nodes.
+func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding, bool) {
+	ref := e.cfg.LocalCSIDriver
+	if ref.Namespace == "" || ref.NodeDaemonSet == "" {
+		return evaluator.Finding{}, false
+	}
+	fakeNodes, err := e.fakeNodes(ctx)
+	if err != nil {
+		return evaluator.Finding{}, false // unknown this pass
+	}
+	missing, notReady, cause, node, notReadySince := kube.DaemonSetPodUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet,
+		func(name string) bool { return fakeNodes[name] })
+	obj := evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: ref.Namespace}
+	switch {
+	case missing:
+		return evaluator.Finding{
+			Reason:   reason.ClusterLocalCSIDriverNotReady,
+			Object:   obj,
+			Message:  fmt.Sprintf("local CSI driver node DaemonSet %s/%s is missing; install/upgrade the KAITO workspace chart that ships it.", ref.Namespace, ref.NodeDaemonSet),
+			GroupKey: "cluster/" + ref.Namespace,
+		}, true
+	case notReady:
+		return evaluator.Finding{
+			Reason:            reason.ClusterLocalCSIDriverNotReady,
+			Object:            obj,
+			Message:           fmt.Sprintf("local CSI driver node pod of DaemonSet %s/%s on Node %s is not ready: %s.", ref.Namespace, ref.NodeDaemonSet, node, cause),
+			GroupKey:          "cluster/" + ref.Namespace,
+			ResourceCreatedAt: notReadySince,
+		}, true
+	}
+	return evaluator.Finding{}, false
+}
+
+// fakeNodes returns the names of the Nodes created by gpu-node-mocker.
+func (e *Evaluator) fakeNodes(ctx context.Context) (map[string]bool, error) {
+	list, err := e.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: fakeNodeLabel})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(list.Items))
+	for i := range list.Items {
+		out[list.Items[i].Name] = true
+	}
+	return out, nil
 }

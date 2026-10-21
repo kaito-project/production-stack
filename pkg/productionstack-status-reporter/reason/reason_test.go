@@ -26,7 +26,8 @@ func TestEventType(t *testing.T) {
 	cases := map[Reason]string{
 		ClusterBBRNotReady:              corev1.EventTypeWarning,
 		ModelharnessGatewayClassMissing: corev1.EventTypeWarning,
-		InferencesetWeightDownloadSlow:  corev1.EventTypeWarning,
+		InferencesetModelDownloadSlow:   corev1.EventTypeWarning,
+		Reason("QuotaExceeded"):         corev1.EventTypeWarning,
 	}
 	for r, want := range cases {
 		if got := EventType(r); got != want {
@@ -38,8 +39,12 @@ func TestEventType(t *testing.T) {
 func TestLayerOf(t *testing.T) {
 	cases := map[Reason]Layer{
 		ClusterKedaKaitoScalerNotReady:  LayerCluster,
+		ClusterLocalCSIDriverNotReady:   LayerCluster,
 		ModelharnessGatewayClassMissing: LayerModelharness,
-		InferencesetWeightDownloadSlow:  LayerModeldeployment,
+		InferencesetModelDownloadSlow:   LayerModeldeployment,
+		// Pass-through KAITO InferenceSetReady reasons belong to the
+		// modeldeployment layer.
+		Reason("ImagePullError"): LayerModeldeployment,
 	}
 	for r, want := range cases {
 		if got := LayerOf(r); got != want {

@@ -204,20 +204,24 @@ const (
 	// Serial. Non-auth so only BBR + EPP are in path.
 	CaseModelUnavailable = "model-unavailable"
 
-	// CaseControlPlaneError covers control_plane_error_spec.go (per-InferenceSet
-	// inferencesetEPPNotReady). It owns a dedicated
-	// namespace so the suite can perturb its EPP Deployment
-	// in parallel with other Describes without colliding on the
-	// model-routing case's namespace or reporter Events.
-	CaseControlPlaneError = "control-plane-error"
-
-	// CaseWeightDownloadSlow covers weight_download_slow_spec.go (negative
-	// assertion that a healthy deployment never trips
-	// inferencesetWeightDownloadSlow). It owns a dedicated namespace so its
-	// quiet-window negative assertion is not contaminated by another Describe
-	// installing/uninstalling a shared case namespace concurrently.
-	CaseWeightDownloadSlow = "weight-download-slow"
+	// CaseModelDownloadRegression covers model_download_regression_spec.go
+	// (a healthy real-GPU deployment never publishes a reporter Warning). It
+	// owns a dedicated namespace so its quiet-window negative assertion is not
+	// contaminated by another Describe installing/uninstalling a shared case
+	// namespace concurrently.
+	CaseModelDownloadRegression = "model-download-regression"
 )
+
+// envGPUInstanceType overrides the SKU of the status-reporter GPU regression
+// case, for regions without A10 quota (e.g. Standard_NC24ads_A100_v4).
+const envGPUInstanceType = "E2E_GPU_INSTANCE_TYPE"
+
+var gpuInstanceType = func() string {
+	if v := os.Getenv(envGPUInstanceType); v != "" {
+		return v
+	}
+	return "Standard_NV36ads_A10_v5"
+}()
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
 // by each test case. The table is the single source of truth for what the
@@ -467,28 +471,15 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
-	CaseControlPlaneError: {
+	CaseModelDownloadRegression: {
 		{
-			// Single GPU-mocked InferenceSet so the EPP Deployment and the
-			// per-case Gateway exist for the perturbation specs. One replica
-			// is enough because the specs scale only control-plane Deployments.
-			Name:         "control-plane-error-phi",
-			Namespace:    "e2e-control-plane-error",
+			// Single healthy InferenceSet. The spec only asserts the absence of
+			// reporter Warnings, so one replica suffices.
+			Name:         "model-download-regression-phi",
+			Namespace:    "e2e-model-download-regression",
 			Model:        presetPhi,
 			Replicas:     1,
-			InstanceType: "Standard_NV36ads_A10_v5",
-		},
-	},
-	CaseWeightDownloadSlow: {
-		{
-			// Single healthy GPU-mocked InferenceSet. The spec only asserts
-			// the absence of a spurious inferencesetWeightDownloadSlow Event,
-			// so one replica suffices.
-			Name:         "weight-download-slow-phi",
-			Namespace:    "e2e-weight-download-slow",
-			Model:        presetPhi,
-			Replicas:     1,
-			InstanceType: "Standard_NV36ads_A10_v5",
+			InstanceType: gpuInstanceType,
 		},
 	},
 }

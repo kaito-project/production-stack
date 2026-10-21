@@ -413,9 +413,13 @@ install_productionstack() {
   # productionstack-status-reporter control-plane overrides: the reporter's
   # chart defaults target a production AKS topology (aks-istio-system,
   # kaito-workspace namespace). The E2E cluster installs istiod via istioctl
-  # into `istio-system` and the KAITO workspace controller into `kaito-system`,
-  # so point the reporter's probes at the E2E namespaces. startupGraceSeconds
-  # is shortened so findings surface within the test emit timeouts.
+  # into `istio-system` and the KAITO workspace controller (with its local CSI
+  # driver) into `kaito-system`, so point the reporter's probes at the E2E
+  # namespaces. startupGraceSeconds is shortened so findings surface within the
+  # test emit timeouts, and eventRefreshSeconds so the specs can observe an
+  # active Event being refreshed and a recovered one going quiet within
+  # minutes. modelStreamingEnabled stays true so the E2E ModelMirror specs
+  # exercise the ModelMirror downloader against mock ModelMirrors.
   #
   # The keda-kaito-scaler chart renders its image as
   # <registry>/<repository>:<tag>, so KEDA_KAITO_SCALER_IMAGE is split on the
@@ -435,12 +439,15 @@ install_productionstack() {
     --set productionstack-status-reporter.image.tag="${STATUS_REPORTER_IMAGE##*:}" \
     --set productionstack-status-reporter.image.pullPolicy=Always \
     --set productionstack-status-reporter.startupGraceSeconds=30 \
+    --set productionstack-status-reporter.eventRefreshSeconds=120 \
     --set productionstack-status-reporter.controlPlane.istioNamespace="${ISTIO_NAMESPACE}" \
     --set productionstack-status-reporter.controlPlane.istiodDeployment=istiod \
     --set productionstack-status-reporter.controlPlane.kaitoNamespace=kaito-system \
     --set productionstack-status-reporter.controlPlane.kaitoDeployment=kaito-workspace \
     --set productionstack-status-reporter.controlPlane.kedaNamespace="${KEDA_NAMESPACE}" \
     --set productionstack-status-reporter.controlPlane.kedaScalerNamespace="${KEDA_NAMESPACE}" \
+    --set productionstack-status-reporter.controlPlane.localCSIDriver.namespace=kaito-system \
+    --set productionstack-status-reporter.controlPlane.weightDownload.modelStreamingEnabled=true \
     "${PRODUCTIONSTACK_PROVIDER_ARGS[@]}" \
     --wait --timeout=600s
 
