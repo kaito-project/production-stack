@@ -18,10 +18,12 @@ package e2e
 
 import (
 	"context"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
+	"k8s.io/utils/ptr"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
@@ -30,6 +32,19 @@ import (
 // intPtr returns a pointer to an int literal — used for optional fields in
 // ModelDeploymentValues (e.g. EPPScorerWeights).
 func intPtr(v int) *int { return &v }
+
+// envScalingInstanceType overrides the Scaling cases' SKU; the real-GPU
+// nightly job sets it to Standard_NC40ads_H100_v5.
+const envScalingInstanceType = "E2E_SCALING_INSTANCE_TYPE"
+
+// scalingInstanceType defaults to a non-NVMe SKU because, on NVMe SKUs, KAITO
+// puts weights on a local-NVMe PVC that a mocker fake node cannot bind.
+var scalingInstanceType = func() string {
+	if v := os.Getenv(envScalingInstanceType); v != "" {
+		return v
+	}
+	return "Standard_NV36ads_A10_v5"
+}()
 
 // Inference preset names. These are the underlying KAITO presets and become
 // the InferenceSet's spec.template.inference.preset.name. They do NOT appear
@@ -347,32 +362,48 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 	},
 	CaseScaling: {
 		{
-			// Scaling baseline matches KEDA's minReplicaCount so that
-			// scale-down can converge back to it. With Replicas>1, KEDA's
-			// HPA computes desiredReplicas=ceil(metric/threshold)*1=0 when
-			// the queue drains and clamps to minReplicaCount=1, so the
+			// Scaling baseline matches KEDA's minReplicaCount (MinReplicas)
+			// so that scale-down can converge back to it. With Replicas>1,
+			// KEDA's HPA computes desiredReplicas=ceil(metric/threshold)*1=0
+			// when the queue drains and clamps to minReplicaCount=1, so the
 			// pool would never return to its starting size and Scale-Down
 			// assertions would fail.
-			Name:          "scaling-phi",
-			Namespace:     "e2e-scaling",
-			Model:         presetPhi,
-			Replicas:      1,
-			InstanceType:  "Standard_NV36ads_A10_v5",
-			EnableScaling: true,
-			MaxReplicas:   2,
-			// Single gauge signal on the vLLM waiting-queue length. The
-			// up-threshold is deliberately low so the pressure workload
-			// (scalingPressureConcurrency) pushes the per-replica queue
-			// above it and scale-up fires; the down-threshold sits below
-			// it so the sub-threshold workload (scalingSubThresholdConcurrency)
-			// drains the queue under it and scale-down converges back to
-			// the baseline. UpThreshold MUST be > DownThreshold (chart guard).
+			Name:                         "scaling-phi",
+			Namespace:                    "e2e-scaling",
+			Model:                        presetPhi,
+			Replicas:                     1,
+			InstanceType:                 scalingInstanceType,
+			EnableScaling:                true,
+			MinReplicas:                  1,
+			MaxReplicas:                  2,
+			ScaleDownStabilizationWindow: ptr.To(int64(300)),
+			ScaleUpPeriodSeconds:         ptr.To(int64(300)),
+			ScaleDownPeriodSeconds:       ptr.To(int64(300)),
+			// Caps concurrent sequences per pod so a modest workload builds
+			// a waiting queue even on an H100. The ConfigMap is created by
+			// the scaling spec before install.
+			Config: scalingVLLMConfigName,
+			// KEDA's scale-up gate needs readyReplicas, which KAITO only counts
+			// after the benchmark; on the mocker the benchmark can never finish.
+			DisableBenchmark: true,
+			// The bulk load repeats one prompt, so prefix-cache scoring pins it
+			// to the warm baseline pod and the scaled-up pod never serves (D1).
+			EPPScorerWeights: &deploy.EPPScorerWeights{PrefixCache: intPtr(0)},
+			// Single gauge signal on the vLLM waiting-queue length. Per-pod
+			// waiting is capped around max-num-seqs (5): the EPP saturation
+			// detector (queueDepthThreshold 5) and KAITO's vLLM rate limiter
+			// (HTTP 429 once waiting > max_num_seqs) stop it growing further.
+			// The up-threshold therefore sits below that cap so the pressure
+			// workload (scalingPressureConcurrency) trips scale-up; the
+			// down-threshold sits below it so the sub-threshold workload
+			// (scalingSubThresholdConcurrency) lets scale-down converge back
+			// to the baseline. UpThreshold MUST be > DownThreshold (chart guard).
 			ScalingMetrics: []deploy.ScalingMetric{
 				{
 					Name:          "vllm:num_requests_waiting",
 					Type:          "gauge",
-					UpThreshold:   "10",
-					DownThreshold: "5",
+					UpThreshold:   "3",
+					DownThreshold: "1",
 				},
 			},
 		},

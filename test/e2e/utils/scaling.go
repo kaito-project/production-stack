@@ -19,11 +19,11 @@ package utils
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +32,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/yaml"
+
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
 
 // KEDA default parameters (applied when the ScaledObject leaves them unset).
@@ -39,12 +41,12 @@ import (
 //   - PollingInterval default: 30s
 //   - CooldownPeriod default: 300s
 //   - ScaleUp stabilizationWindowSeconds default (set by keda-kaito-scaler):   60s
-//   - ScaleDown stabilizationWindowSeconds default (set by keda-kaito-scaler): 300s
+//   - ScaleDown stabilizationWindowSeconds default (set by keda-kaito-scaler): 1800s
 const (
 	DefaultKEDAPollingInterval    = 30 * time.Second
 	DefaultKEDACooldownPeriod     = 300 * time.Second
 	DefaultKEDAScaleUpStabilize   = 60 * time.Second
-	DefaultKEDAScaleDownStabilize = 300 * time.Second
+	DefaultKEDAScaleDownStabilize = 1800 * time.Second
 )
 
 // KEDAParams captures the dynamic KEDA knobs that drive the scaling test
@@ -54,10 +56,13 @@ type KEDAParams struct {
 	Threshold              int
 	PollingInterval        time.Duration
 	CooldownPeriod         time.Duration
+	InitialCooldownPeriod  time.Duration
+	ScaleUpRatePeriod      time.Duration
+	ScaleDownRatePeriod    time.Duration
 	ScaleUpStabilization   time.Duration
 	ScaleDownStabilization time.Duration
-	ScaleUpTotalWait       time.Duration // polling + upStabilization + margin
-	ScaleDownTotalWait     time.Duration // polling + downStabilization + margin
+	ScaleUpTotalWait       time.Duration // polling + max(stabilization, rate period) + margin
+	ScaleDownTotalWait     time.Duration // polling + max(stabilization, rate period) + margin
 }
 
 // GetKEDAParams fetches the ScaledObject managed for the given InferenceSet
@@ -74,27 +79,7 @@ func GetKEDAParams(ctx context.Context, model, namespace string) (KEDAParams, er
 		return KEDAParams{}, fmt.Errorf("get ScaledObject %s/%s: %w", namespace, model, err)
 	}
 
-	p := KEDAParams{
-		PollingInterval:        DefaultKEDAPollingInterval,
-		CooldownPeriod:         DefaultKEDACooldownPeriod,
-		ScaleUpStabilization:   DefaultKEDAScaleUpStabilize,
-		ScaleDownStabilization: DefaultKEDAScaleDownStabilize,
-	}
-
-	if v, found, _ := unstructured.NestedInt64(so.Object, "spec", "pollingInterval"); found {
-		p.PollingInterval = time.Duration(v) * time.Second
-	}
-	if v, found, _ := unstructured.NestedInt64(so.Object, "spec", "cooldownPeriod"); found {
-		p.CooldownPeriod = time.Duration(v) * time.Second
-	}
-	if v, found, _ := unstructured.NestedInt64(so.Object, "spec", "advanced",
-		"horizontalPodAutoscalerConfig", "behavior", "scaleUp", "stabilizationWindowSeconds"); found {
-		p.ScaleUpStabilization = time.Duration(v) * time.Second
-	}
-	if v, found, _ := unstructured.NestedInt64(so.Object, "spec", "advanced",
-		"horizontalPodAutoscalerConfig", "behavior", "scaleDown", "stabilizationWindowSeconds"); found {
-		p.ScaleDownStabilization = time.Duration(v) * time.Second
-	}
+	p := scalingTimingParams(so.Object)
 
 	// Threshold is read from the first trigger's metadata.
 	triggers, found, _ := unstructured.NestedSlice(so.Object, "spec", "triggers")
@@ -114,11 +99,6 @@ func GetKEDAParams(ctx context.Context, model, namespace string) (KEDAParams, er
 		}
 	}
 	if p.Threshold == 0 {
-		// Fallback to the annotation on the InferenceSet. Since
-		// keda-kaito-scaler v0.6.1 the composite (multi-metric) config is
-		// carried in a single scaledobject.kaito.sh/metrics YAML list
-		// annotation; the per-replica scale-up threshold for the first
-		// metric lives under that list's first entry `upthreshold`.
 		is, err := dynClient.Resource(InferenceSetGVR).Namespace(namespace).Get(ctx, model, metav1.GetOptions{})
 		if err == nil {
 			if v, ok := is.GetAnnotations()["scaledobject.kaito.sh/metrics"]; ok {
@@ -132,11 +112,53 @@ func GetKEDAParams(ctx context.Context, model, namespace string) (KEDAParams, er
 			}
 		}
 	}
+	return p, nil
+}
+
+func scalingTimingParams(object map[string]interface{}) KEDAParams {
+	p := KEDAParams{
+		PollingInterval:        DefaultKEDAPollingInterval,
+		CooldownPeriod:         DefaultKEDACooldownPeriod,
+		ScaleUpStabilization:   DefaultKEDAScaleUpStabilize,
+		ScaleDownStabilization: DefaultKEDAScaleDownStabilize,
+	}
+
+	if v, found, _ := unstructured.NestedInt64(object, "spec", "pollingInterval"); found {
+		p.PollingInterval = time.Duration(v) * time.Second
+	}
+	if v, found, _ := unstructured.NestedInt64(object, "spec", "cooldownPeriod"); found {
+		p.CooldownPeriod = time.Duration(v) * time.Second
+	}
+	if v, found, _ := unstructured.NestedInt64(object, "spec", "initialCooldownPeriod"); found {
+		p.InitialCooldownPeriod = time.Duration(v) * time.Second
+	}
+	if v, found, _ := unstructured.NestedInt64(object, "spec", "advanced",
+		"horizontalPodAutoscalerConfig", "behavior", "scaleUp", "stabilizationWindowSeconds"); found {
+		p.ScaleUpStabilization = time.Duration(v) * time.Second
+	}
+	if v, found, _ := unstructured.NestedInt64(object, "spec", "advanced",
+		"horizontalPodAutoscalerConfig", "behavior", "scaleDown", "stabilizationWindowSeconds"); found {
+		p.ScaleDownStabilization = time.Duration(v) * time.Second
+	}
+
+	for direction, period := range map[string]*time.Duration{
+		"scaleUp": &p.ScaleUpRatePeriod, "scaleDown": &p.ScaleDownRatePeriod,
+	} {
+		policies, _, _ := unstructured.NestedSlice(object, "spec", "advanced",
+			"horizontalPodAutoscalerConfig", "behavior", direction, "policies")
+		for _, policy := range policies {
+			if entry, ok := policy.(map[string]interface{}); ok {
+				if seconds, ok := entry["periodSeconds"].(int64); ok {
+					*period = max(*period, time.Duration(seconds)*time.Second)
+				}
+			}
+		}
+	}
 
 	const margin = 15 * time.Second
-	p.ScaleUpTotalWait = p.PollingInterval + p.ScaleUpStabilization + margin
-	p.ScaleDownTotalWait = p.PollingInterval + p.ScaleDownStabilization + margin
-	return p, nil
+	p.ScaleUpTotalWait = p.PollingInterval + max(p.ScaleUpStabilization, p.ScaleUpRatePeriod) + margin
+	p.ScaleDownTotalWait = p.PollingInterval + max(p.ScaleDownStabilization, p.ScaleDownRatePeriod) + margin
+	return p
 }
 
 // GetInferenceSetReplicas returns the current .spec.replicas value of the
@@ -157,12 +179,31 @@ func GetInferenceSetReplicas(ctx context.Context, model, namespace string) (int3
 	return int32(v), nil
 }
 
+// GetInferenceSetReadyReplicas returns .status.readyReplicas of the named
+// InferenceSet; an absent field (omitempty) reads as 0.
+func GetInferenceSetReadyReplicas(ctx context.Context, model, namespace string) (int32, error) {
+	dynClient, err := GetDynamicClient()
+	if err != nil {
+		return 0, err
+	}
+	is, err := dynClient.Resource(InferenceSetGVR).Namespace(namespace).Get(ctx, model, metav1.GetOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("get InferenceSet %s/%s: %w", namespace, model, err)
+	}
+	v, _, err := unstructured.NestedInt64(is.Object, "status", "readyReplicas")
+	if err != nil {
+		return 0, fmt.Errorf("InferenceSet %s/%s: read .status.readyReplicas: %w", namespace, model, err)
+	}
+	return int32(v), nil
+}
+
 // SetInferenceSetReplicas patches the InferenceSet's .spec.replicas directly.
 //
-// Reserved for KEDA-managed deployments (EnableScaling), where the chart
-// deliberately leaves .spec.replicas unset because KEDA owns it through the
-// scale subresource. For those, UpgradeModelDeployment can only move the
-// min-replicas floor and would silently fail to restore the live count.
+// Reserved for KEDA-managed deployments (EnableScaling), where KEDA owns
+// .spec.replicas through the scale subresource. The chart renders the
+// `replicas` value, but Helm only patches .spec.replicas when that value
+// changes between releases, so UpgradeModelDeployment cannot reliably restore
+// the live count; it can only move the min-replicas floor.
 // Everything else must change replicas through UpgradeModelDeployment so the
 // declared configuration stays the source of truth.
 //
@@ -182,161 +223,212 @@ func SetInferenceSetReplicas(ctx context.Context, model, namespace string, repli
 	return nil
 }
 
-// ScalingInventory captures the set of infrastructure objects that participate
-// in an InferenceSet scale event. Snapshotting it before and after lets tests
-// reason about what was created or removed by the scaling pipeline.
-type ScalingInventory struct {
-	// FakeNodeNames lists Node names where kaito.sh/fake-node=true and the
-	// node's kaito.sh/workspace label starts with the given model name.
-	FakeNodeNames []string
-	// ShadowPodNames lists shadow pod names serving this model.
-	ShadowPodNames []string
-	// NodeClaimNames lists NodeClaim names whose kaito.sh/workspace label
-	// starts with the given model name.
-	NodeClaimNames []string
-	// LeaseNames lists Lease names in kube-node-lease matching FakeNodeNames.
-	LeaseNames []string
-}
+// The helpers below describe a scale event only through objects that exist
+// identically on the GPU node mocker and on real Karpenter-provisioned GPUs:
+// the InferenceSet's model pods, the nodes they run on, and the NodeClaims
+// whose status.nodeName points at those nodes. On the mocker the model pod's
+// IP and Ready condition are patched from its shadow pod, so scraping the
+// model pod reaches the simulator.
 
-// SnapshotScalingInventory captures the current state of fake nodes, shadow
-// pods, NodeClaims, and node leases attributable to the given model.
-//
-// Filtering uses the kaito.sh/workspace label propagated from NodeClaim →
-// fake Node, and matches any workspace name that starts with model+"-" (KAITO
-// names workspaces <inferenceSet>-<index>).
-func SnapshotScalingInventory(ctx context.Context, clientset *kubernetes.Clientset, dynClient dynamic.Interface, namespace, model string) (ScalingInventory, error) {
-	inv := ScalingInventory{}
-	wsPrefix := model + "-"
-	workspaceMatches := func(ws string) bool {
-		return ws == model || strings.HasPrefix(ws, wsPrefix)
-	}
+// DefaultModelServerPort is the vLLM port KAITO serves inference and /metrics
+// on; used when a model pod declares no container port.
+const DefaultModelServerPort = 5000
 
-	// Fake nodes.
-	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{
-		LabelSelector: "kaito.sh/fake-node=true",
+// ListModelPods returns the InferenceSet's model pods that are not being
+// deleted, sorted by name.
+func ListModelPods(ctx context.Context, clientset kubernetes.Interface, values deploy.ModelDeploymentValues) ([]corev1.Pod, error) {
+	list, err := clientset.CoreV1().Pods(values.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: values.InferencePodSelector(),
 	})
 	if err != nil {
-		return inv, fmt.Errorf("list fake nodes: %w", err)
+		return nil, fmt.Errorf("list model pods for %s/%s: %w", values.Namespace, values.Name, err)
 	}
-	for _, n := range nodes.Items {
-		ws := n.Labels["kaito.sh/workspace"]
-		if workspaceMatches(ws) {
-			inv.FakeNodeNames = append(inv.FakeNodeNames, n.Name)
+	pods := make([]corev1.Pod, 0, len(list.Items))
+	for _, pod := range list.Items {
+		if pod.DeletionTimestamp == nil {
+			pods = append(pods, pod)
 		}
 	}
-
-	// Shadow pods (already model-scoped via GetShadowPodsForModel).
-	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
-	if err != nil && !strings.Contains(err.Error(), "no running shadow pods found") {
-		return inv, err
-	}
-	for _, p := range pods {
-		inv.ShadowPodNames = append(inv.ShadowPodNames, p.Name)
-	}
-
-	// NodeClaims.
-	ncList, err := dynClient.Resource(NodeClaimGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return inv, fmt.Errorf("list NodeClaims: %w", err)
-	}
-	for _, nc := range ncList.Items {
-		ws := nc.GetLabels()["kaito.sh/workspace"]
-		if workspaceMatches(ws) {
-			inv.NodeClaimNames = append(inv.NodeClaimNames, nc.GetName())
-		}
-	}
-
-	// Leases matching fake node names.
-	for _, nodeName := range inv.FakeNodeNames {
-		lease := &coordinationv1.Lease{}
-		_, err := clientset.CoordinationV1().Leases("kube-node-lease").
-			Get(ctx, nodeName, metav1.GetOptions{})
-		if err == nil {
-			inv.LeaseNames = append(inv.LeaseNames, nodeName)
-			continue
-		}
-		if !apierrors.IsNotFound(err) {
-			return inv, fmt.Errorf("get lease for %s: %w", nodeName, err)
-		}
-		_ = lease // silence unused
-	}
-	return inv, nil
+	sort.Slice(pods, func(i, j int) bool { return pods[i].Name < pods[j].Name })
+	return pods, nil
 }
 
-// DiffInventory returns (added, removed) lists for each sub-collection.
-type InventoryDiff struct {
-	AddedFakeNodes, RemovedFakeNodes   []string
-	AddedShadowPods, RemovedShadowPods []string
-	AddedNodeClaims, RemovedNodeClaims []string
-	AddedLeases, RemovedLeases         []string
-}
-
-func DiffInventory(before, after ScalingInventory) InventoryDiff {
-	d := InventoryDiff{}
-	d.AddedFakeNodes, d.RemovedFakeNodes = diffStringSlices(before.FakeNodeNames, after.FakeNodeNames)
-	d.AddedShadowPods, d.RemovedShadowPods = diffStringSlices(before.ShadowPodNames, after.ShadowPodNames)
-	d.AddedNodeClaims, d.RemovedNodeClaims = diffStringSlices(before.NodeClaimNames, after.NodeClaimNames)
-	d.AddedLeases, d.RemovedLeases = diffStringSlices(before.LeaseNames, after.LeaseNames)
-	return d
-}
-
-func diffStringSlices(before, after []string) (added, removed []string) {
-	bm := make(map[string]struct{}, len(before))
-	for _, s := range before {
-		bm[s] = struct{}{}
+// IsPodReady reports whether the pod is Running with Ready=True.
+func IsPodReady(pod corev1.Pod) bool {
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
 	}
-	am := make(map[string]struct{}, len(after))
-	for _, s := range after {
-		am[s] = struct{}{}
-	}
-	for s := range am {
-		if _, ok := bm[s]; !ok {
-			added = append(added, s)
-		}
-	}
-	for s := range bm {
-		if _, ok := am[s]; !ok {
-			removed = append(removed, s)
-		}
-	}
-	return added, removed
-}
-
-// IsFakeNodeReady returns true when the Node has Ready=True and no
-// unreachable taint.
-func IsFakeNodeReady(node *corev1.Node) bool {
-	for _, t := range node.Spec.Taints {
-		if t.Key == "node.kubernetes.io/unreachable" {
-			return false
-		}
-	}
-	for _, c := range node.Status.Conditions {
-		if c.Type == corev1.NodeReady && c.Status == corev1.ConditionTrue {
-			return true
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
 		}
 	}
 	return false
 }
 
-// CountInferencePoolReadyPods returns the number of Running shadow pods
-// (which mirror the InferencePool's inference pods) that are Ready for
-// the given modeldeployment in the given namespace.
-func CountInferencePoolReadyPods(ctx context.Context, clientset *kubernetes.Clientset, model, namespace string) (int, error) {
-	pods, err := GetShadowPodsForModel(ctx, clientset, namespace, model)
-	if err != nil {
-		if strings.Contains(err.Error(), "no running shadow pods found") {
-			return 0, nil
+// ReadyPods returns the subset of pods that are Ready.
+func ReadyPods(pods []corev1.Pod) []corev1.Pod {
+	var ready []corev1.Pod
+	for _, pod := range pods {
+		if IsPodReady(pod) {
+			ready = append(ready, pod)
 		}
-		return 0, err
 	}
-	ready := 0
-	for _, p := range pods {
-		for _, c := range p.Status.Conditions {
-			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-				ready++
-				break
+	return ready
+}
+
+// PodPlacements maps pod name to the node it is scheduled on (empty when
+// unscheduled).
+func PodPlacements(pods []corev1.Pod) map[string]string {
+	placements := make(map[string]string, len(pods))
+	for _, pod := range pods {
+		placements[pod.Name] = pod.Spec.NodeName
+	}
+	return placements
+}
+
+// ModelServerPort returns the first declared container port of the pod, or
+// DefaultModelServerPort when none is declared.
+func ModelServerPort(pod corev1.Pod) int {
+	for _, c := range pod.Spec.Containers {
+		for _, p := range c.Ports {
+			if p.ContainerPort > 0 {
+				return int(p.ContainerPort)
 			}
 		}
 	}
-	return ready, nil
+	return DefaultModelServerPort
+}
+
+// SumMetricValues sums every sample of metricName whose labels include the
+// given subset. vLLM splits some counters across extra labels (e.g.
+// vllm:request_success_total by finished_reason), so the first match alone
+// would undercount.
+func SumMetricValues(metricsText, metricName string, labels map[string]string) (float64, bool) {
+	var (
+		sum   float64
+		found bool
+	)
+	for _, line := range strings.Split(metricsText, "\n") {
+		line = strings.TrimSpace(line)
+		m := metricsLineRegex.FindStringSubmatch(line)
+		if m == nil || m[1] != metricName || !labelsMatch(m[2], labels) {
+			continue
+		}
+		v, err := strconv.ParseFloat(m[3], 64)
+		if err != nil {
+			continue
+		}
+		sum += v
+		found = true
+	}
+	return sum, found
+}
+
+// ScrapeModelPodMetric scrapes metricName (labelled model_name=<values.Name>)
+// from every Ready model pod via the API server pod proxy and returns
+// pod name → value. It fails if there is no Ready pod, or if any Ready pod
+// cannot be scraped or does not export the metric, so a broken replica cannot
+// hide behind a healthy one.
+func ScrapeModelPodMetric(ctx context.Context, clientset *kubernetes.Clientset, values deploy.ModelDeploymentValues, metricName string) (PodMetricSnapshot, error) {
+	pods, err := ListModelPods(ctx, clientset, values)
+	if err != nil {
+		return nil, err
+	}
+	ready := ReadyPods(pods)
+	if len(ready) == 0 {
+		return nil, fmt.Errorf("no Ready model pods for %s/%s", values.Namespace, values.Name)
+	}
+	snapshot := make(PodMetricSnapshot, len(ready))
+	var missing []string
+	for _, pod := range ready {
+		raw, err := ScrapePodMetrics(ctx, clientset, values.Namespace, pod.Name, ModelServerPort(pod))
+		if err != nil {
+			return nil, err
+		}
+		v, found := SumMetricValues(raw, metricName, map[string]string{"model_name": values.Name})
+		if !found {
+			missing = append(missing, pod.Name)
+			continue
+		}
+		snapshot[pod.Name] = v
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%s{model_name=%q} missing on Ready model pods %v", metricName, values.Name, missing)
+	}
+	return snapshot, nil
+}
+
+// ListNodeClaims returns all Karpenter NodeClaims in the cluster.
+func ListNodeClaims(ctx context.Context, dynClient dynamic.Interface) ([]unstructured.Unstructured, error) {
+	list, err := dynClient.Resource(NodeClaimGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list NodeClaims: %w", err)
+	}
+	return list.Items, nil
+}
+
+// NodeClaimNames returns the sorted names of the NodeClaims.
+func NodeClaimNames(nodeClaims []unstructured.Unstructured) []string {
+	names := make([]string, 0, len(nodeClaims))
+	for _, nc := range nodeClaims {
+		names = append(names, nc.GetName())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// NodeClaimsByNode maps status.nodeName → NodeClaim name for the NodeClaims
+// that have registered a node. Both the mocker and Karpenter set the field.
+func NodeClaimsByNode(nodeClaims []unstructured.Unstructured) map[string]string {
+	byNode := make(map[string]string, len(nodeClaims))
+	for _, nc := range nodeClaims {
+		node, _, _ := unstructured.NestedString(nc.Object, "status", "nodeName")
+		if node != "" {
+			byNode[node] = nc.GetName()
+		}
+	}
+	return byNode
+}
+
+// NewNodeClaimNames returns the sorted names in current that are not in
+// before. Callers snapshot before installing a case and use the result to
+// find every NodeClaim the case caused, including ones that never registered
+// a node.
+func NewNodeClaimNames(before []string, current []unstructured.Unstructured) []string {
+	seen := make(map[string]struct{}, len(before))
+	for _, name := range before {
+		seen[name] = struct{}{}
+	}
+	var added []string
+	for _, name := range NodeClaimNames(current) {
+		if _, ok := seen[name]; !ok {
+			added = append(added, name)
+		}
+	}
+	return added
+}
+
+// EnsureConfigMap creates the ConfigMap or replaces its data.
+func EnsureConfigMap(ctx context.Context, clientset kubernetes.Interface, namespace, name string, data map[string]string) error {
+	configMaps := clientset.CoreV1().ConfigMaps(namespace)
+	existing, err := configMaps.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = configMaps.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Data:       data,
+		}, metav1.CreateOptions{})
+		if err != nil {
+			return fmt.Errorf("create ConfigMap %s/%s: %w", namespace, name, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get ConfigMap %s/%s: %w", namespace, name, err)
+	}
+	existing.Data = data
+	if _, err := configMaps.Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update ConfigMap %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }

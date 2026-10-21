@@ -428,3 +428,19 @@ azure:
     jwtEndpoints:
       issuer: ""
       jwksUri: ""
+
+  # podMonitor wires THIS namespace's pods into AKS Azure Monitor
+  # managed Prometheus via an `azmonitoring.coreos.com/v1` PodMonitor
+  # (reconciled by the Azure Monitor metrics add-on, distinct from the
+  # Prometheus Operator's monitoring.coreos.com PodMonitor). Rendered
+  # only when cloudprovider=azure. `selector: {}` scrapes every pod in
+  # the namespace across the EPP, Istio gateway, and vLLM metric
+  # surfaces; see templates/azure/podmonitor.yaml.
+  podMonitor:
+    # enabled toggles rendering of the PodMonitor.
+    enabled: true
+    # name is the PodMonitor resource name.
+    name: all-model-pods
+    # interval is the scrape interval applied to every pod metrics
+    # endpoint.
+    interval: 30s

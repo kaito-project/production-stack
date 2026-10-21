@@ -134,11 +134,12 @@ flowchart TB
 This satisfies the demo's goals: **2 `modelharness`**, **2 `modeldeployment`
 each**, and **multiple deployments with `replicas > 1`**. Every deployment also
 has **KAITO autoscaling enabled** (`enableScaling=true`): the `keda-kaito-scaler`
-provisions a `ScaledObject` that scales each `InferenceSet` between its
-`replicas` baseline and `maxReplicas`. Scaling is driven by the chart's composite
+provisions a `ScaledObject` that scales each `InferenceSet` between
+`minReplicas` and `maxReplicas` (both required when `enableScaling=true`).
+Scaling is driven by the chart's composite
 `scaling.metrics` list — the two chart defaults, per-replica queue depth
 (`vllm:num_requests_waiting`, gauge) and windowed-average request-queue time
-(`vllm:request_queue_time_seconds`, histogram) — that `keda-kaito-scaler` v0.6.2
+(`vllm:request_queue_time_seconds`, histogram) — that `keda-kaito-scaler` v0.7.0
 combines under a conservative **AND** policy: it scales up by one replica only
 when *both* signals exceed their `upThreshold`, and scales down only when *both*
 fall below their `downThreshold`.
@@ -264,6 +265,7 @@ helm upgrade --install chat-phi charts/modeldeployment \
   --set model=phi-4-mini-instruct \
   --set replicas=2 \
   --set enableScaling=true \
+  --set minReplicas=2 \
   --set maxReplicas=4 \
   --set enableBenchmark=false \
   --set instanceType=Standard_NV36ads_A10_v5 \
@@ -277,6 +279,7 @@ helm upgrade --install code-ministral charts/modeldeployment \
   --set model=ministral-3-3b-instruct \
   --set replicas=1 \
   --set enableScaling=true \
+  --set minReplicas=1 \
   --set maxReplicas=3 \
   --set enableBenchmark=false \
   --set instanceType=Standard_NV36ads_A10_v5 \
@@ -304,6 +307,7 @@ helm upgrade --install assistant-phi charts/modeldeployment \
   --set model=phi-4-mini-instruct \
   --set replicas=2 \
   --set enableScaling=true \
+  --set minReplicas=2 \
   --set maxReplicas=4 \
   --set enableBenchmark=false \
   --set instanceType=Standard_NV36ads_A10_v5 \
@@ -317,6 +321,7 @@ helm upgrade --install summarizer-ministral charts/modeldeployment \
   --set model=ministral-3-3b-instruct \
   --set replicas=1 \
   --set enableScaling=true \
+  --set minReplicas=1 \
   --set maxReplicas=3 \
   --set enableBenchmark=false \
   --set instanceType=Standard_NV36ads_A10_v5 \

@@ -8,7 +8,8 @@
 | **Infrastructure** | Fake Node / Shadow Pod Lifecycle | PR | gpu-node-mocker two-phase pipeline validation |
 | | InferenceSet / InferencePool Lifecycle | PR | KAITO controller and routing infrastructure health |
 | | NodeClaim / Fake Node Cleanup | PR | Reverse-path teardown and reconcile idempotency |
-| | InferenceSet Scaling (E2E) | Nightly | End-to-end scale up/down driven by KEDA + traffic verification |
+| | InferenceSet Scaling (E2E) | Daily (mocker) + Nightly (H100) | End-to-end scale up/down driven by KEDA + traffic verification |
+| | InferenceSet Scale To Zero | Daily (mocker) + Nightly (H100) | EPP-driven `1 -> 0 -> 1 -> 0` activation and post-cold-start serving |
 | **Routing** | Model-Based Routing | PR | BBR → HTTPRoute → EPP → Pod routing correctness |
 | | Unknown Model / Malformed Request Handling | PR | Catch-all 404 JSON + BBR malformed-body behaviour |
 | **Performance** | Prefix Cache Aware Routing | PR (core) + Nightly (full) | EPP prefix-cache scorer and KV-cache locality |
@@ -186,42 +187,53 @@ activity.
 
 ## InferenceSet Scaling — Infra
 
-**CI tier:** Nightly. KEDA polling interval + cooldown windows make the full Scale-Up/Scale-Down loop
-too slow (several minutes each) and timing-sensitive for PR CI; Anti-Flapping in particular needs a
-full cooldown window to be meaningful.
+**CI tier:** `Scaling` label, run serially by `make test-e2e-scaling` — on the GPU mocker
+(`Standard_NV36ads_A10_v5`) in the daily upstream job and on real `Standard_NC40ads_H100_v5` nodes
+in the nightly `e2e-nightly-scaling-tests` job (`E2E_SCALING_INSTANCE_TYPE`). KEDA polling + cooldown windows (and real GPU provisioning) make the
+full loop too slow for PR CI; Anti-Flapping in particular needs a full cooldown window.
 
 Verifies the system reacts correctly to **workload-driven** scaling by exercising the full end-to-end
-chain: rising request queue → KEDA triggers InferenceSet replica change → gpu-node-mocker provisions or
-removes fake nodes and shadow pods → EPP updates its endpoint list → traffic redistributes.
+chain: rising request queue → KEDA triggers InferenceSet replica change → Karpenter (or the GPU mocker)
+provisions or removes GPU nodes → EPP updates its endpoint list → traffic redistributes.
 
-The KEDA scaling trigger is the annotation-configured metric `vllm:num_requests_waiting` with threshold
-`10` (see `scaledobject.kaito.sh/*` annotations on the InferenceSet). Each phase of the flow is verified
-individually so failures can be localised.
+Assertions use only traits common to the mocker and real GPUs: model pods (selected by
+`inferenceset.kaito.sh/created-by`), Nodes, NodeClaims, and `vllm:*` metrics scraped from model pods.
+The case caps concurrency with `max-num-seqs: 5` and uses up/down thresholds `3`/`1`, so 40 concurrent
+bounded (`max_tokens: 128`) requests saturate one H100 replica. Each phase is verified individually so
+failures can be localised.
 
 ### Scale-Up — End-to-End
 
-* Record baseline — Capture initial `InferenceSet.spec.replicas` (e.g. 2), per-pod `vllm:request_success_total`, `inference_pool_ready_pods{name}`, and fake-node/shadow-pod counts. Establishes a clean starting point.
-* Generate queue pressure — Send concurrent requests at a rate exceeding serving capacity so that `vllm:num_requests_waiting` rises above the KEDA threshold (10) on at least one pod. Verify by scraping shadow pod metrics. This is the trigger condition for scale-up.
-* KEDA triggers replica increase — Poll the InferenceSet and verify `.spec.replicas` increases (e.g. 2 → 3) within the KEDA polling interval. Proves the ScaledObject correctly read the vLLM metric and patched the InferenceSet.
-* New fake node provisioned — Verify a new fake node appears with the correct labels and `Ready=True` status. Proves gpu-node-mocker Phase 1 (NodeClaimReconciler) handled the new NodeClaim produced by Karpenter.
-* New shadow pod running — Verify a new shadow pod reaches `Running` in the model's namespace with both `inference-sim` and `tokenizer` containers ready. Proves gpu-node-mocker Phase 2 (ShadowPodReconciler) completed the shadow-pod creation path.
-* Original pod patched to Running — Verify the newly scheduled original pod's status is patched to `Running` with the shadow pod's real CNI IP as `PodIP`. Proves the status-patch pipeline works for dynamically scaled pods, not just initially deployed ones.
-* InferencePool endpoint list updated — Verify `inference_pool_ready_pods{name}` increases to match the new replica count. If InferencePool doesn't learn about the new pod, EPP cannot route to it and the new replica is wasted.
+* Record baseline — Capture initial `InferenceSet.spec.replicas` (e.g. 1), the Ready model pods, and the NodeClaims backing their nodes. Establishes a clean starting point.
+* Generate queue pressure — Send concurrent requests at a rate exceeding serving capacity so that `vllm:num_requests_waiting` rises above the KEDA threshold (3) on at least one model pod. This is the trigger condition for scale-up.
+* KEDA triggers replica increase — Poll the InferenceSet and verify `.spec.replicas` increases (e.g. 1 → 2). Proves the ScaledObject correctly read the vLLM metric and patched the InferenceSet.
+* New model pod on a new GPU node — Verify a model pod not in the baseline becomes Ready on a new Ready node carrying the case's `node.kubernetes.io/instance-type`, allocatable `nvidia.com/gpu` ≥ 1, and a NodeClaim whose `status.nodeName` is that node.
+* Ready model pods match replicas — Verify the Ready model-pod count reaches the new replica count, so EPP has an endpoint for every replica.
 * New pod receives traffic — Continue sending requests. Scrape `vllm:request_success_total` from the new pod and verify it is > 0 within a reasonable window. The new replica must actually serve traffic, not just exist on paper. (General load-distribution fairness is covered by *Model-Based Routing → Load distribution*; not duplicated here.)
 
 ### Scale-Down — End-to-End
 
 * Stop traffic and drain queue — Cease all inbound requests. Wait for `vllm:num_requests_waiting` to reach 0 on every pod and `vllm:num_requests_running` to reach 0. The queue must fully drain before KEDA begins scale-down.
 * KEDA triggers replica decrease — Poll the InferenceSet and verify `.spec.replicas` decreases (e.g. 3 → 2) after the KEDA cooldown period elapses. Proves the scale-down path is not silently stuck.
-* Excess shadow pod and fake node cleaned up — Verify the extra shadow pod is deleted from the model's namespace, the corresponding fake node is removed, and the NodeClaim is released. Proves the cleanup pipeline (ShadowPodReconciler → NodeClaim release, including the lease-renewal goroutine stop) works.
-* InferencePool endpoint list shrinks — Verify `inference_pool_ready_pods{name}` decreases to match the new replica count. A stale endpoint would cause EPP to route to a non-existent pod and requests would fail.
+* Excess pod, NodeClaim, and node cleaned up — Every model pod seen during scale-up that is no longer current is gone, and each node that no longer hosts a model pod has its NodeClaim and then its Node removed. Which replica KAITO removes is nondeterministic, so identity is not asserted.
+* Ready model pods shrink — Verify the Ready model-pod count returns to the baseline replica count.
 * Remaining pods continue to serve traffic — Resume sending requests. Verify all requests succeed (HTTP 200). Scrape `vllm:request_success_total` on the remaining pods to confirm they handle the load. `inference_extension_scheduler_attempts_total{status="failure"}` must not increment.
-* No request failures during transition — Send a low-rate stream of requests throughout the scale-down window. Verify `inference_objective_request_error_total` does not increment and no HTTP 5xx responses are observed. Proves the system handles pod removal gracefully without dropping in-flight requests.
+* No request failures during transition — Send back-to-back long-response requests with one concurrent worker throughout the scale-down window. Verify successful responses and no HTTP 5xx responses are observed. Proves the system handles pod removal gracefully without dropping in-flight requests.
 
 ### Anti-Flapping
 
-* Below-threshold stability — Hold `vllm:num_requests_waiting` strictly below the KEDA threshold for the full polling + cooldown window. Verify `InferenceSet.spec.replicas` does **not** change and no new NodeClaim/fake-node/shadow-pod is created. Guards against false-positive scale-ups from noisy metrics.
+* Below-threshold stability — Hold `vllm:num_requests_waiting` strictly below the KEDA threshold for the full polling + cooldown window. Verify `InferenceSet.spec.replicas` does **not** change, no model pod outside the baseline appears, and no new NodeClaim is created. Guards against false-positive scale-ups from noisy metrics.
 * Cooldown respected — Immediately after a Scale-Down completes, re-apply queue pressure above the threshold. Verify the next Scale-Up does **not** fire until the ScaledObject's cooldown has elapsed and that no intermediate scale oscillations are observed. Flapping is the top production pain point for autoscalers and must be explicitly pinned.
+
+### Scale To Zero — Full Scaling Lifecycle
+
+**CI tier:** same jobs as the Scaling group (`make test-e2e-scaling`). Run alone with `E2E_LABEL='ScaleToZero && StandardK8sOnly' E2E_PARALLEL=1`.
+
+Warm-bootstrap one replica (GPU-mocked or real H100), then upgrade the same release to a zero-minimum, one-maximum ScaledObject with EPP flow control. Verify the idle model parks and releases its GPU NodeClaim while EPP remains Ready. Sustained authenticated requests must wake one replica and keep it through provisioning; cold-start delivery is best effort, with eventual success and bounded 5xx responses. The temporary one-replica cap prevents cold-start pressure from triggering capacity scaling before the baseline is recorded.
+
+The E2E explicitly sets HPA scale-down stabilization and both scaling policy periods to 300 seconds, with initial and ordinary zero cooldowns of 60 seconds. These test overrides do not change production defaults. After successful cold-start traffic, start the single long-request background worker before stopping cold-start pressure. Wait for the backlog to drain, background requests to succeed, and KEDA's active timestamp to advance before requiring a successful chat probe and recording the one-replica baseline. Only after A1 establishes bulk queue pressure does the test raise the maximum to two and verify the ScaledObject reconciles. Unexpected parking during this handoff or capacity scaling fails immediately. Timing budgets read initial cooldown, stabilization, and rate-limit periods independently from the ScaledObject.
+
+On that same deployment, run the Scale-Up and Scale-Down assertions above: queue pressure, replica increase, new GPU node and NodeClaim, routing to the new pod, queue drain, replica decrease, inventory cleanup, and no 5xx during the two-to-one transition. A single background worker sends back-to-back long-response requests (up to 1,024 tokens each) to keep the remaining replica active without building a waiting queue. Stop that worker, verify the deployment returns to zero, and verify all case-created NodeClaims are released while EPP remains Ready. Anti-flapping runs separately after restoring a one-replica minimum.
 
 ## Unknown model / malformed request handling — Routing
 

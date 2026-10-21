@@ -4,6 +4,63 @@
   "description": "Schema for charts/modeldeployment. Validates the per-InferenceSet inputs whose misconfiguration is surfaced by the modeldeployment-level schema reasons in the end-to-end error-handling proposal (e.g. inferencesetScalingMisconfigured). Cross-field guards that JSON Schema cannot express on its own (notably maxReplicas >= replicas) are additionally enforced by a fail-fast Helm template guard at render time.",
   "type": "object",
   "additionalProperties": true,
+  "definitions": {
+    "stabilizationWindowSeconds": {
+      "anyOf": [
+        {"type": "integer", "minimum": 0, "maximum": 3600},
+        {"type": "string", "pattern": "^[0-9]*$"},
+        {"type": "null"}
+      ],
+      "description": "HPA stabilization window in seconds, 0..3600 (HPA API limit; numeric strings are range-checked by a template guard). Defaults to 60 (scaleUp) / 1800 (scaleDown); empty or null lets keda-kaito-scaler apply the same default."
+    },
+    "periodSeconds": {
+      "anyOf": [
+        {"type": "integer", "minimum": 1, "maximum": 1800},
+        {"type": "string", "pattern": "^[0-9]*$"},
+        {"type": "null"}
+      ],
+      "description": "Minimum seconds between scaling steps (HPA Pods policy period, one pod per period), 1..1800 (HPA API limit; numeric strings are range-checked by a template guard). Defaults to 900 (scaleUp) / 1800 (scaleDown); empty or null lets keda-kaito-scaler apply the same default."
+    },
+    "cooldownSeconds": {
+      "anyOf": [
+        {"type": "integer", "minimum": 0, "maximum": 2147483647},
+        {"type": "string", "pattern": "^[0-9]*$"},
+        {"type": "null"}
+      ]
+    },
+    "hpaScaleUpRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stabilizationWindowSeconds": {"$ref": "#/definitions/stabilizationWindowSeconds"},
+        "periodSeconds": {"$ref": "#/definitions/periodSeconds"},
+        "tolerance": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "exclusiveMaximum": 1},
+            {"type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?)?$"},
+            {"type": "null"}
+          ],
+          "description": "HPA scale-up tolerance ratio, 0 <= tolerance < 1. The HPA API only requires >= 0, but at >= 1 the formula's 2.0 scale-up signal never leaves the deadband (numeric strings are range-checked by a template guard). Defaults to 0.1; empty or null lets keda-kaito-scaler apply the same default. 0 disables the deadband. Requires the Kubernetes HPAConfigurableTolerance feature gate."
+        }
+      }
+    },
+    "hpaScaleDownRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stabilizationWindowSeconds": {"$ref": "#/definitions/stabilizationWindowSeconds"},
+        "periodSeconds": {"$ref": "#/definitions/periodSeconds"},
+        "tolerance": {
+          "anyOf": [
+            {"type": "number", "minimum": 0, "exclusiveMaximum": 0.5},
+            {"type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?)?$"},
+            {"type": "null"}
+          ],
+          "description": "HPA scale-down tolerance ratio, 0 <= tolerance < 0.5. The HPA API only requires >= 0, but at >= 0.5 the formula's 0.5 scale-down signal never leaves the deadband (numeric strings are range-checked by a template guard). Defaults to 0.1; empty or null lets keda-kaito-scaler apply the same default. 0 disables the deadband. Requires the Kubernetes HPAConfigurableTolerance feature gate."
+        }
+      }
+    }
+  },
   "properties": {
     "name": {
       "type": "string",
@@ -28,22 +85,35 @@
     },
     "instanceType": {
       "type": "string",
-      "minLength": 1,
-      "description": "VM instance type used for the underlying GPU nodes."
+      "description": "VM instance type used for the underlying GPU nodes. Empty omits spec.template.resource.instanceType, as required on BYO-node clusters (KAITO nodeProvisioner=byo)."
     },
     "replicas": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Desired number of InferenceSet replicas. MUST be at least 1."
+      "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "pattern": "^([0-9]+)?$"},
+        {"type": "null"}
+      ],
+      "description": "Number of InferenceSet replicas (spec.replicas). Optional: empty leaves spec.replicas unset (CRD default 1; with enableScaling, KEDA moves it into [minReplicas, maxReplicas]). When set with enableScaling it is applied on install and re-applied only when its value changes, and MUST lie within [minReplicas, maxReplicas] (enforced by a template guard)."
+    },
+    "minReplicas": {
+      "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "pattern": "^([0-9]+)?$"},
+        {"type": "null"}
+      ],
+      "description": "Autoscaling lower bound wired to scaledobject.kaito.sh/min-replicas. REQUIRED when enableScaling is true (enforced by a template guard); ignored otherwise. 0 enables scale to zero (0 <-> 1, requires keda-kaito-scaler v0.7.0+) and turns on the EPP flowControl feature gate."
     },
     "enableScaling": {
       "type": "boolean",
-      "description": "Toggles KAITO ScaledObject auto-provisioning. When false, maxReplicas and scalingThreshold are ignored."
+      "description": "Toggles KAITO ScaledObject auto-provisioning. When false, minReplicas, maxReplicas and scaling are ignored."
     },
     "maxReplicas": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Upper bound for autoscaling. Only used when enableScaling is true. MUST be at least 1; the Helm template additionally enforces maxReplicas >= replicas when enableScaling is true."
+      "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"type": "string", "pattern": "^([0-9]+)?$"},
+        {"type": "null"}
+      ],
+      "description": "Autoscaling upper bound wired to scaledobject.kaito.sh/max-replicas. REQUIRED when enableScaling is true (enforced by a template guard); ignored otherwise. When enableScaling is true it MUST be at least 1, >= minReplicas and, when set, >= replicas (template guards)."
     },
     "scalingThreshold": {
       "type": "integer",
@@ -53,34 +123,52 @@
     "scaling": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Composite (multi-metric) autoscaling configuration wired to scaledobject.kaito.sh/* annotations. Consumed only when enableScaling is true; keda-kaito-scaler combines every metric under a conservative AND policy. Misconfiguration here is surfaced as inferencesetScalingMisconfigured.",
+      "description": "Composite (multi-metric) autoscaling configuration wired to scaledobject.kaito.sh/* annotations. Consumed only when enableScaling is true; keda-kaito-scaler combines the up/down bands under a conservative AND policy and, when minReplicas is 0, wakes on ANY activation threshold and parks when EVERY deactivation threshold holds. Misconfiguration here is surfaced as inferencesetScalingMisconfigured.",
       "properties": {
         "metrics": {
           "type": "array",
           "minItems": 1,
-          "description": "Ordered list of scaling signals. Rendered as the scaledobject.kaito.sh/metrics annotation (a YAML list, one entry per metric). MUST contain at least one entry when enableScaling is true (also enforced by a fail-fast template guard).",
+          "description": "Ordered list of scaling signals. Rendered as the scaledobject.kaito.sh/metrics annotation (a YAML list, one entry per metric). MUST contain at least one entry when enableScaling is true (also enforced by a fail-fast template guard). Entries carrying only activationThreshold/deactivationThreshold are skipped when minReplicas >= 1.",
           "items": {
             "type": "object",
             "additionalProperties": true,
-            "required": ["name", "upThreshold", "downThreshold"],
+            "required": ["name"],
             "properties": {
               "name": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Prometheus metric family name exposed by each inference pod. Rendered as the `name` field of a scaledobject.kaito.sh/metrics entry."
+                "description": "Prometheus metric family name exposed by the metric source (model pods or EPP). Rendered as the `name` field of a scaledobject.kaito.sh/metrics entry."
               },
               "type": {
                 "type": "string",
                 "enum": ["gauge", "histogram"],
-                "description": "Aggregation applied to the metric: gauge -> per-replica average; histogram -> per-pod windowed average (rolling _sum/_count delta over metricCacheWindow). Rendered as the `type` field of a scaledobject.kaito.sh/metrics entry. Defaults to gauge."
+                "description": "Aggregation applied to the metric: gauge -> per-replica average (summed across EPP pods for source epp); histogram -> per-pod windowed average (rolling _sum/_count delta over metricCacheWindow). Rendered as the `type` field of a scaledobject.kaito.sh/metrics entry. Defaults to gauge."
+              },
+              "source": {
+                "type": "string",
+                "enum": ["", "modelpod", "epp"],
+                "description": "Where the metric is scraped: modelpod (the model-serving pods, default) or epp (the Endpoint Picker pods, which keep reporting at zero replicas). Rendered as the `source` field when set."
+              },
+              "aggregation": {
+                "type": "string",
+                "enum": ["", "sum", "service-avg", "windowed-avg"],
+                "description": "Overrides the reduction derived from type and source: sum / service-avg (gauge only) or windowed-avg (histogram only). Rendered as the `aggregation` field when set."
               },
               "upThreshold": {
                 "type": ["string", "number"],
-                "description": "Per-replica scale-up threshold (float). REQUIRED when enableScaling is true: chart-defaulted per metric (10 for queue depth, 30 for queue time), and a fail-fast template guard rejects the install when it is explicitly set empty. MUST be strictly greater than downThreshold (also enforced by the template guard). Rendered as the `upthreshold` field of a scaledobject.kaito.sh/metrics entry."
+                "description": "Per-replica scale-up threshold (float) for the 1 <-> N range. REQUIRED (together with downThreshold) when minReplicas >= 1, enforced by a fail-fast template guard; optional when minReplicas is 0. MUST be strictly greater than downThreshold. Rendered as the `upthreshold` field of a scaledobject.kaito.sh/metrics entry."
               },
               "downThreshold": {
                 "type": ["string", "number"],
-                "description": "Per-replica scale-down threshold (float). MUST be strictly less than upThreshold. REQUIRED when enableScaling is true: chart-defaulted to 1, and a fail-fast template guard rejects the install when it is explicitly set empty. Rendered as the `downthreshold` field of a scaledobject.kaito.sh/metrics entry."
+                "description": "Per-replica scale-down threshold (float) for the 1 <-> N range. MUST be strictly less than upThreshold and set together with it (enforced by a fail-fast template guard). Rendered as the `downthreshold` field of a scaledobject.kaito.sh/metrics entry."
+              },
+              "activationThreshold": {
+                "type": ["string", "number"],
+                "description": "Wake threshold for the 0 -> 1 transition (metric > threshold). Only used when minReplicas is 0; requires source epp and a deactivationThreshold on the same metric. Rendered as the `activationthreshold` field."
+              },
+              "deactivationThreshold": {
+                "type": ["string", "number"],
+                "description": "Park threshold for the 1 -> 0 transition (metric <= threshold, ANDed across metrics). Only used when minReplicas is 0; MUST NOT exceed activationThreshold. At least one modelpod metric must carry one. Rendered as the `deactivationthreshold` field."
               },
               "metricCacheWindow": {
                 "type": ["string", "number"],
@@ -89,20 +177,22 @@
             }
           }
         },
-        "evaluationWindow": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Scale-up stabilization window in seconds. Wired to scaledobject.kaito.sh/evaluationwindow."
+        "hpa": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "HPA behavior of the generated ScaledObject (1 <-> N scaling only). Each field maps to one InferenceSet annotation: scaleUp.stabilizationWindowSeconds -> scaleupstabilizationwindow, scaleUp.periodSeconds -> scaleupcooldown, scaleUp.tolerance -> scaleuptolerance, scaleDown.stabilizationWindowSeconds -> scaledownstabilizationwindow, scaleDown.periodSeconds -> scaledowncooldown, scaleDown.tolerance -> scaledowntolerance (all under scaledobject.kaito.sh/).",
+          "properties": {
+            "scaleUp": {"$ref": "#/definitions/hpaScaleUpRules"},
+            "scaleDown": {"$ref": "#/definitions/hpaScaleDownRules"}
+          }
         },
-        "scaleUpCooldown": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Minimum seconds between scale-up steps. Wired to scaledobject.kaito.sh/scaleupcooldown."
+        "initialCooldownPeriod": {
+          "allOf": [{"$ref": "#/definitions/cooldownSeconds"}],
+          "description": "Seconds after ScaledObject creation before KEDA starts applying the scale-to-zero cooldown. Does not delay initial scale-up. Only rendered as scaledobject.kaito.sh/initialcooldownperiod when minReplicas is 0. Defaults to 1800; empty or null lets keda-kaito-scaler apply the same default. KEDA requires >= 0; MUST fit in int32, 0..2147483647 (numeric strings are range-checked by a template guard)."
         },
-        "scaleDownCooldown": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Minimum seconds between scale-down steps. Wired to scaledobject.kaito.sh/scaledowncooldown."
+        "cooldownPeriod": {
+          "allOf": [{"$ref": "#/definitions/cooldownSeconds"}],
+          "description": "Seconds KEDA waits after the last active trigger reading before parking the deployment at zero (0 parks on the first inactive poll). Only rendered (as scaledobject.kaito.sh/cooldownperiod) when minReplicas is 0; ignored otherwise. Defaults to 1800; empty or null lets keda-kaito-scaler apply the same default. KEDA requires >= 0; MUST fit in int32, 0..2147483647 (numeric strings are range-checked by a template guard)."
         }
       }
     },
@@ -205,6 +295,30 @@
           "minimum": 1,
           "maximum": 65535,
           "description": "EPP HTTP metrics port."
+        },
+        "flowControl": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "EPP flow-control layer (flowControl feature gate). Turned on automatically when enableScaling is true and minReplicas is 0, so requests are held in the EPP while the deployment is parked.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Forces flow control on even without scale to zero."
+            },
+            "maxConcurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Per-endpoint in-flight request capacity of the concurrency saturation detector. The EPP queues once in-flight requests reach maxConcurrency x endpoints; an empty pool always counts as saturated."
+            },
+            "maxBytes": {
+              "type": ["string", "integer"],
+              "description": "Cap on the total size of request bodies buffered in the flow-control queue, as a Kubernetes quantity (e.g. \"128Mi\"). Requests beyond it are rejected with 429. Empty falls back to the EPP's 1GB-per-priority-band limit."
+            },
+            "defaultRequestTTL": {
+              "type": "string",
+              "description": "Maximum time a request may wait in the flow-control queue, e.g. \"10m\". Empty waits until the client cancels."
+            }
+          }
         }
       }
     },

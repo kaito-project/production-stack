@@ -1,7 +1,8 @@
 name: E2E tests (daily, upstream)
 
 # Runs the regular E2E suite against upstream KEDA and Istio with the GPU node
-# mocker. Slow Nightly and Perf specs remain in their dedicated workflows.
+# mocker, then the Scaling specs serially on the same cluster. Slow Nightly
+# and Perf specs remain in their dedicated workflows.
 # Triggers:
 #   - schedule: every day at 20:00 Sydney time
 #   - workflow_dispatch: manual run
@@ -50,6 +51,8 @@ jobs:
   e2e-upstream-daily-tests:
     runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
     environment: e2e-test
+    # main suite (60m) + Scaling (240m) + cluster setup/teardown.
+    timeout-minutes: 420
     permissions:
       contents: read
 
@@ -60,6 +63,7 @@ jobs:
           ref: ${{ github.event.inputs.branch || github.ref }}
 
       - name: E2E base setup
+        id: setup
         uses: ./.github/actions/e2e-base-setup
         with:
           resource-group: ${{ env.RESOURCE_GROUP }}
@@ -77,13 +81,13 @@ jobs:
       - name: Run E2E tests
         run: make test-e2e
         env:
-          E2E_LABEL: "!Nightly && !Perf"
+          E2E_LABEL: "!Nightly && !Perf && !Scaling"
 
       - name: Generate E2E coverage report
         if: always()
         run: |
           go run ./hack/e2e/report \
-            --label-filter '!Nightly && !Perf' \
+            --label-filter '!Nightly && !Perf && !Scaling' \
             --workflow 'E2E tests (daily, upstream)' \
             --results ginkgo-report.json \
             --output-md e2e-coverage-report.md \
@@ -99,6 +103,33 @@ jobs:
           path: |
             e2e-coverage-report.md
             e2e-coverage-report.html
+
+      # Runs even when the main suite failed so a regression there does not
+      # hide scaling coverage.
+      - name: Run E2E tests (Scaling)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: make test-e2e-scaling
+
+      - name: Generate Scaling coverage report
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: |
+          go run ./hack/e2e/report \
+            --label-filter 'Scaling' \
+            --workflow 'E2E tests (daily, upstream, scaling)' \
+            --results ginkgo-report-scaling.json \
+            --output-md e2e-scaling-coverage-report.md \
+            --output-html e2e-scaling-coverage-report.html
+          echo '## Upstream Daily Scaling Coverage' >> "$GITHUB_STEP_SUMMARY"
+          cat e2e-scaling-coverage-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Scaling coverage report
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-upstream-scaling-coverage-report
+          path: |
+            e2e-scaling-coverage-report.md
+            e2e-scaling-coverage-report.html
 
       - name: Dump cluster state
         if: failure()

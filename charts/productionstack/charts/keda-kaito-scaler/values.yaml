@@ -21,7 +21,7 @@ namespaceOverride: ""
 image:
     registry: mcr.microsoft.com
     repository: oss/v2/kaito/keda-kaito-scaler
-    tag: v0.6.2
+    tag: v0.7.1
     pullSecrets: []
 
 ports:

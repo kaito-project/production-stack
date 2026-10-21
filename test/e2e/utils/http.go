@@ -142,6 +142,7 @@ type gatewayRequest struct {
 	transportRetry bool
 	originPath     bool
 	timeout        time.Duration
+	maxTokens      int
 	buildBody      func(*gatewayRequest) ([]byte, error)
 }
 
@@ -158,6 +159,12 @@ func WithTimeout(timeout time.Duration) RequestOption {
 // WithPrompt overrides the "hello" the chat helpers send by default.
 func WithPrompt(prompt string) RequestOption {
 	return func(r *gatewayRequest) { r.prompt = prompt }
+}
+
+// WithMaxTokens bounds the completion length of chat requests so a real model
+// answers well inside HTTPTimeout. Zero leaves max_tokens unset.
+func WithMaxTokens(n int) RequestOption {
+	return func(r *gatewayRequest) { r.maxTokens = n }
 }
 
 // WithHeader adds one request header. Repeatable.
@@ -217,8 +224,9 @@ func SendChatContext(ctx context.Context, gateway deploy.GatewayEndpoint, model 
 	chatBody := func(request *gatewayRequest) {
 		request.buildBody = func(settings *gatewayRequest) ([]byte, error) {
 			return json.Marshal(ChatCompletionRequest{
-				Model:    model,
-				Messages: []ChatMessage{{Role: "user", Content: settings.prompt}},
+				Model:     model,
+				Messages:  []ChatMessage{{Role: "user", Content: settings.prompt}},
+				MaxTokens: settings.maxTokens,
 			})
 		}
 	}

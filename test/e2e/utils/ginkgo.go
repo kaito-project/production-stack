@@ -36,7 +36,8 @@ var (
 	// GinkgoLabelInferenceSet marks tests that verify InferenceSet lifecycle and routing setup.
 	GinkgoLabelInferenceSet = g.Label("InferenceSet")
 
-	// GinkgoLabelNightly marks tests that are destructive or slow and only run in nightly CI.
+	// GinkgoLabelNightly marks tests that are destructive or slow. The PR and
+	// daily-upstream runs exclude it; the Azure nightly run includes it.
 	GinkgoLabelNightly = g.Label("Nightly")
 
 	// GinkgoLabelPerf marks prefix-cache load/perf specs that replay real
@@ -63,9 +64,15 @@ var (
 	// GinkgoLabelScaling marks tests that verify end-to-end KEDA-driven
 	// scaling of InferenceSet replicas, covering the scale-up and
 	// scale-down phases as well as anti-flapping (no oscillation near the
-	// threshold or during cooldown). Nightly-only because KEDA polling and
-	// cooldown windows make these tests take minutes per run.
+	// threshold or during cooldown). Excluded from the main runs and executed
+	// serially by `make test-e2e-scaling`: on the GPU mocker in the daily
+	// upstream job, and on real H100 nodes in a dedicated nightly job, because
+	// KEDA windows and real GPU provisioning make these specs take tens of
+	// minutes each.
 	GinkgoLabelScaling = g.Label("Scaling")
+
+	// GinkgoLabelScaleToZero marks the full 0 -> 1 -> 2 -> 1 -> 0 lifecycle.
+	GinkgoLabelScaleToZero = g.Label("ScaleToZero")
 
 	// GinkgoLabelFilterOrder marks tests that verify the Envoy HTTP
 	// filter chain execution order on the per-namespace Gateway:

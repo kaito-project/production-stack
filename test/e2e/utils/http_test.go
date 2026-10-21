@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -462,6 +463,58 @@ func TestLoadGeneratorStopCancelsRequests(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestChatMaxTokensIsSentOnlyWhenSet(t *testing.T) {
+	received := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		received <- body
+	}))
+	defer server.Close()
+	gateway := &credentialEndpoint{
+		fakeEndpoint: fakeEndpoint{urls: []string{server.URL + "/v1"}},
+		headers:      []deploy.AuthHeader{{Name: "X-API-Key", Value: "key"}},
+	}
+
+	for _, test := range []struct {
+		name string
+		send func() error
+		want any
+	}{
+		{name: "chat default", send: func() error { return CheckChatSuccess(context.Background(), gateway, "model") }},
+		{name: "chat bounded", send: func() error {
+			return CheckChatSuccess(context.Background(), gateway, "model", WithMaxTokens(128))
+		}, want: float64(128)},
+		{name: "load generator default", send: func() error { return runOneLoadRequest(gateway, 0) }},
+		{name: "load generator bounded", send: func() error { return runOneLoadRequest(gateway, 64) }, want: float64(64)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.send(); err != nil {
+				t.Fatal(err)
+			}
+			body := <-received
+			got, present := body["max_tokens"]
+			if test.want == nil && present {
+				t.Fatalf("max_tokens sent without being requested: %v", got)
+			}
+			if test.want != nil && got != test.want {
+				t.Fatalf("max_tokens=%v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func runOneLoadRequest(gateway deploy.GatewayEndpoint, maxTokens int) error {
+	load := &LoadGenerator{Gateway: gateway, Model: "model", MaxTokens: maxTokens}
+	load.sendOnce(context.Background())
+	if stats := load.Stats(); stats.Success != 1 {
+		return fmt.Errorf("load request failed: %+v", stats)
+	}
+	return nil
 }
 
 type trackedResponseBody struct {

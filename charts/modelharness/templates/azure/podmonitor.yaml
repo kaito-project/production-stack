@@ -1,0 +1,56 @@
+{{- if and (eq .Values.cloudprovider "azure") .Values.azure.podMonitor.enabled (.Capabilities.APIVersions.Has "azmonitoring.coreos.com/v1/PodMonitor") }}
+{{/*
+Per-namespace Azure Monitor managed-Prometheus PodMonitor that scrapes
+every pod in THIS workload namespace. The `azmonitoring.coreos.com/v1`
+PodMonitor CR is reconciled by the AKS Azure Monitor metrics add-on
+(distinct from the Prometheus Operator's monitoring.coreos.com
+PodMonitor), so it renders only under cloudprovider=azure.
+
+The `.Capabilities.APIVersions.Has` guard skips this manifest when the
+cluster does not serve the azmonitoring.coreos.com/v1 PodMonitor CRD
+(i.e. the AKS Azure Monitor managed Prometheus add-on is not installed),
+so `helm install/upgrade` against such a cluster succeeds instead of
+failing on an unknown kind. NOTE: capability discovery needs a live
+cluster — a bare `helm template` (no --validate / no API server) reports
+only Helm's built-in API list, so this block renders nothing there even
+when the CRD is actually present on the target cluster.
+
+selector: {} matches every pod in the namespace. The podTargetLabels are
+lifted onto the emitted series so downstream queries can group by
+inferencepool / gateway / shadow-pod / workspace identity. The three
+podMetricsEndpoints cover the metric surfaces a model namespace exposes:
+EPP (`metrics` port, /metrics), the Istio gateway sidecar
+(`metrics` port, /stats/prometheus), and vLLM inference (`http`
+port, /metrics). A port named on a pod that does not expose it is simply
+skipped by the scraper.
+*/}}
+apiVersion: azmonitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ .Values.azure.podMonitor.name }}
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  labelLimit: 63
+  labelNameLengthLimit: 511
+  labelValueLengthLimit: 1023
+  selector: {}
+  podTargetLabels:
+    - inferencepool
+    - gateway.networking.k8s.io/gateway-name
+    - kaito.sh/shadow-pod-inferenceset
+    - kaito.sh/shadow-pod-for
+    - inferenceset.kaito.sh/created-by
+    - kaito.sh/workspace
+  podMetricsEndpoints:
+    - interval: {{ .Values.azure.podMonitor.interval }}  # epp
+      path: /metrics
+      port: metrics
+    - interval: {{ .Values.azure.podMonitor.interval }}  # istio gateway
+      path: /stats/prometheus
+      port: metrics
+    - interval: {{ .Values.azure.podMonitor.interval }}  # vllm inference
+      path: /metrics
+      port: http
+{{- end }}

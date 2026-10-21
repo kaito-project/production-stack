@@ -52,6 +52,7 @@ type LoadGenerator struct {
 	Prompt      string
 	Concurrency int
 	Rate        float64 // requests per second; 0 means Concurrency mode
+	MaxTokens   int     // max_tokens per request; 0 leaves it unset
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -140,7 +141,8 @@ func (lg *LoadGenerator) sendOnce(ctx context.Context) {
 		return
 	}
 	lg.total.Add(1)
-	resp, err := SendChatContext(ctx, lg.Gateway, lg.Model, WithPrompt(lg.Prompt), WithTransportRetry())
+	resp, err := SendChatContext(ctx, lg.Gateway, lg.Model,
+		WithPrompt(lg.Prompt), WithMaxTokens(lg.MaxTokens), WithTransportRetry())
 	if err != nil {
 		lg.transportErr.Add(1)
 		return

@@ -13,6 +13,8 @@
 #   SHADOW_CONTROLLER_IMAGE    — gpu-node-mocker image (default: ghcr.io/kaito-project/gpu-node-mocker:latest)
 #   STATUS_REPORTER_IMAGE      — productionstack-status-reporter image
 #                                (default: ghcr.io/kaito-project/productionstack-status-reporter:latest)
+#   KEDA_KAITO_SCALER_IMAGE    — keda-kaito-scaler image, <registry>/<repository>:<tag>
+#                                (default: ghcr.io/kaito-project/keda-kaito-scaler:<chart appVersion without "v">)
 #   INSTALL_PARALLEL           — set to "0" to disable parallelism (default: 1)
 #
 # llm-gateway-apikey chart version + image tag are pinned by
@@ -26,6 +28,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 SHADOW_CONTROLLER_IMAGE="${SHADOW_CONTROLLER_IMAGE:-ghcr.io/kaito-project/gpu-node-mocker:latest}"
 STATUS_REPORTER_IMAGE="${STATUS_REPORTER_IMAGE:-ghcr.io/kaito-project/productionstack-status-reporter:latest}"
+# The keda-kaito-scaler chart pins its MCR image, which is published some
+# time after the upstream release; E2E pulls the same version from ghcr
+# (published at release time, tagged without the "v" prefix) so a chart bump
+# can be tested before the MCR mirror catches up.
+KEDA_KAITO_SCALER_CHART_VERSION="$(sed -n 's/^appVersion: *"\{0,1\}v\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' \
+  "${SCRIPT_DIR}/../../../charts/productionstack/charts/keda-kaito-scaler/Chart.yaml")"
+KEDA_KAITO_SCALER_IMAGE="${KEDA_KAITO_SCALER_IMAGE:-ghcr.io/kaito-project/keda-kaito-scaler:${KEDA_KAITO_SCALER_CHART_VERSION}}"
 INSTALL_PARALLEL="${INSTALL_PARALLEL:-1}"
 E2E_PROVIDER="${E2E_PROVIDER:-azure}"
 
@@ -86,6 +95,7 @@ echo "  KAITO_NODE_CLASS:          ${KAITO_NODE_CLASS} (${NODE_CLASS_GROUP}/${NO
 echo "  KEDA_NAMESPACE:            ${KEDA_NAMESPACE}"
 echo "  SHADOW_CONTROLLER_IMAGE:   ${SHADOW_CONTROLLER_IMAGE}"
 echo "  STATUS_REPORTER_IMAGE:     ${STATUS_REPORTER_IMAGE}"
+echo "  KEDA_KAITO_SCALER_IMAGE:   ${KEDA_KAITO_SCALER_IMAGE}"
 echo "  INSTALL_PARALLEL:          ${INSTALL_PARALLEL}"
 echo ""
 
@@ -117,6 +127,94 @@ prepare_managed_kaito_crds() {
   KAITO_HELM_ARGS+=(--skip-crds)
 }
 
+retry_azure_identity_not_found() {
+  local attempt output exit_code
+  for attempt in 1 2 3 4 5 6; do
+    if output=$(az "$@" --only-show-errors 2>&1); then
+      printf '%s\n' "${output}"
+      return 0
+    else
+      exit_code=$?
+    fi
+    printf '%s\n' "${output}" >&2
+    if ! grep -Eq '^ERROR: \((Resource)?NotFound\)' <<< "${output}" || [[ "${attempt}" == 6 ]]; then
+      return "${exit_code}"
+    fi
+    echo "Identity operation not yet available (attempt ${attempt}/6); retrying in $((attempt * 10))s..." >&2
+    sleep "$((attempt * 10))"
+  done
+}
+
+prepare_model_streaming() {
+  local namespace="${E2E_MODEL_STREAMING_NAMESPACE:?Set E2E_MODEL_STREAMING_NAMESPACE}"
+  local storage_class="kaito-model-mirror"
+  local service_account="kaito-model-streamer"
+  local identity_name="kaito-model-streamer"
+  local storage_account identity_json identity_client_id identity_principal_id storage_scope oidc_issuer control_plane_id
+  local subscription="${AZURE_SUBSCRIPTION_ID:?Set AZURE_SUBSCRIPTION_ID}"
+  storage_account="kaitomm$(printf '%s' "${CLUSTER_NAME}" | openssl dgst -sha256 | awk '{print substr($NF,1,16)}')"
+
+  echo "=== Preparing ModelMirror and ModelStreaming (${namespace}) ==="
+  echo "  Enabling Blob CSI, OIDC issuer, and workload identity"
+  az aks update --subscription "${subscription}" \
+    --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" \
+    --enable-blob-driver --enable-oidc-issuer --enable-workload-identity \
+    --yes --only-show-errors --output none
+  echo "  Creating model mirror storage account ${storage_account}"
+  az storage account create --subscription "${subscription}" \
+    --resource-group "${RESOURCE_GROUP}" --name "${storage_account}" \
+    --location "${LOCATION}" --sku Premium_LRS --kind BlockBlobStorage \
+    --https-only true --allow-shared-key-access false --output none
+  echo "  Creating streaming identity ${identity_name}"
+  identity_json=$(retry_azure_identity_not_found identity create --subscription "${subscription}" \
+    --resource-group "${RESOURCE_GROUP}" --name "${identity_name}" --output json)
+  identity_client_id=$(jq -er '.clientId | select(type == "string" and length > 0)' <<< "${identity_json}")
+  identity_principal_id=$(jq -er '.principalId | select(type == "string" and length > 0)' <<< "${identity_json}")
+  storage_scope="/subscriptions/${subscription}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.Storage/storageAccounts/${storage_account}"
+  echo "  Granting streaming identity access to model blobs"
+  az role assignment create --subscription "${subscription}" \
+    --assignee-object-id "${identity_principal_id}" --assignee-principal-type ServicePrincipal \
+    --role "Storage Blob Data Contributor" --scope "${storage_scope}" --output none
+  echo "  Granting AKS control-plane identity access to the storage account"
+  control_plane_id=$(az aks show --subscription "${subscription}" \
+    --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" --query identity.principalId --output tsv)
+  az role assignment create --subscription "${subscription}" \
+    --assignee-object-id "${control_plane_id}" --assignee-principal-type ServicePrincipal \
+    --role "Storage Account Contributor" --scope "${storage_scope}" --output none
+  oidc_issuer=$(az aks show --subscription "${subscription}" \
+    --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" --query oidcIssuerProfile.issuerUrl --output tsv)
+  echo "  Creating streaming federated credential for ${namespace}/${service_account}"
+  retry_azure_identity_not_found identity federated-credential create --subscription "${subscription}" \
+    --resource-group "${RESOURCE_GROUP}" --identity-name "${identity_name}" \
+    --name model-streaming --issuer "${oidc_issuer}" \
+    --subject "system:serviceaccount:${namespace}:${service_account}" \
+    --audiences api://AzureADTokenExchange --output none
+
+  echo "  Configuring streaming service account and storage class"
+  kubectl create namespace "${namespace}" --dry-run=client --output yaml | kubectl apply -f -
+  kubectl create serviceaccount "${service_account}" --namespace "${namespace}" \
+    --dry-run=client --output yaml | kubectl apply -f -
+  kubectl annotate serviceaccount "${service_account}" --namespace "${namespace}" \
+    "azure.workload.identity/client-id=${identity_client_id}" --overwrite
+  jq -n --arg name "${storage_class}" --arg rg "${RESOURCE_GROUP}" \
+    --arg account "${storage_account}" --arg client "${identity_client_id}" '{
+      apiVersion: "storage.k8s.io/v1", kind: "StorageClass", metadata: {name: $name},
+      provisioner: "blob.csi.azure.com", allowVolumeExpansion: true, reclaimPolicy: "Delete",
+      parameters: {resourceGroup: $rg, storageAccount: $account, protocol: "fuse2",
+        skuName: "Premium_LRS", clientID: $client, mountWithWorkloadIdentityToken: "true"},
+      mountOptions: ["-o allow_other", "--block-cache", "--block-cache-block-size=16",
+        "--block-cache-pool-size=8192", "--block-cache-prefetch=11"]
+    }' | kubectl apply -f -
+  kubectl rollout status daemonset/csi-blob-node --namespace kube-system --timeout=300s
+
+  KAITO_HELM_ARGS+=(
+    --set featureGates.ModelMirror=true
+    --set featureGates.ModelStreaming=true
+    --set "defaultModelMirrorStorageClass=${storage_class}"
+    --set "defaultStreamingServiceAccount=${service_account}"
+  )
+}
+
 install_kaito() {
   echo "=== Installing KAITO workspace operator (image: nightly-latest) ==="
 
@@ -129,6 +227,9 @@ install_kaito() {
 
   KAITO_HELM_ARGS=()
   run_provider_hook prepare_kaito_crds
+  if [[ "${E2E_MODEL_STREAMING:-false}" == "true" ]]; then
+    prepare_model_streaming
+  fi
 
   # Per-model GAIE artifacts are provisioned by charts/modeldeployment; enabling
   # the gate would render a duplicate set of resources via Flux and conflict.
@@ -306,7 +407,7 @@ install_productionstack() {
 
   echo "=== Installing productionstack umbrella chart ==="
   echo "    body-based-routing → kaito-system (umbrella release namespace)"
-  echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE}"
+  echo "    keda-kaito-scaler  → ${KEDA_NAMESPACE} (image: ${KEDA_KAITO_SCALER_IMAGE})"
   echo "    llm-gateway-apikey → llm-gateway-auth (chart version pinned in Chart.yaml)"
   echo "    productionstack-status-reporter → kube-system (image: ${STATUS_REPORTER_IMAGE})"
   # productionstack-status-reporter control-plane overrides: the reporter's
@@ -315,10 +416,19 @@ install_productionstack() {
   # into `istio-system` and the KAITO workspace controller into `kaito-system`,
   # so point the reporter's probes at the E2E namespaces. startupGraceSeconds
   # is shortened so findings surface within the test emit timeouts.
+  #
+  # The keda-kaito-scaler chart renders its image as
+  # <registry>/<repository>:<tag>, so KEDA_KAITO_SCALER_IMAGE is split on the
+  # first "/" and the last ":".
+  local keda_scaler_registry="${KEDA_KAITO_SCALER_IMAGE%%/*}"
+  local keda_scaler_path="${KEDA_KAITO_SCALER_IMAGE#*/}"
   helm upgrade --install productionstack "${PRODUCTIONSTACK_CHART_DIR}" \
     --namespace kaito-system \
     --create-namespace \
     --set keda-kaito-scaler.namespaceOverride="${KEDA_NAMESPACE}" \
+    --set keda-kaito-scaler.image.registry="${keda_scaler_registry}" \
+    --set keda-kaito-scaler.image.repository="${keda_scaler_path%:*}" \
+    --set keda-kaito-scaler.image.tag="${keda_scaler_path##*:}" \
     --set llm-gateway-apikey.enabled=true \
     --set llm-gateway-apikey.namespaceOverride=llm-gateway-auth \
     --set productionstack-status-reporter.image.repository="${STATUS_REPORTER_IMAGE%:*}" \
