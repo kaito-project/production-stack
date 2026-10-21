@@ -77,7 +77,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
       - name: Install ext_proc and test dependencies
         working-directory: kaito-guard-ext-proc
         run: python -m pip install -e '.[dev]'
