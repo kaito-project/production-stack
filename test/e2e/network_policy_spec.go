@@ -828,8 +828,8 @@ func readyModelPodEndpoint(ctx context.Context, clientset *kubernetes.Clientset,
 // InferenceSetReadyTimeout.
 func readyEPPPodEndpoint(ctx context.Context, clientset *kubernetes.Clientset, ns, deploymentName string) (string, int32) {
 	// Matches charts/modeldeployment/templates/_helpers.tpl:
-	//   inferencepool: <deploymentName>-inferencepool-epp
-	selector := fmt.Sprintf("inferencepool=%s-inferencepool-epp", deploymentName)
+	//   inferencepool: <deploymentName>
+	selector := utils.EPPSelector(deploymentName)
 
 	Eventually(func() (string, error) {
 		pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})

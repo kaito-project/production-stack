@@ -124,8 +124,9 @@ letting KEDA fail later when it creates the HPA:
 
 ## Naming conventions
 
-- InferencePool: `<name>-inferencepool`
-- EPP Deployment / Service / SA / Role / ConfigMap: `<name>-inferencepool-epp`
+- InferencePool, EPP Service and the EPP pods' `inferencepool` label: `<name>`
+  (these must fit 63 characters, so `name` is limited to 63 characters)
+- EPP Deployment / SA / Role / RoleBinding / ConfigMap: `<name>-inferencepool-epp`
 - HTTPRoute: `<name>-route`
 
 ## Example

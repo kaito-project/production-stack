@@ -20,7 +20,9 @@ package helm
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -287,8 +289,9 @@ func isNotFound(out []byte) bool {
 
 // InstallModelDeployment runs `helm upgrade --install` for the modeldeployment
 // chart with the supplied values. It is idempotent — re-running it on an
-// existing release reconciles to the new values. The release name equals
-// values.Name and the release namespace equals values.Namespace.
+// existing release reconciles to the new values. The release name is
+// modelDeploymentReleaseName(values.Name) and the release namespace equals
+// values.Namespace.
 func (d *Deployer) InstallModelDeployment(ctx context.Context, values deploy.ModelDeploymentValues) error {
 	if err := values.Validate(); err != nil {
 		return err
@@ -304,7 +307,7 @@ func (d *Deployer) InstallModelDeployment(ctx context.Context, values deploy.Mod
 	}
 
 	args := []string{
-		"upgrade", "--install", values.Name, chart,
+		"upgrade", "--install", modelDeploymentReleaseName(values.Name), chart,
 		"--namespace", values.Namespace,
 		"--create-namespace",
 	}
@@ -335,7 +338,7 @@ func (d *Deployer) UpgradeModelDeployment(ctx context.Context, values deploy.Mod
 		return err
 	}
 
-	args := []string{"upgrade", values.Name, chart, "--namespace", values.Namespace}
+	args := []string{"upgrade", modelDeploymentReleaseName(values.Name), chart, "--namespace", values.Namespace}
 	args = append(args, setArgs(values)...)
 	args = append(args, gatewaySetArgs(values.Gateway)...)
 
@@ -357,18 +360,32 @@ func gatewaySetArgs(values deploy.GatewayValues) []string {
 	return args
 }
 
-// UninstallModelDeployment runs `helm uninstall` for the named release.
-// Missing releases are treated as success (so cleanup is idempotent).
+// UninstallModelDeployment runs `helm uninstall` for the named model
+// deployment's release. Missing releases are treated as success (so cleanup
+// is idempotent).
 func (d *Deployer) UninstallModelDeployment(ctx context.Context, name, namespace string) error {
 	if name == "" {
 		return fmt.Errorf("modeldeployment: name is required")
 	}
-	args := []string{"uninstall", name, "--namespace", namespace, "--ignore-not-found", "--wait"}
+	args := []string{"uninstall", modelDeploymentReleaseName(name), "--namespace", namespace, "--ignore-not-found", "--wait"}
 
 	if out, err := d.run(ctx, args...); err != nil {
 		return fmt.Errorf("helm uninstall %s failed: %w\n%s", name, err, string(out))
 	}
 	return nil
+}
+
+// modelDeploymentReleaseName returns the Helm release name for a model
+// deployment. It is the deployment name, except that names longer than Helm's
+// 53-character release name limit (deployment names may reach 63 characters)
+// are truncated and suffixed with a hash of the full name so they stay unique.
+func modelDeploymentReleaseName(name string) string {
+	const maxReleaseNameLength, hashLength = 53, 8
+	if len(name) <= maxReleaseNameLength {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return name[:maxReleaseNameLength-hashLength-1] + "-" + hex.EncodeToString(sum[:])[:hashLength]
 }
 
 // setArgs builds the `--set` arguments for the modeldeployment chart.

@@ -8,6 +8,7 @@
 | **Infrastructure** | Fake Node / Shadow Pod Lifecycle | PR | gpu-node-mocker two-phase pipeline validation |
 | | InferenceSet / InferencePool Lifecycle | PR | KAITO controller and routing infrastructure health |
 | | NodeClaim / Fake Node Cleanup | PR | Reverse-path teardown and reconcile idempotency |
+| | Long Deployment Name | PR | 63-character deployment name serves inference; 64 characters is rejected |
 | | InferenceSet Scaling (E2E) | Daily (mocker) + Nightly (H100) | End-to-end scale up/down driven by KEDA + traffic verification |
 | | InferenceSet Scale To Zero | Daily (mocker) + Nightly (H100) | EPP-driven `1 -> 0 -> 1 -> 0` activation and post-cold-start serving |
 | **Routing** | Model-Based Routing | PR | BBR → HTTPRoute → EPP → Pod routing correctness |
@@ -97,6 +98,13 @@ Verifies KAITO's InferenceSet controller processed the CRs, auto-created Inferen
 * EPP pods running — Without a running EPP, the Gateway can't select backend pods; routing is dead.
 * HTTPRoute Accepted=True — An unaccepted HTTPRoute silently drops all traffic; this catches misconfig early.
 * DestinationRules `trafficPolicy.tls.mode=SIMPLE` — Missing or wrong-mode DestinationRules cause TLS errors between Istio sidecars and EPP; requests fail cryptically.
+
+### Long deployment name — InferenceSet
+
+**CI tier:** PR. The deployment name becomes the InferenceSet name, the InferencePool name, the EPP Service name and the EPP `inferencepool` selector label value, all capped at 63 characters.
+
+* 63-character name serves inference — Deploy a model whose name is exactly 63 characters and send an authenticated chat completion through the namespace Gateway. Catches any generated name or label value (ours, KAITO's or Istio's) that overflows the limit.
+* 64-character name is rejected — Installing a 64-character name fails and creates no InferenceSet (the modeldeployment chart schema caps `name` at 63 characters).
 
 ### NodeClaim / Fake Node cleanup — Infra
 

@@ -64,7 +64,8 @@
   "properties": {
     "name": {
       "type": "string",
-      "description": "Deployment / InferenceSet name. Empty falls back to .Release.Name."
+      "maxLength": 63,
+      "description": "Deployment / InferenceSet name, also used as the InferencePool and EPP Service name and the EPP `inferencepool` selector label value, hence at most 63 characters. Empty falls back to .Release.Name."
     },
     "namespace": {
       "type": "string",

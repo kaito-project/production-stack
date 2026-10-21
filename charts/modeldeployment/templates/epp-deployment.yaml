@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "modeldeployment.eppServiceName" . }}
+  name: {{ include "modeldeployment.eppName" . }}
   namespace: {{ include "modeldeployment.namespace" . }}
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
@@ -36,7 +36,7 @@ spec:
         checksum/epp-flow-control: {{ include "modeldeployment.eppFlowControlSettings" . | sha256sum }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "modeldeployment.eppServiceName" . }}
+      serviceAccountName: {{ include "modeldeployment.eppName" . }}
       terminationGracePeriodSeconds: 130
       {{- with .Values.epp.tolerations }}
       tolerations:
@@ -94,4 +94,4 @@ spec:
       volumes:
         - name: plugins-config-volume
           configMap:
-            name: {{ include "modeldeployment.eppServiceName" . }}
+            name: {{ include "modeldeployment.eppName" . }}

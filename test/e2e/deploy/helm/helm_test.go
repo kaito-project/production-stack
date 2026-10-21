@@ -742,6 +742,47 @@ func assertNamespaceLabelled(t *testing.T, calls [][]string, namespace string) {
 
 // Upgrade must not double as create: a mistyped release name has to fail
 // rather than silently provision a second deployment.
+// Deployment names may reach 63 characters, but Helm release names are capped
+// at 53. Install, upgrade and uninstall must all target the same shortened
+// release, while the chart still receives the full deployment name.
+func TestLongDeploymentNameUsesShortenedRelease(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+
+	name := strings.Repeat("a", 63)
+	values := deploy.ModelDeploymentValues{
+		Name: name, Namespace: "e2e-ns", Model: "phi-4-mini-instruct", Replicas: 1,
+	}
+	if err := d.InstallModelDeployment(context.Background(), values); err != nil {
+		t.Fatalf("InstallModelDeployment: %v", err)
+	}
+	if err := d.UpgradeModelDeployment(context.Background(), values); err != nil {
+		t.Fatalf("UpgradeModelDeployment: %v", err)
+	}
+	if err := d.UninstallModelDeployment(context.Background(), name, "e2e-ns"); err != nil {
+		t.Fatalf("UninstallModelDeployment: %v", err)
+	}
+
+	release := modelDeploymentReleaseName(name)
+	if len(release) != 53 || !strings.HasPrefix(release, strings.Repeat("a", 44)+"-") {
+		t.Fatalf("release name %q is not a 53-character hash-suffixed prefix", release)
+	}
+	if got := modelDeploymentReleaseName(strings.Repeat("a", 62) + "b"); got == release {
+		t.Errorf("names differing past the truncation point share release %q", got)
+	}
+	if got := modelDeploymentReleaseName("phi"); got != "phi" {
+		t.Errorf("short name release = %q, want %q", got, "phi")
+	}
+
+	install, upgrade, uninstall := (*calls)[0], (*calls)[1], (*calls)[2]
+	if install[2] != release || upgrade[1] != release || uninstall[1] != release {
+		t.Errorf("release mismatch: install %q, upgrade %q, uninstall %q, want %q",
+			install[2], upgrade[1], uninstall[1], release)
+	}
+	if !hasArg(install, "name="+name) || !hasArg(upgrade, "name="+name) {
+		t.Errorf("chart must receive the full deployment name: install %v, upgrade %v", install, upgrade)
+	}
+}
+
 func TestUpgradeModelDeploymentDoesNotInstall(t *testing.T) {
 	d, calls := newTestDeployer(t, nil)
 

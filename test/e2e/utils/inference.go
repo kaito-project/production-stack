@@ -42,13 +42,19 @@ const (
 // deployment (InferenceSet) name. Matches the modeldeployment chart's
 // naming convention.
 func InferencePoolName(deploymentName string) string {
-	return deploymentName + "-inferencepool"
+	return deploymentName
 }
 
-// EPPServiceName returns the EPP service name derived from the deployment
-// name. Matches the modeldeployment chart's naming convention.
-func EPPServiceName(deploymentName string) string {
-	return InferencePoolName(deploymentName) + "-epp"
+// EPPDeploymentName returns the EPP Deployment name derived from the
+// deployment name. Matches the modeldeployment chart's naming convention.
+func EPPDeploymentName(deploymentName string) string {
+	return deploymentName + "-inferencepool-epp"
+}
+
+// EPPSelector returns the label selector matching the EPP pods of the given
+// deployment. Matches the modeldeployment chart's `inferencepool` label.
+func EPPSelector(deploymentName string) string {
+	return "inferencepool=" + deploymentName
 }
 
 // WaitForInferenceSetReady waits until the modeldeployment can actually serve:
@@ -72,7 +78,7 @@ func WaitForInferenceSetReady(ctx context.Context, values deploy.ModelDeployment
 }
 
 func inferenceSetReady(ctx context.Context, clientset kubernetes.Interface, values deploy.ModelDeploymentValues) error {
-	namespace, eppName := values.Namespace, EPPServiceName(values.Name)
+	namespace, eppName := values.Namespace, EPPDeploymentName(values.Name)
 
 	epp, err := clientset.AppsV1().Deployments(namespace).Get(ctx, eppName, metav1.GetOptions{})
 	if err != nil {
@@ -119,7 +125,7 @@ func RestartEPP(ctx context.Context, name, namespace string) error {
 	if err != nil {
 		return fmt.Errorf("init clientset: %w", err)
 	}
-	eppName := EPPServiceName(name)
+	eppName := EPPDeploymentName(name)
 	patch := fmt.Sprintf(
 		`{"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":%q}}}}}`,
 		time.Now().Format(time.RFC3339Nano))
@@ -139,7 +145,7 @@ func WaitForEPPRollout(ctx context.Context, name, namespace string, timeout time
 	if err != nil {
 		return fmt.Errorf("init clientset: %w", err)
 	}
-	eppName := EPPServiceName(name)
+	eppName := EPPDeploymentName(name)
 
 	return pollUntilReady(ctx, timeout, fmt.Sprintf("EPP Deployment %s/%s to roll out", namespace, eppName), func(ctx context.Context) error {
 		return eppRolledOut(ctx, clientset, namespace, eppName)

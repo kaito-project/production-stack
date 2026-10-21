@@ -1085,7 +1085,7 @@ func assertEPPReady(ctx context.Context, namespace, modelName string) error {
 	if err != nil {
 		return err
 	}
-	eppName := utils.EPPServiceName(modelName)
+	eppName := utils.EPPDeploymentName(modelName)
 	deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, eppName, metav1.GetOptions{})
 	if err != nil {
 		return err
@@ -1093,7 +1093,7 @@ func assertEPPReady(ctx context.Context, namespace, modelName string) error {
 	if deployment.Status.ReadyReplicas < 1 {
 		return fmt.Errorf("EPP Deployment %s/%s has no ready replicas", namespace, eppName)
 	}
-	selector := "inferencepool=" + eppName
+	selector := utils.EPPSelector(modelName)
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
 		return err
