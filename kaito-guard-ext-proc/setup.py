@@ -6,8 +6,10 @@ setup(
     description="Python ext_proc for KAITO guardrailing in Envoy",
     author="KAITO Team",
     packages=find_packages(include=["ext_proc", "ext_proc.*"]),
-    python_requires=">=3.11",
+    python_requires=">=3.12",
     install_requires=[
+        "guardrail-core @ https://github.com/kaito-project/kaito/archive/"
+        "dda1b10e881ed69228978964a2e89ecf241757f9.tar.gz#subdirectory=guardrail_core",
         "grpcio==1.84.0",
         "xds-protos==1.84.0",
     ],

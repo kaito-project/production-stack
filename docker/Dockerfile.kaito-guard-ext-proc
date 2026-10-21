@@ -1,10 +1,11 @@
-FROM python:3.11-slim
+FROM python:3.12.13-slim-bookworm@sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2
 
 WORKDIR /app
 
 COPY kaito-guard-ext-proc/setup.py .
 COPY kaito-guard-ext-proc/ext_proc/ ./ext_proc/
 RUN pip install --no-cache-dir .
+RUN python -c "from guardrail_core.streaming_window import StreamingBufferWindow, WindowScanner, WindowScanResult, WindowEmitResult, WindowScanError; from ext_proc.streaming_window import StreamingResponseWindow"
 
 EXPOSE 9000
 
