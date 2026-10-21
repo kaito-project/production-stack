@@ -85,7 +85,36 @@
     },
     "instanceType": {
       "type": "string",
-      "description": "VM instance type used for the underlying GPU nodes. Empty omits spec.template.resource.instanceType, as required on BYO-node clusters (KAITO nodeProvisioner=byo)."
+      "description": "VM instance type used for the underlying GPU nodes. Empty omits spec.template.resource.instanceType. Required with node auto-provisioning; optional on BYO-node clusters (KAITO nodeProvisioner=byo), where it restricts GPU nodes to node.kubernetes.io/instance-type=<instanceType>."
+    },
+    "nodeLabelSelector": {
+      "description": "LabelSelector for the GPU nodes, rendered as spec.template.resource.labelSelector. Empty omits it: with node auto-provisioning it then inherits spec.labelSelector; on BYO-node clusters GPU nodes are auto-selected. Requires KAITO v0.13.0+.",
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "matchLabels": {
+              "type": "object",
+              "additionalProperties": {"type": "string"}
+            },
+            "matchExpressions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["key", "operator"],
+                "properties": {
+                  "key": {"type": "string", "minLength": 1},
+                  "operator": {"type": "string", "enum": ["In", "NotIn", "Exists", "DoesNotExist"]},
+                  "values": {"type": "array", "items": {"type": "string"}}
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "replicas": {
       "anyOf": [
