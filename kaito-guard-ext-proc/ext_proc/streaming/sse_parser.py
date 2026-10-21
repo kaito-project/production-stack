@@ -25,7 +25,6 @@ def split_sse_events(buf: bytes, *, final: bool = False) -> tuple[list[bytes], b
     events: list[bytes] = []
     event_start = line_start = event_end = 0
     for ending in _LINE_ENDING.finditer(buf):
-        # A trailing CR may be the first byte of a CRLF in the next chunk.
         if not final and ending.group() == b"\r" and ending.end() == len(buf):
             break
         if ending.start() == line_start:
