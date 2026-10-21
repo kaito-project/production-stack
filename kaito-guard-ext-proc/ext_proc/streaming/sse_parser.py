@@ -58,12 +58,7 @@ def _extract_data(event: bytes) -> str | None:
 
 
 def parse_sse_event(event: bytes) -> ParsedEvent | None:
-    """Parse a single OpenAI choice; raise SSEParseError for malformed data.
-
-    None denotes an event without data, empty data, or an empty choices list.
-    Missing/null content is a valid non-text delta, represented by "".
-    Multiple choices and explicit choice indices other than integer 0 are rejected.
-    """
+    """Parse a single-choice OpenAI event; raise SSEParseError for invalid data."""
     data = _extract_data(event)
     if data is None or not data.strip():
         return None
