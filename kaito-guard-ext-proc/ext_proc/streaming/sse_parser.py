@@ -21,10 +21,7 @@ _LINE_ENDING = re.compile(rb"\r\n|\r|\n")
 
 
 def split_sse_events(buf: bytes, *, final: bool = False) -> tuple[list[bytes], bytes]:
-    """Split on blank SSE lines; final resolves a trailing CR at EOF.
-
-    Input without a terminating blank line remains in the remainder, even at EOF.
-    """
+    """Split complete events; final resolves trailing CR, not missing delimiters."""
     events: list[bytes] = []
     event_start = line_start = event_end = 0
     for ending in _LINE_ENDING.finditer(buf):
