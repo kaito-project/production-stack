@@ -233,12 +233,20 @@ spec:
         {{- end }}
       {{- end }}
     {{- /*
-    Empty instanceType omits the field, which KAITO requires on BYO
-    (nodeProvisioner=byo) clusters where nodes are not auto-provisioned.
+    Empty instanceType / nodeLabelSelector omit their fields. On BYO
+    (nodeProvisioner=byo) clusters both are optional node filters and KAITO
+    auto-selects GPU nodes when both are empty; with node auto-provisioning an
+    omitted labelSelector inherits spec.labelSelector.
     */}}
     resource:
+      {{- if or .Values.instanceType .Values.nodeLabelSelector }}
       {{- with .Values.instanceType }}
       instanceType: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.nodeLabelSelector }}
+      labelSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- else }} {}
       {{- end }}
     inference:

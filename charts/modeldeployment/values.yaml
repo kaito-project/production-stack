@@ -16,8 +16,15 @@ config: ""
 # modelAccessSecret names the Secret holding the Hugging Face access credentials.
 modelAccessSecret: ""
 
-# instanceType is the VM instance type of the GPU nodes; set "" on BYO-node clusters to omit it.
+# instanceType is the VM instance type of the GPU nodes; "" omits it. Required with node auto-provisioning;
+# optional on BYO-node clusters, where it restricts GPU nodes to node.kubernetes.io/instance-type=<instanceType>.
 instanceType: "Standard_NV36ads_A10_v5"
+
+# nodeLabelSelector is a LabelSelector (matchLabels / matchExpressions) for the GPU nodes, rendered as
+# spec.template.resource.labelSelector; empty omits it. With node auto-provisioning an empty value inherits the
+# InferenceSet spec.labelSelector; on BYO-node clusters GPU nodes are auto-selected. Requires a KAITO release with
+# kaito-project/kaito#2444 (v0.13.0+); older CRDs silently drop it.
+nodeLabelSelector: {}
 
 # replicas sets spec.replicas when not empty (otherwise the CRD default of 1); with enableScaling it must lie
 # within [minReplicas, maxReplicas] and is reapplied on upgrade only when its value changes.
