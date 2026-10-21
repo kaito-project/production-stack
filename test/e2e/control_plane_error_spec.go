@@ -60,7 +60,7 @@ var _ = Describe("Control-plane Error Reporter",
 		})
 
 		It("emits inferencesetEPPNotReady when the InferenceSet EPP is scaled to zero", func() {
-			eppName := utils.EPPServiceName(modelName)
+			eppName := utils.EPPDeploymentName(modelName)
 			desired, _, err := utils.GetDeploymentReplicas(ctx, caseNS, eppName)
 			Expect(err).NotTo(HaveOccurred())
 			baseline, err := utils.ReporterEventBaseline(ctx, "inferencesetEPPNotReady", caseNS)

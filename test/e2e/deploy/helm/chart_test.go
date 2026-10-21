@@ -17,14 +17,21 @@ limitations under the License.
 package helm
 
 import (
+	"encoding/json"
+	"maps"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 )
+
+var maxLengthErrorRe = regexp.MustCompile(`name: String length must be less than or equal to 63|'/name': maxLength: got \d+, want 63`)
 
 func TestModelDeploymentScalingAnnotations(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -185,6 +192,89 @@ func TestModelDeploymentScalingValidation(t *testing.T) {
 				t.Fatalf("expected validation error for %s, got %v\n%s", tt.field, err, output)
 			}
 		})
+	}
+}
+
+// The deployment name feeds the EPP Service name, the `inferencepool`
+// selector label value and the InferencePool name (which Istio copies into a
+// label on the pool's shadow Service), all capped at 63 characters. A
+// 63-character name must render objects that satisfy those limits, and a
+// 64-character name must be rejected by the chart.
+func TestModelDeploymentNameLength(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	chart := filepath.Join("..", "..", "..", "..", "charts", "modeldeployment")
+	render := func(name string) ([]byte, error) {
+		return exec.Command("helm", "template", "model", chart,
+			"--set", "model=test-model", "--set", "namespace=ns", "--set", "name="+name).CombinedOutput()
+	}
+
+	// Helm's JSON schema validator words the error differently across releases:
+	// "name: String length must be less than or equal to 63" before v3.18,
+	// "at '/name': maxLength: got 64, want 63" from v3.18 on.
+	output, err := render(strings.Repeat("a", 64))
+	if err == nil || !maxLengthErrorRe.Match(output) {
+		t.Errorf("expected a 64-character name to be rejected, got %v\n%s", err, output)
+	}
+
+	output, err = render(strings.Repeat("a", 63))
+	if err != nil {
+		t.Fatalf("render with a 63-character name: %v\n%s", err, output)
+	}
+	var kinds []string
+	for _, doc := range strings.Split(string(output), "\n---") {
+		var obj struct {
+			Kind     string            `json:"kind"`
+			Metadata metav1.ObjectMeta `json:"metadata"`
+			Spec     struct {
+				Selector json.RawMessage `json:"selector"`
+				Template struct {
+					Metadata metav1.ObjectMeta `json:"metadata"`
+				} `json:"template"`
+			} `json:"spec"`
+		}
+		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+			t.Fatalf("parse rendered object: %v\n%s", err, doc)
+		}
+		if obj.Kind == "" {
+			continue
+		}
+		kinds = append(kinds, obj.Kind)
+		labels := map[string]string{}
+		maps.Copy(labels, obj.Metadata.Labels)
+		maps.Copy(labels, obj.Spec.Template.Metadata.Labels)
+		switch obj.Kind {
+		case "Service":
+			if errs := validation.IsDNS1035Label(obj.Metadata.Name); len(errs) > 0 {
+				t.Errorf("Service name %q: %v", obj.Metadata.Name, errs)
+			}
+			var selector map[string]string
+			if err := json.Unmarshal(obj.Spec.Selector, &selector); err != nil {
+				t.Fatalf("parse Service selector: %v", err)
+			}
+			maps.Copy(labels, selector)
+		case "Deployment":
+			var selector metav1.LabelSelector
+			if err := json.Unmarshal(obj.Spec.Selector, &selector); err != nil {
+				t.Fatalf("parse Deployment selector: %v", err)
+			}
+			maps.Copy(labels, selector.MatchLabels)
+		case "InferencePool":
+			if len(obj.Metadata.Name) > 63 {
+				t.Errorf("InferencePool name %q exceeds 63 characters", obj.Metadata.Name)
+			}
+		}
+		for key, value := range labels {
+			if len(value) > 63 {
+				t.Errorf("%s %s: label %s=%q exceeds 63 characters", obj.Kind, obj.Metadata.Name, key, value)
+			}
+		}
+	}
+	for _, kind := range []string{"Service", "Deployment", "InferencePool"} {
+		if !slices.Contains(kinds, kind) {
+			t.Errorf("rendered chart has no %s; rendered kinds: %v", kind, kinds)
+		}
 	}
 }
 

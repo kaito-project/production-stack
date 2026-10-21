@@ -8,6 +8,7 @@
 | **Infrastructure** | Fake Node / Shadow Pod Lifecycle | PR | gpu-node-mocker two-phase pipeline validation |
 | | InferenceSet / InferencePool Lifecycle | PR | KAITO controller and routing infrastructure health |
 | | NodeClaim / Fake Node Cleanup | PR | Reverse-path teardown and reconcile idempotency |
+| | Long Deployment Name | PR | 63-character deployment name serves inference; 64 characters is rejected |
 | | InferenceSet Scaling (E2E) | Daily (mocker) + Nightly (H100) | End-to-end scale up/down driven by KEDA + traffic verification |
 | | InferenceSet Scale To Zero | Daily (mocker) + Nightly (H100) | EPP-driven `1 -> 0 -> 1 -> 0` activation and post-cold-start serving |
 | **Routing** | Model-Based Routing | PR | BBR → HTTPRoute → EPP → Pod routing correctness |

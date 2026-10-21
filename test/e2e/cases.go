@@ -225,9 +225,10 @@ const (
 // unique across the entire table so Helm releases never collide.
 //
 // Conventions:
-//   - Name: deployment / Helm release name. AND the value carried in the
-//     `model` field of OpenAI-style requests (matched by the HTTPRoute as
-//     X-Gateway-Model-Name).
+//   - Name: deployment name (the Helm backend uses it as the release name,
+//     shortened when it exceeds Helm's 53-character limit). AND the value
+//     carried in the `model` field of OpenAI-style requests (matched by the
+//     HTTPRoute as X-Gateway-Model-Name).
 //   - Model: inference preset name, written to the InferenceSet's
 //     spec.template.inference.preset.name.
 //   - Namespace: per-case namespace — the suite installs into this

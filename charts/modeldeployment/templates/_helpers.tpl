@@ -24,17 +24,27 @@ Gateway that modelharness provisions in the workload namespace.
 {{- end }}
 
 {{/*
-Derived InferencePool name, matching KAITO's naming convention.
+InferencePool name. Equals the deployment name: Istio stamps it as the
+istio.io/inferencepool-name label value on the InferencePool's shadow
+Service, so it must fit the 63-character label value limit.
 */}}
 {{- define "modeldeployment.inferencePoolName" -}}
-{{ include "modeldeployment.name" . }}-inferencepool
+{{- include "modeldeployment.name" . -}}
 {{- end }}
 
 {{/*
-Derived EPP service name (used as the DestinationRule host).
+EPP Service name, also used as the `inferencepool` selector label value.
+Equals the deployment name so it fits the 63-character limit of both.
 */}}
 {{- define "modeldeployment.eppServiceName" -}}
-{{ include "modeldeployment.inferencePoolName" . }}-epp
+{{- include "modeldeployment.name" . -}}
+{{- end }}
+
+{{/*
+Name of the EPP Deployment / ServiceAccount / Role / RoleBinding / ConfigMap.
+*/}}
+{{- define "modeldeployment.eppName" -}}
+{{ include "modeldeployment.name" . }}-inferencepool-epp
 {{- end }}
 
 {{/*

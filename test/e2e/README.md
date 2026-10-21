@@ -32,7 +32,7 @@ the production App Routing provisioning contract.
 - [`setup.go`](utils/setup.go) — `EnsureNamespace` (provisions the workload namespace + modelharness), `DeleteNamespace`, `SetupInferenceSetsWithRouting`, `TeardownInferenceSetsWithRouting`.
 - [`http.go`](utils/http.go) — authenticated `SendGatewayRequest` with `SendChat` / `SendModels` shortcuts against a `deploy.GatewayEndpoint`, taking `RequestOption`s (`WithPrompt`, `WithAuth`, `WithoutAuth`, `WithHeader`, `WithMethod`, `WithTransportRetry`, `WithOriginPath`, `WithTimeout`).
 - [`deployer.go`](utils/deployer.go) — `SetDeployer` / `CurrentDeployer` plus the `InstallModelDeployment`, `UpgradeModelDeployment`, `UninstallModelDeployment`, `InstallModelHarness`, `UninstallModelHarness`, `NamespaceAuthHeaders` helpers that delegate to the active backend (see [Deployment backends](#deployment-backends)).
-- [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPServiceName`, snapshot/diff helpers.
+- [`inference.go`](utils/inference.go) — `WaitForInferenceSetReady`, `EPPDeploymentName`, `EPPSelector`, snapshot/diff helpers.
 - [`metrics.go`](utils/metrics.go), [`cluster.go`](utils/cluster.go), [`dynamic.go`](utils/dynamic.go), [`ginkgo.go`](utils/ginkgo.go).
 
 `cases.go`:
