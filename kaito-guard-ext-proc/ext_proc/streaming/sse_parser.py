@@ -44,7 +44,7 @@ def _extract_data(event: bytes) -> str | None:
     except UnicodeDecodeError as exc:
         raise SSEParseError("Invalid UTF-8 in SSE event") from exc
 
-    # Preserve the original helper's support for an unprefixed DONE marker.
+    # Accept bare [DONE] for backward compatibility.
     if text.strip() == "[DONE]":
         return "[DONE]"
 
