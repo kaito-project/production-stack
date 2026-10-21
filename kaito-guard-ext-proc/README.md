@@ -28,6 +28,34 @@ python -m pytest
 Runtime dependencies are defined only in `setup.py`. `xds-protos`, published
 by the gRPC project, supplies the generated Envoy protobuf messages and service.
 
+## SSE parser
+
+`ext_proc.streaming.sse_parser` provides standalone framing and OpenAI chunk
+parsing helpers. They are included in the existing package and container;
+they are not yet wired into the server's `Process` method.
+
+- `split_sse_events(buffer)` returns complete event bytes and an unchanged
+  incomplete remainder. Append the next chunk to that remainder. LF, CRLF,
+  and CR line endings are recognized; a trailing CR is retained until the next
+  byte disambiguates it from a split CRLF.
+- `parse_sse_event(event)` extracts SSE `data` fields line by line, joins
+  multiple data fields with newlines, and parses the first OpenAI choice.
+  Comments and other SSE fields do not become content.
+- `is_done_event(event)` uses the same data extraction to recognize `[DONE]`,
+  including `data:[DONE]` and the legacy unprefixed marker.
+
+The parser preserves the `delta.content` / `finish_reason` result shape and
+returns `{"delta": {"content": ""}, "done": True}` for `[DONE]`. Valid events
+without data or with an empty choices list return `None`; missing or null
+content in a valid delta becomes an empty string. Invalid UTF-8, malformed
+JSON, and invalid payload/choices/delta/content types raise `SSEParseError`,
+rather than being treated as harmless empty events. The DONE helper also
+raises this error for invalid UTF-8.
+
+The future adapter must handle `SSEParseError` through its explicit failure
+policy. These helpers do not enforce policies, scan content, implement
+holdback, or integrate the shared guardrail core.
+
 ## CI
 
 The `kaito-guard-ext-proc` job in the repository's CI workflow installs
