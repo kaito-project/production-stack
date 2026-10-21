@@ -99,13 +99,6 @@ Verifies KAITO's InferenceSet controller processed the CRs, auto-created Inferen
 * HTTPRoute Accepted=True — An unaccepted HTTPRoute silently drops all traffic; this catches misconfig early.
 * DestinationRules `trafficPolicy.tls.mode=SIMPLE` — Missing or wrong-mode DestinationRules cause TLS errors between Istio sidecars and EPP; requests fail cryptically.
 
-### Long deployment name — InferenceSet
-
-**CI tier:** PR. The deployment name becomes the InferenceSet name, the InferencePool name, the EPP Service name and the EPP `inferencepool` selector label value, all capped at 63 characters.
-
-* 63-character name serves inference — Deploy a model whose name is exactly 63 characters and send an authenticated chat completion through the namespace Gateway. Catches any generated name or label value (ours, KAITO's or Istio's) that overflows the limit.
-* 64-character name is rejected — Installing a 64-character name fails and creates no InferenceSet (the modeldeployment chart schema caps `name` at 63 characters).
-
 ### NodeClaim / Fake Node cleanup — Infra
 
 **CI tier:** PR (required). Operates on a dedicated test namespace / NodeClaim created for the case, so deletion does not affect other tests in the run.

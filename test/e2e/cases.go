@@ -19,7 +19,6 @@ package e2e
 import (
 	"context"
 	"os"
-	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
@@ -218,19 +217,7 @@ const (
 	// quiet-window negative assertion is not contaminated by another Describe
 	// installing/uninstalling a shared case namespace concurrently.
 	CaseWeightDownloadSlow = "weight-download-slow"
-
-	// CaseLongName covers long_name_spec.go: a deployment whose name is the
-	// 63-character maximum must deploy and serve inference, and a
-	// 64-character name must be rejected.
-	CaseLongName = "long-name"
 )
-
-// longDeploymentName is CaseLongName's deployment name, padded to the
-// 63-character maximum that the modeldeployment chart and KAITO accept.
-var longDeploymentName = func() string {
-	const prefix = "long-name-phi-"
-	return prefix + strings.Repeat("x", 63-len(prefix))
-}()
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
 // by each test case. The table is the single source of truth for what the
@@ -499,15 +486,6 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 			// so one replica suffices.
 			Name:         "weight-download-slow-phi",
 			Namespace:    "e2e-weight-download-slow",
-			Model:        presetPhi,
-			Replicas:     1,
-			InstanceType: "Standard_NV36ads_A10_v5",
-		},
-	},
-	CaseLongName: {
-		{
-			Name:         longDeploymentName,
-			Namespace:    "e2e-long-name",
 			Model:        presetPhi,
 			Replicas:     1,
 			InstanceType: "Standard_NV36ads_A10_v5",

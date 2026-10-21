@@ -168,7 +168,13 @@ func pollUntilReady(ctx context.Context, timeout time.Duration, description stri
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
-		lastErr = check(ctx)
+		checkErr := check(ctx)
+		// A check cut short by the deadline only reports the cancellation;
+		// keep the previous diagnostic so the timeout says what was not ready.
+		if checkErr != nil && ctx.Err() != nil && lastErr != nil {
+			return false, nil
+		}
+		lastErr = checkErr
 		return lastErr == nil, nil
 	})
 	if err != nil {

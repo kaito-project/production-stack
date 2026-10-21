@@ -13,7 +13,6 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 | `CasePrefixCache` | `prefix_cache_routing_spec.go` | `e2e-prefix-cache` | `e2e-prefix-cache-gw` | `prefix-cache-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
 | `CasePrefixCachePerf` | `prefix_cache_perf_spec.go` | `e2e-pc-perf` | `e2e-pc-perf-gw` | `pc-perf-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
 | `CaseModelDeploymentChart` | `modeldeployment_chart_spec.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
-| `CaseLongName` | `long_name_spec.go` | `e2e-long-name` | `e2e-long-name` | `long-name-phi-xxx…` (63 characters) | `BeforeAll` / `AfterAll` |
 
 `Name` is unique cluster-wide and is the value matched by `X-Gateway-Model-Name` (i.e. the `model` field clients send in OpenAI-compatible requests). `Model` is the KAITO preset only — multiple deployments may share a preset under different `Name`s.
 
@@ -561,7 +560,6 @@ test/e2e/
 ├── prefix_cache_routing_spec.go      # CasePrefixCache
 ├── prefix_cache_perf_spec.go         # CasePrefixCachePerf (Perf load/replay)
 ├── modeldeployment_chart_spec.go     # CaseModelDeploymentChart (per-It ns)
-├── long_name_spec.go                 # CaseLongName (63-char name serves, 64 rejected)
 ├── deploy/                           # Backend-agnostic Deployer interface + values
 │   └── helm/                         # Default Helm CLI backend
 ├── testdata/

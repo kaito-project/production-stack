@@ -21,6 +21,7 @@ import (
 	"maps"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -29,6 +30,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 )
+
+var maxLengthErrorRe = regexp.MustCompile(`name: String length must be less than or equal to 63|'/name': maxLength: got \d+, want 63`)
 
 func TestModelDeploymentScalingAnnotations(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -207,8 +210,11 @@ func TestModelDeploymentNameLength(t *testing.T) {
 			"--set", "model=test-model", "--set", "namespace=ns", "--set", "name="+name).CombinedOutput()
 	}
 
+	// Helm's JSON schema validator words the error differently across releases:
+	// "name: String length must be less than or equal to 63" before v3.18,
+	// "at '/name': maxLength: got 64, want 63" from v3.18 on.
 	output, err := render(strings.Repeat("a", 64))
-	if err == nil || !strings.Contains(string(output), "name: String length must be less than or equal to 63") {
+	if err == nil || !maxLengthErrorRe.Match(output) {
 		t.Errorf("expected a 64-character name to be rejected, got %v\n%s", err, output)
 	}
 
