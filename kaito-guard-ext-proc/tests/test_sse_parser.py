@@ -177,15 +177,16 @@ def test_byte_at_a_time_stream(ending):
     raw += b"data:[DONE]" + ending
     remainder = b""
     events = []
-    # The next byte disambiguates a trailing CR from an incomplete CRLF.
-    for byte in raw + b":":
+    for byte in raw:
         complete, remainder = split_sse_events(remainder + bytes([byte]))
         events.extend(complete)
+    complete, remainder = split_sse_events(remainder, final=True)
+    events.extend(complete)
     assert [parse_sse_event(event) for event in events] == [
         {"delta": {"content": "hi"}, "finish_reason": None},
         {"delta": {"content": ""}, "done": True},
     ]
-    assert remainder == b":"
+    assert remainder == b""
 
 
 @pytest.mark.parametrize("ending", [b"\n", b"\r\n", b"\r"])
@@ -198,6 +199,44 @@ def test_trailing_cr_is_retained_until_next_chunk():
     raw = b"data: [DONE]\r\n\r"
     assert split_sse_events(raw) == ([], raw)
     assert split_sse_events(raw + b"\n") == ([b"data: [DONE]"], b"")
+
+
+@pytest.mark.parametrize("ending", [b"\r\r", b"\n\r", b"\r\n\r"])
+def test_eof_finalizes_trailing_cr(ending):
+    raw = b"data:[DONE]" + ending
+    assert split_sse_events(raw) == ([], raw)
+    events, remaining = split_sse_events(raw, final=True)
+    assert events == [b"data:[DONE]"]
+    assert remaining == b""
+    assert is_done_event(events[0]) is True
+    assert split_sse_events(remaining, final=True) == ([], b"")
+
+
+@pytest.mark.parametrize("raw", [
+    b"",
+    b"data:[DONE]",
+    b"data:[DONE]\n",
+    b"data:[DONE]\r",
+    b"data:[DONE]\r\n",
+    b'data: {"choices":',
+])
+def test_eof_does_not_dispatch_an_unterminated_event(raw):
+    assert split_sse_events(raw, final=True) == ([], raw)
+
+
+@pytest.mark.parametrize("ending", [
+    b"\n\n", b"\r\n\r\n", b"\r\r", b"\n\r", b"\r\n\r",
+])
+@pytest.mark.parametrize("partial", [b"", b"data: unfinished"])
+def test_eof_at_every_chunk_boundary(ending, partial):
+    first = b'data: {"choices":[{"delta":{"content":"hello"}}]}'
+    second = b"data:[DONE]"
+    raw = first + ending + second + ending + partial
+    for offset in range(len(raw) + 1):
+        events, remaining = split_sse_events(raw[:offset])
+        following, remaining = split_sse_events(remaining + raw[offset:], final=True)
+        assert events + following == [first, second], offset
+        assert remaining == partial, offset
 
 
 @pytest.mark.parametrize("newline", [b"\n", b"\r\n", b"\r"])
@@ -252,6 +291,33 @@ def test_non_text_delta_is_not_an_error(delta):
     event = b"data: " + json.dumps({"choices": [{"delta": delta}]}).encode()
     assert parse_sse_event(event) == {
         "delta": {"content": ""}, "finish_reason": None,
+    }
+
+
+@pytest.mark.parametrize("choices", [
+    [{"delta": {"content": "first"}}, {"delta": {"content": "second"}}],
+    [{"delta": {}}, {"delta": {"content": "unscanned"}, "index": 1}],
+    [{"delta": {"content": "first"}}, None],
+])
+def test_multiple_choices_are_explicitly_rejected(choices):
+    event = b"data: " + json.dumps({"choices": choices}).encode()
+    with pytest.raises(SSEParseError, match="Only one choice"):
+        parse_sse_event(event)
+
+
+@pytest.mark.parametrize("index", [1, -1, None, "0", False, True])
+def test_nonzero_or_invalid_choice_index_is_rejected(index):
+    event = b"data: " + json.dumps({
+        "choices": [{"index": index, "delta": {"content": "text"}}],
+    }).encode()
+    with pytest.raises(SSEParseError, match="choice index 0"):
+        parse_sse_event(event)
+
+
+def test_single_choice_with_zero_index():
+    event = b'data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}'
+    assert parse_sse_event(event) == {
+        "delta": {"content": "hello"}, "finish_reason": None,
     }
 
 

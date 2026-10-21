@@ -20,13 +20,16 @@ class ParsedEvent(TypedDict):
 _LINE_ENDING = re.compile(rb"\r\n|\r|\n")
 
 
-def split_sse_events(buf: bytes) -> tuple[list[bytes], bytes]:
-    """Split on blank SSE lines, retaining incomplete input unchanged."""
+def split_sse_events(buf: bytes, *, final: bool = False) -> tuple[list[bytes], bytes]:
+    """Split on blank SSE lines; final resolves a trailing CR at EOF.
+
+    Input without a terminating blank line remains in the remainder, even at EOF.
+    """
     events: list[bytes] = []
     event_start = line_start = event_end = 0
     for ending in _LINE_ENDING.finditer(buf):
         # A trailing CR may be the first byte of a CRLF in the next chunk.
-        if ending.group() == b"\r" and ending.end() == len(buf):
+        if not final and ending.group() == b"\r" and ending.end() == len(buf):
             break
         if ending.start() == line_start:
             events.append(buf[event_start:event_end])
@@ -59,10 +62,11 @@ def _extract_data(event: bytes) -> str | None:
 
 
 def parse_sse_event(event: bytes) -> ParsedEvent | None:
-    """Parse the first OpenAI choice; raise SSEParseError for malformed data.
+    """Parse a single OpenAI choice; raise SSEParseError for malformed data.
 
     None denotes an event without data, empty data, or an empty choices list.
     Missing/null content is a valid non-text delta, represented by "".
+    Multiple choices and explicit choice indices other than integer 0 are rejected.
     """
     data = _extract_data(event)
     if data is None or not data.strip():
@@ -81,9 +85,14 @@ def parse_sse_event(event: bytes) -> ParsedEvent | None:
         raise SSEParseError("payload.choices must be a list")
     if not choices:
         return None
+    if len(choices) != 1:
+        raise SSEParseError("Only one choice is supported")
     choice = choices[0]
     if not isinstance(choice, dict):
         raise SSEParseError("choices[0] must be an object")
+    choice_index = choice.get("index", 0)
+    if type(choice_index) is not int or choice_index != 0:
+        raise SSEParseError("Only choice index 0 is supported")
     delta = choice.get("delta")
     if not isinstance(delta, dict):
         raise SSEParseError("choices[0].delta must be an object")
