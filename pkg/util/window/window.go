@@ -76,10 +76,12 @@ func (b *bucket) add(s Sample) {
 }
 
 // evict drops the samples older than now-WindowDuration, except the latest of
-// them: it is the window's start sample, so a window sampled only once per
-// WindowDuration (e.g. a resync interval equal to the window) still spans it.
-// The start sample is dropped too once it is 2*WindowDuration old, as it then
-// stands for a gap in sampling rather than for the start of the window.
+// them: it is the window's start sample, so a window sampled only about once
+// per WindowDuration (e.g. a resync interval equal to the window, whose passes
+// jitter around it) still spans it. Continuity is judged between consecutive
+// samples: a gap of 2*WindowDuration or more means sampling stopped (e.g. the
+// download was not observable for a while), so the samples before such a gap
+// no longer describe the current download and are dropped.
 func (b *bucket) evict(now time.Time) {
 	cutoff := now.Add(-b.cfg.WindowDuration)
 	start := 0
@@ -89,9 +91,11 @@ func (b *bucket) evict(now time.Time) {
 		}
 		start = i
 	}
-	if start < len(b.samples) && !b.samples[start].Timestamp.After(cutoff) &&
-		now.Sub(b.samples[start].Timestamp) >= 2*b.cfg.WindowDuration {
-		start++
+	for i := len(b.samples) - 1; i > start; i-- {
+		if b.samples[i].Timestamp.Sub(b.samples[i-1].Timestamp) >= 2*b.cfg.WindowDuration {
+			start = i
+			break
+		}
 	}
 	if start > 0 {
 		b.samples = append(b.samples[:0:0], b.samples[start:]...)

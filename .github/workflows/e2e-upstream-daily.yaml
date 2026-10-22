@@ -82,6 +82,10 @@ jobs:
         run: make test-e2e
         env:
           E2E_LABEL: "!Nightly && !Perf && !Scaling"
+          # The suite runs ~55-60 min on 2 workers (randomized order puts
+          # Serial specs anywhere), so the Makefile's 60m default leaves no
+          # headroom; a suite timeout aborts whatever spec is running.
+          E2E_TIMEOUT: 90m
 
       - name: Generate E2E coverage report
         if: always()
