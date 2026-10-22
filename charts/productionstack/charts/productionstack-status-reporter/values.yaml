@@ -81,13 +81,14 @@ controlPlane:
   # APIKey CRs, present only for apikey/hybrid auth. Set to "" to skip a probe.
   gatewayAuthDeployment: apikey-authz
   gatewayAuthOperatorDeployment: apikey-operator
-  # Optional azure-authz ext_authz backend (subchart llm-gateway-azureauth),
-  # installed for both azure and hybrid auth. It shares the
-  # clusterGatewayAuthNotReady reason with apikey-authz. Leave name empty to
-  # skip the check.
+  # azure-authz ext_authz backend (subchart llm-gateway-azureauth, whose
+  # fullnameOverride "azure" names the Deployment "azure-authz"), installed for
+  # both azure and hybrid auth. It shares the clusterGatewayAuthNotReady reason
+  # with apikey-authz; on a cluster without it nothing is reported. Leave name
+  # empty to skip the check.
   azureAuthz:
-    name: ""
-    namespace: ""
+    name: azure-authz
+    namespace: kube-system
   # Local CSI driver installed by the KAITO workspace chart, probed for
   # clusterLocalCSIDriverNotReady. Set namespace to "" to disable the check, or
   # clear one name to skip that half of it.
