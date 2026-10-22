@@ -4,7 +4,7 @@ dependencies:
   version: 1.5.0
 - name: keda-kaito-scaler
   repository: ""
-  version: 0.7.1
+  version: 0.7.2
 - name: gpu-node-mocker
   repository: file://../gpu-node-mocker
   version: 0.5.1
@@ -17,5 +17,5 @@ dependencies:
 - name: productionstack-status-reporter
   repository: ""
   version: 0.5.1
-digest: sha256:1de32585c84e52a527f76e2af194687eece2ed1255004ab80afec233ed47296f
-generated: "2026-10-22T15:34:23.106222+11:00"
+digest: sha256:1730422d5006d98c1890062b7fe5f541aef92e1badc3bb5bd781fd9cdf8bd83c
+generated: "2026-10-22T23:09:15.283776+11:00"

@@ -18,10 +18,13 @@ nameOverrider: ""
 # already exist — Helm only auto-creates the release namespace.
 namespaceOverride: ""
 
+# TODO: temporarily pulled from ghcr (tags have no "v" prefix) until the MCR
+# mirror publishes v0.7.2; then switch back to
+# mcr.microsoft.com/oss/v2/kaito/keda-kaito-scaler:v0.7.2.
 image:
-    registry: mcr.microsoft.com
-    repository: oss/v2/kaito/keda-kaito-scaler
-    tag: v0.7.1
+    registry: ghcr.io
+    repository: kaito-project/keda-kaito-scaler
+    tag: 0.7.2
     pullSecrets: []
 
 ports:
