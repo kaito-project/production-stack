@@ -25,14 +25,14 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes"
 )
 
-// DeploymentPodUnavailable inspects the pods owned by a Deployment. missing is
-// true when the Deployment itself is gone. unavailable is true when a pod is
+// DeploymentPodUnavailable inspects the pods owned by a Deployment. A missing
+// Deployment, or one that cannot be read, is reported as available: callers
+// check only the readiness of a Deployment that exists. unavailable is true when a pod is
 // not serving — either its Pod Ready condition is False, or it has no Ready
 // condition at all because it is still Pending/unschedulable — or when the
 // Deployment has no pods at all (scaled to zero or every replica removed), which
@@ -48,19 +48,16 @@ import (
 // strings are kubelet/runtime implementation details and not an API contract, so
 // classification is deliberately time-based instead. cause is a short
 // human-readable hint for the event message only.
-func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string) (missing, unavailable bool, cause string, notReadySince time.Time) {
+func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string) (unavailable bool, cause string, notReadySince time.Time) {
 	dep, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return true, false, "", time.Time{}
-		}
-		return false, false, "", time.Time{} // transient API error — nothing to emit
+		return false, "", time.Time{} // missing, or a transient API error — nothing to emit
 	}
 	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(dep.Spec.Selector),
 	})
 	if err != nil {
-		return false, false, "", time.Time{}
+		return false, "", time.Time{}
 	}
 	// A Deployment with no pods at all cannot serve.
 	if len(pods.Items) == 0 {
@@ -68,7 +65,7 @@ func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, name
 		if dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 {
 			cause = "Deployment is scaled to zero replicas"
 		}
-		return false, true, cause, time.Time{}
+		return true, cause, time.Time{}
 	}
 	for i := range pods.Items {
 		p := &pods.Items[i]
@@ -77,7 +74,7 @@ func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, name
 		}
 		if ready := PodReadyCondition(p); ready != nil {
 			if ready.Status == corev1.ConditionFalse {
-				return false, true, PodNotReadyCause(p, *ready), ready.LastTransitionTime.Time
+				return true, PodNotReadyCause(p, *ready), ready.LastTransitionTime.Time
 			}
 			continue // Ready=True — this pod is serving
 		}
@@ -86,10 +83,10 @@ func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, name
 		// Ready-only probe would silently miss.
 		if p.Status.Phase == corev1.PodPending {
 			since, hint := pendingCause(p)
-			return false, true, hint, since
+			return true, hint, since
 		}
 	}
-	return false, false, "", time.Time{}
+	return false, "", time.Time{}
 }
 
 // DaemonSetPodUnavailable probes a DaemonSet the same way
@@ -98,20 +95,17 @@ func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, name
 // node it runs on. Pods on nodes for which skipNode returns true are ignored,
 // so simulated nodes that can never run the DaemonSet do not flag it. A
 // DaemonSet with no pods is not flagged: it may legitimately have no eligible
-// node. A transient API error reports nothing.
-func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode func(string) bool) (missing, unavailable bool, cause, nodeName string, notReadySince time.Time) {
+// node. A missing DaemonSet, or a transient API error, reports nothing.
+func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode func(string) bool) (unavailable bool, cause, nodeName string, notReadySince time.Time) {
 	ds, err := cs.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return true, false, "", "", time.Time{}
-		}
-		return false, false, "", "", time.Time{}
+		return false, "", "", time.Time{}
 	}
 	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(ds.Spec.Selector),
 	})
 	if err != nil {
-		return false, false, "", "", time.Time{}
+		return false, "", "", time.Time{}
 	}
 	for i := range pods.Items {
 		p := &pods.Items[i]
@@ -123,16 +117,16 @@ func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, names
 		}
 		if ready := PodReadyCondition(p); ready != nil {
 			if ready.Status == corev1.ConditionFalse {
-				return false, true, PodNotReadyCause(p, *ready), p.Spec.NodeName, ready.LastTransitionTime.Time
+				return true, PodNotReadyCause(p, *ready), p.Spec.NodeName, ready.LastTransitionTime.Time
 			}
 			continue
 		}
 		if p.Status.Phase == corev1.PodPending {
 			since, hint := pendingCause(p)
-			return false, true, hint, p.Spec.NodeName, since
+			return true, hint, p.Spec.NodeName, since
 		}
 	}
-	return false, false, "", "", time.Time{}
+	return false, "", "", time.Time{}
 }
 
 // PodReadyCondition returns the pod's Ready condition, or nil when it is absent

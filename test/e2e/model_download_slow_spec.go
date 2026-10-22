@@ -67,8 +67,8 @@ var _ = Describe("Model Download Slow Reporter",
 		const isName = "download-phi"
 
 		// setup creates a managed namespace with a zero-replica preset
-		// InferenceSet and its stub EPP. A streaming opt-out selects the vLLM
-		// self-download path; otherwise the mock ModelMirror is created.
+		// InferenceSet. A streaming opt-out selects the vLLM self-download path;
+		// otherwise the mock ModelMirror is created.
 		setup := func(prefix string, selfDownload bool) {
 			ns = utils.UniqueName(prefix)
 			Expect(utils.CreateManagedNamespace(ctx, ns)).To(Succeed())
@@ -83,8 +83,6 @@ var _ = Describe("Model Download Slow Reporter",
 				spec.Annotations = map[string]string{"kaito.sh/model-streaming": "disabled"}
 			}
 			Expect(utils.CreateInferenceSet(ctx, spec)).To(Succeed())
-			_, err := utils.CreateStubEPP(ctx, ns, isName, setupTimeout)
-			Expect(err).NotTo(HaveOccurred())
 			if !selfDownload {
 				mirror = downloader.ModelMirrorName(presetPhi, "")
 				Expect(utils.CreateModelMirror(ctx, ns, mirror)).To(Succeed())

@@ -55,10 +55,10 @@ func newStartupGate(clock func() time.Time, grace time.Duration) startupGate {
 // inside its startup window; an old-but-broken resource surfaces immediately,
 // and this survives reporter restarts (the timestamp is persistent).
 //
-// Scheme 1 (debounce): for findings without a backing object (missing CRDs or
-// Deployments) the warning is withheld until the problem has persisted for the
-// grace window, so a chart that has not finished installing at reporter start
-// does not flap the event stream.
+// Scheme 1 (debounce): for findings without a timestamp (e.g. a Deployment
+// with no pods, such as one scaled to zero) the warning is withheld until the
+// problem has persisted for the grace window, so a rollout that has not
+// finished at reporter start does not flap the event stream.
 func (g *startupGate) withholdDuringStartup(f evaluator.Finding, now time.Time, touched map[string]bool) bool {
 	if f.StartupGraceExempt {
 		return false

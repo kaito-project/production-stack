@@ -58,7 +58,10 @@ leaderElection:
 modelsAPI:
   port: 8082
 
-# Install namespaces of the cluster-layer components the reporter probes.
+# Install namespaces of the cluster-layer components the reporter probes. Only
+# the readiness of a Deployment or DaemonSet that exists is checked: the
+# deploying party guarantees what it installs exists, so a component that is
+# not installed on this cluster is never reported.
 # These default to the umbrella chart's own defaults; override to match a
 # customised install.
 controlPlane:
@@ -75,14 +78,13 @@ controlPlane:
   bbrDeployment: body-based-router
   kedaScalerDeployment: keda-kaito-scaler
   # apikey-authz ext_authz backend and the apikey-operator that reconciles
-  # APIKey CRs, present only for apikey/hybrid auth. Set to "" on a pure-azure
-  # cluster so their absence is not flagged.
+  # APIKey CRs, present only for apikey/hybrid auth. Set to "" to skip a probe.
   gatewayAuthDeployment: apikey-authz
   gatewayAuthOperatorDeployment: apikey-operator
   # Optional azure-authz ext_authz backend (subchart llm-gateway-azureauth),
   # installed for both azure and hybrid auth. It shares the
-  # clusterGatewayAuthNotReady reason with apikey-authz. Leave name empty on a
-  # pure-apikey cluster to skip the check.
+  # clusterGatewayAuthNotReady reason with apikey-authz. Leave name empty to
+  # skip the check.
   azureAuthz:
     name: ""
     namespace: ""

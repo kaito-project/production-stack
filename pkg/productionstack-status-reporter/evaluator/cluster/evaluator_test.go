@@ -99,6 +99,14 @@ func TestHealthyClusterHasNoFindings(t *testing.T) {
 	}
 }
 
+// Only components that exist are checked: on an empty cluster nothing is
+// reported.
+func TestMissingComponentsAreNotReported(t *testing.T) {
+	if got := evaluate(t, config.DefaultConfig()); len(got) != 0 {
+		t.Fatalf("missing components must not be reported, got %v", got)
+	}
+}
+
 func TestGatewayAuthOperatorNotReady(t *testing.T) {
 	cfg := config.DefaultConfig()
 	objs := healthyCluster(cfg)
@@ -125,8 +133,38 @@ func TestLocalCSIDriver(t *testing.T) {
 			}
 			objs = append(objs, o)
 		}
-		if _, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]; !ok {
-			t.Fatalf("missing manager must flag clusterLocalCSIDriverNotReady")
+		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]; ok {
+			t.Fatalf("a missing manager must not be reported, got %+v", f)
+		}
+	})
+	t.Run("manager scaled to zero", func(t *testing.T) {
+		var objs []runtime.Object
+		for _, o := range healthyCluster(cfg) {
+			if p, ok := o.(*corev1.Pod); ok && p.Labels["app"] == cfg.LocalCSIDriver.ManagerDeployment {
+				continue
+			}
+			if d, ok := o.(*appsv1.Deployment); ok && d.Name == cfg.LocalCSIDriver.ManagerDeployment {
+				d = d.DeepCopy()
+				d.Spec.Replicas = new(int32)
+				o = d
+			}
+			objs = append(objs, o)
+		}
+		f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]
+		if !ok || !strings.Contains(f.Message, "scaled to zero") {
+			t.Fatalf("a manager scaled to zero must flag clusterLocalCSIDriverNotReady, got %+v", f)
+		}
+	})
+	t.Run("node DaemonSet missing", func(t *testing.T) {
+		var objs []runtime.Object
+		for _, o := range healthyCluster(cfg) {
+			if _, ok := o.(*appsv1.DaemonSet); ok {
+				continue
+			}
+			objs = append(objs, o)
+		}
+		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]; ok {
+			t.Fatalf("a missing node DaemonSet must not be reported, got %+v", f)
 		}
 	})
 	t.Run("node pod not ready on a real node", func(t *testing.T) {

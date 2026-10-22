@@ -167,26 +167,39 @@ func CreateInferenceSet(ctx context.Context, spec InferenceSetSpec) error {
 	return err
 }
 
-// GetInferenceSetReadyReason returns the reason of the InferenceSet's
-// InferenceSetReady condition, or "" when it is not set.
-func GetInferenceSetReadyReason(ctx context.Context, namespace, name string) (string, error) {
+// ReadyCondition is an InferenceSet's InferenceSetReady condition.
+type ReadyCondition struct {
+	Reason             string
+	Message            string
+	LastTransitionTime time.Time
+}
+
+// GetInferenceSetReadyCondition returns the InferenceSet's InferenceSetReady
+// condition, or a zero ReadyCondition when it is not set.
+func GetInferenceSetReadyCondition(ctx context.Context, namespace, name string) (ReadyCondition, error) {
 	dyn, err := GetDynamicClient()
 	if err != nil {
-		return "", err
+		return ReadyCondition{}, err
 	}
 	is, err := dyn.Resource(InferenceSetGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return "", err
+		return ReadyCondition{}, err
 	}
 	conds, _, _ := unstructured.NestedSlice(is.Object, "status", "conditions")
 	for _, c := range conds {
 		m, _ := c.(map[string]interface{})
-		if m["type"] == "InferenceSetReady" {
-			r, _ := m["reason"].(string)
-			return r, nil
+		if m["type"] != "InferenceSetReady" {
+			continue
 		}
+		out := ReadyCondition{}
+		out.Reason, _ = m["reason"].(string)
+		out.Message, _ = m["message"].(string)
+		if ts, _ := m["lastTransitionTime"].(string); ts != "" {
+			out.LastTransitionTime, _ = time.Parse(time.RFC3339, ts)
+		}
+		return out, nil
 	}
-	return "", nil
+	return ReadyCondition{}, nil
 }
 
 // CreateStubEPP creates the `<inferenceset>-inferencepool-epp` Deployment the
@@ -347,6 +360,23 @@ func ExistingNode(ctx context.Context) (hostname, instanceType string, err error
 		}
 	}
 	return "", "", fmt.Errorf("no Ready BYO node found")
+}
+
+// GPUNodeMockerDeployed reports whether gpu-node-mocker is installed. It fakes
+// node provisioning — a NodeClaim becomes a fake Node without any Azure call —
+// so a cloud provisioning failure can never happen on such a cluster.
+func GPUNodeMockerDeployed(ctx context.Context) (bool, error) {
+	cs, err := GetK8sClientset()
+	if err != nil {
+		return false, err
+	}
+	deps, err := cs.AppsV1().Deployments("").List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/name=gpu-node-mocker",
+	})
+	if err != nil {
+		return false, err
+	}
+	return len(deps.Items) > 0, nil
 }
 
 // ClusterRegion returns the Azure region of the cluster's nodes.

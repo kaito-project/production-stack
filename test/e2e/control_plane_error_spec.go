@@ -19,30 +19,37 @@ package e2e
 import (
 	"context"
 	"strconv"
+	"strings"
 	"time"
 
+	kaitoconsts "github.com/kaito-project/kaito/pkg/utils/consts"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/evaluator/modeldeployment"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
 // Modeldeployment-layer status reporter tests (proposal §1.2 modeldeployment
 // reasons) that cost nothing beyond the running cluster. Instead of deploying
 // the modelharness and modeldeployment charts, each spec builds what the
-// reporter evaluates directly in a fresh modelharness-managed namespace: an
-// InferenceSet plus a stub `<inferenceset>-inferencepool-epp` Deployment.
+// reporter evaluates directly in a fresh modelharness-managed namespace. Only
+// the EPP spec creates a stub `<inferenceset>-inferencepool-epp` Deployment:
+// the reporter does not report a missing EPP, which the other specs verify.
 //
 //   - EPP outage: a zero-replica InferenceSet, so no node is provisioned.
 //   - Non-terminal failure (debounced): a pod-template InferenceSet pinned to
 //     an existing node, which KAITO counts as a BYO node and does not
 //     provision, but whose pod KAITO's node affinity keeps Unschedulable.
-//   - Terminal failures (immediate): QuotaExceeded / CapacityUnavailable, a
-//     pod-template InferenceSet whose instance type Azure refuses to create,
-//     so no VM is ever billed. These need the az CLI to confirm the
-//     precondition and skip otherwise.
+//   - Terminal failures (immediate): a pod-template InferenceSet whose
+//     instance type has no quota (QuotaExceeded / CapacityUnavailable), and one
+//     whose instance type the subscription cannot use, which Azure accepts and
+//     then fails asynchronously (a Karpenter AsyncProvisioningError). No VM is
+//     ever billed. These need a real node provisioner — they skip when
+//     gpu-node-mocker fakes provisioning — and the az CLI to confirm the
+//     precondition, and skip otherwise.
 var _ = Describe("Control-plane Error Reporter",
 	utils.GinkgoLabelStatusReporter, utils.GinkgoLabelNoGPU, utils.GinkgoLabelStandardK8sOnly, func() {
 
@@ -57,6 +64,11 @@ var _ = Describe("Control-plane Error Reporter",
 			envZeroQuotaInstanceType = "E2E_ZERO_QUOTA_INSTANCE_TYPE"
 			envZeroQuotaFamily       = "E2E_ZERO_QUOTA_FAMILY"
 			envZeroQuotaVCPUs        = "E2E_ZERO_QUOTA_VCPUS"
+
+			// publishLatency bounds how long the reporter takes to publish a
+			// terminal reason once KAITO reports it: one resync plus the E2E
+			// startup grace, with slack.
+			publishLatency = 2 * time.Minute
 		)
 
 		var (
@@ -81,6 +93,16 @@ var _ = Describe("Control-plane Error Reporter",
 				Image: image,
 				Ports: []corev1.ContainerPort{{ContainerPort: 5000}},
 			}}}}
+		}
+
+		// requireRealProvisioner skips a spec that needs a cloud provisioning
+		// failure on a cluster where gpu-node-mocker fakes node provisioning.
+		requireRealProvisioner := func() {
+			mocked, err := utils.GPUNodeMockerDeployed(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			if mocked {
+				Skip("gpu-node-mocker fakes node provisioning, so no cloud provisioning failure can occur")
+			}
 		}
 
 		// expectPassThrough waits for the reporter to publish the KAITO
@@ -135,8 +157,6 @@ var _ = Describe("Control-plane Error Reporter",
 				NodeSelector: map[string]string{corev1.LabelHostname: hostname},
 				PodTemplate:  podTemplate(utils.MissingImage),
 			})).To(Succeed())
-			_, err = utils.CreateStubEPP(ctx, ns, isName, setupTimeout)
-			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for KAITO to report InferenceSetReady=Unschedulable")
 			Eventually(func() string { return lastReadyReason(ctx, ns, isName) }).
@@ -149,9 +169,15 @@ var _ = Describe("Control-plane Error Reporter",
 
 			By("waiting for the pass-through Unschedulable Warning after the debounce")
 			expectPassThrough("Unschedulable", isName, 4*time.Minute)
+
+			By("checking the missing EPP Deployment was never reported")
+			_, found, err := utils.FindReporterEvent(ctx, "inferencesetEPPNotReady", ns)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeFalse(), "a missing EPP Deployment must not be reported")
 		})
 
 		It("passes through the terminal provisioning failure of an instance type without quota", func() {
+			requireRealProvisioner()
 			instanceType := envOr(envZeroQuotaInstanceType, "Standard_NV36ads_A10_v5")
 			family := envOr(envZeroQuotaFamily, "StandardNVADSA10v5Family")
 			vcpus := envIntOr(envZeroQuotaVCPUs, 36)
@@ -173,8 +199,6 @@ var _ = Describe("Control-plane Error Reporter",
 				NodeSelector: map[string]string{"e2e-reporter": ns},
 				PodTemplate:  podTemplate(utils.MissingImage),
 			})).To(Succeed())
-			_, err = utils.CreateStubEPP(ctx, ns, isName, setupTimeout)
-			Expect(err).NotTo(HaveOccurred())
 
 			// Azure rejects the launch as QuotaExceeded, unless the Karpenter
 			// provider already filters the zero-quota size out as an unavailable
@@ -192,7 +216,8 @@ var _ = Describe("Control-plane Error Reporter",
 			expectPassThrough(kaitoReason, isName, emitTimeout)
 		})
 
-		It("passes through CapacityUnavailable for an instance type the subscription cannot use", func() {
+		It("passes through an AsyncProvisioningError for an instance type the subscription cannot use", func() {
+			requireRealProvisioner()
 			region, err := utils.ClusterRegion(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			sku, err := utils.RestrictedGPUSKU(ctx, region)
@@ -203,8 +228,8 @@ var _ = Describe("Control-plane Error Reporter",
 				Skip("no N-series VM size is restricted for this subscription in " + region)
 			}
 
-			newNamespace("e2e-rpt-capacity")
-			const isName = "capacity"
+			newNamespace("e2e-rpt-async")
+			const isName = "async"
 			if err := utils.CreateInferenceSet(ctx, utils.InferenceSetSpec{
 				Namespace: ns, Name: isName, Replicas: 1,
 				InstanceType: sku,
@@ -213,17 +238,51 @@ var _ = Describe("Control-plane Error Reporter",
 			}); err != nil {
 				Skip("KAITO rejected restricted VM size " + sku + ": " + err.Error())
 			}
-			_, err = utils.CreateStubEPP(ctx, ns, isName, setupTimeout)
-			Expect(err).NotTo(HaveOccurred())
 
-			By("waiting for the pass-through CapacityUnavailable Warning for " + sku)
-			if _, err := utils.WaitForReporterEventSince(ctx, "CapacityUnavailable", ns, metav1Zero, provisionTimeout); err != nil {
-				// Whether Azure reports a restricted size as unavailable capacity
-				// depends on the provider; the unit tests cover the pass-through.
-				Skip("KAITO did not classify " + sku + " as CapacityUnavailable (InferenceSetReady reason " +
-					lastReadyReason(ctx, ns, isName) + ")")
+			// Azure accepts the AKS machine and then fails its creation
+			// asynchronously, so the Karpenter provider publishes an
+			// AsyncProvisioningError, which KAITO classifies into a terminal reason
+			// and keeps on InferenceSetReady with the original error in front of
+			// the message.
+			By("waiting for KAITO to report the AsyncProvisioningError of " + sku)
+			var cond utils.ReadyCondition
+			isAsync := func() bool {
+				return kaitoconsts.IsTerminatedReason(cond.Reason) && strings.Contains(cond.Message, "AsyncProvisioningError")
 			}
-			expectPassThrough("CapacityUnavailable", isName, emitTimeout)
+			// Polled by hand rather than with Eventually: running out of time is a
+			// Skip (the async precondition was not met), not a failure.
+			deadline := time.Now().Add(provisionTimeout)
+			for time.Now().Before(deadline) {
+				if cond, err = utils.GetInferenceSetReadyCondition(ctx, ns, isName); err == nil && isAsync() {
+					break
+				}
+				time.Sleep(5 * time.Second)
+			}
+			if !isAsync() {
+				Skip("KAITO did not report an AsyncProvisioningError for " + sku + " (InferenceSetReady " +
+					cond.Reason + ": " + cond.Message + ")")
+			}
+			reportedAt := time.Now()
+
+			By("waiting for the pass-through " + cond.Reason + " Warning")
+			ev, err := utils.WaitForReporterEventSince(ctx, cond.Reason, ns, metav1Zero, emitTimeout)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ev.Message).To(HavePrefix("InferenceSet " + ns + "/" + isName + ": "))
+			Expect(ev.Message).To(ContainSubstring("AsyncProvisioningError"))
+			// A terminal reason bypasses the debounce of non-terminal failures,
+			// which is anchored on the condition's lastTransitionTime (when the
+			// InferenceSet first went not-ready). It is observable only when KAITO
+			// reported the reason early enough that a debounced Warning would come
+			// later than an immediate one.
+			debounceEnd := cond.LastTransitionTime.Add(modeldeployment.FailureGracePeriod)
+			if reportedAt.Add(publishLatency).Before(debounceEnd) {
+				Expect(ev.FirstTimestamp.Time).To(BeTemporally("<", debounceEnd),
+					"a terminal reason must be published without the debounce")
+			} else {
+				AddReportEntry("debounce bypass not observable",
+					"KAITO reported "+cond.Reason+" at "+reportedAt.Format(time.RFC3339)+
+						", too close to the end of the debounce at "+debounceEnd.Format(time.RFC3339))
+			}
 		})
 	})
 
@@ -233,11 +292,11 @@ var metav1Zero = metav1.Time{}
 
 // lastReadyReason returns the InferenceSetReady reason for failure messages.
 func lastReadyReason(ctx context.Context, namespace, name string) string {
-	r, err := utils.GetInferenceSetReadyReason(ctx, namespace, name)
+	cond, err := utils.GetInferenceSetReadyCondition(ctx, namespace, name)
 	if err != nil {
 		return "unknown: " + err.Error()
 	}
-	return r
+	return cond.Reason
 }
 
 // envOr returns the environment variable, or def when it is unset.

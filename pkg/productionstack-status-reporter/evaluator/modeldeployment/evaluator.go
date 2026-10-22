@@ -41,11 +41,11 @@ import (
 // aggregates the root cause of its not-ready child Workspaces.
 const inferenceSetReadyCondition = "InferenceSetReady"
 
-// failureGracePeriod debounces a pass-through InferenceSetReady failure that
+// FailureGracePeriod debounces a pass-through InferenceSetReady failure that
 // KAITO does not classify as terminal: the controllers keep retrying it, so it
 // is surfaced only once it has persisted this long since the condition's
 // lastTransitionTime. Terminal failures (consts.IsTerminatedReason) bypass it.
-const failureGracePeriod = 5 * time.Minute
+const FailureGracePeriod = 5 * time.Minute
 
 // Evaluator enumerates the InferenceSets in every managed namespace and
 // evaluates every modeldeployment-layer reason (§1.2) for each. The orthogonal
@@ -155,7 +155,7 @@ func getInferenceSetReadyCondition(is *unstructured.Unstructured) (readyConditio
 // failures — so the reason and message are surfaced verbatim. In-progress
 // reasons (consts.IsProgressReason) are not failures and are not surfaced. A
 // terminal reason (consts.IsTerminatedReason) is surfaced immediately; any
-// other failure only once it has persisted for failureGracePeriod since the
+// other failure only once it has persisted for FailureGracePeriod since the
 // condition's lastTransitionTime. A condition written for an older generation
 // of the InferenceSet is stale and ignored until KAITO reconciles it.
 func inferenceSetReadyFinding(is *unstructured.Unstructured, obj evaluator.InvolvedObject, groupKey string) (evaluator.Finding, bool) {
@@ -177,29 +177,26 @@ func inferenceSetReadyFinding(is *unstructured.Unstructured, obj evaluator.Invol
 		GroupKey:            groupKey,
 		StartupGraceExempt:  kaitoconsts.IsTerminatedReason(cond.reason),
 		ResourceCreatedAt:   cond.lastTransition,
-		GracePeriodOverride: failureGracePeriod,
+		GracePeriodOverride: FailureGracePeriod,
 	}, true
 }
 
 // eppNotReady checks the EPP Deployment for an InferenceSet by delegating to
 // the shared kube.DeploymentPodUnavailable probe. The EPP Deployment name is
 // deterministic: charts/modeldeployment names it `<inferenceset>-inferencepool-epp`
-// (the modeldeployment.eppServiceName helper) and the InferenceSet name equals
+// (the modeldeployment.eppName helper) and the InferenceSet name equals
 // the chart's deployment name, so it is derived directly rather than via a label
 // list (which could match more than one Deployment). It returns the Deployment
 // name, a debounce anchor for the startup grace gate (the pod's NotReady
-// transition; zero when the Deployment is missing, so the emit falls back to the
-// reason-level debounce), and a message predicate when the Deployment is missing
-// or its pod is not ready. A missing Deployment is surfaced too: without the EPP
-// the InferencePool has no endpoint picker and routing is broken.
+// transition; zero when the Deployment has no pods, e.g. it is scaled to zero, so
+// the emit falls back to the reason-level debounce), and a message predicate
+// when its pod is not ready or it has no pods. A missing EPP Deployment is not
+// reported: the deploying party guarantees it exists alongside its InferenceSet.
 func eppNotReady(ctx context.Context, cs kubernetes.Interface, namespace, name string) (string, time.Time, string) {
 	eppName := name + "-inferencepool-epp"
-	missing, unavailable, cause, notReadySince := kube.DeploymentPodUnavailable(ctx, cs, namespace, eppName)
-	switch {
-	case missing:
-		return eppName, time.Time{}, "is missing; re-apply charts/modeldeployment to restore the endpoint picker"
-	case unavailable:
-		return eppName, notReadySince, "not ready: " + cause
+	unavailable, cause, notReadySince := kube.DeploymentPodUnavailable(ctx, cs, namespace, eppName)
+	if !unavailable {
+		return eppName, time.Time{}, ""
 	}
-	return eppName, time.Time{}, ""
+	return eppName, notReadySince, "not ready: " + cause
 }

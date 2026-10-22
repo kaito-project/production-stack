@@ -15,7 +15,7 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 | `CaseModelDeploymentChart` | `modeldeployment_chart_spec.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
 | `CaseModelDownloadRegression` | `model_download_regression_spec.go` | `e2e-model-download-regression` | `e2e-model-download-regression-gw` | `model-download-regression-phi` (SKU from `E2E_GPU_INSTANCE_TYPE`) | `BeforeAll` / `AfterAll` |
 
-The zero-cost status-reporter specs (`control_plane_error_spec.go`, `model_download_slow_spec.go`) do not use a case: each `It` creates a fresh `e2e-rpt-*-<rand>` namespace carrying the modelharness discovery label and builds the InferenceSet, stub EPP, mock ModelMirror or stub model pod the reporter evaluates directly, so no GPU node is provisioned. They are labelled `NoGPU`:
+The zero-cost status-reporter specs (`control_plane_error_spec.go`, `model_download_slow_spec.go`) do not use a case: each `It` creates a fresh `e2e-rpt-*-<rand>` namespace carrying the modelharness discovery label and builds the InferenceSet, mock ModelMirror or stub model pod the reporter evaluates directly (only the EPP spec adds a stub EPP Deployment; the others verify a missing EPP is not reported), so no GPU node is provisioned. They are labelled `NoGPU`:
 
 ```bash
 E2E_LABEL='StatusReporter && NoGPU' make test-e2e

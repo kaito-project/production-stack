@@ -89,8 +89,8 @@ func TestInferenceSetReadyFinding(t *testing.T) {
 		if f.StartupGraceExempt != tc.wantExempt {
 			t.Errorf("%s: exempt=%v, want %v", tc.name, f.StartupGraceExempt, tc.wantExempt)
 		}
-		if f.GracePeriodOverride != failureGracePeriod || !f.ResourceCreatedAt.Equal(transition) {
-			t.Errorf("%s: debounce=%v anchored at %v, want %v at %v", tc.name, f.GracePeriodOverride, f.ResourceCreatedAt, failureGracePeriod, transition)
+		if f.GracePeriodOverride != FailureGracePeriod || !f.ResourceCreatedAt.Equal(transition) {
+			t.Errorf("%s: debounce=%v anchored at %v, want %v at %v", tc.name, f.GracePeriodOverride, f.ResourceCreatedAt, FailureGracePeriod, transition)
 		}
 		if want := "InferenceSet team-a/qwen: inferenceset is not ready, 0/1 replicas are ready"; f.Message != want {
 			t.Errorf("%s: message=%q, want %q", tc.name, f.Message, want)

@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -47,12 +48,22 @@ func newTestReporter(objects ...runtime.Object) (*StatusReporter, *fake.Clientse
 	return r, cs
 }
 
-// On an empty cluster every shared control-plane Deployment is absent, so the
-// reporter must emit a cluster*NotReady Warning per missing Deployment, on a
-// Namespace-scoped involvedObject, in kube-system, sourced by the reporter
-// component.
+// scaledToZeroBBR is the default BBR Deployment scaled to zero replicas.
+func scaledToZeroBBR() *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "kaito-system", Name: "body-based-router"},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: new(int32),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "body-based-router"}},
+		},
+	}
+}
+
+// A shared control-plane Deployment scaled to zero is not ready, so the
+// reporter must emit its cluster*NotReady Warning on a Namespace-scoped
+// involvedObject, in kube-system, sourced by the reporter component.
 func TestReconcileEmitsClusterDeploymentNotReady(t *testing.T) {
-	r, cs := newTestReporter()
+	r, cs := newTestReporter(scaledToZeroBBR())
 	ctx := context.Background()
 
 	r.ReconcileOnce(ctx)
@@ -80,10 +91,28 @@ func TestReconcileEmitsClusterDeploymentNotReady(t *testing.T) {
 	}
 }
 
+// The deploying party guarantees that the components it installs exist, so on
+// an empty cluster — every shared control-plane Deployment absent — the
+// reporter publishes nothing.
+func TestReconcileDoesNotReportMissingComponents(t *testing.T) {
+	r, cs := newTestReporter()
+	ctx := context.Background()
+
+	r.ReconcileOnce(ctx)
+
+	events, err := cs.CoreV1().Events(config.ReportingNamespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	for _, ev := range events.Items {
+		t.Errorf("unexpected event for a missing component: %s: %s", ev.Reason, ev.Message)
+	}
+}
+
 // Repeated reconciles refresh the same Event (count bump) rather than create
 // duplicates, but no more often than the refresh interval (§1.1).
 func TestReconcileRefreshesRepeatEventsAtInterval(t *testing.T) {
-	cs := fake.NewSimpleClientset()
+	cs := fake.NewSimpleClientset(scaledToZeroBBR())
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	cfg := config.DefaultConfig()
 	cfg.StartupGracePeriod = 0

@@ -56,7 +56,8 @@ const (
 // is a fail-closed ext_authz backend, so an outage blocks authenticated
 // requests exactly like apikey-authz. It shares the clusterGatewayAuthNotReady
 // reason with apikey-authz (GatewayAuthDeployment). When Name is empty the
-// probe is skipped so a pure-apikey cluster is not penalised (§1.2).
+// probe is skipped; a configured Deployment that does not exist is not
+// reported either (§1.2).
 type AzureAuthzRef struct {
 	Name      string
 	Namespace string
@@ -89,8 +90,9 @@ type Config struct {
 	// Deployment names probed for cluster-layer readiness. GatewayAuthDeployment
 	// is the apikey-authz ext_authz backend and GatewayAuthOperatorDeployment the
 	// apikey-operator that reconciles APIKey CRs (both present only for
-	// apikey/hybrid auth); leave them empty on a pure-azure cluster so their
-	// absence is not flagged.
+	// apikey/hybrid auth). Only the readiness of a Deployment that exists is
+	// checked, so a component that is not installed is never reported; an empty
+	// name skips the probe altogether.
 	IstiodDeployment              string
 	KaitoDeployment               string
 	BBRDeployment                 string
