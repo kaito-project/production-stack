@@ -63,7 +63,10 @@ env:
   CLUSTER_NAME: "kaito-gw-e2e-aks-${{ github.run_id }}-${{ github.run_attempt }}"
   ACR_NAME: "kaitogwe2eaks${{ github.run_id }}a${{ github.run_attempt }}acr"
   GPU_MOCKER_IMAGE: "gpu-node-mocker:latest-${{ github.run_id }}-${{ github.run_attempt }}"
-  LOCATION: australiaeast
+  # westus3: closest region to the self-hosted runner (westus, which does not
+  # offer Standard_D8s_v5) with standardDSv5Family quota to spare; the
+  # australiaeast quota is shared with other workflows and dev clusters.
+  LOCATION: westus3
   NODE_COUNT: '3'
   NODE_VM_SIZE: Standard_D8s_v5
 
