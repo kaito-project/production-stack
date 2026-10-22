@@ -3,9 +3,9 @@ entries:
   gpu-node-mocker:
   - apiVersion: v2
     appVersion: 0.5.1
-    created: "2026-10-22T08:49:06.482859357Z"
+    created: "2026-10-22T12:27:32.912405007Z"
     description: GPU Node Mocker controller for KAITO production-stack
-    digest: d6a914dacd829510f0ba58eaca34716a1f5dd0e7231c860b60fe7c3b8ae6c947
+    digest: 3454075fef4c4519b2c9643eb17ba12c9bd5819a6b84395e4650f37d902b472a
     name: gpu-node-mocker
     type: application
     urls:
@@ -124,10 +124,10 @@ entries:
   modeldeployment:
   - apiVersion: v2
     appVersion: 0.5.1
-    created: "2026-10-22T08:49:06.483961598Z"
+    created: "2026-10-22T12:27:32.913626175Z"
     description: 'Deploys a KAITO InferenceSet together with the Istio DestinationRule
       and Gateway API HTTPRoute required to route inference traffic to it. '
-    digest: 1ae4829c1c8da164857abbb3c84f11605ef5524638e8f82ee18f0ce7c06d4063
+    digest: 37d9aca0f5258c8e68fdcde7b5c912edfe9282327fd3fd709e6dd0c4ea749f2d
     name: modeldeployment
     type: application
     urls:
@@ -257,7 +257,7 @@ entries:
   modelharness:
   - apiVersion: v2
     appVersion: 0.5.1
-    created: "2026-10-22T08:49:06.485459525Z"
+    created: "2026-10-22T12:27:32.915306596Z"
     description: 'Per-namespace shared resources for production-stack workloads. One
       modelharness release per workload namespace provisions the artifacts every model
       deployment in that namespace shares: the Istio Gateway, the per-namespace EnvoyFilters
@@ -269,7 +269,7 @@ entries:
       consumed by clients. The cluster-wide components these reference (apikey-authz,
       BBR, and the model registry served by productionstack-status-reporter) are installed
       once per cluster by the `productionstack` umbrella chart. '
-    digest: 4e4c6c1d3d409393b0a002e56d32151ac969b8c678b26ea3cafd31fe3c257b0a
+    digest: 60fcfc79b19046413c24a5994794e186466f23e7b463ccc4fe4a1696bae04249
     name: modelharness
     type: application
     urls:
@@ -495,7 +495,7 @@ entries:
   productionstack:
   - apiVersion: v2
     appVersion: 0.5.1
-    created: "2026-10-22T08:49:06.489956261Z"
+    created: "2026-10-22T12:27:32.920755529Z"
     dependencies:
     - name: body-based-routing
       repository: ""
@@ -507,7 +507,7 @@ entries:
       repository: ""
       tags:
       - autoscaling
-      version: 0.7.1
+      version: 0.7.2
     - condition: gpu-node-mocker.enabled
       name: gpu-node-mocker
       repository: file://../gpu-node-mocker
@@ -546,7 +546,7 @@ entries:
       them under the subchart''s name, e.g.:      body-based-routing:       bbr:         replicas:
       2  Adding a new cluster-level component is a matter of dropping its chart under
       `charts/` and appending a new entry to the `dependencies` list below. '
-    digest: 37224490aed058382787ef0b5e3d17f6c183a6a6296865f7028ed84a331a6cc8
+    digest: c70eaa3508a025705ed26aadeeb39afde498b85fa4d46f43f5da25f91e309016
     home: https://github.com/kaito-project/production-stack
     keywords:
     - kaito
@@ -1202,4 +1202,4 @@ entries:
     urls:
     - https://kaito-project.github.io/production-stack/charts/kaito-project/productionstack-0.2.0.tgz
     version: 0.2.0
-generated: "2026-10-22T08:49:06.481462495Z"
+generated: "2026-10-22T12:27:32.911152601Z"
