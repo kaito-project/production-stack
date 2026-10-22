@@ -13,6 +13,13 @@ Single source of truth: [`cases.go`](cases.go) → `CaseDeployments`. Each entry
 | `CasePrefixCache` | `prefix_cache_routing_spec.go` | `e2e-prefix-cache` | `e2e-prefix-cache-gw` | `prefix-cache-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
 | `CasePrefixCachePerf` | `prefix_cache_perf_spec.go` | `e2e-pc-perf` | `e2e-pc-perf-gw` | `pc-perf-phi` (replicas ≥ 2) | `BeforeAll` / `AfterAll` |
 | `CaseModelDeploymentChart` | `modeldeployment_chart_spec.go` | `e2e-inferenceset-<rand>` | `e2e-inferenceset-<rand>-gw` | `mdchart-phi` | Per-`It`; namespace recycled in `AfterEach` |
+| `CaseModelDownloadRegression` | `model_download_regression_spec.go` | `e2e-model-download-regression` | `e2e-model-download-regression-gw` | `model-download-regression-phi` (SKU from `E2E_GPU_INSTANCE_TYPE`) | `BeforeAll` / `AfterAll` |
+
+The zero-cost status-reporter specs (`control_plane_error_spec.go`, `model_download_slow_spec.go`) do not use a case: each `It` creates a fresh `e2e-rpt-*-<rand>` namespace carrying the modelharness discovery label and builds the InferenceSet, mock ModelMirror or stub model pod the reporter evaluates directly (only the EPP spec adds a stub EPP Deployment; the others verify a missing EPP is not reported), so no GPU node is provisioned. They are labelled `NoGPU`:
+
+```bash
+E2E_LABEL='StatusReporter && NoGPU' make test-e2e
+```
 
 `Name` is unique cluster-wide and is the value matched by `X-Gateway-Model-Name` (i.e. the `model` field clients send in OpenAI-compatible requests). `Model` is the KAITO preset only — multiple deployments may share a preset under different `Name`s.
 
@@ -74,7 +81,7 @@ Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into three groups:
   on a local-NVMe PVC that a fake node cannot bind. The specs assert only traits common to both
   backends (model pods, Nodes, NodeClaims, vLLM metrics), never mocker internals.
 - **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `CORS`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `ScaleToZero` (full `0 -> 1 -> 2 -> 1 -> 0` lifecycle), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
-- **Environment** (what kind of cluster a spec needs): `StandardK8sOnly`.
+- **Environment** (what kind of cluster a spec needs): `StandardK8sOnly`, and `NoGPU` for specs that never provision a GPU node.
 
 `ModelDiscovery` marks the `/v1/models` listing, retrieval, and authentication
 specs. They remain enabled by default upstream. Consumers whose deployed stack
@@ -96,8 +103,8 @@ E2E_LABEL='!StandardK8sOnly' make test-e2e
 ```
 
 It currently covers `bbr_outage`, `ext_authz_outage`, `epp_outage`,
-`cluster_filter_ha`, `cluster_status`, `control_plane_error`, `scaling`,
-`scale_to_zero`, and the
+`cluster_filter_ha`, `cluster_status`, `control_plane_error`,
+`model_download_slow`, `scaling`, `scale_to_zero`, and the
 `Load distribution` Context of `model_routing` (which turns prefix-cache scoring
 off through `EPPScorerWeights` so identical prompts spread across replicas).
 It also covers `prefix_cache_routing`, `prefix_cache_perf`, the cross-model

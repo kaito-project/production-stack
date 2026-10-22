@@ -26,7 +26,7 @@ func newSlowConfig() Config {
 }
 
 func sample(base time.Time, offset time.Duration, mbps float64) Sample {
-	return Sample{Timestamp: base.Add(offset), MBps: mbps, SourcePod: "qwen-0"}
+	return Sample{Timestamp: base.Add(offset), MBps: mbps, Source: "qwen-0"}
 }
 
 func TestWindowSustainedSlowRaises(t *testing.T) {
@@ -112,5 +112,39 @@ func TestWindowForget(t *testing.T) {
 	v := ws.Add(key, sample(base, 60*time.Second, 5))
 	if v.Ready {
 		t.Fatalf("forgotten window must restart evaluation from scratch")
+	}
+}
+
+// A window sampled only once per WindowDuration — the reporter's default 60s
+// resync against a 60s window — must still become ready: the latest sample at
+// or before the cutoff is kept as the window's start.
+func TestWindowSampledOncePerWindowRaises(t *testing.T) {
+	ws := NewSet(newSlowConfig())
+	base := time.Now()
+	key := "ns/iset/llm-0"
+
+	if v := ws.Add(key, sample(base, 0, 5)); v.Ready {
+		t.Fatalf("a single sample must not be ready")
+	}
+	v := ws.Add(key, sample(base, 60*time.Second+50*time.Millisecond, 6))
+	if !v.Ready || !v.Slow {
+		t.Fatalf("two slow samples one window apart must raise, got %+v", v)
+	}
+	v = ws.Add(key, sample(base, 120*time.Second+100*time.Millisecond, 25))
+	if !v.Ready || v.Slow {
+		t.Fatalf("a healthy sample must clear the verdict, got %+v", v)
+	}
+}
+
+// A start sample two windows old stands for a gap in sampling, not for the
+// start of the window, so it is dropped.
+func TestWindowDropsStaleStartSample(t *testing.T) {
+	ws := NewSet(newSlowConfig())
+	base := time.Now()
+	key := "ns/iset/llm-0"
+
+	ws.Add(key, sample(base, 0, 5))
+	if v := ws.Add(key, sample(base, 3*time.Minute, 5)); v.Ready {
+		t.Fatalf("a stale start sample must not complete the window, got %+v", v)
 	}
 }

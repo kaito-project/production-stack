@@ -160,8 +160,8 @@ func (e *Evaluator) evaluateGatewayDataPlane(ctx context.Context, namespace, gwN
 	}
 	for i := range deps.Items {
 		dep := &deps.Items[i]
-		missing, unavailable, cause, since := kube.DeploymentPodUnavailable(ctx, e.clientset, namespace, dep.Name)
-		if missing || !unavailable {
+		unavailable, cause, since := kube.DeploymentPodUnavailable(ctx, e.clientset, namespace, dep.Name)
+		if !unavailable {
 			continue
 		}
 		*findings = append(*findings, evaluator.Finding{

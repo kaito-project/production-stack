@@ -120,12 +120,21 @@ var (
 	// GinkgoLabelStatusReporter marks tests that verify the
 	// productionstack-status-reporter control-plane reason catalogue (issue
 	// #87): cluster and modeldeployment Warning Events in kube-system plus the
-	// inferencesetWeightDownloadSlow sliding-window negative path. Several specs
-	// perturb shared cluster-wide control-plane Deployments (BBR,
-	// llm-gateway-auth, KAITO), so those MUST be decorated Serial. See
-	// test/e2e/cluster_status_spec.go, control_plane_error_spec.go, and
-	// weight_download_slow_spec.go.
+	// inferencesetModelDownloadSlow sliding window. Several specs perturb shared
+	// cluster-wide control-plane Deployments (BBR, llm-gateway-auth, KAITO, the
+	// local CSI driver), so those MUST be decorated Serial. See
+	// test/e2e/cluster_status_spec.go, control_plane_error_spec.go,
+	// model_download_slow_spec.go and model_download_regression_spec.go.
 	GinkgoLabelStatusReporter = g.Label("StatusReporter")
+
+	// GinkgoLabelNoGPU marks tests that never provision a GPU node, so they cost
+	// nothing beyond the running cluster. The zero-cost status-reporter specs
+	// build the objects the reporter evaluates directly (InferenceSets on
+	// existing nodes or with zero replicas, stub EPPs, mock ModelMirrors) instead
+	// of deploying models:
+	//
+	//	E2E_LABEL='StatusReporter && NoGPU' make test-e2e
+	GinkgoLabelNoGPU = g.Label("NoGPU")
 
 	// GinkgoLabelStandardK8sOnly marks tests that require a standard Kubernetes
 	// cluster and cannot run on an opinionated managed one such as AKS Automatic.

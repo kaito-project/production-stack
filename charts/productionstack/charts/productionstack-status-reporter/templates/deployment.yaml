@@ -51,6 +51,7 @@ spec:
             - --leader-election-id={{ .Values.leaderElection.id }}
             - --resync-seconds={{ .Values.resyncSeconds }}
             - --startup-grace-seconds={{ .Values.startupGraceSeconds }}
+            - --event-refresh-seconds={{ .Values.eventRefreshSeconds }}
             - --release-namespace={{ .Release.Namespace }}
             - --istio-namespace={{ .Values.controlPlane.istioNamespace }}
             - --kaito-namespace={{ .Values.controlPlane.kaitoNamespace }}
@@ -63,12 +64,7 @@ spec:
             - --bbr-deployment={{ .Values.controlPlane.bbrDeployment }}
             - --keda-scaler-deployment={{ .Values.controlPlane.kedaScalerDeployment }}
             - --gateway-auth-deployment={{ .Values.controlPlane.gatewayAuthDeployment }}
-            {{- with .Values.controlPlane.nodeProvisioner }}
-            {{- if .name }}
-            - --node-provisioner-name={{ .name }}
-            - --node-provisioner-namespace={{ .namespace }}
-            {{- end }}
-            {{- end }}
+            - --gateway-auth-operator-deployment={{ .Values.controlPlane.gatewayAuthOperatorDeployment }}
             {{- with .Values.controlPlane.azureAuthz }}
             {{- if .name }}
             - --azure-authz-deployment={{ .name }}
@@ -79,6 +75,10 @@ spec:
             - --weight-download-min-mbps={{ .Values.controlPlane.weightDownload.minMBps }}
             - --weight-download-metric={{ .Values.controlPlane.weightDownload.metricName }}
             - --weight-download-metric-port={{ .Values.controlPlane.weightDownload.metricPort }}
+            - --model-streaming-enabled={{ .Values.controlPlane.weightDownload.modelStreamingEnabled }}
+            - --local-csi-namespace={{ .Values.controlPlane.localCSIDriver.namespace }}
+            - --local-csi-manager-deployment={{ .Values.controlPlane.localCSIDriver.managerDeployment }}
+            - --local-csi-node-daemonset={{ .Values.controlPlane.localCSIDriver.nodeDaemonSet }}
             - --models-api-bind-address=:{{ .Values.modelsAPI.port }}
           ports:
             - name: metrics

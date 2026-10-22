@@ -18,6 +18,7 @@
     "replicas": { "type": "integer", "minimum": 1 },
     "resyncSeconds": { "type": "integer", "minimum": 1 },
     "startupGraceSeconds": { "type": "integer", "minimum": 0 },
+    "eventRefreshSeconds": { "type": "integer", "minimum": 1, "maximum": 1799 },
     "leaderElection": {
       "type": "object",
       "additionalProperties": false,
@@ -51,6 +52,7 @@
         "bbrDeployment": { "type": "string" },
         "kedaScalerDeployment": { "type": "string" },
         "gatewayAuthDeployment": { "type": "string" },
+        "gatewayAuthOperatorDeployment": { "type": "string" },
         "azureAuthz": {
           "type": "object",
           "additionalProperties": false,
@@ -59,12 +61,13 @@
             "namespace": { "type": "string" }
           }
         },
-        "nodeProvisioner": {
+        "localCSIDriver": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "name": { "type": "string" },
-            "namespace": { "type": "string" }
+            "namespace": { "type": "string" },
+            "managerDeployment": { "type": "string" },
+            "nodeDaemonSet": { "type": "string" }
           }
         },
         "weightDownload": {
@@ -72,9 +75,10 @@
           "additionalProperties": false,
           "properties": {
             "windowSeconds": { "type": "integer", "minimum": 1 },
-            "minMBps": { "type": "number", "minimum": 0 },
+            "minMBps": { "type": "number", "exclusiveMinimum": 0 },
             "metricName": { "type": "string", "minLength": 1 },
-            "metricPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+            "metricPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "modelStreamingEnabled": { "type": "boolean" }
           }
         }
       }

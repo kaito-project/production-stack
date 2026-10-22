@@ -91,7 +91,8 @@ type Finding struct {
 	StartupGraceExempt bool
 	// ResourceCreatedAt is the creation time of the resource the finding is
 	// about, used by the startup grace gate for object-age gating. Zero when
-	// there is no backing object (e.g. a missing CRD or Deployment).
+	// there is no timestamp to anchor on (e.g. a Deployment with no pods), in
+	// which case the gate debounces on first observation.
 	ResourceCreatedAt time.Time
 	// GracePeriodOverride, when greater than zero, replaces the global
 	// StartupGracePeriod for this finding's startup-grace gate. Evaluators set

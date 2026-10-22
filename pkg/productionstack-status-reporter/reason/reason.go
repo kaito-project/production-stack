@@ -14,12 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package reason defines the closed control-plane reason vocabulary
-// published by the productionstack-status-reporter as Kubernetes Events in
-// the kube-system namespace, for the end-to-end error-handling proposal.
+// Package reason defines the control-plane reason vocabulary published by the
+// productionstack-status-reporter as Kubernetes Events in the kube-system
+// namespace (§1.2 of the control-plane error-reporting proposal).
 //
-// The reporter is the SINGLE producer of these reasons; emitting any of
-// them from another component is forbidden by the proposal.
+// Cluster and modelharness reasons form a closed, layer-prefixed vocabulary
+// owned by the proposal. The modeldeployment layer owns two prefixed reasons
+// (inferencesetEPPNotReady, inferencesetModelDownloadSlow) and otherwise
+// passes through the reason KAITO reports on InferenceSetReady, so the Reason
+// type is deliberately an open string.
+//
+// The reporter is the SINGLE producer of these Events.
 package reason
 
 import (
@@ -31,17 +36,17 @@ type Layer string
 
 const (
 	// LayerCluster covers umbrella-chart subchart and shared controller
-	// readiness (BBR, KEDA, Istio, KAITO, gateway-auth, node provisioner).
+	// readiness (BBR, KEDA, Istio, KAITO, gateway-auth, local CSI driver).
 	LayerCluster Layer = "cluster"
 	// LayerModelharness covers per-workload-namespace harness objects.
 	LayerModelharness Layer = "modelharness"
-	// LayerModeldeployment covers per-InferenceSet model deployment objects.
+	// LayerModeldeployment covers per-InferenceSet model deployment objects,
+	// including pass-through KAITO InferenceSetReady reasons.
 	LayerModeldeployment Layer = "modeldeployment"
 )
 
-// Reason is one stable string from the §1.2 reason catalogue. The string
-// itself is layer-prefixed so each value is globally unique and maps
-// unambiguously to a TSG-1 anchor.
+// Reason is one §1.2 reason: a prefixed string owned by the proposal, or a
+// KAITO InferenceSetReady reason passed through verbatim.
 type Reason string
 
 // Cluster-layer reasons (§1.2).
@@ -50,9 +55,9 @@ const (
 	ClusterGatewayAuthNotReady       Reason = "clusterGatewayAuthNotReady"
 	ClusterBBRNotReady               Reason = "clusterBBRNotReady"
 	ClusterKaitoControllerNotReady   Reason = "clusterKaitoControllerNotReady"
-	ClusterNodeProvisionerNotReady   Reason = "clusterNodeProvisionerNotReady"
 	ClusterKedaNotReady              Reason = "clusterKedaNotReady"
 	ClusterKedaKaitoScalerNotReady   Reason = "clusterKedaKaitoScalerNotReady"
+	ClusterLocalCSIDriverNotReady    Reason = "clusterLocalCSIDriverNotReady"
 )
 
 // Modelharness-layer reasons (§1.2).
@@ -62,28 +67,28 @@ const (
 	ModelharnessGatewayDataPlaneNotReady Reason = "modelharnessGatewayDataPlaneNotReady"
 )
 
-// Modeldeployment-layer reasons (§1.2).
+// Modeldeployment-layer reasons owned by the proposal (§1.2). Every other
+// modeldeployment reason is a pass-through KAITO InferenceSetReady reason.
 const (
-	InferencesetInfraProvisioningFailed Reason = "inferencesetInfraProvisioningFailed"
-	InferencesetModelPodsNotReady       Reason = "inferencesetModelPodsNotReady"
-	InferencesetNodeUnderPressure       Reason = "inferencesetNodeUnderPressure"
-	InferencesetEPPNotReady             Reason = "inferencesetEPPNotReady"
-	InferencesetWeightDownloadSlow      Reason = "inferencesetWeightDownloadSlow"
+	InferencesetEPPNotReady       Reason = "inferencesetEPPNotReady"
+	InferencesetModelDownloadSlow Reason = "inferencesetModelDownloadSlow"
 )
 
 // EventType returns the Kubernetes event type for a reason. The reporter only
 // publishes problems, so every reason is a Warning (§1.1); a healthy state is
-// the absence of a Warning, not a positive event.
+// the absence of a freshly refreshed Warning, not a positive event.
 func EventType(Reason) string {
 	return corev1.EventTypeWarning
 }
 
-// LayerOf returns the layer that owns the reason.
+// LayerOf returns the layer that owns the reason. Any reason outside the
+// cluster and modelharness vocabularies belongs to the modeldeployment layer,
+// which includes the pass-through KAITO reasons.
 func LayerOf(r Reason) Layer {
 	switch r {
 	case ClusterIstioControlPlaneNotReady, ClusterGatewayAuthNotReady,
-		ClusterBBRNotReady, ClusterKaitoControllerNotReady, ClusterNodeProvisionerNotReady,
-		ClusterKedaNotReady, ClusterKedaKaitoScalerNotReady:
+		ClusterBBRNotReady, ClusterKaitoControllerNotReady,
+		ClusterKedaNotReady, ClusterKedaKaitoScalerNotReady, ClusterLocalCSIDriverNotReady:
 		return LayerCluster
 	case ModelharnessGatewayClassMissing, ModelharnessGatewayProgrammingFailed,
 		ModelharnessGatewayDataPlaneNotReady:

@@ -23,98 +23,77 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/evaluator"
+	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/reason"
 )
 
-// workspaceWithCondition builds a minimal Workspace unstructured carrying a
-// single status condition.
-func workspaceWithCondition(name, condType, status, reason, message string) *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]interface{}{
+// inferenceSet builds a minimal InferenceSet at generation 2 carrying a single
+// InferenceSetReady condition.
+func inferenceSet(status, condReason, message string, observedGeneration int64, transition time.Time) *unstructured.Unstructured {
+	cond := map[string]interface{}{
+		"type":               inferenceSetReadyCondition,
+		"status":             status,
+		"reason":             condReason,
+		"message":            message,
+		"lastTransitionTime": transition.UTC().Format(time.RFC3339),
+	}
+	if observedGeneration != 0 {
+		cond["observedGeneration"] = observedGeneration
+	}
+	is := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "kaito.sh/v1beta1",
-		"kind":       "Workspace",
-		"metadata":   map[string]interface{}{"name": name},
-		"status": map[string]interface{}{
-			"conditions": []interface{}{
-				map[string]interface{}{
-					"type":               condType,
-					"status":             status,
-					"reason":             reason,
-					"message":            message,
-					"lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
-				},
-			},
-		},
+		"kind":       "InferenceSet",
+		"metadata":   map[string]interface{}{"name": "qwen", "namespace": "team-a"},
+		"status":     map[string]interface{}{"conditions": []interface{}{cond}},
 	}}
+	is.SetGeneration(2)
+	return is
 }
 
-func TestInfraProvisioningFinding(t *testing.T) {
-	obj := evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: "ns"}
+func TestInferenceSetReadyFinding(t *testing.T) {
+	obj := evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: "team-a"}
+	transition := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
-		name   string
-		status string
-		reason string
-		want   bool
+		name               string
+		status             string
+		reason             string
+		observedGeneration int64
+		want               bool
+		wantExempt         bool
 	}{
-		{"quota failure surfaces", "False", "SubscriptionQuotaReached", true},
-		{"sku unavailable surfaces", "False", "SKUNotAvailable", true},
-		{"generic in-progress benign", "False", "NodeClaimNotReady", false},
-		{"awaiting reconciliation benign", "False", "AwaitingReconciliation", false},
-		{"ready is not a failure", "True", "NodeClaimsReady", false},
+		{"terminal quota failure surfaces immediately", "False", "QuotaExceeded", 2, true, true},
+		{"terminal image pull failure surfaces immediately", "False", "ImagePullError", 2, true, true},
+		{"terminal capacity failure surfaces immediately", "False", "CapacityUnavailable", 2, true, true},
+		{"non-terminal failure is debounced", "False", "DownloadFailed", 2, true, false},
+		{"unclassified generic reason is debounced", "False", "inferencesetNotReady", 2, true, false},
+		{"in-progress node claim is ignored", "False", "NodeClaimNotReady", 2, false, false},
+		{"in-progress model mirror is ignored", "False", "ModelMirrorNotReady", 2, false, false},
+		{"in-progress inference is ignored", "False", "WorkspaceInferenceStatusPending", 2, false, false},
+		{"ready is ignored", "True", "inferencesetReady", 2, false, false},
+		{"empty reason is ignored", "False", "", 2, false, false},
+		{"stale generation is ignored", "False", "QuotaExceeded", 1, false, false},
+		{"missing observedGeneration is accepted", "False", "QuotaExceeded", 0, true, true},
 	}
 	for _, tc := range cases {
-		ws := workspaceWithCondition("ws0", workspaceCondNodeClaimReady, tc.status, tc.reason, "detail")
-		_, got := infraProvisioningFinding([]*unstructured.Unstructured{ws}, "ns", "iset", obj, "gk")
+		is := inferenceSet(tc.status, tc.reason, "inferenceset is not ready, 0/1 replicas are ready", tc.observedGeneration, transition)
+		f, got := inferenceSetReadyFinding(is, obj, "inferenceset/team-a/qwen")
 		if got != tc.want {
-			t.Errorf("%s: infraProvisioningFinding got=%v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-func TestModelPodFinding(t *testing.T) {
-	obj := evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: "ns"}
-	cases := []struct {
-		name   string
-		status string
-		reason string
-		want   bool
-	}{
-		{"image pull error surfaces", "False", "ImagePullError", true},
-		{"crash loop surfaces", "False", "ContainerCrashLoopBackOff", true},
-		{"oom surfaces", "False", "ContainerOOMKilled", true},
-		{"generic pending benign", "False", "WorkspaceInferenceStatusPending", false},
-		{"empty reason benign", "False", "", false},
-		{"ready is not a failure", "True", "WorkspaceInferenceStatusSuccess", false},
-	}
-	for _, tc := range cases {
-		ws := workspaceWithCondition("ws0", workspaceCondInferenceReady, tc.status, tc.reason, "detail")
-		_, got := modelPodFinding([]*unstructured.Unstructured{ws}, "ns", "iset", obj, "gk")
-		if got != tc.want {
-			t.Errorf("%s: modelPodFinding got=%v, want %v", tc.name, got, tc.want)
-		}
-	}
-}
-
-func TestNodePressureFinding(t *testing.T) {
-	obj := evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: "ns"}
-	cases := []struct {
-		name    string
-		status  string
-		message string
-		want    bool
-	}{
-		{"pressure marker surfaces (nodes ready)", "True", "Enough Nodes are ready with GPU resources; warning: worker node(s) under resource pressure: aks-0 (DiskPressure)", true},
-		{"pressure marker surfaces (nodes not ready)", "False", "Not enough Nodes are ready; warning: worker node(s) under resource pressure: aks-0 (MemoryPressure)", true},
-		{"healthy message benign", "True", "Enough Nodes are ready with GPU resources", false},
-		{"empty message benign", "True", "", false},
-	}
-	for _, tc := range cases {
-		ws := workspaceWithCondition("ws0", workspaceCondNodesReady, tc.status, "NodesReady", tc.message)
-		f, got := nodePressureFinding([]*unstructured.Unstructured{ws}, "ns", "iset", obj, "gk")
-		if got != tc.want {
-			t.Errorf("%s: nodePressureFinding got=%v, want %v", tc.name, got, tc.want)
+			t.Errorf("%s: got=%v, want %v", tc.name, got, tc.want)
 			continue
 		}
-		if got && f.GracePeriodOverride != nodePressureGracePeriod {
-			t.Errorf("%s: expected short GracePeriodOverride, got %v", tc.name, f.GracePeriodOverride)
+		if !got {
+			continue
+		}
+		if f.Reason != reason.Reason(tc.reason) {
+			t.Errorf("%s: reason=%q, want pass-through %q", tc.name, f.Reason, tc.reason)
+		}
+		if f.StartupGraceExempt != tc.wantExempt {
+			t.Errorf("%s: exempt=%v, want %v", tc.name, f.StartupGraceExempt, tc.wantExempt)
+		}
+		if f.GracePeriodOverride != FailureGracePeriod || !f.ResourceCreatedAt.Equal(transition) {
+			t.Errorf("%s: debounce=%v anchored at %v, want %v at %v", tc.name, f.GracePeriodOverride, f.ResourceCreatedAt, FailureGracePeriod, transition)
+		}
+		if want := "InferenceSet team-a/qwen: inferenceset is not ready, 0/1 replicas are ready"; f.Message != want {
+			t.Errorf("%s: message=%q, want %q", tc.name, f.Message, want)
 		}
 	}
 }
