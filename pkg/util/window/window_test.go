@@ -148,3 +148,30 @@ func TestWindowDropsStaleStartSample(t *testing.T) {
 		t.Fatalf("a stale start sample must not complete the window, got %+v", v)
 	}
 }
+
+// Passes sampled about once per WindowDuration jitter around it, e.g. the
+// reporter's default 60s resync against the default 60s window on a loaded
+// cluster. A sustained-slow download must stay slow on every pass once the
+// window is full, however the intervals straddle WindowDuration.
+func TestWindowJitteredSamplingStaysReady(t *testing.T) {
+	ws := NewSet(newSlowConfig())
+	base := time.Now()
+	key := "ns/iset/llm-0"
+
+	offset := time.Duration(0)
+	intervals := []time.Duration{
+		60500 * time.Millisecond, 59800 * time.Millisecond, 60300 * time.Millisecond,
+		59600 * time.Millisecond, 60900 * time.Millisecond, 59900 * time.Millisecond,
+	}
+	ws.Add(key, sample(base, offset, 5))
+	for i, d := range intervals {
+		offset += d
+		v := ws.Add(key, sample(base, offset, 5))
+		if i == 0 {
+			continue // the first interval may fall short of the window
+		}
+		if !v.Ready || !v.Slow {
+			t.Fatalf("pass %d at %s: a sustained-slow window must stay ready and slow, got %+v", i+1, offset, v)
+		}
+	}
+}

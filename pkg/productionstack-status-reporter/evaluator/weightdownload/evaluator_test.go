@@ -141,6 +141,25 @@ func TestSustainedSlowRaisesAtTheDefaultResync(t *testing.T) {
 	}
 }
 
+// Passes of a loaded reporter jitter around the default 60s resync. Once the
+// window is full, a sustained-slow download must raise on every pass: a pass
+// without the finding would reset the startup gate's first-observation timer
+// and withhold the Warning again.
+func TestSustainedSlowRaisesOnEveryJitteredPass(t *testing.T) {
+	d := &scripted{statuses: []downloader.DownloadStatus{downloading(6)}}
+	e, now := newTestEvaluator(d, presetInferenceSet())
+	steps := []time.Duration{
+		60500 * time.Millisecond, 59800 * time.Millisecond, 60300 * time.Millisecond,
+		59600 * time.Millisecond, 60900 * time.Millisecond, 0,
+	}
+	for i, step := range steps {
+		got := runEvery(t, e, now, 1, step)
+		if i >= 2 && len(got[0]) != 1 {
+			t.Fatalf("pass %d: a sustained-slow download must raise on every pass once the window is full, got %v", i+1, got[0])
+		}
+	}
+}
+
 func TestTransientDipDoesNotRaise(t *testing.T) {
 	d := &scripted{statuses: []downloader.DownloadStatus{downloading(6), downloading(50), downloading(6), downloading(50), downloading(6)}}
 	e, now := newTestEvaluator(d, presetInferenceSet())
