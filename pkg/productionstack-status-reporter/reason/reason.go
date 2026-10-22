@@ -65,8 +65,9 @@ const (
 // Modeldeployment-layer reasons (§1.2).
 const (
 	InferencesetInfraProvisioningFailed Reason = "inferencesetInfraProvisioningFailed"
+	InferencesetModelConfigInvalid      Reason = "inferencesetModelConfigInvalid"
+	InferencesetModelMirrorFailed       Reason = "inferencesetModelMirrorFailed"
 	InferencesetModelPodsNotReady       Reason = "inferencesetModelPodsNotReady"
-	InferencesetNodeUnderPressure       Reason = "inferencesetNodeUnderPressure"
 	InferencesetEPPNotReady             Reason = "inferencesetEPPNotReady"
 	InferencesetWeightDownloadSlow      Reason = "inferencesetWeightDownloadSlow"
 )
