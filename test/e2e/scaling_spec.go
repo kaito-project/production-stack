@@ -99,7 +99,9 @@ var scalingVLLMConfig = map[string]string{
 }
 
 var _ = Describe("InferenceSet Scaling — Infra",
-	Ordered, utils.GinkgoLabelScaling, utils.GinkgoLabelStandardK8sOnly, func() {
+	// Serial: every scaling container shares the CaseScaling namespace and the
+	// cluster's GPU quota, so they must never overlap.
+	Ordered, Serial, utils.GinkgoLabelScaling, utils.GinkgoLabelStandardK8sOnly, func() {
 
 		// Per-case deployment owned by scaling_spec.go (see cases.go).
 		// Resolved as Describe-local values so the table lookup happens
@@ -123,7 +125,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 		BeforeAll(func() {
 			ctx := context.Background()
 			nodeClaimsBeforeInstall = snapshotNodeClaimNames(ctx)
-			gateway = installScalingCase(ctx)
+			gateway = installScalingCase(ctx, CaseScaling)
 		})
 
 		AfterAll(func() {
@@ -164,22 +166,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 				BeforeAll(func() {
 					ctx = context.Background()
-					values := scalingValues
-					values.MinReplicas = 0
-					values.MaxReplicas = 1
-					values.CooldownPeriod = 60
-					initialCooldown := int64(60)
-					values.InitialCooldownPeriod = &initialCooldown
-					values.ScalingMetrics = slices.Clone(values.ScalingMetrics)
-					values.ScalingMetrics[0].Source = "modelpod"
-					values.ScalingMetrics[0].DeactivationThreshold = "0"
-					values.ScalingMetrics = append(values.ScalingMetrics,
-						deploy.ScalingMetric{
-							Name: "llm_d_epp_flow_control_queue_size", Type: "gauge", Source: "epp",
-							ActivationThreshold: "10", DeactivationThreshold: "0",
-						},
-						deploy.ScalingMetric{Name: "vllm:num_requests_running", Type: "gauge", Source: "modelpod", DeactivationThreshold: "0"},
-					)
+					values := scaleToZeroScalingValues(scalingValues, 1)
 					lifecycleValues = values
 					Expect(utils.UpgradeModelDeployment(ctx, values)).To(Succeed())
 					Eventually(func(g Gomega) {
@@ -966,24 +953,24 @@ var _ = Describe("InferenceSet Scaling — Infra",
 	},
 )
 
-// installScalingCase mirrors InstallCase for CaseScaling, with three
+// installScalingCase mirrors InstallCase for a scaling case, with three
 // differences: it creates the KAITO inference ConfigMap the case references,
 // it waits up to scalingProvisionTimeout (a fresh GPU node plus model load can
 // exceed InferenceSetReadyTimeout), and the warm-up completion is bounded.
-func installScalingCase(ctx context.Context) deploy.GatewayEndpoint {
-	ns := CaseNamespace(CaseScaling)
-	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", CaseScaling)
+func installScalingCase(ctx context.Context, caseName string) deploy.GatewayEndpoint {
+	ns := CaseNamespace(caseName)
+	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", caseName)
 	Expect(utils.EnsureNamespace(ctx, ns)).To(Succeed(), "failed to ensure namespace %s", ns)
 
 	clientset, err := utils.GetK8sClientset()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(utils.EnsureConfigMap(ctx, clientset, ns, scalingVLLMConfigName, scalingVLLMConfig)).To(Succeed())
 
-	gateway, err := utils.OpenGateway(ctx, ns, CaseGatewayName(CaseScaling))
-	Expect(err).NotTo(HaveOccurred(), "failed to open gateway for case %s", CaseScaling)
+	gateway, err := utils.OpenGateway(ctx, ns, CaseGatewayName(caseName))
+	Expect(err).NotTo(HaveOccurred(), "failed to open gateway for case %s", caseName)
 
 	utils.GetClusterClient(utils.TestingCluster)
-	deployments := CaseDeployments[CaseScaling]
+	deployments := CaseDeployments[caseName]
 	for _, d := range deployments {
 		By(fmt.Sprintf("Installing modeldeployment %s (model=%s) in %s", d.Name, d.Model, d.Namespace))
 		Expect(utils.InstallModelDeployment(ctx, d)).To(Succeed(), "failed to install modeldeployment for %s", d.Name)
@@ -1001,6 +988,29 @@ func installScalingCase(ctx context.Context) deploy.GatewayEndpoint {
 			"gateway should route to deployment %s successfully", d.Name)
 	}
 	return gateway
+}
+
+// scaleToZeroScalingValues returns values that let the deployment park at zero
+// after a short cooldown and wake from EPP queue demand, capped at maxReplicas.
+// The waiting-queue band stays in place for 1 <-> N scaling; the running gauge
+// keeps an in-flight generation from being parked.
+func scaleToZeroScalingValues(values deploy.ModelDeploymentValues, maxReplicas int64) deploy.ModelDeploymentValues {
+	values.MinReplicas = 0
+	values.MaxReplicas = maxReplicas
+	values.CooldownPeriod = 60
+	initialCooldown := int64(60)
+	values.InitialCooldownPeriod = &initialCooldown
+	values.ScalingMetrics = slices.Clone(values.ScalingMetrics)
+	values.ScalingMetrics[0].Source = "modelpod"
+	values.ScalingMetrics[0].DeactivationThreshold = "0"
+	values.ScalingMetrics = append(values.ScalingMetrics,
+		deploy.ScalingMetric{
+			Name: "llm_d_epp_flow_control_queue_size", Type: "gauge", Source: "epp",
+			ActivationThreshold: "10", DeactivationThreshold: "0",
+		},
+		deploy.ScalingMetric{Name: "vllm:num_requests_running", Type: "gauge", Source: "modelpod", DeactivationThreshold: "0"},
+	)
+	return values
 }
 
 // expectReadyModelPods waits until the deployment has exactly want model pods,

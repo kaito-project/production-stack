@@ -236,6 +236,24 @@ The E2E explicitly sets HPA scale-down stabilization and both scaling policy per
 
 On that same deployment, run the Scale-Up and Scale-Down assertions above: queue pressure, replica increase, new GPU node and NodeClaim, routing to the new pod, queue drain, replica decrease, inventory cleanup, and no 5xx during the two-to-one transition. A single background worker sends back-to-back long-response requests (up to 1,024 tokens each) to keep the remaining replica active without building a waiting queue. Stop that worker, verify the deployment returns to zero, and verify all case-created NodeClaims are released while EPP remains Ready. Anti-flapping runs separately after restoring a one-replica minimum.
 
+### Configuration Transitions
+
+**CI tier:** daily upstream job only, on the GPU mocker (`make test-e2e-scaling`, serial). The real-H100 nightly job excludes it with `E2E_SCALING_LABEL='Scaling && !ScalingTransitions'`, because each case provisions GPU nodes. Run alone with `E2E_LABEL='ScalingTransitions' E2E_PARALLEL=1`.
+
+Each case first establishes its own starting state, then changes the autoscaling configuration only through a chart upgrade, the way a user would. The deployer sets `replicas` only in manual mode and leaves it empty under autoscaling, so KEDA owns the live count and returning to manual always reapplies the declared count. Leaving `replicas` set under autoscaling can strand a stale count after returning to manual, because Helm patches `.spec.replicas` only when its rendered value changes; that pattern is not exercised here. A failing case does not skip the others. Because the cases run only on the mocker, the case shortens HPA scale-down stabilization and both scaling policy periods to 60 seconds (the main scaling case uses 300). The suite uses its own namespace (`e2e-scaling-transitions`), so it never reuses the Scale To Zero namespace while that namespace is still terminating.
+
+Timing considerations (the cases still run on a real-GPU cluster when selected explicitly): a case keeps the previous case's state when it already matches, so the cases are ordered to reuse GPU nodes instead of provisioning new ones. When the state does not match, setup passes through manual mode, which deletes the HPA together with its recommendation and scale-event history, so a stale recommendation from an earlier load cannot resize the deployment during setup. Every wake is capped at one replica, probes run only after pressure load stops (a single request can get HTTP 429 under 40-way load), and parking budgets include the EPP rollout triggered when flow control is enabled or disabled.
+
+* Manual → manual — With autoscaling off, raise the fixed replica count from one to two, then lower it back to one. Each change converges through the chart alone, the extra GPU is released, no ScaledObject or HPA appears, and the deployment serves throughout.
+* Manual (2) → autoscaling (min 2) — From two fixed replicas, enable autoscaling with a floor of two. The deployment settles at two Ready replicas and serves. Known limitation, accepted by the test: because `replicas` leaves the rendered manifest, the CRD default of one can replace the manual count until KEDA enforces the floor, so a running replica may be removed and recreated.
+* Manual → autoscaling (min 1) — From a fixed one-replica deployment, enable autoscaling. The ScaledObject becomes Ready, the running model pod is kept (same UID) while idle, and queue pressure then scales to two replicas.
+* Lower maxReplicas below the current count — At two replicas under pressure, lower the maximum to one. Replicas drop to one, the extra GPU NodeClaim is released, and the new ceiling holds while pressure continues.
+* Raise minReplicas above the current count — At one idle replica, raise the floor to two without setting `replicas`. KEDA alone raises the count to two Ready pods, which stay while idle.
+* Autoscaling → manual — From two autoscaled replicas, disable autoscaling with one fixed replica. The ScaledObject and its KEDA HPA are deleted, the deployment converges to one replica and releases the extra GPU, and queue pressure no longer scales it.
+* Manual → autoscaling (min 0) — From an idle fixed replica, enable scale-to-zero. The replica is kept for the initial cooldown, then parks while EPP stays Ready.
+* Parked, raise minReplicas 0 → 1 — While parked, raise the floor to one. The ScaledObject stays Ready (no trigger error) and KEDA restores one serving replica.
+* Parked → manual — While parked, disable autoscaling with one fixed replica. The ScaledObject and HPA are deleted and the deployment returns to one replica and serves.
+
 ## Unknown model / malformed request handling — Routing
 
 **CI tier:** PR (required). Negative-path API contract, fast and deterministic.

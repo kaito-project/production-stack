@@ -394,9 +394,14 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 		"--set", "name=" + v.Name,
 		"--set", "namespace=" + v.Namespace,
 		"--set", "model=" + v.Model,
-		// Always rendered: 0 means scale-to-zero, which UpgradeModelDeployment
-		// uses to empty an inference pool, so it cannot be treated as "unset".
-		"--set", "replicas=" + strconv.FormatInt(v.Replicas, 10),
+	}
+	// replicas is set only in manual mode, where 0 is an explicit scale-to-zero
+	// that UpgradeModelDeployment uses to empty an inference pool. Under
+	// autoscaling it is left empty so KEDA owns the live count, and switching
+	// back to manual always changes the rendered value, which makes Helm
+	// reapply it.
+	if !v.EnableScaling {
+		args = append(args, "--set", "replicas="+strconv.FormatInt(v.Replicas, 10))
 	}
 	if v.InstanceType != "" {
 		args = append(args, "--set", "instanceType="+v.InstanceType)

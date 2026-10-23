@@ -58,10 +58,14 @@ make test-e2e
 E2E_LABEL=Routing make test-e2e
 E2E_LABEL=PrefixCache make test-e2e
 E2E_LABEL=ScaleToZero E2E_PARALLEL=1 make test-e2e
+E2E_LABEL=ScalingTransitions E2E_PARALLEL=1 make test-e2e
 E2E_LABEL=Smoke make test-e2e
 
-# Scaling specs (Scaling label: 1<->2 and 0<->1), serial, 240m budget
+# Scaling specs (Scaling label: 1<->2, 0<->1, and configuration transitions), serial, 240m budget
 make test-e2e-scaling
+
+# Real-GPU nightly selection: skip the configuration transitions
+E2E_SCALING_LABEL='Scaling && !ScalingTransitions' make test-e2e-scaling
 
 # Override parallelism
 E2E_PARALLEL=4 make test-e2e
@@ -80,7 +84,7 @@ Labels live in [`utils/ginkgo.go`](utils/ginkgo.go) and fall into three groups:
   ModelMirror and ModelStreaming.
   on a local-NVMe PVC that a fake node cannot bind. The specs assert only traits common to both
   backends (model pods, Nodes, NodeClaims, vLLM metrics), never mocker internals.
-- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `CORS`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `ScaleToZero` (full `0 -> 1 -> 2 -> 1 -> 0` lifecycle), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
+- **Feature area** (what a spec verifies): `Infra`, `Routing`, `PrefixCache`, `Perf` (prefix-cache load/perf, see [below](#prefix-cache-perf--load-test)), `Auth`, `CORS`, `NetworkPolicy`, `Scaling` (scale-up / scale-down / anti-flapping), `ScaleToZero` (full `0 -> 1 -> 2 -> 1 -> 0` lifecycle), `ScalingTransitions` (manual <-> autoscaling and replica-bound changes; also labeled `Scaling`; daily mocker job only), `InferenceSet`, `FilterOrder`, `Karpenter`, `Outage` (fail-closed / HA resilience).
 - **Environment** (what kind of cluster a spec needs): `StandardK8sOnly`, and `NoGPU` for specs that never provision a GPU node.
 
 `ModelDiscovery` marks the `/v1/models` listing, retrieval, and authentication
