@@ -74,6 +74,14 @@ var (
 	// GinkgoLabelScaleToZero marks the full 0 -> 1 -> 2 -> 1 -> 0 lifecycle.
 	GinkgoLabelScaleToZero = g.Label("ScaleToZero")
 
+	// GinkgoLabelScalingTransitions marks scaling specs that change the
+	// autoscaling configuration of a running or parked deployment (manual <->
+	// autoscaling, replica bound changes). They also carry
+	// GinkgoLabelScaling, so `make test-e2e-scaling` runs them in the daily
+	// mocker job; the real-GPU nightly job excludes them because each case
+	// provisions GPU nodes.
+	GinkgoLabelScalingTransitions = g.Label("ScalingTransitions")
+
 	// GinkgoLabelFilterOrder marks tests that verify the Envoy HTTP
 	// filter chain execution order on the per-namespace Gateway:
 	//   ext_authz → ext_proc.bbr → ext_proc (InferencePool/EPP) → router
