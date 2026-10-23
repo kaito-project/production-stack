@@ -43,7 +43,7 @@ dependencies:
       - gateway
       - routing
   - name: keda-kaito-scaler
-    version: 0.7.2
+    version: 0.7.3
     tags:
       - autoscaling
   # In-tree gpu-node-mocker chart. Sourced via a `file://` repository
