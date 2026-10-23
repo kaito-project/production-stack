@@ -118,7 +118,10 @@ retry log line.
   relies on the mutating webhook to inject the AAD env vars and projected token.
 - Shadow-pod nodes need egress to PyPI, `download.pytorch.org`, AAD/ARM and blob
   storage. The Run:ai streamer hard-depends on torch, so the probe installs the
-  **CPU-only** wheel first to avoid pulling ~2.5 GB of CUDA packages.
+  **CPU-only** wheel first to avoid pulling ~2.5 GB of CUDA packages. pip,
+  `requests` and Python's `ssl` verify against the image's OS CA bundle only
+  (`PIP_CERT` + `PIP_USE_DEPRECATED=legacy-certs` / `REQUESTS_CA_BUNDLE` /
+  `SSL_CERT_FILE`), never pip's vendored certifi.
 - Shadow pods are built once and never mutated, so changing the probe
   configuration only affects shadow pods created afterwards. To refresh existing
   ones, delete them — the controller recreates them from current config:

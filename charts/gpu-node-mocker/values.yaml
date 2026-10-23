@@ -60,7 +60,12 @@ shadowPod:
   # azure-workload-identity mutating webhook to inject the AAD env vars and
   # projected SA token into the shadow pod.
   streamingProbe:
-    image: python:3.12-slim
+    # Pinned by digest: the probe pip-installs from PyPI at runtime, and a node
+    # may still cache an older python:3.12-slim whose CA bundle trusts the roots
+    # behind the compromised eMudhra intermediates. The probe also makes pip
+    # verify against the OS CA bundle only, since pip's vendored certifi can lag
+    # behind it.
+    image: python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
     timeoutSeconds: 600
     resources:
       cpu: "1"
