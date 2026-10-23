@@ -361,6 +361,45 @@ func TestBuildProbeContainer_DirectAzureDoesNotSourceEnvFile(t *testing.T) {
 	}
 }
 
+// pip's vendored certifi can still trust roots the OS bundle has already
+// distrusted, so every mode must switch pip/requests/ssl to the OS bundle
+// before anything reaches the network.
+func TestProbeShellCommandUsesSystemCABundle(t *testing.T) {
+	for _, mode := range []streamingMode{streamingModeSAS, streamingModeDirectAzure} {
+		t.Run(string(mode), func(t *testing.T) {
+			script := probeShellCommand(mode)
+			if out, err := exec.Command("/bin/sh", "-n", "-c", script).CombinedOutput(); err != nil {
+				t.Fatalf("probe shell command does not parse: %v\n%s\n%s", err, out, script)
+			}
+			caIdx := strings.Index(script, "export PIP_CERT=")
+			if caIdx < 0 {
+				t.Fatalf("probe must point pip at the OS CA bundle: %s", script)
+			}
+			for _, v := range []string{`PIP_CERT="$ca"`, `REQUESTS_CA_BUNDLE="$ca"`, `SSL_CERT_FILE="$ca"`} {
+				if !strings.Contains(script, v) {
+					t.Errorf("probe must export %s: %s", v, script)
+				}
+			}
+			for _, p := range systemCABundlePaths {
+				if !strings.Contains(script, p) {
+					t.Errorf("probe must try CA bundle %s: %s", p, script)
+				}
+			}
+			if pipIdx := strings.Index(script, "pip install"); pipIdx >= 0 && pipIdx < caIdx {
+				t.Error("CA bundle must be selected before any pip install")
+			}
+			// pip's truststore path ignores PIP_CERT and merges its vendored
+			// certifi, so installs must opt into legacy-certs first.
+			if pipIdx := strings.Index(script, "pip install"); pipIdx >= 0 {
+				legacyIdx := strings.Index(script, "export PIP_USE_DEPRECATED=legacy-certs")
+				if legacyIdx < 0 || legacyIdx > pipIdx {
+					t.Errorf("pip must use legacy-certs before installing: %s", script)
+				}
+			}
+		})
+	}
+}
+
 // ── Probe script ────────────────────────────────────────────────────────────
 
 func TestProbeScriptIsCPUOnly(t *testing.T) {

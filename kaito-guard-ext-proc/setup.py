@@ -8,8 +8,8 @@ setup(
     packages=find_packages(include=["ext_proc", "ext_proc.*"]),
     python_requires=">=3.11",
     install_requires=[
-        "grpcio==1.84.0",
-        "xds-protos==1.84.0",
+        "grpcio==1.84.1",
+        "xds-protos==1.84.1",
     ],
     extras_require={
         "dev": [

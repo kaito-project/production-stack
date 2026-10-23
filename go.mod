@@ -1,6 +1,6 @@
 module github.com/kaito-project/production-stack
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/awslabs/operatorpkg v0.0.0-20260217224511-7a138650b2d1

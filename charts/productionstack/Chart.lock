@@ -4,10 +4,10 @@ dependencies:
   version: 1.5.0
 - name: keda-kaito-scaler
   repository: ""
-  version: 0.7.2
+  version: 0.7.3
 - name: gpu-node-mocker
   repository: file://../gpu-node-mocker
-  version: 0.5.1
+  version: 0.5.2
 - name: llm-gateway-apikey
   repository: oci://mcr.microsoft.com/aks/kaito/helm
   version: 0.1.4
@@ -16,6 +16,6 @@ dependencies:
   version: 0.1.4
 - name: productionstack-status-reporter
   repository: ""
-  version: 0.5.1
-digest: sha256:7ddc3e26fc6e28de60a6e32f83a87bb74b71b2c85fbe3aceecab0bc2b4285c6a
-generated: "2026-10-23T00:30:03.011833735Z"
+  version: 0.5.2
+digest: sha256:411c87bab97c06b2cea47d470894e4c41a53e461f1d95dc764f3877c4b78a0f2
+generated: "2026-10-23T17:11:37.142828+11:00"

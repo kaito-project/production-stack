@@ -195,8 +195,10 @@ const (
 	StreamingProbeScriptFileName = "streaming_probe.py"
 
 	// DefaultStreamingProbeImage is a slim Python base; the Run:ai streamer is
-	// pip-installed at container start, mirroring KAITO's own fetch-sas.
-	DefaultStreamingProbeImage = "python:3.12-slim"
+	// pip-installed at container start, mirroring KAITO's own fetch-sas. Pinned
+	// by digest so a node never reuses a cached python:3.12-slim whose CA bundle
+	// predates the eMudhra distrust (Debian ca-certificates 20250419+deb13u1).
+	DefaultStreamingProbeImage = "python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704"
 
 	// RunAIStreamerVersion mirrors the pin in KAITO's
 	// presets/workspace/dependencies/requirements.txt. Keep them in sync.
@@ -230,6 +232,13 @@ const (
 	// tensor -- which is unpredictable per model, so we let it size itself.
 	DefaultStreamingProbeStreamerMemLimit int64 = 0
 )
+
+// systemCABundlePaths are the OS CA bundle locations the streaming probe tries,
+// in order: Debian/Ubuntu/Alpine, then RHEL/Azure Linux.
+var systemCABundlePaths = []string{
+	"/etc/ssl/certs/ca-certificates.crt",
+	"/etc/pki/tls/certs/ca-bundle.crt",
+}
 
 // NodeClassRef identifies the cluster-scoped karpenter NodeClass resource that
 // KAITO's NodePool template references and that the NodeClassReconciler marks
