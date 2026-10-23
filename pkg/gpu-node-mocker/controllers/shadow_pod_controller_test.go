@@ -224,6 +224,19 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	if expr.Key != LabelFakeNode || expr.Operator != corev1.NodeSelectorOpDoesNotExist {
 		t.Errorf("anti-affinity expr = %+v", expr)
 	}
+	for _, effect := range []corev1.TaintEffect{corev1.TaintEffectNoSchedule, corev1.TaintEffectNoExecute} {
+		taint := &corev1.Taint{Key: "CriticalAddonsOnly", Value: "true", Effect: effect}
+		tolerated := false
+		for _, toleration := range shadow.Spec.Tolerations {
+			if toleration.ToleratesTaint(ctrl.Log, taint, false) {
+				tolerated = true
+				break
+			}
+		}
+		if !tolerated {
+			t.Errorf("shadow pod does not tolerate system-node taint %v", taint)
+		}
+	}
 	// Should NOT have ServiceAccountName
 	if shadow.Spec.ServiceAccountName != "" {
 		t.Errorf("ServiceAccountName should be empty, got %q", shadow.Spec.ServiceAccountName)

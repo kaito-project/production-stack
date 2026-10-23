@@ -323,6 +323,10 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		Spec: corev1.PodSpec{
 			ServiceAccountName: identity.serviceAccount,
 			InitContainers:     probeInitCtrs,
+			// System pools may be the only real nodes in a mocked-GPU cluster.
+			Tolerations: []corev1.Toleration{
+				{Key: "CriticalAddonsOnly", Operator: corev1.TolerationOpExists},
+			},
 			Affinity: &corev1.Affinity{
 				NodeAffinity: &corev1.NodeAffinity{
 					RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
