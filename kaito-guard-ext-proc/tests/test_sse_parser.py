@@ -377,3 +377,64 @@ def test_utf8_character_split_across_chunks():
     assert parse_sse_event(events[0]) == {
         "delta": {"content": content}, "finish_reason": None,
     }
+
+
+@pytest.mark.parametrize("final", [False, True])
+def test_shared_framer_rejects_complete_invalid_utf8(final):
+    with pytest.raises(SSEParseError, match="UTF-8"):
+        split_sse_events(b"data: [DONE]\n\ndata: \xff\n\n", final=final)
+
+
+def test_partial_utf8_is_retained_at_eof():
+    raw = b"data: \xe4"
+    assert split_sse_events(raw, final=True) == ([], raw)
+
+
+def test_bom_at_stream_start():
+    raw = b'\xef\xbb\xbfdata: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n'
+    for offset in range(len(raw) + 1):
+        events, remaining = split_sse_events(raw[:offset])
+        following, remaining = split_sse_events(remaining + raw[offset:], final=True)
+        assert remaining == b""
+        assert [parse_sse_event(event) for event in events + following] == [
+            {"delta": {"content": "hi"}, "finish_reason": None},
+        ]
+
+
+def test_legacy_buffer_api_does_not_add_an_event_size_limit():
+    from guardrail_core.streaming.sse import DEFAULT_MAX_EVENT_BYTES
+
+    content = "x" * DEFAULT_MAX_EVENT_BYTES
+    body = b"data: " + json.dumps({
+        "choices": [{"index": 0, "delta": {"content": content}}],
+    }).encode()
+    events, remaining = split_sse_events(body + b"\n\n")
+    assert events == [body]
+    assert remaining == b""
+    assert parse_sse_event(events[0]) == {
+        "delta": {"content": content}, "finish_reason": None,
+    }
+
+
+@pytest.mark.parametrize("index", [None, 0])
+def test_adapter_delegates_to_shared_openai_parser(monkeypatch, index):
+    import ext_proc.streaming.sse_parser as adapter
+
+    shared_parser = adapter.parse_openai_chat_sse_event
+    calls = []
+
+    def parse(event):
+        result = shared_parser(event)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(adapter, "parse_openai_chat_sse_event", parse)
+    choice: dict[str, object] = {"delta": {"content": "shared"}}
+    if index is not None:
+        choice["index"] = index
+    event = b"data: " + json.dumps({"choices": [choice]}).encode()
+    assert parse_sse_event(event) == {
+        "delta": {"content": "shared"}, "finish_reason": None,
+    }
+    assert calls[-1].parsed_choices[0].content == "shared"
+    assert calls[-1].parsed_choices[0].choice_index == 0

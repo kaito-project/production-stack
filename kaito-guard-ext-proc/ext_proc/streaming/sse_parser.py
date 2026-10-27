@@ -1,6 +1,17 @@
 import json
-import re
+from dataclasses import replace
 from typing import NotRequired, TypedDict
+
+from guardrail_core.streaming.openai import (
+    OpenAIChatChunkParseStatus,
+    parse_openai_chat_sse_event,
+)
+from guardrail_core.streaming.sse import (
+    SSEEvent,
+    SSEFramer,
+    SSEFramingError,
+    SSEIncompleteEventError,
+)
 
 
 class SSEParseError(ValueError):
@@ -17,60 +28,48 @@ class ParsedEvent(TypedDict):
     done: NotRequired[bool]
 
 
-_LINE_ENDING = re.compile(rb"\r\n|\r|\n")
-
-
 def split_sse_events(buf: bytes, *, final: bool = False) -> tuple[list[bytes], bytes]:
     """Split complete events; final resolves trailing CR, not missing delimiters."""
-    events: list[bytes] = []
-    event_start = line_start = event_end = 0
-    for ending in _LINE_ENDING.finditer(buf):
-        if not final and ending.group() == b"\r" and ending.end() == len(buf):
-            break
-        if ending.start() == line_start:
-            events.append(buf[event_start:event_end])
-            event_start = ending.end()
-            event_end = event_start
-        else:
-            event_end = ending.start()
-        line_start = ending.end()
-    return events, buf[event_start:]
-
-
-def _extract_data(event: bytes) -> str | None:
+    # Preserve the legacy API's unbounded event size.
+    framer = SSEFramer(max_event_bytes=max(1, len(buf)))
     try:
-        text = event.decode("utf-8")
+        events = framer.feed(buf)
+        if final:
+            try:
+                events.extend(framer.finish())
+            except SSEIncompleteEventError as exc:
+                events.extend(exc.completed_events)
+    except SSEFramingError as exc:
+        raise SSEParseError(str(exc)) from exc
+    consumed = sum(len(event.raw_bytes) for event in events)
+    return [event.raw_bytes.rstrip(b"\r\n") for event in events], buf[consumed:]
+
+
+def _to_sse_event(event: bytes) -> SSEEvent:
+    try:
+        text = event.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise SSEParseError("Invalid UTF-8 in SSE event") from exc
-
-    # Accept bare [DONE] for backward compatibility.
     if text.strip() == "[DONE]":
-        return "[DONE]"
-
-    data: list[str] = []
-    for line in re.split(r"\r\n|\r|\n", text):
-        if not line or line.startswith(":"):
-            continue
-        field, _, value = line.partition(":")
-        if field == "data":
-            data.append(value.removeprefix(" "))
-    return "\n".join(data) if data else None
+        text = "data: [DONE]"
+    return SSEEvent.from_raw(text, raw_bytes=event)
 
 
 def parse_sse_event(event: bytes) -> ParsedEvent | None:
     """Parse a single-choice OpenAI event; raise SSEParseError for invalid data."""
-    data = _extract_data(event)
-    if data is None or not data.strip():
+    sse_event = _to_sse_event(event)
+    result = parse_openai_chat_sse_event(sse_event)
+    if result.status == OpenAIChatChunkParseStatus.NO_DATA:
         return None
-    if data.strip() == "[DONE]":
+    if result.status == OpenAIChatChunkParseStatus.DONE:
         return {"delta": {"content": ""}, "done": True}
-    try:
-        payload = json.loads(data)
-    except json.JSONDecodeError as exc:
-        raise SSEParseError("Invalid JSON in SSE data") from exc
+    if result.status == OpenAIChatChunkParseStatus.MALFORMED_JSON:
+        raise SSEParseError(f"Invalid JSON in SSE data: {result.error}")
 
-    if not isinstance(payload, dict):
+    payload = result.payload
+    if payload is None:
         raise SSEParseError("SSE payload must be an object")
+    # The shared parser allows multiple choices; this adapter supports only index 0.
     choices = payload.get("choices")
     if not isinstance(choices, list):
         raise SSEParseError("payload.choices must be a list")
@@ -87,18 +86,22 @@ def parse_sse_event(event: bytes) -> ParsedEvent | None:
     delta = choice.get("delta")
     if not isinstance(delta, dict):
         raise SSEParseError("choices[0].delta must be an object")
-    content = delta.get("content")
-    if content is None:
-        content = ""
-    if not isinstance(content, str):
-        raise SSEParseError("delta.content must be a string or null")
-    finish_reason = choice.get("finish_reason")
-    if finish_reason is not None and not isinstance(finish_reason, str):
-        raise SSEParseError("finish_reason must be a string or null")
-    return {"delta": {"content": content}, "finish_reason": finish_reason}
+    if "index" not in choice:
+        # The shared parser requires an explicit index; legacy callers omit it.
+        normalized = {**payload, "choices": [{**choice, "index": 0}]}
+        result = parse_openai_chat_sse_event(
+            replace(sse_event, data=json.dumps(normalized))
+        )
+    if result.status != OpenAIChatChunkParseStatus.PARSED:
+        raise SSEParseError(result.error)
+    parsed_choice = result.parsed_choices[0]
+    return {
+        "delta": {"content": parsed_choice.content or ""},
+        "finish_reason": parsed_choice.finish_reason,
+    }
 
 
 def is_done_event(event: bytes) -> bool:
     """Use the same SSE field extraction and encoding checks as parsing."""
-    data = _extract_data(event)
+    data = _to_sse_event(event).data
     return data is not None and data.strip() == "[DONE]"
