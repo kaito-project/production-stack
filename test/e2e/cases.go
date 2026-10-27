@@ -114,6 +114,10 @@ const (
 	// background load to assert no 5xx during transitions).
 	CaseScaling = "scaling"
 
+	// CaseScalingTransitions covers scaling_transitions_spec.go: changes to
+	// the autoscaling configuration of a running or parked deployment.
+	CaseScalingTransitions = "scaling-transitions"
+
 	// CaseKarpenterSmall covers the Karpenter nightly small-model scenario:
 	// a single-GPU, single-node deployment that proves basic NAP provisioning,
 	// readiness, request serving, and scale-back-to-zero.
@@ -365,54 +369,8 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
-	CaseScaling: {
-		{
-			// Scaling baseline matches KEDA's minReplicaCount (MinReplicas)
-			// so that scale-down can converge back to it. With Replicas>1,
-			// KEDA's HPA computes desiredReplicas=ceil(metric/threshold)*1=0
-			// when the queue drains and clamps to minReplicaCount=1, so the
-			// pool would never return to its starting size and Scale-Down
-			// assertions would fail.
-			Name:                         "scaling-phi",
-			Namespace:                    "e2e-scaling",
-			Model:                        presetPhi,
-			Replicas:                     1,
-			InstanceType:                 scalingInstanceType,
-			EnableScaling:                true,
-			MinReplicas:                  1,
-			MaxReplicas:                  2,
-			ScaleDownStabilizationWindow: ptr.To(int64(300)),
-			ScaleUpPeriodSeconds:         ptr.To(int64(300)),
-			ScaleDownPeriodSeconds:       ptr.To(int64(300)),
-			// Caps concurrent sequences per pod so a modest workload builds
-			// a waiting queue even on an H100. The ConfigMap is created by
-			// the scaling spec before install.
-			Config: scalingVLLMConfigName,
-			// KEDA's scale-up gate needs readyReplicas, which KAITO only counts
-			// after the benchmark; on the mocker the benchmark can never finish.
-			DisableBenchmark: true,
-			// The bulk load repeats one prompt, so prefix-cache scoring pins it
-			// to the warm baseline pod and the scaled-up pod never serves (D1).
-			EPPScorerWeights: &deploy.EPPScorerWeights{PrefixCache: intPtr(0)},
-			// Single gauge signal on the vLLM waiting-queue length. Per-pod
-			// waiting is capped around max-num-seqs (5): the EPP saturation
-			// detector (queueDepthThreshold 5) and KAITO's vLLM rate limiter
-			// (HTTP 429 once waiting > max_num_seqs) stop it growing further.
-			// The up-threshold therefore sits below that cap so the pressure
-			// workload (scalingPressureConcurrency) trips scale-up; the
-			// down-threshold sits below it so the sub-threshold workload
-			// (scalingSubThresholdConcurrency) lets scale-down converge back
-			// to the baseline. UpThreshold MUST be > DownThreshold (chart guard).
-			ScalingMetrics: []deploy.ScalingMetric{
-				{
-					Name:          "vllm:num_requests_waiting",
-					Type:          "gauge",
-					UpThreshold:   "3",
-					DownThreshold: "1",
-				},
-			},
-		},
-	},
+	CaseScaling:            {scalingCaseDeployment("scaling-phi", "e2e-scaling")},
+	CaseScalingTransitions: {scalingTransitionsDeployment()},
 	CaseKarpenterSmall: {
 		{
 			Name:         "k-7b",
@@ -558,4 +516,68 @@ func prepareDeploymentOutage(ctx context.Context, namespace, name string) *utils
 		Expect(guard.Restore(ctx, 3*time.Minute)).To(Succeed(), "failed to restore %s/%s", namespace, name)
 	}, NodeTimeout(4*time.Minute))
 	return guard
+}
+
+// scalingCaseDeployment returns the KEDA-scaled deployment shared by the
+// scaling cases; each case gets its own namespace so containers never reuse a
+// namespace that is still terminating.
+func scalingCaseDeployment(name, namespace string) deploy.ModelDeploymentValues {
+	return deploy.ModelDeploymentValues{
+		// Scaling baseline matches KEDA's minReplicaCount (MinReplicas)
+		// so that scale-down can converge back to it. With Replicas>1,
+		// KEDA's HPA computes desiredReplicas=ceil(metric/threshold)*1=0
+		// when the queue drains and clamps to minReplicaCount=1, so the
+		// pool would never return to its starting size and Scale-Down
+		// assertions would fail.
+		Name:                         name,
+		Namespace:                    namespace,
+		Model:                        presetPhi,
+		Replicas:                     1,
+		InstanceType:                 scalingInstanceType,
+		EnableScaling:                true,
+		MinReplicas:                  1,
+		MaxReplicas:                  2,
+		ScaleDownStabilizationWindow: ptr.To(int64(300)),
+		ScaleUpPeriodSeconds:         ptr.To(int64(300)),
+		ScaleDownPeriodSeconds:       ptr.To(int64(300)),
+		// Caps concurrent sequences per pod so a modest workload builds
+		// a waiting queue even on an H100. The ConfigMap is created by
+		// the scaling spec before install.
+		Config: scalingVLLMConfigName,
+		// KEDA's scale-up gate needs readyReplicas, which KAITO only counts
+		// after the benchmark; on the mocker the benchmark can never finish.
+		DisableBenchmark: true,
+		// The bulk load repeats one prompt, so prefix-cache scoring pins it
+		// to the warm baseline pod and the scaled-up pod never serves (D1).
+		EPPScorerWeights: &deploy.EPPScorerWeights{PrefixCache: intPtr(0)},
+		// Single gauge signal on the vLLM waiting-queue length. Per-pod
+		// waiting is capped around max-num-seqs (5): the EPP saturation
+		// detector (queueDepthThreshold 5) and KAITO's vLLM rate limiter
+		// (HTTP 429 once waiting > max_num_seqs) stop it growing further.
+		// The up-threshold therefore sits below that cap so the pressure
+		// workload (scalingPressureConcurrency) trips scale-up; the
+		// down-threshold sits below it so the sub-threshold workload
+		// (scalingSubThresholdConcurrency) lets scale-down converge back
+		// to the baseline. UpThreshold MUST be > DownThreshold (chart guard).
+		ScalingMetrics: []deploy.ScalingMetric{
+			{
+				Name:          "vllm:num_requests_waiting",
+				Type:          "gauge",
+				UpThreshold:   "3",
+				DownThreshold: "1",
+			},
+		},
+	}
+}
+
+// scalingTransitionsDeployment shortens the HPA windows of the scaling
+// deployment. The transition specs run only on the GPU mocker, where the
+// signals are steady, so 60s windows cut each "holds under load" check from
+// about six minutes to about two without changing what is asserted.
+func scalingTransitionsDeployment() deploy.ModelDeploymentValues {
+	values := scalingCaseDeployment("transitions-phi", "e2e-scaling-transitions")
+	values.ScaleDownStabilizationWindow = ptr.To(int64(60))
+	values.ScaleUpPeriodSeconds = ptr.To(int64(60))
+	values.ScaleDownPeriodSeconds = ptr.To(int64(60))
+	return values
 }

@@ -170,6 +170,9 @@ jobs:
         run: make test-e2e-scaling
         env:
           E2E_SCALING_INSTANCE_TYPE: Standard_NC40ads_H100_v5
+          # Configuration transitions run only in the daily mocker job: on real
+          # GPUs each case provisions nodes and would multiply the runtime.
+          E2E_SCALING_LABEL: Scaling && !ScalingTransitions
 
       - name: Generate Scaling coverage report
         if: always()

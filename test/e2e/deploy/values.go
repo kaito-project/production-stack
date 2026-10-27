@@ -129,9 +129,11 @@ type ModelDeploymentValues struct {
 	// Config is the name of a ConfigMap containing custom inference arguments
 	// (spec.template.inference.config).
 	Config string
-	// Replicas is the desired number of InferenceSet replicas. Always
-	// rendered, so 0 is an explicit scale-to-zero rather than "unset" —
-	// UpgradeModelDeployment relies on that to empty an inference pool.
+	// Replicas is the desired number of InferenceSet replicas in manual mode.
+	// Rendered only when EnableScaling is false, where 0 is an explicit
+	// scale-to-zero rather than "unset" — UpgradeModelDeployment relies on
+	// that to empty an inference pool. Ignored under autoscaling, so KEDA
+	// owns the live count.
 	Replicas int64
 	// InstanceType is the VM instance type. Defaults to the backend default
 	// when empty.

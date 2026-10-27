@@ -256,7 +256,6 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 		"name=phi",
 		"namespace=e2e-ns",
 		"model=phi-4-mini-instruct",
-		"replicas=3",
 		"instanceType=Standard_NC24ads_A100_v4",
 		"enableScaling=true",
 		"minReplicas=2",
@@ -330,7 +329,7 @@ func TestInstallModelDeploymentMapsScaleToZero(t *testing.T) {
 	}
 	args := (*calls)[0]
 	for _, want := range []string{
-		"replicas=1", "minReplicas=0", "maxReplicas=1", "scaling.cooldownPeriod=60", "enableBenchmark=false",
+		"minReplicas=0", "maxReplicas=1", "scaling.cooldownPeriod=60", "enableBenchmark=false",
 		"scaling.initialCooldownPeriod=0", "scaling.hpa.scaleDown.stabilizationWindowSeconds=300",
 		"scaling.hpa.scaleUp.periodSeconds=300", "scaling.hpa.scaleDown.periodSeconds=300",
 	} {
@@ -366,7 +365,7 @@ func TestUpgradeModelDeploymentEnablesCapacityWithoutRemovingZeroScaling(t *test
 			wantMaximum = "maxReplicas=2"
 		}
 		for _, want := range []string{
-			wantMaximum, "replicas=1", "minReplicas=0", "enableScaling=true",
+			wantMaximum, "minReplicas=0", "enableScaling=true",
 			"scaling.cooldownPeriod=60", "scaling.initialCooldownPeriod=60",
 			"scaling.metrics[0].upThreshold=3", "scaling.metrics[0].downThreshold=1",
 			"scaling.metrics[1].activationThreshold=0", "scaling.metrics[1].deactivationThreshold=0",
@@ -816,6 +815,35 @@ func TestReplicasZeroIsRendered(t *testing.T) {
 	}
 	if !hasArg((*calls)[0], "replicas=0") {
 		t.Errorf("scale-to-zero was dropped: %v", (*calls)[0])
+	}
+}
+
+// replicas is rendered only in manual mode, so returning
+// from autoscaling always changes the rendered value and Helm reapplies it.
+func TestReplicasRenderedOnlyInManualMode(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+	base := deploy.ModelDeploymentValues{Name: "phi", Namespace: "e2e-ns", Model: "phi-4-mini-instruct", Replicas: 2}
+
+	autoscaled := base
+	autoscaled.EnableScaling, autoscaled.MinReplicas, autoscaled.MaxReplicas = true, 1, 3
+	for _, step := range []struct {
+		values       deploy.ModelDeploymentValues
+		wantReplicas bool
+	}{{base, true}, {autoscaled, false}, {base, true}} {
+		if err := d.UpgradeModelDeployment(context.Background(), step.values); err != nil {
+			t.Fatalf("UpgradeModelDeployment(enableScaling=%t): %v", step.values.EnableScaling, err)
+		}
+		args := (*calls)[len(*calls)-1]
+		rendered := false
+		for _, a := range args {
+			if strings.HasPrefix(a, "replicas=") {
+				rendered = true
+			}
+		}
+		if rendered != step.wantReplicas {
+			t.Errorf("enableScaling=%t: replicas rendered=%t, want %t: %v",
+				step.values.EnableScaling, rendered, step.wantReplicas, args)
+		}
 	}
 }
 
