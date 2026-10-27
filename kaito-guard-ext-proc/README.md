@@ -27,11 +27,8 @@ python -m pytest
 
 Runtime dependencies are defined only in `setup.py`. `xds-protos`, published
 by the gRPC project, supplies the generated Envoy protobuf messages and service.
-`kaito-guardrail-core` is installed from the KAITO source archive at immutable
-revision `022ec86f82e28d1a703b6d51106bf379d3bf505f`, using its `guardrail_core`
-subdirectory. Installation does not require Git. The revision already contains
-the shared streaming implementation; it does not depend on the RAGEngine
-adoption in [kaito-project/kaito#2453](https://github.com/kaito-project/kaito/pull/2453).
+`kaito-guardrail-core==0.1.0` is installed from PyPI and supplies the shared
+streaming implementation. No Git checkout or source archive is required.
 
 ## SSE parser
 
