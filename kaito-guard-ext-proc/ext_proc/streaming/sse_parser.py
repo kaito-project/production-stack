@@ -69,7 +69,7 @@ def parse_sse_event(event: bytes) -> ParsedEvent | None:
     payload = result.payload
     if payload is None:
         raise SSEParseError("SSE payload must be an object")
-    # Keep production-stack's stricter shape and single-choice policy.
+    # The shared parser allows multiple choices; this adapter supports only index 0.
     choices = payload.get("choices")
     if not isinstance(choices, list):
         raise SSEParseError("payload.choices must be a list")
