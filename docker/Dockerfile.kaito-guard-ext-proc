@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Make pip trust only the OS CA bundle: pip's vendored certifi can still
 # trust roots the OS bundle has distrusted (e.g. those behind the

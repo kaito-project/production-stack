@@ -3,8 +3,8 @@
 This package is the Envoy gateway/streaming adapter, not a guardrail
 implementation. Guardrail logic belongs to the shared KAITO guardrail core,
 as described in [kaito-project/production-stack#226](https://github.com/kaito-project/production-stack/issues/226).
-Core integration is deferred until its dependency and API are pinned; no local
-scanners or guard engine are provided here.
+Streaming utilities come from the shared core; scanner and guard engine
+integration is still deferred. No local scanners or guard engine are provided here.
 
 The server registers Envoy's `envoy.service.ext_proc.v3.ExternalProcessor`
 service and listens on `[::]:9000`. `Process` returns gRPC `UNIMPLEMENTED`
@@ -13,7 +13,7 @@ traffic and must not be used as an active guardrail.
 
 ## Run and test
 
-Requires Python 3.11 or newer. From the repository root:
+Requires Python 3.12 or newer (the shared core's minimum). From the repository root:
 
 ```sh
 cd kaito-guard-ext-proc
@@ -27,11 +27,17 @@ python -m pytest
 
 Runtime dependencies are defined only in `setup.py`. `xds-protos`, published
 by the gRPC project, supplies the generated Envoy protobuf messages and service.
+`kaito-guardrail-core` is installed from the KAITO source archive at immutable
+revision `022ec86f82e28d1a703b6d51106bf379d3bf505f`, using its `guardrail_core`
+subdirectory. Installation does not require Git. The revision already contains
+the shared streaming implementation; it does not depend on the RAGEngine
+adoption in [kaito-project/kaito#2453](https://github.com/kaito-project/kaito/pull/2453).
 
 ## SSE parser
 
-`ext_proc.streaming.sse_parser` provides standalone framing and OpenAI chunk
-parsing helpers. They are included in the existing package and container;
+`ext_proc.streaming.sse_parser` adapts `guardrail_core.streaming.SSEFramer`,
+`SSEEvent`, and the shared OpenAI parser to the existing byte-buffer API.
+These helpers are included in the existing package and container;
 they are not yet wired into the server's `Process` method.
 
 - `split_sse_events(buffer, final=False)` returns complete event bytes and an unchanged
@@ -64,14 +70,21 @@ compatibility. The future adapter must restrict requests to `n=1`; supporting
 `n>1` requires independent per-choice stream handling rather than ignoring or
 concatenating other choices.
 
+Invalid UTF-8 in a complete event now raises `SSEParseError` during splitting,
+before payload parsing. Framing errors do not return partially completed events.
+An initial UTF-8 BOM is accepted by the shared framer and the event adapter.
+The legacy buffer API retains its unbounded input size and incomplete EOF
+remainder contract. New stateful consumers should use the shared `SSEFramer`
+directly for its event-size limit and strict EOF validation.
+
 The future adapter must handle `SSEParseError` through its explicit failure
-policy. These helpers do not enforce policies, scan content, implement
-holdback, or integrate the shared guardrail core.
+policy. These helpers do not scan content, implement holdback, or integrate
+the shared guardrail scanners.
 
 ## CI
 
 The `kaito-guard-ext-proc` job in the repository's CI workflow installs
-`.[dev]` with Python 3.11, runs pytest, and builds the container image.
+`.[dev]` with Python 3.12, runs pytest, and builds the container image.
 The image is not published, and this job does not test real Envoy integration.
 
 ## Container
