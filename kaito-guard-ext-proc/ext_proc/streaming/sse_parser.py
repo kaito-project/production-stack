@@ -30,8 +30,7 @@ class ParsedEvent(TypedDict):
 
 def split_sse_events(buf: bytes, *, final: bool = False) -> tuple[list[bytes], bytes]:
     """Split complete events; final resolves trailing CR, not missing delimiters."""
-    # This legacy buffer API has no size limit; stateful consumers should use
-    # SSEFramer directly to enforce its bounded buffering and strict EOF policy.
+    # Preserve the legacy API's unbounded event size.
     framer = SSEFramer(max_event_bytes=max(1, len(buf)))
     try:
         events = framer.feed(buf)
