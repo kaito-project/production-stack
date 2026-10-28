@@ -125,8 +125,8 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 					By(fmt.Sprintf("verifying InferenceSet %q preset.name == %q", name, d.Model))
 					preset, found, _ := unstructured.NestedString(is.Object, "spec", "template", "inference", "preset", "name")
 					Expect(found).To(BeTrue(), "spec.template.inference.preset.name should be set")
-					Expect(preset).To(Equal(d.Model),
-						"InferenceSet %q preset.name should match the explicitly-set model", name)
+					Expect(utils.PresetMatchesModel(preset, d.Model)).To(BeTrue(),
+						"InferenceSet %q preset.name %q should match the explicitly-set model %q", name, preset, d.Model)
 
 					// NOTE: We intentionally do not assert on
 					// InferenceSet.status.readyReplicas (or the

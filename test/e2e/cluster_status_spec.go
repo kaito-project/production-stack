@@ -43,26 +43,44 @@ var _ = Describe("Cluster Status Reporter",
 			emitTimeout  = 3 * time.Minute
 			clearTimeout = 5 * time.Minute
 
-			bbrNamespace  = "kaito-system"
 			bbrDeployment = "body-based-router"
 
-			gatewayAuthNamespace  = "llm-gateway-auth"
 			gatewayAuthDeployment = "apikey-authz"
 			gatewayAuthOperator   = "apikey-operator"
 
-			// The E2E install points the reporter at the KAITO workspace
-			// chart's local CSI driver in kaito-system.
-			localCSINamespace = "kaito-system"
-			localCSIManager   = "csi-local-manager"
+			// The reporter watches the KAITO workspace chart's local CSI
+			// driver.
+			localCSIManager = "csi-local-manager"
 
-			kaitoNamespace  = "kaito-system"
 			kaitoDeployment = "kaito-workspace"
 		)
 
-		var ctx context.Context
+		// The control-plane namespaces are discovered rather than assumed: a
+		// managed control plane installs these workloads into its own add-on
+		// namespace (kube-system on AI Manager).
+		var (
+			ctx                  context.Context
+			bbrNamespace         string
+			gatewayAuthNamespace string
+			localCSINamespace    string
+			kaitoNamespace       string
+		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
+			for _, target := range []struct {
+				namespace  *string
+				deployment string
+			}{
+				{&bbrNamespace, bbrDeployment},
+				{&gatewayAuthNamespace, gatewayAuthDeployment},
+				{&localCSINamespace, localCSIManager},
+				{&kaitoNamespace, kaitoDeployment},
+			} {
+				ns, err := utils.DeploymentNamespace(ctx, target.deployment)
+				Expect(err).NotTo(HaveOccurred())
+				*target.namespace = ns
+			}
 		})
 
 		// scaleToZeroAndAssert scales a Deployment to zero, registers a

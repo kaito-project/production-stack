@@ -90,10 +90,13 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 			gatewayName := namespace
 
 			// Each entry: a harness-owned object identified by GVK + name.
+			// altNames lists names the same object takes in another chart
+			// mode; the first one that exists is asserted.
 			owned := []struct {
-				desc string
-				gvk  schema.GroupVersionKind
-				name string
+				desc     string
+				gvk      schema.GroupVersionKind
+				name     string
+				altNames []string
 			}{
 				{
 					desc: "Gateway",
@@ -119,6 +122,8 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 					desc: "ext-authz EnvoyFilter",
 					gvk:  schema.GroupVersionKind{Group: "networking.istio.io", Version: "v1alpha3", Kind: "EnvoyFilter"},
 					name: "apikey-ext-authz",
+					// cloudprovider=azure renders templates/azure/envoyfilter-ext-authz.yaml.
+					altNames: []string{"ext-authz"},
 				},
 				{
 					desc: "APIKey",
@@ -132,10 +137,12 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 				obj := &unstructured.Unstructured{}
 				obj.SetGroupVersionKind(o.gvk)
 				Eventually(func() map[string]string {
-					if err := cl.Get(ctx, types.NamespacedName{Namespace: namespace, Name: o.name}, obj); err != nil {
-						return nil
+					for _, name := range append([]string{o.name}, o.altNames...) {
+						if err := cl.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, obj); err == nil {
+							return obj.GetLabels()
+						}
 					}
-					return obj.GetLabels()
+					return nil
 				}, utils.InferenceSetReadyTimeout, utils.PollInterval).Should(
 					HaveKeyWithValue("kaito.sh/owned-by", "modelharness"),
 					"%s must carry kaito.sh/owned-by: modelharness", o.desc)

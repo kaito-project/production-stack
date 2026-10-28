@@ -57,6 +57,36 @@ func BBRNamespace(ctx context.Context) (string, error) {
 	return pods.Items[0].Namespace, nil
 }
 
+// DeploymentNamespace discovers the namespace of the cluster-wide Deployment
+// named name. Like BBRNamespace, it avoids assuming the umbrella chart's
+// release namespaces (kaito-system, llm-gateway-auth): a managed control plane
+// installs the same workloads into its own add-on namespace. Exactly one
+// Deployment with that name must exist.
+func DeploymentNamespace(ctx context.Context, name string) (string, error) {
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return "", err
+	}
+	deployments, err := clientset.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		FieldSelector: "metadata.name=" + name,
+	})
+	if err != nil {
+		return "", fmt.Errorf("list Deployments named %q: %w", name, err)
+	}
+	switch len(deployments.Items) {
+	case 0:
+		return "", fmt.Errorf("no Deployment named %q in any namespace", name)
+	case 1:
+		return deployments.Items[0].Namespace, nil
+	default:
+		namespaces := make([]string, 0, len(deployments.Items))
+		for _, d := range deployments.Items {
+			namespaces = append(namespaces, d.Namespace)
+		}
+		return "", fmt.Errorf("Deployment %q exists in several namespaces %v", name, namespaces)
+	}
+}
+
 var (
 	scheme         = runtime.NewScheme()
 	TestingCluster = NewCluster(scheme)

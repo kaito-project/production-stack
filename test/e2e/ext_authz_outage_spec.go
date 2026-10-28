@@ -63,16 +63,14 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelAuth,
 	utils.GinkgoLabelStandardK8sOnly, func() {
 
-		const (
-			authNamespace      = "llm-gateway-auth"
-			authDeploymentName = "apikey-authz"
-		)
+		const authDeploymentName = "apikey-authz"
 
 		var (
-			ctx         context.Context
-			caseGateway deploy.GatewayEndpoint
-			modelName   string
-			replicas    *utils.DeploymentReplicaGuard
+			ctx           context.Context
+			authNamespace string
+			caseGateway   deploy.GatewayEndpoint
+			modelName     string
+			replicas      *utils.DeploymentReplicaGuard
 		)
 
 		BeforeAll(func() {
@@ -81,6 +79,9 @@ var _ = Describe("ext_authz outage (fail-closed cluster filter)",
 
 			caseGateway = InstallCase(CaseExtAuthzOutage)
 			modelName = CaseDeployments[CaseExtAuthzOutage][0].Name
+			var err error
+			authNamespace, err = utils.DeploymentNamespace(ctx, authDeploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			replicas = prepareDeploymentOutage(ctx, authNamespace, authDeploymentName)
 
 			// Sanity: an authenticated request must succeed BEFORE we
