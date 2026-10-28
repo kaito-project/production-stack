@@ -41,7 +41,7 @@ import (
 // The E2E install runs the reporter with a 60s resync, a 60s window at
 // 20 MB/s, a 30s startup grace and a 120s Event refresh interval.
 var _ = Describe("Model Download Slow Reporter",
-	utils.GinkgoLabelStatusReporter, utils.GinkgoLabelNoGPU, utils.GinkgoLabelStandardK8sOnly, func() {
+	utils.GinkgoLabelStatusReporter, utils.GinkgoLabelNoGPU, func() {
 
 		const (
 			setupTimeout  = 3 * time.Minute
@@ -102,7 +102,11 @@ var _ = Describe("Model Download Slow Reporter",
 			ctx = context.Background()
 		})
 
-		It("emits inferencesetModelDownloadSlow for a sustained-slow ModelMirror and stops once it is Ready", func() {
+		// The mock ModelMirror status is patched directly; a managed control
+		// plane that runs KAITO's ModelMirror controller immediately
+		// reconciles it back to Ready, so the sustained-slow window never
+		// fills.
+		It("emits inferencesetModelDownloadSlow for a sustained-slow ModelMirror and stops once it is Ready", utils.GinkgoLabelStandardK8sOnly, func() {
 			setup("e2e-rpt-mm-slow", false)
 			setSpeed(slowBps)
 

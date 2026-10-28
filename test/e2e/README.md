@@ -92,28 +92,28 @@ specs. They remain enabled by default upstream. Consumers whose deployed stack
 does not yet support these endpoints can exclude them with `!ModelDiscovery`.
 
 `StandardK8sOnly` cuts across the other two. It marks specs that require a
-standard Kubernetes cluster and cannot run on an opinionated managed one such as
-AKS Automatic: they reshape running workloads
-directly rather than going through the `Deployer` — `ScaleDeployment` on a
-Deployment's scale subresource ([`utils/cluster.go`](utils/cluster.go)) or
-`SetInferenceSetReplicas` patching an InferenceSet
-([`utils/scaling.go`](utils/scaling.go)) — or their assertion only holds under a
-`ModelDeploymentValues` field a managed backend cannot express, or they scrape
-metrics through `pods/proxy`, directly or via the helpers in
-[`utils/metrics.go`](utils/metrics.go). When running against a managed cluster:
+standard Kubernetes cluster and cannot run on a managed control plane such as
+AKS AI Manager, even with cluster-admin access: their assertion only holds under
+a `ModelDeploymentValues` field a managed backend cannot express
+(`EPPScorerWeights`, `ScalingMetrics`, `AutoUpgrade`), they fake state that a
+controller run by the managed control plane reconciles away (a ModelMirror
+download status), or they have not been verified on a managed control plane yet.
+Scaling shared Deployments through the scale subresource
+([`utils/cluster.go`](utils/cluster.go)), `kubectl exec` into the Gateway, and
+scraping metrics through `pods/proxy` ([`utils/metrics.go`](utils/metrics.go))
+do not need it. When running against a managed cluster:
 
 ```bash
 E2E_LABEL='!StandardK8sOnly' make test-e2e
 ```
 
-It currently covers `bbr_outage`, `ext_authz_outage`, `epp_outage`,
-`cluster_filter_ha`, `cluster_status`, `control_plane_error`,
-`model_download_slow`, `scaling`, `scale_to_zero`, and the
-`Load distribution` Context of `model_routing` (which turns prefix-cache scoring
-off through `EPPScorerWeights` so identical prompts spread across replicas).
-It also covers `prefix_cache_routing`, `prefix_cache_perf`, the cross-model
-isolation and EPP metrics Contexts and backend 4xx counter assertion in
-`model_routing`, and the full-chain counter assertions in `filter_order`.
+It currently covers `scaling` (including `scale_to_zero`), the
+`Load distribution` Context of `model_routing` (which turns prefix-cache
+scoring off through `EPPScorerWeights` so identical prompts spread across
+replicas) and its EPP metrics Context, the `autoUpgrade` Context of
+`modeldeployment_chart`, the sustained-slow ModelMirror case of
+`model_download_slow`, and the two cloud provisioning-failure cases of
+`control_plane_error`.
 Label the smallest container that needs it, not the whole file: routing and
 filter-order specs that do not require these mechanisms stay runnable everywhere.
 Note it describes the MECHANISM, not the blast radius: `model_unavailable`
@@ -271,7 +271,7 @@ Conventions worth knowing when writing a spec:
   errors. `WaitForDeploymentReplicas` accepts at least the requested ready count,
   except zero, which waits for scale-down convergence. `DeploymentReplicaGuard`
   captures the original count and provides exact `ScaleAndWait` and repeatable
-  `Restore` operations for `StandardK8sOnly` fault-injection specs.
+  `Restore` operations for fault-injection specs.
   Register case teardown and restoration independently in `BeforeAll`, with
   restoration registered last so it runs first after the Ordered container.
   Keep outage attribution, labels, and recovery assertions visible in each spec.

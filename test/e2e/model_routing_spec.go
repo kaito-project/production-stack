@@ -204,7 +204,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("Cross-model isolation (serial)", utils.GinkgoLabelStandardK8sOnly, func() {
+	Context("Cross-model isolation (serial)", func() {
 		const numRequests = 5
 
 		It("should route requests to the correct model pool with no cross-contamination", func() {
@@ -248,7 +248,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("Cross-model isolation (concurrent)", utils.GinkgoLabelStandardK8sOnly, func() {
+	Context("Cross-model isolation (concurrent)", func() {
 		const numPerModel = 20
 
 		It("should maintain isolation under interleaved concurrent traffic", func() {
@@ -690,7 +690,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				"non-/v1/ path should not cause a 5xx error")
 		})
 
-		It("should passthrough backend 4xx when prompt exceeds max context length", utils.GinkgoLabelStandardK8sOnly, func() {
+		It("should passthrough backend 4xx when prompt exceeds max context length", func() {
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 

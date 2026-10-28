@@ -145,18 +145,23 @@ var (
 	GinkgoLabelNoGPU = g.Label("NoGPU")
 
 	// GinkgoLabelStandardK8sOnly marks tests that require a standard Kubernetes
-	// cluster and cannot run on an opinionated managed one such as AKS Automatic.
+	// cluster and cannot run on a managed control plane such as AKS AI Manager,
+	// even with cluster-admin access.
 	//
-	// Three things put a spec here:
+	// What puts a spec here:
 	//
-	//   - It reshapes running workloads directly, bypassing the deploy.Deployer:
-	//     ScaleDeployment on a Deployment's scale subresource (utils/cluster.go)
-	//     or SetInferenceSetReplicas patching an InferenceSet (utils/scaling.go).
 	//   - Its assertion only holds under a ModelDeploymentValues field a managed
-	//     backend cannot express, such as the EPPScorerWeights override the
-	//     load-distribution spec needs to disable prefix-cache scoring.
-	//   - It scrapes pod metrics through the pods/proxy subresource, directly
-	//     or through the helpers in utils/metrics.go.
+	//     backend cannot express: EPPScorerWeights (load distribution, scaling),
+	//     ScalingMetrics (scaling) or AutoUpgrade (modeldeployment chart).
+	//   - It fakes state that a controller run by the managed control plane
+	//     reconciles away, such as a ModelMirror download status.
+	//   - It has not been verified on a managed control plane yet: the cloud
+	//     provisioning-failure specs (skipped under gpu-node-mocker) and the EPP
+	//     metrics spec (skipped everywhere).
+	//
+	// Scaling shared Deployments through the scale subresource, `kubectl exec`
+	// into the Gateway, and scraping pod metrics through pods/proxy do not need
+	// it: those work on AI Manager with cluster-admin access.
 	//
 	// It cuts ACROSS the feature-area labels — a spec keeps its own (Outage,
 	// StatusReporter, Scaling, ...) and carries this one in addition, so a run

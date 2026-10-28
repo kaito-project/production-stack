@@ -54,7 +54,7 @@ func recycleNamespace(ctx context.Context, deploymentName, namespace string) {
 	}
 }
 
-var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.GinkgoLabelStandardK8sOnly, func() {
+var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() {
 	var ctx context.Context
 
 	BeforeEach(func() {
@@ -208,7 +208,9 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.G
 		})
 	})
 
-	Context("modeldeployment chart with autoUpgrade enabled", func() {
+	// AutoUpgrade is a ModelDeploymentValues field a managed backend may not
+	// be able to express.
+	Context("modeldeployment chart with autoUpgrade enabled", utils.GinkgoLabelStandardK8sOnly, func() {
 		// Reuse the same base deployment values as the install/uninstall
 		// context, but opt into KAITO automatic base image upgrades with a
 		// maintenance window. Each It installs into a fresh random namespace

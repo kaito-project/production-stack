@@ -81,11 +81,8 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 			"workload namespace must carry the reporter discovery label")
 	})
 
-	// The Namespace above is a built-in kind; everything asserted here is a CR
-	// the harness renders, which a managed control plane does not let the caller
-	// read.
 	It("stamps kaito.sh/owned-by: modelharness on every harness-owned object",
-		utils.GinkgoLabelStandardK8sOnly, func() {
+		func() {
 			cl := utils.TestingCluster.KubeClient
 			gatewayName := namespace
 
