@@ -95,12 +95,12 @@ def test_framer_parser_and_holdback_at_every_byte_boundary(scanner, ending):
 
 def test_shared_holdback_scans_before_release_and_preserves_context(scanner):
     window = StreamingBufferWindow(scanner, holdback_len=2)
-    assert window.feed("hello") == WindowEmitResult(chunks=("hel",))
-    assert window.feed(" world") == WindowEmitResult(chunks=("lo wor",))
+    assert window.feed("hello!") == WindowEmitResult(chunks=("hell",))
+    assert window.feed(" world") == WindowEmitResult(chunks=("o! wor",))
     assert window.flush() == WindowEmitResult(chunks=("ld",))
     assert scanner.scan.call_args_list == [
-        call("hello", flush=False, preceding_char=""),
-        call("lo world", flush=False, preceding_char="l"),
+        call("hello!", flush=False, preceding_char=""),
+        call("o! world", flush=False, preceding_char="l"),
         call("ld", flush=True, preceding_char="r"),
     ]
 
