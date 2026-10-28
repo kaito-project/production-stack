@@ -149,8 +149,7 @@ integration must supply transport and policy handling, not duplicate core logic.
 
 The `kaito-guard-ext-proc` job installs `.[dev]` with Python 3.12, exercises the
 published framing/parser/window APIs and the logical stream adapter, runs the
-unchanged gRPC skeleton tests, and builds the container. The image build verifies
-the shared API imports.
+unchanged gRPC skeleton tests, and builds the container.
 The image is not published; these tests do not claim real Envoy protection.
 
 ## Container

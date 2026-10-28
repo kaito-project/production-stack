@@ -9,8 +9,7 @@ WORKDIR /app
 
 COPY kaito-guard-ext-proc/setup.py .
 COPY kaito-guard-ext-proc/ext_proc/ ./ext_proc/
-RUN pip install --no-cache-dir . \
-    && python -c "from guardrail_core.streaming.sse import SSEFramer; from guardrail_core.streaming.openai import parse_openai_chat_sse_event; from guardrail_core.streaming.window import StreamingBufferWindow"
+RUN pip install --no-cache-dir .
 
 EXPOSE 9000
 
