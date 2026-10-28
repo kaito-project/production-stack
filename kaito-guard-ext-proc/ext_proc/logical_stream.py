@@ -30,14 +30,11 @@ class LogicalStreamError(ValueError):
 
 
 class LogicalStream:
-    """Release scanner-approved text from one response's SSE bytes.
+    """Scan one response's SSE text before releasing it.
 
-    Each response needs its own instance. holdback_len counts Unicode code
-    points and must cover the scanner's cross-chunk matching requirements.
-    Framing errors, protocol errors, scanner errors, and cancellation permanently
-    close the stream without flushing. Exceptions propagate to the caller.
-    The caller owns upstream closure, refusal responses, and cancel() on
-    upstream failure or cancellation outside these synchronous methods.
+    Use a separate instance per response. The caller handles upstream closure
+    and refusal responses, and must call cancel() on external failure or
+    cancellation.
     """
 
     def __init__(
@@ -47,6 +44,7 @@ class LogicalStream:
         holdback_len: int,
         max_event_bytes: int = 1024 * 1024,
     ) -> None:
+        """Set holdback_len in Unicode code points to cover cross-chunk matches."""
         self._framer: SSEFramer | None = SSEFramer(max_event_bytes=max_event_bytes)
         self._window: StreamingBufferWindow | None = StreamingBufferWindow(
             scanner, holdback_len=holdback_len
@@ -63,11 +61,17 @@ class LogicalStream:
         return self._blocked
 
     def feed(self, chunk: bytes) -> WindowEmitResult:
-        """Parse bytes and return only approved chunks; blocked means stop."""
+        """Return approved chunks; blocked means stop.
+
+        Errors propagate and permanently close the stream without flushing.
+        """
         return self._advance(chunk, final=False)
 
     def finish(self) -> WindowEmitResult:
-        """At normal EOF, validate framing and DONE before flushing once."""
+        """At normal EOF, validate framing and DONE before flushing once.
+
+        Errors propagate and permanently close the stream without flushing.
+        """
         return self._advance(b"", final=True)
 
     def cancel(self) -> None:
