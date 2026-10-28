@@ -29,7 +29,48 @@ Runtime dependencies are defined in `setup.py`. `kaito-guardrail-core==0.1.1`
 is installed from PyPI. `xds-protos`, published by the gRPC project, supplies
 the generated Envoy protobuf messages and service.
 
-## Direct shared streaming APIs
+## Logical stream adapter
+
+`ext_proc.logical_stream.LogicalStream` connects SSE bytes, shared OpenAI
+parsing, and the shared scan-before-release window for one response:
+
+```python
+from ext_proc.logical_stream import LogicalStream
+
+stream = LogicalStream(scanner, holdback_len=holdback_len)
+try:
+    for wire_bytes in upstream:
+        result = stream.feed(wire_bytes)
+        emit(result.chunks)
+        if result.blocked:
+            refuse()
+            break
+    else:
+        result = stream.finish()
+        emit(result.chunks)
+        if result.blocked:
+            refuse()
+finally:
+    stream.cancel()
+    upstream.close()
+```
+
+The caller supplies `scanner`, `holdback_len`, upstream ownership, emission,
+and refusal/error policy. Only emit returned chunks; stop and refuse on block.
+The adapter accepts empty choices as metadata; non-empty choices must contain
+exactly one choice with index zero. It requires `[DONE]` **and** successful EOF
+framing validation before flushing. Data after DONE is rejected; comments are
+ignored. Finish, block, errors, and cancellation permanently close the adapter;
+subsequent input or finish raises `RuntimeError`. `cancel()` is idempotent and
+discards pending text without scanning or flushing.
+
+Shared framing and scanner exceptions propagate. Invalid parsed events or
+choice policy violations raise `LogicalStreamError`, without including model
+text. Call `cancel()` on upstream failure/cancellation, never `finish()`.
+This is tested composition code, not an Envoy `Process` implementation; the
+server remains unchanged and does not protect traffic.
+
+## Shared streaming contracts
 
 Import the APIs from their owning package; no ext_proc compatibility layer is
 needed:
@@ -68,15 +109,14 @@ in order, and call `finish()` once at normal EOF.
   exceptions. There is no incomplete-remainder success fallback.
 - `parse_openai_chat_sse_event(event)` returns a shared result with `PARSED`,
   `DONE`, `NO_DATA`, `MALFORMED_JSON`, or `INVALID_PAYLOAD` status. Malformed or
-  invalid data must enter the future adapter's explicit failure policy, not be
+  invalid data enters the adapter's explicit failure path, not be
   treated as harmless empty content.
 - Choice indexes must be explicit integers; omitted indexes are not defaulted
   locally. A bare `[DONE]` without a data field is not an SSE DONE event.
 - The shared parser retains all choices, including non-text entries. It does
-  not enforce a product's single-choice policy. Future `Process` integration
-  must restrict requests to `n=1` and validate every choice as index zero, or
-  maintain independent stream/window state per choice. Do not concatenate
-  different choices.
+  not enforce a product's single-choice policy. The logical stream adapter
+  validates this policy; future `Process` integration must also restrict
+  requests to `n=1`. Do not concatenate different choices.
 
 ### Holdback and stream lifecycle
 
@@ -102,14 +142,15 @@ blocking, and safe-prefix release.
   and terminal response state. Unlike `SSEFramer.finish()`, window `flush()` does
   not close the window. Do not reuse a completed or abandoned response's window.
 
-These are requirements for future `Process` integration, not implemented gateway
-behavior. Overlapping local safety logic must not be added in parallel.
+The logical stream adapter manages these lifecycle rules; future `Process`
+integration must supply transport and policy handling, not duplicate core logic.
 
 ## CI
 
 The `kaito-guard-ext-proc` job installs `.[dev]` with Python 3.12, exercises the
-published framing/parser/window APIs together, runs the unchanged gRPC skeleton
-tests, and builds the container. The image build verifies the shared API imports.
+published framing/parser/window APIs and the logical stream adapter, runs the
+unchanged gRPC skeleton tests, and builds the container. The image build verifies
+the shared API imports.
 The image is not published; these tests do not claim real Envoy protection.
 
 ## Container
