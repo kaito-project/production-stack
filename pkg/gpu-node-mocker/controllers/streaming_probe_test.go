@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -257,7 +258,7 @@ func TestBuildStreamingIdentity_DirectAzure(t *testing.T) {
 
 func TestBuildProbeContainer_SAS(t *testing.T) {
 	id := buildStreamingIdentity(newSASOriginalPod(), streamingModeSAS)
-	c := buildProbeContainer(id, testConfig(), "probe-cm")
+	c := buildProbeContainer(id, testConfig())
 
 	if c.Name != StreamingProbeContainerName {
 		t.Errorf("name = %q", c.Name)
@@ -297,7 +298,7 @@ func TestBuildProbeContainer_SAS(t *testing.T) {
 	for _, m := range c.VolumeMounts {
 		mounts[m.Name] = true
 	}
-	if !mounts["probe-cm"] || !mounts[KaitoSASSharedVolumeName] {
+	if !mounts[StreamingProbeVolumeName] || !mounts[KaitoSASSharedVolumeName] {
 		t.Errorf("unexpected mounts: %v", mounts)
 	}
 }
@@ -325,7 +326,7 @@ func TestBuildProbeContainer_FollowsOriginalSASPaths(t *testing.T) {
 		}
 	}
 
-	probe := buildProbeContainer(buildStreamingIdentity(original, streamingModeSAS), testConfig(), "probe-cm")
+	probe := buildProbeContainer(buildStreamingIdentity(original, streamingModeSAS), testConfig())
 	if got := envValue(probe.Env, KaitoSASEnvFileEnvVar); got != "/elsewhere/sas.env" {
 		t.Errorf("STREAM_ENV_FILE = %q, want the original's value", got)
 	}
@@ -336,7 +337,7 @@ func TestBuildProbeContainer_FollowsOriginalSASPaths(t *testing.T) {
 
 func TestBuildProbeContainer_DirectAzureDoesNotSourceEnvFile(t *testing.T) {
 	id := streamingIdentity{mode: streamingModeDirectAzure, modelURI: "az://weights/phi-3"}
-	c := buildProbeContainer(id, testConfig(), "probe-cm")
+	c := buildProbeContainer(id, testConfig())
 
 	if envValue(c.Env, "PROBE_MODEL_URI") != "az://weights/phi-3" {
 		t.Errorf("missing PROBE_MODEL_URI: %+v", c.Env)
@@ -509,6 +510,37 @@ func initContainerNames(pod *corev1.Pod) []string {
 		names = append(names, c.Name)
 	}
 	return names
+}
+
+func TestEnsureShadowPod_LongNameKeepsVolumeNamesValid(t *testing.T) {
+	original := newSASOriginalPod()
+	r, _ := newProbeReconciler(t, testConfig(), original)
+	shadowName := "shadow-e2e-model-download-regression-model-download-regression-phi-47pkf-0"
+
+	shadow, err := r.ensureShadowPod(context.Background(), original, shadowName)
+	if err != nil {
+		t.Fatalf("ensureShadowPod: %v", err)
+	}
+
+	volumes := map[string]bool{}
+	for _, v := range shadow.Spec.Volumes {
+		if errs := validation.IsDNS1123Label(v.Name); len(errs) > 0 {
+			t.Errorf("volume name %q is invalid: %v", v.Name, errs)
+		}
+		volumes[v.Name] = true
+		if v.Name == StreamingProbeVolumeName {
+			if v.ConfigMap == nil || v.ConfigMap.Name != probeScriptConfigMapName(shadowName) {
+				t.Errorf("probe volume source = %+v, want ConfigMap %q", v.VolumeSource, probeScriptConfigMapName(shadowName))
+			}
+		}
+	}
+	for _, c := range shadow.Spec.InitContainers {
+		for _, m := range c.VolumeMounts {
+			if !volumes[m.Name] {
+				t.Errorf("init container %q mounts undeclared volume %q", c.Name, m.Name)
+			}
+		}
+	}
 }
 
 func TestEnsureShadowPod_SASPath(t *testing.T) {
