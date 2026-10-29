@@ -1,14 +1,9 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-# Make pip trust only the OS CA bundle: pip's vendored certifi can still
-# trust roots the OS bundle has distrusted (e.g. those behind the
-# compromised eMudhra intermediates). The base image's pip 24.0 honours
-# PIP_CERT directly; pip >= 24.2 verifies through truststore and merges its
-# vendored certifi unless legacy-certs is set, which pip 24.0 rejects, so it
-# is only enabled after the upgrade.
+# Keep pip's vendored certifi from adding roots distrusted by the OS bundle.
 ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
-RUN pip install --no-cache-dir pip==26.2.2
 ENV PIP_USE_DEPRECATED=legacy-certs
+RUN pip install --no-cache-dir pip==26.2.2
 
 WORKDIR /app
 
