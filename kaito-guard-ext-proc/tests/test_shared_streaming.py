@@ -35,11 +35,7 @@ def test_pinned_dependency_contract():
     dependencies = requires("kaito-guard-ext-proc")
     assert dependencies is not None
     core = next(dep for dep in dependencies if dep.startswith("kaito-guardrail-core"))
-    assert (
-        "https://github.com/xiaoqi-7/kaito/archive/"
-        "2aed1ae7da18536d73eaee0f089d8a40559469d7.tar.gz"
-        "#subdirectory=guardrail_core"
-    ) in core
+    assert core == "kaito-guardrail-core==0.2.0"
     assert metadata("kaito-guard-ext-proc")["Requires-Python"] == ">=3.12"
 
 

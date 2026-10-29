@@ -25,14 +25,12 @@ python -m ext_proc.server
 python -m pytest
 ```
 
-Runtime dependencies are defined in `setup.py`. This draft pins the shared core
-source archive at commit `2aed1ae7da18536d73eaee0f089d8a40559469d7` from
-[kaito-project/kaito#2487](https://github.com/kaito-project/kaito/pull/2487).
-Published core 0.1.1 supplies the streaming APIs but not the new configuration
-APIs. Replace the temporary source pin with an exact PyPI version once the
-prerequisite is merged and released; core's source version 0.2.0 is not a
-published release. `xds-protos`, published by the gRPC project, supplies the
-generated Envoy protobuf messages and service.
+Runtime dependencies are defined in `setup.py`. The shared core is pinned to
+the published PyPI package `kaito-guardrail-core==0.2.0`, which supplies both
+streaming and configuration/build APIs. See the
+[0.2.0 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.0).
+`xds-protos`, published by the gRPC project, supplies the generated Envoy
+protobuf messages and service.
 
 ## Gateway policy adaptation
 
