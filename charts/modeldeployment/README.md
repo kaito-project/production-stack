@@ -6,7 +6,8 @@ Extension) artifacts for a single model:
 - `kaito.sh/v1beta1` `InferenceSet`
 - `inference.networking.k8s.io/v1` `InferencePool` (normally provisioned by KAITO via Flux; rendered inline here)
 - Endpoint Picker (EPP) `Deployment` + `Service` + `ServiceAccount` + `Role` + `RoleBinding` + `ConfigMap`
-- `gateway.networking.k8s.io/v1` `HTTPRoute` matching `X-Gateway-Model-Name: <name>`
+- optional BBR-managed `ConfigMap` mapping LoRA adapter IDs to their base deployment
+- `gateway.networking.k8s.io/v1` `HTTPRoute` matching either `X-Gateway-Model-Name: <name>` or `X-Gateway-Base-Model-Name: <name>`
 - `networking.istio.io/v1alpha3` `EnvoyFilter` mapping EPP / upstream response flags onto the unified OpenAI-compatible error envelope
 
 Every chart-owned object (EPP `Deployment` / `Service`, `HTTPRoute`,
@@ -32,6 +33,54 @@ The EPP runs the [`llm-d-router-endpoint-picker`](https://github.com/llm-d/llm-d
 distribution with `--secure-serving=false`, so the Istio Gateway can reach it
 over plaintext gRPC and **no `DestinationRule` is required**.
 
+## LoRA adapters
+
+The chart supports LoRA adapter serving with KAITO's vLLM runtime. It renders
+each adapter into `spec.template.inference.adapters` and creates a labeled
+ConfigMap consumed by BBR's `base-model-to-header` plugin. A request whose
+OpenAI `model` field is an adapter name is therefore routed to this
+deployment's InferencePool while preserving the adapter name for vLLM.
+When adapters are configured, the chart stamps `kaito.sh/runtime: vllm` on
+both the InferenceSet and its Workspace template. The KAITO controller's vLLM
+feature gate must also be enabled; clusters configured for Transformers-only
+serving are not supported by this adapter interface.
+
+Image-backed example:
+
+```yaml
+name: team-a-phi
+model: phi-4-mini-instruct
+adapters:
+  - source:
+      name: team-a-legal
+      image: example.azurecr.io/phi-legal-adapter:v1
+      imagePullSecrets:
+        - adapter-registry
+```
+
+PVC-backed example:
+
+```yaml
+name: team-a-phi
+model: phi-4-mini-instruct
+adapters:
+  - source:
+      name: team-a-summary
+      volumeSource:
+        persistentVolumeClaim:
+          claimName: phi-summary-adapter
+```
+
+The field is named `volumeSource` to match the KAITO CRD. The adapter volume
+must contain valid PEFT files such as `adapter_model.safetensors` and
+`adapter_config.json`.
+
+The chart intentionally does not expose KAITO's `strength` field because vLLM
+rejects it. Adapter names must be unique within a deployment, must differ from
+the base deployment name, and must be unique across the cluster: the shared
+BBR instance indexes adapter mappings by name without a namespace dimension.
+Use tenant/deployment-prefixed names on shared clusters.
+
 ## Inputs
 
 | Key                       | Required | Default                                                              | Description                                                                                |
@@ -40,6 +89,11 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `namespace`               | optional | `.Release.Namespace`                                                 | Target namespace.                                                                          |
 | `model`                   | required | `""`                                                                 | Preset model name. Used only as `spec.template.inference.preset.name`.                     |
 | `config`                  | optional | `""`                                                                 | Name of a ConfigMap in the deployment namespace containing custom inference arguments. Rendered as `spec.template.inference.config`. |
+| `adapters`                          | optional    | `[]`    | LoRA adapters loaded by vLLM. Each adapter name is an additional client-visible model ID. |
+| `adapters[].source.name`            | per adapter | _none_  | DNS-1123 adapter ID. Must differ from the deployment name and be cluster-wide unique. |
+| `adapters[].source.image`           | conditional | _none_  | Adapter image with PEFT files under `/data`. Exactly one of `image` or `volumeSource` is required. |
+| `adapters[].source.imagePullSecrets` | optional    | `[]`    | Secret names used to pull the adapter image. Valid only with `image`. |
+| `adapters[].source.volumeSource`    | conditional | _none_  | Kubernetes VolumeSource containing the adapter files. Exactly one of `image` or `volumeSource` is required. |
 | `modelAccessSecret`       | optional | `""`                                                                 | Name of a Secret containing Hugging Face model access credentials. Rendered as `spec.template.inference.preset.presetOptions.modelAccessSecret`. |
 | `instanceType`            | optional | `Standard_NV36ads_A10_v5`                                            | VM instance type for the underlying nodes. Set `""` to omit `spec.template.resource.instanceType`. Required with node auto-provisioning; optional on BYO-node clusters (KAITO `nodeProvisioner=byo`), where it restricts GPU nodes to `node.kubernetes.io/instance-type=<instanceType>`. |
 | `nodeLabelSelector`       | optional | `{}`                                                                 | GPU node [LabelSelector](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#resources-that-support-set-based-requirements) (`matchLabels` / `matchExpressions`), rendered as `spec.template.resource.labelSelector`. Empty omits it: with node auto-provisioning it inherits `spec.labelSelector`; on BYO-node clusters GPU nodes are auto-selected. Requires a KAITO release with kaito-project/kaito#2444 (v0.13.0+); older CRDs silently drop the field. |
