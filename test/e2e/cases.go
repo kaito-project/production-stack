@@ -18,10 +18,12 @@ package e2e
 
 import (
 	"context"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo DSL
 	. "github.com/onsi/gomega"    //nolint:revive // Gomega DSL
+	"k8s.io/utils/ptr"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
@@ -30,6 +32,19 @@ import (
 // intPtr returns a pointer to an int literal — used for optional fields in
 // ModelDeploymentValues (e.g. EPPScorerWeights).
 func intPtr(v int) *int { return &v }
+
+// envScalingInstanceType overrides the Scaling cases' SKU; the real-GPU
+// nightly job sets it to Standard_NC40ads_H100_v5.
+const envScalingInstanceType = "E2E_SCALING_INSTANCE_TYPE"
+
+// scalingInstanceType defaults to a non-NVMe SKU because, on NVMe SKUs, KAITO
+// puts weights on a local-NVMe PVC that a mocker fake node cannot bind.
+var scalingInstanceType = func() string {
+	if v := os.Getenv(envScalingInstanceType); v != "" {
+		return v
+	}
+	return "Standard_NV36ads_A10_v5"
+}()
 
 // Inference preset names. These are the underlying KAITO presets and become
 // the InferenceSet's spec.template.inference.preset.name. They do NOT appear
@@ -98,6 +113,10 @@ const (
 	// of a single model, fake-node and shadow-pod inventory churn,
 	// background load to assert no 5xx during transitions).
 	CaseScaling = "scaling"
+
+	// CaseScalingTransitions covers scaling_transitions_spec.go: changes to
+	// the autoscaling configuration of a running or parked deployment.
+	CaseScalingTransitions = "scaling-transitions"
 
 	// CaseKarpenterSmall covers the Karpenter nightly small-model scenario:
 	// a single-GPU, single-node deployment that proves basic NAP provisioning,
@@ -189,20 +208,24 @@ const (
 	// Serial. Non-auth so only BBR + EPP are in path.
 	CaseModelUnavailable = "model-unavailable"
 
-	// CaseControlPlaneError covers control_plane_error_spec.go (per-InferenceSet
-	// inferencesetEPPNotReady). It owns a dedicated
-	// namespace so the suite can perturb its EPP Deployment
-	// in parallel with other Describes without colliding on the
-	// model-routing case's namespace or reporter Events.
-	CaseControlPlaneError = "control-plane-error"
-
-	// CaseWeightDownloadSlow covers weight_download_slow_spec.go (negative
-	// assertion that a healthy deployment never trips
-	// inferencesetWeightDownloadSlow). It owns a dedicated namespace so its
-	// quiet-window negative assertion is not contaminated by another Describe
-	// installing/uninstalling a shared case namespace concurrently.
-	CaseWeightDownloadSlow = "weight-download-slow"
+	// CaseModelDownloadRegression covers model_download_regression_spec.go
+	// (a healthy real-GPU deployment never publishes a reporter Warning). It
+	// owns a dedicated namespace so its quiet-window negative assertion is not
+	// contaminated by another Describe installing/uninstalling a shared case
+	// namespace concurrently.
+	CaseModelDownloadRegression = "model-download-regression"
 )
+
+// envGPUInstanceType overrides the SKU of the status-reporter GPU regression
+// case, for regions without A10 quota (e.g. Standard_NC24ads_A100_v4).
+const envGPUInstanceType = "E2E_GPU_INSTANCE_TYPE"
+
+var gpuInstanceType = func() string {
+	if v := os.Getenv(envGPUInstanceType); v != "" {
+		return v
+	}
+	return "Standard_NV36ads_A10_v5"
+}()
 
 // CaseDeployments enumerates the full set of ModelDeploymentValues required
 // by each test case. The table is the single source of truth for what the
@@ -210,9 +233,10 @@ const (
 // unique across the entire table so Helm releases never collide.
 //
 // Conventions:
-//   - Name: deployment / Helm release name. AND the value carried in the
-//     `model` field of OpenAI-style requests (matched by the HTTPRoute as
-//     X-Gateway-Model-Name).
+//   - Name: deployment name (the Helm backend uses it as the release name,
+//     shortened when it exceeds Helm's 53-character limit). AND the value
+//     carried in the `model` field of OpenAI-style requests (matched by the
+//     HTTPRoute as X-Gateway-Model-Name).
 //   - Model: inference preset name, written to the InferenceSet's
 //     spec.template.inference.preset.name.
 //   - Namespace: per-case namespace — the suite installs into this
@@ -345,38 +369,8 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
-	CaseScaling: {
-		{
-			// Scaling baseline matches KEDA's minReplicaCount so that
-			// scale-down can converge back to it. With Replicas>1, KEDA's
-			// HPA computes desiredReplicas=ceil(metric/threshold)*1=0 when
-			// the queue drains and clamps to minReplicaCount=1, so the
-			// pool would never return to its starting size and Scale-Down
-			// assertions would fail.
-			Name:          "scaling-phi",
-			Namespace:     "e2e-scaling",
-			Model:         presetPhi,
-			Replicas:      1,
-			InstanceType:  "Standard_NV36ads_A10_v5",
-			EnableScaling: true,
-			MaxReplicas:   2,
-			// Single gauge signal on the vLLM waiting-queue length. The
-			// up-threshold is deliberately low so the pressure workload
-			// (scalingPressureConcurrency) pushes the per-replica queue
-			// above it and scale-up fires; the down-threshold sits below
-			// it so the sub-threshold workload (scalingSubThresholdConcurrency)
-			// drains the queue under it and scale-down converges back to
-			// the baseline. UpThreshold MUST be > DownThreshold (chart guard).
-			ScalingMetrics: []deploy.ScalingMetric{
-				{
-					Name:          "vllm:num_requests_waiting",
-					Type:          "gauge",
-					UpThreshold:   "10",
-					DownThreshold: "5",
-				},
-			},
-		},
-	},
+	CaseScaling:            {scalingCaseDeployment("scaling-phi", "e2e-scaling")},
+	CaseScalingTransitions: {scalingTransitionsDeployment()},
 	CaseKarpenterSmall: {
 		{
 			Name:         "k-7b",
@@ -435,28 +429,15 @@ var CaseDeployments = map[string][]deploy.ModelDeploymentValues{
 			InstanceType: "Standard_NV36ads_A10_v5",
 		},
 	},
-	CaseControlPlaneError: {
+	CaseModelDownloadRegression: {
 		{
-			// Single GPU-mocked InferenceSet so the EPP Deployment and the
-			// per-case Gateway exist for the perturbation specs. One replica
-			// is enough because the specs scale only control-plane Deployments.
-			Name:         "control-plane-error-phi",
-			Namespace:    "e2e-control-plane-error",
+			// Single healthy InferenceSet. The spec only asserts the absence of
+			// reporter Warnings, so one replica suffices.
+			Name:         "model-download-regression-phi",
+			Namespace:    "e2e-model-download-regression",
 			Model:        presetPhi,
 			Replicas:     1,
-			InstanceType: "Standard_NV36ads_A10_v5",
-		},
-	},
-	CaseWeightDownloadSlow: {
-		{
-			// Single healthy GPU-mocked InferenceSet. The spec only asserts
-			// the absence of a spurious inferencesetWeightDownloadSlow Event,
-			// so one replica suffices.
-			Name:         "weight-download-slow-phi",
-			Namespace:    "e2e-weight-download-slow",
-			Model:        presetPhi,
-			Replicas:     1,
-			InstanceType: "Standard_NV36ads_A10_v5",
+			InstanceType: gpuInstanceType,
 		},
 	},
 }
@@ -535,4 +516,68 @@ func prepareDeploymentOutage(ctx context.Context, namespace, name string) *utils
 		Expect(guard.Restore(ctx, 3*time.Minute)).To(Succeed(), "failed to restore %s/%s", namespace, name)
 	}, NodeTimeout(4*time.Minute))
 	return guard
+}
+
+// scalingCaseDeployment returns the KEDA-scaled deployment shared by the
+// scaling cases; each case gets its own namespace so containers never reuse a
+// namespace that is still terminating.
+func scalingCaseDeployment(name, namespace string) deploy.ModelDeploymentValues {
+	return deploy.ModelDeploymentValues{
+		// Scaling baseline matches KEDA's minReplicaCount (MinReplicas)
+		// so that scale-down can converge back to it. With Replicas>1,
+		// KEDA's HPA computes desiredReplicas=ceil(metric/threshold)*1=0
+		// when the queue drains and clamps to minReplicaCount=1, so the
+		// pool would never return to its starting size and Scale-Down
+		// assertions would fail.
+		Name:                         name,
+		Namespace:                    namespace,
+		Model:                        presetPhi,
+		Replicas:                     1,
+		InstanceType:                 scalingInstanceType,
+		EnableScaling:                true,
+		MinReplicas:                  1,
+		MaxReplicas:                  2,
+		ScaleDownStabilizationWindow: ptr.To(int64(300)),
+		ScaleUpPeriodSeconds:         ptr.To(int64(300)),
+		ScaleDownPeriodSeconds:       ptr.To(int64(300)),
+		// Caps concurrent sequences per pod so a modest workload builds
+		// a waiting queue even on an H100. The ConfigMap is created by
+		// the scaling spec before install.
+		Config: scalingVLLMConfigName,
+		// KEDA's scale-up gate needs readyReplicas, which KAITO only counts
+		// after the benchmark; on the mocker the benchmark can never finish.
+		DisableBenchmark: true,
+		// The bulk load repeats one prompt, so prefix-cache scoring pins it
+		// to the warm baseline pod and the scaled-up pod never serves (D1).
+		EPPScorerWeights: &deploy.EPPScorerWeights{PrefixCache: intPtr(0)},
+		// Single gauge signal on the vLLM waiting-queue length. Per-pod
+		// waiting is capped around max-num-seqs (5): the EPP saturation
+		// detector (queueDepthThreshold 5) and KAITO's vLLM rate limiter
+		// (HTTP 429 once waiting > max_num_seqs) stop it growing further.
+		// The up-threshold therefore sits below that cap so the pressure
+		// workload (scalingPressureConcurrency) trips scale-up; the
+		// down-threshold sits below it so the sub-threshold workload
+		// (scalingSubThresholdConcurrency) lets scale-down converge back
+		// to the baseline. UpThreshold MUST be > DownThreshold (chart guard).
+		ScalingMetrics: []deploy.ScalingMetric{
+			{
+				Name:          "vllm:num_requests_waiting",
+				Type:          "gauge",
+				UpThreshold:   "3",
+				DownThreshold: "1",
+			},
+		},
+	}
+}
+
+// scalingTransitionsDeployment shortens the HPA windows of the scaling
+// deployment. The transition specs run only on the GPU mocker, where the
+// signals are steady, so 60s windows cut each "holds under load" check from
+// about six minutes to about two without changing what is asserted.
+func scalingTransitionsDeployment() deploy.ModelDeploymentValues {
+	values := scalingCaseDeployment("transitions-phi", "e2e-scaling-transitions")
+	values.ScaleDownStabilizationWindow = ptr.To(int64(60))
+	values.ScaleUpPeriodSeconds = ptr.To(int64(60))
+	values.ScaleDownPeriodSeconds = ptr.To(int64(60))
+	return values
 }

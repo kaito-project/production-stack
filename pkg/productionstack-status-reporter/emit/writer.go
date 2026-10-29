@@ -16,12 +16,14 @@ limitations under the License.
 
 // Package emit is the low-level control-plane Event publisher. It enforces the
 // §1.1 schema (cluster-scoped involvedObject, source.component =
-// productionstack-status-reporter, Warning/Normal type) and implements the
-// standard Event aggregation behaviour by hand: a repeat of the same
-// (reason, involvedObject, message) bumps count + lastTimestamp on the existing
-// Event instead of creating a new one. The "what to publish and when"
-// (startup gating, recovery) is decided by the per-pass Emitter;
-// the writer below only knows how to persist a single Event to the API.
+// productionstack-status-reporter, Warning type) and the §1.1 Event lifecycle:
+// the first observation of an active finding creates its Event, and while the
+// finding stays active the same Event is refreshed (count, lastTimestamp,
+// message) at most once per refresh interval, so it never ages out with the
+// Event TTL. On recovery the finding is no longer passed in, so the Event is
+// simply no longer refreshed. The "what to publish and when" (startup gating)
+// is decided by the per-pass Emitter; the writer below only knows how to
+// persist a single Event to the API.
 package emit
 
 import (
@@ -30,6 +32,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -42,16 +45,27 @@ import (
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/reason"
 )
 
-// writer persists control-plane Events to kube-system. It is stateless beyond
-// the clientset, so the in-memory transition state used by the reporter lives
-// on the per-pass Emitter, not here.
+// writer persists control-plane Events to kube-system. It keeps no state
+// beyond its configuration: whether an active Event is due for a refresh is
+// read from the Event's own lastTimestamp, so the decision survives reporter
+// restarts and leader changes.
 type writer struct {
 	clientset kubernetes.Interface
+	clock     func() time.Time
+	// refreshInterval is the minimum interval between two writes of the same
+	// active Event (§1.1). Zero refreshes on every write.
+	refreshInterval time.Duration
 }
 
 // newWriter constructs a writer that persists Events via the supplied clientset.
-func newWriter(cs kubernetes.Interface) *writer {
-	return &writer{clientset: cs}
+func newWriter(cs kubernetes.Interface, clock func() time.Time, refreshInterval time.Duration) *writer {
+	return &writer{clientset: cs, clock: clock, refreshInterval: refreshInterval}
+}
+
+// dueForRefresh reports whether an existing Event was last written at least
+// refreshInterval ago.
+func (w *writer) dueForRefresh(ev *corev1.Event, now time.Time) bool {
+	return now.Sub(ev.LastTimestamp.Time) >= w.refreshInterval
 }
 
 // objectReference builds the cluster-scoped involvedObject reference. CRDs and
@@ -114,17 +128,21 @@ func sanitizeEventName(s string) string {
 	return name
 }
 
-// write creates or aggregates the Event for the finding.
+// write creates the Event for the finding, or refreshes the existing one when
+// it is due (§1.1).
 func (w *writer) write(ctx context.Context, f evaluator.Finding) error {
 	message := f.Message
 	name := eventName(f)
 	ref := objectReference(f.Object)
-	now := metav1.Now()
+	now := metav1.NewTime(w.clock())
 	eventType := reason.EventType(f.Reason)
 
 	existing, err := w.clientset.CoreV1().Events(config.ReportingNamespace).Get(ctx, name, metav1.GetOptions{})
 	if err == nil {
-		// Aggregate: bump count + lastTimestamp; refresh message in case it
+		if !w.dueForRefresh(existing, now.Time) {
+			return nil
+		}
+		// Refresh: bump count + lastTimestamp; refresh message in case it
 		// changed.
 		patch := existing.DeepCopy()
 		patch.Count++
@@ -166,21 +184,24 @@ func (w *writer) write(ctx context.Context, f evaluator.Finding) error {
 	}
 	if _, cerr := w.clientset.CoreV1().Events(config.ReportingNamespace).Create(ctx, event, metav1.CreateOptions{}); cerr != nil {
 		if apierrors.IsAlreadyExists(cerr) {
-			// Lost a race with another reconcile; fall back to an aggregate.
-			return w.aggregateExisting(ctx, name, message, eventType)
+			// Lost a race with another reconcile; fall back to a refresh.
+			return w.aggregateExisting(ctx, name, message, eventType, now)
 		}
 		return fmt.Errorf("create event %s: %w", name, cerr)
 	}
 	return nil
 }
 
-func (w *writer) aggregateExisting(ctx context.Context, name, message, eventType string) error {
+func (w *writer) aggregateExisting(ctx context.Context, name, message, eventType string, now metav1.Time) error {
 	existing, err := w.clientset.CoreV1().Events(config.ReportingNamespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("get event %s after AlreadyExists: %w", name, err)
 	}
+	if !w.dueForRefresh(existing, now.Time) {
+		return nil
+	}
 	existing.Count++
-	existing.LastTimestamp = metav1.Now()
+	existing.LastTimestamp = now
 	existing.Message = message
 	existing.Type = eventType
 	if _, uerr := w.clientset.CoreV1().Events(config.ReportingNamespace).Update(ctx, existing, metav1.UpdateOptions{}); uerr != nil {

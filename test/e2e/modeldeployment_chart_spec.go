@@ -102,7 +102,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.G
 			is := &unstructured.Unstructured{}
 			is.SetGroupVersionKind(schema.GroupVersionKind{
 				Group:   "kaito.sh",
-				Version: "v1alpha1",
+				Version: "v1beta1",
 				Kind:    "InferenceSet",
 			})
 			err := cl.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, is)
@@ -187,7 +187,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.G
 				is := &unstructured.Unstructured{}
 				is.SetGroupVersionKind(schema.GroupVersionKind{
 					Group:   "kaito.sh",
-					Version: "v1alpha1",
+					Version: "v1beta1",
 					Kind:    "InferenceSet",
 				})
 				err := cl.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, is)
@@ -246,7 +246,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.G
 			is := &unstructured.Unstructured{}
 			is.SetGroupVersionKind(schema.GroupVersionKind{
 				Group:   "kaito.sh",
-				Version: "v1alpha1",
+				Version: "v1beta1",
 				Kind:    "InferenceSet",
 			})
 			err := cl.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: namespace}, is)

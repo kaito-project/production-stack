@@ -23,6 +23,7 @@ limitations under the License.
 package window
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,8 +43,8 @@ type Sample struct {
 	Timestamp time.Time
 	// MBps is the observed throughput in MB/s.
 	MBps float64
-	// SourcePod is the pod the sample was scraped from.
-	SourcePod string
+	// Source is the download source the sample was observed from.
+	Source string
 }
 
 // Verdict is the result of evaluating one key's throughput window.
@@ -57,13 +58,13 @@ type Verdict struct {
 	Slow bool
 	// WorstMBps is the lowest throughput observed across the window.
 	WorstMBps float64
-	// SourcePod is the pod the window's samples were scraped from.
-	SourcePod string
+	// Source is the download source of the latest sample in the window.
+	Source string
 }
 
 // bucket is a per-key ring buffer of throughput samples bounded by
 // WindowDuration. Samples older than the window are evicted on every add and
-// evaluate.
+// evaluate, except the window's start sample.
 type bucket struct {
 	cfg     Config
 	samples []Sample
@@ -74,15 +75,30 @@ func (b *bucket) add(s Sample) {
 	b.evict(s.Timestamp)
 }
 
-// evict drops samples whose timestamp is older than now-WindowDuration.
+// evict drops the samples older than now-WindowDuration, except the latest of
+// them: it is the window's start sample, so a window sampled only about once
+// per WindowDuration (e.g. a resync interval equal to the window, whose passes
+// jitter around it) still spans it. Continuity is judged between consecutive
+// samples: a gap of 2*WindowDuration or more means sampling stopped (e.g. the
+// download was not observable for a while), so the samples before such a gap
+// no longer describe the current download and are dropped.
 func (b *bucket) evict(now time.Time) {
 	cutoff := now.Add(-b.cfg.WindowDuration)
-	i := 0
-	for i < len(b.samples) && b.samples[i].Timestamp.Before(cutoff) {
-		i++
+	start := 0
+	for i := range b.samples {
+		if b.samples[i].Timestamp.After(cutoff) {
+			break
+		}
+		start = i
 	}
-	if i > 0 {
-		b.samples = append(b.samples[:0:0], b.samples[i:]...)
+	for i := len(b.samples) - 1; i > start; i-- {
+		if b.samples[i].Timestamp.Sub(b.samples[i-1].Timestamp) >= 2*b.cfg.WindowDuration {
+			start = i
+			break
+		}
+	}
+	if start > 0 {
+		b.samples = append(b.samples[:0:0], b.samples[start:]...)
 	}
 }
 
@@ -109,7 +125,7 @@ func (b *bucket) evaluate(now time.Time) Verdict {
 		Ready:     true,
 		Slow:      allBelow,
 		WorstMBps: worst,
-		SourcePod: b.samples[len(b.samples)-1].SourcePod,
+		Source:    b.samples[len(b.samples)-1].Source,
 	}
 }
 
@@ -144,4 +160,29 @@ func (s *Set) Forget(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.buckets, key)
+}
+
+// Prune drops every window whose key is not in keep, so the windows of
+// subjects that no longer exist do not accumulate.
+func (s *Set) Prune(keep map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k := range s.buckets {
+		if !keep[k] {
+			delete(s.buckets, k)
+		}
+	}
+}
+
+// KeysWithPrefix returns the keys of the windows whose key starts with prefix.
+func (s *Set) KeysWithPrefix(prefix string) map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]bool{}
+	for k := range s.buckets {
+		if strings.HasPrefix(k, prefix) {
+			out[k] = true
+		}
+	}
+	return out
 }

@@ -17,7 +17,7 @@ permissions:
   packages: write
 
 env:
-  GO_VERSION: '1.26'
+  GO_VERSION: '1.26.10'
   IMAGE_NAME: 'gpu-node-mocker'
   STATUS_REPORTER_IMAGE_NAME: 'productionstack-status-reporter'
   REGISTRY: ghcr.io

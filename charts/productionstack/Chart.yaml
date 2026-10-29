@@ -21,8 +21,8 @@ description: |
   under `charts/` and appending a new entry to the `dependencies` list
   below.
 type: application
-version: 0.4.2
-appVersion: "0.4.2"
+version: 0.5.2
+appVersion: "0.5.2"
 keywords:
   - kaito
   - production-stack
@@ -38,12 +38,12 @@ maintainers:
 
 dependencies:
   - name: body-based-routing
-    version: 0.1.1
+    version: 1.5.0
     tags:
       - gateway
       - routing
   - name: keda-kaito-scaler
-    version: 0.6.2
+    version: 0.7.3
     tags:
       - autoscaling
   # In-tree gpu-node-mocker chart. Sourced via a `file://` repository
@@ -55,7 +55,7 @@ dependencies:
   # an `image.repository` and is only relevant for E2E / dev clusters
   # that don't have a real GPU node provisioner.
   - name: gpu-node-mocker
-    version: 0.4.2
+    version: 0.5.2
     repository: file://../gpu-node-mocker
     condition: gpu-node-mocker.enabled
     tags:
@@ -74,7 +74,7 @@ dependencies:
   # is part of the umbrella `productionstack` release manifest, so
   # `helm uninstall productionstack` cleans it up automatically.
   - name: llm-gateway-apikey
-    version: 0.1.2
+    version: 0.1.4
     repository: oci://mcr.microsoft.com/aks/kaito/helm
     condition: llm-gateway-apikey.enabled
     tags:
@@ -91,7 +91,7 @@ dependencies:
   # tenant-specific configuration (`azure.tenantId`, `azure.jwt.audiences`)
   # and has no sensible default.
   - name: llm-gateway-azureauth
-    version: 0.1.2
+    version: 0.1.4
     repository: oci://mcr.microsoft.com/aks/kaito/helm
     condition: llm-gateway-azureauth.enabled
     tags:
@@ -102,7 +102,7 @@ dependencies:
   # producer of the end-to-end error-handling reason catalogue as
   # Kubernetes Events in kube-system. In-tree subchart under `charts/`.
   - name: productionstack-status-reporter
-    version: 0.4.2
+    version: 0.5.2
     condition: productionstack-status-reporter.enabled
     tags:
       - observability

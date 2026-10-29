@@ -93,10 +93,10 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				for _, d := range suiteDeployments {
-					eppName := utils.EPPServiceName(d.Name)
-					By(fmt.Sprintf("checking EPP pods for %q", eppName))
+					selector := utils.EPPSelector(d.Name)
+					By(fmt.Sprintf("checking EPP pods for %q", selector))
 					pods, err := clientset.CoreV1().Pods(caseNamespace).List(context.Background(), metav1.ListOptions{
-						LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
+						LabelSelector: selector,
 					})
 					Expect(err).NotTo(HaveOccurred())
 					var runningEPP int
@@ -106,7 +106,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 						}
 					}
 					Expect(runningEPP).To(BeNumerically(">=", 1),
-						"at least one EPP pod should be Running for %q", eppName)
+						"at least one EPP pod should be Running for %q", selector)
 				}
 			})
 

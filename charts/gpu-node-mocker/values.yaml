@@ -8,7 +8,7 @@ namespaceOverride: ""
 image:
   # REQUIRED: set via --set image.repository=<your-acr>.azurecr.io/gpu-node-mocker
   repository: "ghcr.io/kaito-project/gpu-node-mocker"
-  tag: 0.4.2
+  tag: 0.5.2
   pullPolicy: IfNotPresent
 
 shadowPod:
@@ -60,7 +60,12 @@ shadowPod:
   # azure-workload-identity mutating webhook to inject the AAD env vars and
   # projected SA token into the shadow pod.
   streamingProbe:
-    image: python:3.12-slim
+    # Pinned by digest: the probe pip-installs from PyPI at runtime, and a node
+    # may still cache an older python:3.12-slim whose CA bundle trusts the roots
+    # behind the compromised eMudhra intermediates. The probe also makes pip
+    # verify against the OS CA bundle only, since pip's vendored certifi can lag
+    # behind it.
+    image: python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
     timeoutSeconds: 600
     resources:
       cpu: "1"
@@ -112,7 +117,10 @@ resources:
     cpu: 500m
     memory: 256Mi
 
-# tolerations applied to the controller pod. Empty by default; the caller is
-# expected to pass any required tolerations (e.g. a CriticalAddonsOnly
-# toleration for nodes reserved for critical add-ons).
-tolerations: []
+# tolerations applied to the controller pod. By default the mocker tolerates
+# the CriticalAddonsOnly taint (any effect) so it can run on AKS system node
+# pools, which are often the only real nodes in a mocked-GPU cluster. Override
+# to replace the list.
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists

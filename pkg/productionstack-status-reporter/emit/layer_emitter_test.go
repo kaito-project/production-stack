@@ -33,7 +33,7 @@ func TestStartupGateWithhold(t *testing.T) {
 	g := newStartupGate(func() time.Time { return now }, grace)
 
 	// Exempt findings are never withheld.
-	exempt := evaluator.Finding{Reason: reason.InferencesetModelPodsNotReady, GroupKey: "g", StartupGraceExempt: true}
+	exempt := evaluator.Finding{Reason: reason.Reason("QuotaExceeded"), GroupKey: "g", StartupGraceExempt: true}
 	if g.withholdDuringStartup(exempt, now, map[string]bool{}) {
 		t.Errorf("exempt finding must not be withheld")
 	}

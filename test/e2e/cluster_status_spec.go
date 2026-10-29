@@ -36,10 +36,10 @@ import (
 // These perturb cluster-wide singletons every other namespace shares, so the
 // suite is decorated Serial.
 var _ = Describe("Cluster Status Reporter",
-	Serial, utils.GinkgoLabelStatusReporter, utils.GinkgoLabelStandardK8sOnly, func() {
+	Serial, utils.GinkgoLabelStatusReporter, utils.GinkgoLabelNoGPU, utils.GinkgoLabelStandardK8sOnly, func() {
 
 		const (
-			// Resync default is 30s; allow a couple of cycles plus rollout slack.
+			// Allow a couple of resyncs plus startup grace and rollout slack.
 			emitTimeout  = 3 * time.Minute
 			clearTimeout = 5 * time.Minute
 
@@ -48,6 +48,12 @@ var _ = Describe("Cluster Status Reporter",
 
 			gatewayAuthNamespace  = "llm-gateway-auth"
 			gatewayAuthDeployment = "apikey-authz"
+			gatewayAuthOperator   = "apikey-operator"
+
+			// The E2E install points the reporter at the KAITO workspace
+			// chart's local CSI driver in kaito-system.
+			localCSINamespace = "kaito-system"
+			localCSIManager   = "csi-local-manager"
 
 			kaitoNamespace  = "kaito-system"
 			kaitoDeployment = "kaito-workspace"
@@ -130,6 +136,38 @@ var _ = Describe("Cluster Status Reporter",
 			scaleToZeroAndAssert(kaitoNamespace, kaitoDeployment, desired, func() {
 				ev, err := utils.WaitForReporterEventSince(ctx, "clusterKaitoControllerNotReady", "", baseline, emitTimeout)
 				Expect(err).NotTo(HaveOccurred())
+				Expect(ev.Message).NotTo(ContainSubstring("http://"))
+				Expect(ev.Message).NotTo(ContainSubstring("https://"))
+			})
+		})
+
+		It("emits clusterGatewayAuthNotReady when apikey-operator is scaled to zero", func() {
+			desired, _, err := utils.GetDeploymentReplicas(ctx, gatewayAuthNamespace, gatewayAuthOperator)
+			Expect(err).NotTo(HaveOccurred())
+			baseline, err := utils.ReporterEventBaseline(ctx, "clusterGatewayAuthNotReady", "")
+			Expect(err).NotTo(HaveOccurred())
+
+			By("scaling apikey-operator to zero and waiting for the clusterGatewayAuthNotReady Warning")
+			scaleToZeroAndAssert(gatewayAuthNamespace, gatewayAuthOperator, desired, func() {
+				ev, err := utils.WaitForReporterEventSince(ctx, "clusterGatewayAuthNotReady", "", baseline, emitTimeout)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ev.Message).To(ContainSubstring(gatewayAuthOperator))
+				Expect(ev.Message).NotTo(ContainSubstring("http://"))
+				Expect(ev.Message).NotTo(ContainSubstring("https://"))
+			})
+		})
+
+		It("emits clusterLocalCSIDriverNotReady when the local CSI driver manager is scaled to zero", func() {
+			desired, _, err := utils.GetDeploymentReplicas(ctx, localCSINamespace, localCSIManager)
+			Expect(err).NotTo(HaveOccurred())
+			baseline, err := utils.ReporterEventBaseline(ctx, "clusterLocalCSIDriverNotReady", localCSINamespace)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("scaling csi-local-manager to zero and waiting for the clusterLocalCSIDriverNotReady Warning")
+			scaleToZeroAndAssert(localCSINamespace, localCSIManager, desired, func() {
+				ev, err := utils.WaitForReporterEventSince(ctx, "clusterLocalCSIDriverNotReady", localCSINamespace, baseline, emitTimeout)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ev.Message).To(ContainSubstring(localCSIManager))
 				Expect(ev.Message).NotTo(ContainSubstring("http://"))
 				Expect(ev.Message).NotTo(ContainSubstring("https://"))
 			})

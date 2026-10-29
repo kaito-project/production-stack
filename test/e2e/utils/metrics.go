@@ -292,9 +292,8 @@ func inferenceSimPort(pod corev1.Pod) int {
 
 // GetEPPPods returns the EPP pods for the given deployment.
 func GetEPPPods(ctx context.Context, clientset *kubernetes.Clientset, deploymentName, namespace string) ([]corev1.Pod, error) {
-	eppName := EPPServiceName(deploymentName)
 	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("inferencepool=%s", eppName),
+		LabelSelector: EPPSelector(deploymentName),
 		FieldSelector: "status.phase=Running",
 	})
 	if err != nil {

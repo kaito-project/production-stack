@@ -36,7 +36,8 @@ var (
 	// GinkgoLabelInferenceSet marks tests that verify InferenceSet lifecycle and routing setup.
 	GinkgoLabelInferenceSet = g.Label("InferenceSet")
 
-	// GinkgoLabelNightly marks tests that are destructive or slow and only run in nightly CI.
+	// GinkgoLabelNightly marks tests that are destructive or slow. The PR and
+	// daily-upstream runs exclude it; the Azure nightly run includes it.
 	GinkgoLabelNightly = g.Label("Nightly")
 
 	// GinkgoLabelPerf marks prefix-cache load/perf specs that replay real
@@ -63,9 +64,23 @@ var (
 	// GinkgoLabelScaling marks tests that verify end-to-end KEDA-driven
 	// scaling of InferenceSet replicas, covering the scale-up and
 	// scale-down phases as well as anti-flapping (no oscillation near the
-	// threshold or during cooldown). Nightly-only because KEDA polling and
-	// cooldown windows make these tests take minutes per run.
+	// threshold or during cooldown). Excluded from the main runs and executed
+	// serially by `make test-e2e-scaling`: on the GPU mocker in the daily
+	// upstream job, and on real H100 nodes in a dedicated nightly job, because
+	// KEDA windows and real GPU provisioning make these specs take tens of
+	// minutes each.
 	GinkgoLabelScaling = g.Label("Scaling")
+
+	// GinkgoLabelScaleToZero marks the full 0 -> 1 -> 2 -> 1 -> 0 lifecycle.
+	GinkgoLabelScaleToZero = g.Label("ScaleToZero")
+
+	// GinkgoLabelScalingTransitions marks scaling specs that change the
+	// autoscaling configuration of a running or parked deployment (manual <->
+	// autoscaling, replica bound changes). They also carry
+	// GinkgoLabelScaling, so `make test-e2e-scaling` runs them in the daily
+	// mocker job; the real-GPU nightly job excludes them because each case
+	// provisions GPU nodes.
+	GinkgoLabelScalingTransitions = g.Label("ScalingTransitions")
 
 	// GinkgoLabelFilterOrder marks tests that verify the Envoy HTTP
 	// filter chain execution order on the per-namespace Gateway:
@@ -113,12 +128,21 @@ var (
 	// GinkgoLabelStatusReporter marks tests that verify the
 	// productionstack-status-reporter control-plane reason catalogue (issue
 	// #87): cluster and modeldeployment Warning Events in kube-system plus the
-	// inferencesetWeightDownloadSlow sliding-window negative path. Several specs
-	// perturb shared cluster-wide control-plane Deployments (BBR,
-	// llm-gateway-auth, KAITO), so those MUST be decorated Serial. See
-	// test/e2e/cluster_status_spec.go, control_plane_error_spec.go, and
-	// weight_download_slow_spec.go.
+	// inferencesetModelDownloadSlow sliding window. Several specs perturb shared
+	// cluster-wide control-plane Deployments (BBR, llm-gateway-auth, KAITO, the
+	// local CSI driver), so those MUST be decorated Serial. See
+	// test/e2e/cluster_status_spec.go, control_plane_error_spec.go,
+	// model_download_slow_spec.go and model_download_regression_spec.go.
 	GinkgoLabelStatusReporter = g.Label("StatusReporter")
+
+	// GinkgoLabelNoGPU marks tests that never provision a GPU node, so they cost
+	// nothing beyond the running cluster. The zero-cost status-reporter specs
+	// build the objects the reporter evaluates directly (InferenceSets on
+	// existing nodes or with zero replicas, stub EPPs, mock ModelMirrors) instead
+	// of deploying models:
+	//
+	//	E2E_LABEL='StatusReporter && NoGPU' make test-e2e
+	GinkgoLabelNoGPU = g.Label("NoGPU")
 
 	// GinkgoLabelStandardK8sOnly marks tests that require a standard Kubernetes
 	// cluster and cannot run on an opinionated managed one such as AKS Automatic.

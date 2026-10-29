@@ -55,6 +55,7 @@ func main() {
 		leaderElectionID     string
 		resyncSeconds        int
 		startupGraceSeconds  int
+		eventRefreshSeconds  int
 
 		releaseNamespace      string
 		istioNamespace        string
@@ -68,14 +69,17 @@ func main() {
 		bbrDeployment         string
 		kedaScalerDeployment  string
 		gatewayAuthDeployment string
-		nodeProvisionerName   string
-		nodeProvisionerNS     string
+		gatewayAuthOperator   string
 		azureAuthzName        string
 		azureAuthzNS          string
+		localCSINamespace     string
+		localCSIManager       string
+		localCSINode          string
 		weightWindowSeconds   int
 		weightMinMBps         float64
 		metricName            string
 		metricPort            int
+		modelStreaming        bool
 		modelsAPIAddr         string
 	)
 
@@ -85,11 +89,13 @@ func main() {
 		"Enable leader election so only one replica emits events (HA).")
 	flag.StringVar(&leaderElectionID, "leader-election-id", "productionstack-status-reporter",
 		"The name of the leader election lease.")
-	flag.IntVar(&resyncSeconds, "resync-seconds", 30, "How often every reason is re-evaluated.")
-	flag.IntVar(&startupGraceSeconds, "startup-grace-seconds", int(config.DefaultConfig().StartupGracePeriod/time.Second),
-		"Window during which transient startup states are not surfaced as Warning events (0 disables).")
-
 	cfg := config.DefaultConfig()
+	flag.IntVar(&resyncSeconds, "resync-seconds", int(cfg.ResyncInterval/time.Second), "How often every reason is re-evaluated.")
+	flag.IntVar(&startupGraceSeconds, "startup-grace-seconds", int(cfg.StartupGracePeriod/time.Second),
+		"Window during which transient startup states are not surfaced as Warning events (0 disables).")
+	flag.IntVar(&eventRefreshSeconds, "event-refresh-seconds", int(cfg.EventRefreshInterval/time.Second),
+		"Minimum interval between two writes of the same active Event; must be below 1800.")
+
 	flag.StringVar(&releaseNamespace, "release-namespace", cfg.ReleaseNamespace, "Umbrella chart release namespace (cluster-layer event involvedObject).")
 	flag.StringVar(&istioNamespace, "istio-namespace", cfg.IstioNamespace, "Istio control-plane install namespace.")
 	flag.StringVar(&kaitoNamespace, "kaito-namespace", cfg.KaitoNamespace, "KAITO controller install namespace.")
@@ -102,14 +108,17 @@ func main() {
 	flag.StringVar(&bbrDeployment, "bbr-deployment", cfg.BBRDeployment, "body-based-routing Deployment name.")
 	flag.StringVar(&kedaScalerDeployment, "keda-scaler-deployment", cfg.KedaScalerDeployment, "keda-kaito-scaler Deployment name.")
 	flag.StringVar(&gatewayAuthDeployment, "gateway-auth-deployment", cfg.GatewayAuthDeployment, "apikey-authz ext_authz Deployment name (apikey/hybrid auth); empty disables the check.")
-	flag.StringVar(&nodeProvisionerName, "node-provisioner-name", "", "Optional node-provisioner Deployment name; empty disables the check.")
-	flag.StringVar(&nodeProvisionerNS, "node-provisioner-namespace", "", "Node-provisioner Deployment namespace.")
+	flag.StringVar(&gatewayAuthOperator, "gateway-auth-operator-deployment", cfg.GatewayAuthOperatorDeployment, "apikey-operator Deployment name (apikey/hybrid auth, shares clusterGatewayAuthNotReady); empty disables the check.")
 	flag.StringVar(&azureAuthzName, "azure-authz-deployment", "", "Optional azure-authz ext_authz Deployment name (azure/hybrid auth, shares clusterGatewayAuthNotReady); empty disables the check.")
 	flag.StringVar(&azureAuthzNS, "azure-authz-namespace", "", "azure-authz ext_authz Deployment namespace.")
-	flag.IntVar(&weightWindowSeconds, "weight-download-window-seconds", 60, "Sliding-window length for inferencesetWeightDownloadSlow.")
-	flag.Float64Var(&weightMinMBps, "weight-download-min-mbps", 20, "Throughput threshold (MB/s) for inferencesetWeightDownloadSlow.")
-	flag.StringVar(&metricName, "weight-download-metric", cfg.MetricName, "Prometheus gauge name for model-weights download throughput.")
-	flag.IntVar(&metricPort, "weight-download-metric-port", cfg.MetricPort, "Port exposing the throughput metric on the source pod.")
+	flag.StringVar(&localCSINamespace, "local-csi-namespace", cfg.LocalCSIDriver.Namespace, "Local CSI driver install namespace; empty disables clusterLocalCSIDriverNotReady.")
+	flag.StringVar(&localCSIManager, "local-csi-manager-deployment", cfg.LocalCSIDriver.ManagerDeployment, "Local CSI driver manager Deployment name; empty skips the manager check.")
+	flag.StringVar(&localCSINode, "local-csi-node-daemonset", cfg.LocalCSIDriver.NodeDaemonSet, "Local CSI driver node DaemonSet name; empty skips the node check.")
+	flag.IntVar(&weightWindowSeconds, "weight-download-window-seconds", int(cfg.WeightDownload.WindowDuration/time.Second), "Sliding-window length for inferencesetModelDownloadSlow.")
+	flag.Float64Var(&weightMinMBps, "weight-download-min-mbps", cfg.WeightDownload.MinMBps, "Throughput threshold (MB/s) for inferencesetModelDownloadSlow.")
+	flag.StringVar(&metricName, "weight-download-metric", cfg.MetricName, "Prometheus gauge name for the vLLM model-pod download throughput.")
+	flag.IntVar(&metricPort, "weight-download-metric-port", cfg.MetricPort, "Port exposing the throughput metric on the vLLM model pod.")
+	flag.BoolVar(&modelStreaming, "model-streaming-enabled", cfg.ModelStreamingEnabled, "Must match KAITO's ModelStreaming feature gate; selects the ModelMirror downloader for InferenceSets that do not opt out of streaming.")
 	flag.StringVar(&modelsAPIAddr, "models-api-bind-address", cfg.ModelsAPIBindAddress,
 		"The address the OpenAI-compatible model discovery endpoint binds to (empty disables it).")
 
@@ -131,15 +140,22 @@ func main() {
 	cfg.BBRDeployment = bbrDeployment
 	cfg.KedaScalerDeployment = kedaScalerDeployment
 	cfg.GatewayAuthDeployment = gatewayAuthDeployment
-	cfg.NodeProvisioner = config.NodeProvisionerRef{Name: nodeProvisionerName, Namespace: nodeProvisionerNS}
+	cfg.GatewayAuthOperatorDeployment = gatewayAuthOperator
 	cfg.AzureAuthz = config.AzureAuthzRef{Name: azureAuthzName, Namespace: azureAuthzNS}
+	cfg.LocalCSIDriver = config.LocalCSIDriverRef{Namespace: localCSINamespace, ManagerDeployment: localCSIManager, NodeDaemonSet: localCSINode}
 	cfg.WeightDownload.WindowDuration = time.Duration(weightWindowSeconds) * time.Second
 	cfg.WeightDownload.MinMBps = weightMinMBps
 	cfg.MetricName = metricName
 	cfg.MetricPort = metricPort
+	cfg.ModelStreamingEnabled = modelStreaming
 	cfg.ResyncInterval = time.Duration(resyncSeconds) * time.Second
 	cfg.StartupGracePeriod = time.Duration(startupGraceSeconds) * time.Second
+	cfg.EventRefreshInterval = time.Duration(eventRefreshSeconds) * time.Second
 	cfg.ModelsAPIBindAddress = modelsAPIAddr
+	if err := cfg.Validate(); err != nil {
+		setupLog.Error(err, "invalid configuration")
+		os.Exit(1)
+	}
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,

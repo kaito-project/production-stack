@@ -9,7 +9,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  GO_VERSION: '1.26.6'
+  GO_VERSION: '1.26.10'
 
 jobs:
   check-files:
@@ -68,6 +68,24 @@ jobs:
         run: make build ARCH=${{ matrix.arch }}
       - name: Build productionstack-status-reporter binary
         run: make build-status-reporter ARCH=${{ matrix.arch }}
+
+  kaito-guard-ext-proc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ext_proc and test dependencies
+        working-directory: kaito-guard-ext-proc
+        run: python -m pip install -e '.[dev]'
+      - name: Run ext_proc tests
+        working-directory: kaito-guard-ext-proc
+        run: python -m pytest
+      - name: Build ext_proc image
+        run: docker build -f docker/Dockerfile.kaito-guard-ext-proc -t kaito-guard-ext-proc:ci .
 
   docker-build:
     runs-on: ubuntu-latest

@@ -13,7 +13,7 @@ namespaceOverride: ""
 
 image:
   repository: mcr.microsoft.com/oss/v2/kaito/productionstack-status-reporter
-  tag: v0.4.2
+  tag: v0.5.2
   pullPolicy: IfNotPresent
 
 # Run HA so a node drain never blanks the status stream. Only the elected
@@ -23,12 +23,17 @@ replicas: 2
 # How often every reason is re-evaluated.
 resyncSeconds: 60
 
+# Minimum interval (seconds) between two writes of the same active Event. While
+# a problem persists its Event is refreshed this often so it never ages out with
+# the kube-apiserver Event TTL (default 1h); must be below 1800. No recovery
+# Event is emitted: once the problem clears, the Event simply stops refreshing.
+eventRefreshSeconds: 300
+
 # Window (seconds) during which transient startup states are not surfaced as
-# Warning events: cluster/harness/EPP/route findings are withheld while the
-# backing resource is younger than this window (or, for findings without a
-# backing object, until the problem has persisted this long). Workspace and
-# model-pod findings bypass it and instead only surface terminal failures.
-# Set to 0 to disable.
+# Warning events: findings are withheld while the backing resource is younger
+# than this window (or, for findings without a backing object, until the
+# problem has persisted this long). Some reasons use their own window, and
+# terminal KAITO failures bypass it. Set to 0 to disable.
 startupGraceSeconds: 60
 
 leaderElection:
@@ -53,7 +58,10 @@ leaderElection:
 modelsAPI:
   port: 8082
 
-# Install namespaces of the cluster-layer components the reporter probes.
+# Install namespaces of the cluster-layer components the reporter probes. Only
+# the readiness of a Deployment or DaemonSet that exists is checked: the
+# deploying party guarantees what it installs exists, so a component that is
+# not installed on this cluster is never reported.
 # These default to the umbrella chart's own defaults; override to match a
 # customised install.
 controlPlane:
@@ -69,27 +77,35 @@ controlPlane:
   kaitoDeployment: kaito-workspace
   bbrDeployment: body-based-router
   kedaScalerDeployment: keda-kaito-scaler
-  # apikey-authz ext_authz backend, present only for apikey/hybrid auth. Set to
-  # "" on a pure-azure cluster so its absence is not flagged.
+  # apikey-authz ext_authz backend and the apikey-operator that reconciles
+  # APIKey CRs, present only for apikey/hybrid auth. Set to "" to skip a probe.
   gatewayAuthDeployment: apikey-authz
-  # Optional azure-authz ext_authz backend (subchart llm-gateway-azureauth),
-  # installed for both azure and hybrid auth. It shares the
-  # clusterGatewayAuthNotReady reason with apikey-authz. Leave name empty on a
-  # pure-apikey cluster to skip the check.
+  gatewayAuthOperatorDeployment: apikey-operator
+  # azure-authz ext_authz backend (subchart llm-gateway-azureauth, whose
+  # fullnameOverride "azure" names the Deployment "azure-authz"), installed for
+  # both azure and hybrid auth. It shares the clusterGatewayAuthNotReady reason
+  # with apikey-authz; on a cluster without it nothing is reported. Leave name
+  # empty to skip the check.
   azureAuthz:
-    name: ""
-    namespace: ""
-  # Optional cluster-autoscaler / Karpenter node provisioner Deployment.
-  # Leave name empty to skip the clusterNodeProvisionerNotReady check.
-  nodeProvisioner:
-    name: ""
-    namespace: ""
-  # Sliding-window evaluation for inferencesetWeightDownloadSlow.
+    name: azure-authz
+    namespace: kube-system
+  # Local CSI driver installed by the KAITO workspace chart, probed for
+  # clusterLocalCSIDriverNotReady. Set namespace to "" to disable the check, or
+  # clear one name to skip that half of it.
+  localCSIDriver:
+    namespace: kube-system
+    managerDeployment: csi-local-manager
+    nodeDaemonSet: csi-local-node
+  # Sliding-window evaluation for inferencesetModelDownloadSlow.
   weightDownload:
     windowSeconds: 60
     minMBps: 20
+    # Download-speed gauge and port of the vLLM model pod (self-download path).
     metricName: kaito_model_download_speed_bytes_per_second
     metricPort: 5000
+    # MUST match KAITO's ModelStreaming feature gate: when true, InferenceSets
+    # that do not opt out of streaming are observed through their ModelMirror.
+    modelStreamingEnabled: true
 
 resources:
   requests:

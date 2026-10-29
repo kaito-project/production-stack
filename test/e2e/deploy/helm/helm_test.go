@@ -26,6 +26,8 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/utils/ptr"
+
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 )
 
@@ -217,6 +219,7 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 		Replicas:      3,
 		InstanceType:  "Standard_NC24ads_A100_v4",
 		EnableScaling: true,
+		MinReplicas:   2,
 		MaxReplicas:   7,
 		ScalingMetrics: []deploy.ScalingMetric{
 			{Name: "vllm:num_requests_waiting", Type: "gauge", UpThreshold: "10", DownThreshold: "1"},
@@ -253,9 +256,9 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 		"name=phi",
 		"namespace=e2e-ns",
 		"model=phi-4-mini-instruct",
-		"replicas=3",
 		"instanceType=Standard_NC24ads_A100_v4",
 		"enableScaling=true",
+		"minReplicas=2",
 		"maxReplicas=7",
 		"scaling.metrics[0].name=vllm:num_requests_waiting",
 		"scaling.metrics[0].type=gauge",
@@ -282,6 +285,9 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 	if !hasArg(args, "epp.scorerWeights.prefixCache=0") {
 		t.Errorf("zero-valued prefixCache weight was dropped: %v", args)
 	}
+	if _, found := argValue(args, "--set", "enableBenchmark="); found {
+		t.Errorf("enableBenchmark must inherit the chart default unless DisableBenchmark is set: %v", args)
+	}
 	// kvCacheUtilization was nil and must fall through to the chart default.
 	if _, found := argValue(args, "--set", "epp.scorerWeights.kvCacheUtilization="); found {
 		t.Errorf("nil kvCacheUtilization must not be rendered: %v", args)
@@ -301,8 +307,74 @@ func TestInstallModelDeploymentMapsValues(t *testing.T) {
 	if err := d.InstallModelDeployment(context.Background(), values); err != nil {
 		t.Fatalf("InstallModelDeployment (scaling off): %v", err)
 	}
-	if args := (*calls)[1]; hasArg(args, "enableScaling=true") || hasArg(args, "maxReplicas=7") {
+	if args := (*calls)[1]; hasArg(args, "enableScaling=true") || hasArg(args, "minReplicas=2") || hasArg(args, "maxReplicas=7") {
 		t.Errorf("scaling args rendered while scaling disabled: %v", args)
+	}
+}
+
+func TestInstallModelDeploymentMapsScaleToZero(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+	values := deploy.ModelDeploymentValues{
+		Name: "phi", Namespace: "e2e-ns", Model: "phi-4-mini-instruct",
+		Replicas: 1, EnableScaling: true, MinReplicas: 0, MaxReplicas: 1, CooldownPeriod: 60,
+		DisableBenchmark:             true,
+		InitialCooldownPeriod:        ptr.To(int64(0)),
+		ScaleDownStabilizationWindow: ptr.To(int64(300)),
+		ScaleUpPeriodSeconds:         ptr.To(int64(300)),
+		ScaleDownPeriodSeconds:       ptr.To(int64(300)),
+	}
+
+	if err := d.InstallModelDeployment(context.Background(), values); err != nil {
+		t.Fatalf("InstallModelDeployment: %v", err)
+	}
+	args := (*calls)[0]
+	for _, want := range []string{
+		"minReplicas=0", "maxReplicas=1", "scaling.cooldownPeriod=60", "enableBenchmark=false",
+		"scaling.initialCooldownPeriod=0", "scaling.hpa.scaleDown.stabilizationWindowSeconds=300",
+		"scaling.hpa.scaleUp.periodSeconds=300", "scaling.hpa.scaleDown.periodSeconds=300",
+	} {
+		if !hasArg(args, want) {
+			t.Errorf("missing --set %q in %v", want, args)
+		}
+	}
+	if hasArg(args, "scaling.metrics[0].name=") {
+		t.Errorf("chart-default metrics must not be overridden: %v", args)
+	}
+}
+
+func TestUpgradeModelDeploymentEnablesCapacityWithoutRemovingZeroScaling(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+	values := deploy.ModelDeploymentValues{
+		Name: "phi", Namespace: "e2e-ns", Model: "phi-4-mini-instruct",
+		Replicas: 1, EnableScaling: true, MinReplicas: 0, MaxReplicas: 1, CooldownPeriod: 60,
+		InitialCooldownPeriod: ptr.To(int64(60)),
+		ScalingMetrics: []deploy.ScalingMetric{
+			{Name: "vllm:num_requests_waiting", Type: "gauge", Source: "modelpod", UpThreshold: "3", DownThreshold: "1", DeactivationThreshold: "0"},
+			{Name: "llm_d_epp_flow_control_queue_size", Type: "gauge", Source: "epp", ActivationThreshold: "0", DeactivationThreshold: "0"},
+			{Name: "vllm:num_requests_running", Type: "gauge", Source: "modelpod", DeactivationThreshold: "0"},
+		},
+	}
+	for _, maximum := range []int64{1, 2} {
+		values.MaxReplicas = maximum
+		if err := d.UpgradeModelDeployment(context.Background(), values); err != nil {
+			t.Fatalf("UpgradeModelDeployment (maxReplicas=%d): %v", maximum, err)
+		}
+		args := (*calls)[len(*calls)-1]
+		wantMaximum := "maxReplicas=1"
+		if maximum == 2 {
+			wantMaximum = "maxReplicas=2"
+		}
+		for _, want := range []string{
+			wantMaximum, "minReplicas=0", "enableScaling=true",
+			"scaling.cooldownPeriod=60", "scaling.initialCooldownPeriod=60",
+			"scaling.metrics[0].upThreshold=3", "scaling.metrics[0].downThreshold=1",
+			"scaling.metrics[1].activationThreshold=0", "scaling.metrics[1].deactivationThreshold=0",
+			"scaling.metrics[2].name=vllm:num_requests_running", "scaling.metrics[2].deactivationThreshold=0",
+		} {
+			if !hasArg(args, want) {
+				t.Errorf("maxReplicas=%d: missing --set %q in %v", maximum, want, args)
+			}
+		}
 	}
 }
 
@@ -323,17 +395,91 @@ func TestInstallValidatesBeforeInvokingHelm(t *testing.T) {
 			wantErr: "Model is required",
 		},
 		{
-			name:    "scaling without metrics",
-			values:  deploy.ModelDeploymentValues{Name: "phi", Model: "phi", EnableScaling: true},
-			wantErr: "at least one ScalingMetric",
-		},
-		{
 			name: "metric without thresholds",
 			values: deploy.ModelDeploymentValues{
-				Name: "phi", Model: "phi", EnableScaling: true,
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: 1, MaxReplicas: 2,
 				ScalingMetrics: []deploy.ScalingMetric{{Name: "vllm:num_requests_waiting"}},
 			},
-			wantErr: "UpThreshold is required",
+			wantErr: "requires UpThreshold/DownThreshold, ActivationThreshold or DeactivationThreshold",
+		},
+		{
+			name: "positive minReplicas with only zero-edge metrics",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: 1, MaxReplicas: 2,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "queue", Source: "epp", ActivationThreshold: "0", DeactivationThreshold: "0"}},
+			},
+			wantErr: "requires at least one metric with UpThreshold/DownThreshold",
+		},
+		{
+			name: "cooldown with positive minReplicas",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: 1, MaxReplicas: 2, CooldownPeriod: 60,
+			},
+			wantErr: "CooldownPeriod requires MinReplicas=0",
+		},
+		{
+			name: "initial cooldown with positive minimum",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: 1, MaxReplicas: 2,
+				InitialCooldownPeriod: ptr.To(int64(0)),
+			},
+			wantErr: "InitialCooldownPeriod requires MinReplicas=0",
+		},
+		{
+			name: "invalid stabilization window",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: 1, MaxReplicas: 2,
+				ScaleDownStabilizationWindow: ptr.To(int64(3601)),
+			},
+			wantErr: "ScaleDownStabilizationWindow must be between 0 and 3600",
+		},
+		{
+			name: "invalid scale-up policy period",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: 1, MaxReplicas: 2,
+				ScaleUpPeriodSeconds: ptr.To(int64(0)),
+			},
+			wantErr: "ScaleUpPeriodSeconds must be between 1 and 1800",
+		},
+		{
+			name: "zero without activation metric",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MaxReplicas: 1,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "running", Source: "modelpod", DeactivationThreshold: "0"}},
+			},
+			wantErr: "requires at least one EPP activation metric",
+		},
+		{
+			name: "zero without modelpod deactivation metric",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MaxReplicas: 1,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "queue", Source: "epp", ActivationThreshold: "0", DeactivationThreshold: "0"}},
+			},
+			wantErr: "requires at least one modelpod deactivation metric",
+		},
+		{
+			name: "negative minReplicas",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: -1, MaxReplicas: 3,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "m", UpThreshold: "10", DownThreshold: "1"}},
+			},
+			wantErr: "MinReplicas must not be negative",
+		},
+		{
+			name: "scaling without maxReplicas",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "m", UpThreshold: "10", DownThreshold: "1"}},
+			},
+			wantErr: "EnableScaling requires MaxReplicas >= 1",
+		},
+		{
+			name: "maxReplicas below minReplicas",
+			values: deploy.ModelDeploymentValues{
+				Name: "phi", Model: "phi", EnableScaling: true, MinReplicas: 3, MaxReplicas: 2,
+				ScalingMetrics: []deploy.ScalingMetric{{Name: "m", UpThreshold: "10", DownThreshold: "1"}},
+			},
+			wantErr: "MaxReplicas (2) must be >= MinReplicas (3)",
 		},
 	}
 
@@ -595,6 +741,47 @@ func assertNamespaceLabelled(t *testing.T, calls [][]string, namespace string) {
 
 // Upgrade must not double as create: a mistyped release name has to fail
 // rather than silently provision a second deployment.
+// Deployment names may reach 63 characters, but Helm release names are capped
+// at 53. Install, upgrade and uninstall must all target the same shortened
+// release, while the chart still receives the full deployment name.
+func TestLongDeploymentNameUsesShortenedRelease(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+
+	name := strings.Repeat("a", 63)
+	values := deploy.ModelDeploymentValues{
+		Name: name, Namespace: "e2e-ns", Model: "phi-4-mini-instruct", Replicas: 1,
+	}
+	if err := d.InstallModelDeployment(context.Background(), values); err != nil {
+		t.Fatalf("InstallModelDeployment: %v", err)
+	}
+	if err := d.UpgradeModelDeployment(context.Background(), values); err != nil {
+		t.Fatalf("UpgradeModelDeployment: %v", err)
+	}
+	if err := d.UninstallModelDeployment(context.Background(), name, "e2e-ns"); err != nil {
+		t.Fatalf("UninstallModelDeployment: %v", err)
+	}
+
+	release := modelDeploymentReleaseName(name)
+	if len(release) != 53 || !strings.HasPrefix(release, strings.Repeat("a", 44)+"-") {
+		t.Fatalf("release name %q is not a 53-character hash-suffixed prefix", release)
+	}
+	if got := modelDeploymentReleaseName(strings.Repeat("a", 62) + "b"); got == release {
+		t.Errorf("names differing past the truncation point share release %q", got)
+	}
+	if got := modelDeploymentReleaseName("phi"); got != "phi" {
+		t.Errorf("short name release = %q, want %q", got, "phi")
+	}
+
+	install, upgrade, uninstall := (*calls)[0], (*calls)[1], (*calls)[2]
+	if install[2] != release || upgrade[1] != release || uninstall[1] != release {
+		t.Errorf("release mismatch: install %q, upgrade %q, uninstall %q, want %q",
+			install[2], upgrade[1], uninstall[1], release)
+	}
+	if !hasArg(install, "name="+name) || !hasArg(upgrade, "name="+name) {
+		t.Errorf("chart must receive the full deployment name: install %v, upgrade %v", install, upgrade)
+	}
+}
+
 func TestUpgradeModelDeploymentDoesNotInstall(t *testing.T) {
 	d, calls := newTestDeployer(t, nil)
 
@@ -628,6 +815,35 @@ func TestReplicasZeroIsRendered(t *testing.T) {
 	}
 	if !hasArg((*calls)[0], "replicas=0") {
 		t.Errorf("scale-to-zero was dropped: %v", (*calls)[0])
+	}
+}
+
+// replicas is rendered only in manual mode, so returning
+// from autoscaling always changes the rendered value and Helm reapplies it.
+func TestReplicasRenderedOnlyInManualMode(t *testing.T) {
+	d, calls := newTestDeployer(t, nil)
+	base := deploy.ModelDeploymentValues{Name: "phi", Namespace: "e2e-ns", Model: "phi-4-mini-instruct", Replicas: 2}
+
+	autoscaled := base
+	autoscaled.EnableScaling, autoscaled.MinReplicas, autoscaled.MaxReplicas = true, 1, 3
+	for _, step := range []struct {
+		values       deploy.ModelDeploymentValues
+		wantReplicas bool
+	}{{base, true}, {autoscaled, false}, {base, true}} {
+		if err := d.UpgradeModelDeployment(context.Background(), step.values); err != nil {
+			t.Fatalf("UpgradeModelDeployment(enableScaling=%t): %v", step.values.EnableScaling, err)
+		}
+		args := (*calls)[len(*calls)-1]
+		rendered := false
+		for _, a := range args {
+			if strings.HasPrefix(a, "replicas=") {
+				rendered = true
+			}
+		}
+		if rendered != step.wantReplicas {
+			t.Errorf("enableScaling=%t: replicas rendered=%t, want %t: %v",
+				step.values.EnableScaling, rendered, step.wantReplicas, args)
+		}
 	}
 }
 

@@ -74,8 +74,8 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 			caseGateway = InstallCase(CaseEPPOutage)
 			modelName = CaseDeployments[CaseEPPOutage][0].Name
 			// The EPP Deployment is named "<name>-inferencepool-epp" by the
-			// modeldeployment chart (modeldeployment.eppServiceName).
-			replicas = prepareDeploymentOutage(ctx, CaseNamespace(CaseEPPOutage), utils.EPPServiceName(modelName))
+			// modeldeployment chart (modeldeployment.eppName).
+			replicas = prepareDeploymentOutage(ctx, CaseNamespace(CaseEPPOutage), utils.EPPDeploymentName(modelName))
 
 			// Sanity: a valid request must succeed BEFORE we induce the
 			// outage, otherwise a 502 below would be meaningless.

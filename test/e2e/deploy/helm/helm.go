@@ -20,7 +20,9 @@ package helm
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -287,8 +289,9 @@ func isNotFound(out []byte) bool {
 
 // InstallModelDeployment runs `helm upgrade --install` for the modeldeployment
 // chart with the supplied values. It is idempotent — re-running it on an
-// existing release reconciles to the new values. The release name equals
-// values.Name and the release namespace equals values.Namespace.
+// existing release reconciles to the new values. The release name is
+// modelDeploymentReleaseName(values.Name) and the release namespace equals
+// values.Namespace.
 func (d *Deployer) InstallModelDeployment(ctx context.Context, values deploy.ModelDeploymentValues) error {
 	if err := values.Validate(); err != nil {
 		return err
@@ -304,7 +307,7 @@ func (d *Deployer) InstallModelDeployment(ctx context.Context, values deploy.Mod
 	}
 
 	args := []string{
-		"upgrade", "--install", values.Name, chart,
+		"upgrade", "--install", modelDeploymentReleaseName(values.Name), chart,
 		"--namespace", values.Namespace,
 		"--create-namespace",
 	}
@@ -335,7 +338,7 @@ func (d *Deployer) UpgradeModelDeployment(ctx context.Context, values deploy.Mod
 		return err
 	}
 
-	args := []string{"upgrade", values.Name, chart, "--namespace", values.Namespace}
+	args := []string{"upgrade", modelDeploymentReleaseName(values.Name), chart, "--namespace", values.Namespace}
 	args = append(args, setArgs(values)...)
 	args = append(args, gatewaySetArgs(values.Gateway)...)
 
@@ -357,18 +360,32 @@ func gatewaySetArgs(values deploy.GatewayValues) []string {
 	return args
 }
 
-// UninstallModelDeployment runs `helm uninstall` for the named release.
-// Missing releases are treated as success (so cleanup is idempotent).
+// UninstallModelDeployment runs `helm uninstall` for the named model
+// deployment's release. Missing releases are treated as success (so cleanup
+// is idempotent).
 func (d *Deployer) UninstallModelDeployment(ctx context.Context, name, namespace string) error {
 	if name == "" {
 		return fmt.Errorf("modeldeployment: name is required")
 	}
-	args := []string{"uninstall", name, "--namespace", namespace, "--ignore-not-found", "--wait"}
+	args := []string{"uninstall", modelDeploymentReleaseName(name), "--namespace", namespace, "--ignore-not-found", "--wait"}
 
 	if out, err := d.run(ctx, args...); err != nil {
 		return fmt.Errorf("helm uninstall %s failed: %w\n%s", name, err, string(out))
 	}
 	return nil
+}
+
+// modelDeploymentReleaseName returns the Helm release name for a model
+// deployment. It is the deployment name, except that names longer than Helm's
+// 53-character release name limit (deployment names may reach 63 characters)
+// are truncated and suffixed with a hash of the full name so they stay unique.
+func modelDeploymentReleaseName(name string) string {
+	const maxReleaseNameLength, hashLength = 53, 8
+	if len(name) <= maxReleaseNameLength {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return name[:maxReleaseNameLength-hashLength-1] + "-" + hex.EncodeToString(sum[:])[:hashLength]
 }
 
 // setArgs builds the `--set` arguments for the modeldeployment chart.
@@ -377,9 +394,14 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 		"--set", "name=" + v.Name,
 		"--set", "namespace=" + v.Namespace,
 		"--set", "model=" + v.Model,
-		// Always rendered: 0 means scale-to-zero, which UpgradeModelDeployment
-		// uses to empty an inference pool, so it cannot be treated as "unset".
-		"--set", "replicas=" + strconv.FormatInt(v.Replicas, 10),
+	}
+	// replicas is set only in manual mode, where 0 is an explicit scale-to-zero
+	// that UpgradeModelDeployment uses to empty an inference pool. Under
+	// autoscaling it is left empty so KEDA owns the live count, and switching
+	// back to manual always changes the rendered value, which makes Helm
+	// reapply it.
+	if !v.EnableScaling {
+		args = append(args, "--set", "replicas="+strconv.FormatInt(v.Replicas, 10))
 	}
 	if v.InstanceType != "" {
 		args = append(args, "--set", "instanceType="+v.InstanceType)
@@ -387,24 +409,54 @@ func setArgs(v deploy.ModelDeploymentValues) []string {
 	if v.Config != "" {
 		args = append(args, "--set-string", "config="+v.Config)
 	}
+	if v.DisableBenchmark {
+		args = append(args, "--set", "enableBenchmark=false")
+	}
 	if v.EnableScaling {
 		args = append(args, "--set", "enableScaling=true")
-		if v.MaxReplicas > 0 {
-			args = append(args, "--set", "maxReplicas="+strconv.FormatInt(v.MaxReplicas, 10))
-		}
+		args = append(args,
+			"--set", "minReplicas="+strconv.FormatInt(v.MinReplicas, 10),
+			"--set", "maxReplicas="+strconv.FormatInt(v.MaxReplicas, 10),
+		)
 		for i, m := range v.ScalingMetrics {
 			prefix := fmt.Sprintf("scaling.metrics[%d].", i)
 			args = append(args, "--set", prefix+"name="+m.Name)
 			if m.Type != "" {
 				args = append(args, "--set", prefix+"type="+m.Type)
 			}
-			args = append(args,
-				"--set", prefix+"upThreshold="+m.UpThreshold,
-				"--set", prefix+"downThreshold="+m.DownThreshold,
-			)
+			if m.Source != "" {
+				args = append(args, "--set", prefix+"source="+m.Source)
+			}
+			if m.UpThreshold != "" {
+				args = append(args, "--set", prefix+"upThreshold="+m.UpThreshold)
+			}
+			if m.DownThreshold != "" {
+				args = append(args, "--set", prefix+"downThreshold="+m.DownThreshold)
+			}
+			if m.ActivationThreshold != "" {
+				args = append(args, "--set", prefix+"activationThreshold="+m.ActivationThreshold)
+			}
+			if m.DeactivationThreshold != "" {
+				args = append(args, "--set", prefix+"deactivationThreshold="+m.DeactivationThreshold)
+			}
 			if m.MetricCacheWindow != "" {
 				args = append(args, "--set", prefix+"metricCacheWindow="+m.MetricCacheWindow)
 			}
+		}
+		if v.CooldownPeriod > 0 {
+			args = append(args, "--set", "scaling.cooldownPeriod="+strconv.FormatInt(v.CooldownPeriod, 10))
+		}
+		if v.InitialCooldownPeriod != nil {
+			args = append(args, "--set", "scaling.initialCooldownPeriod="+strconv.FormatInt(*v.InitialCooldownPeriod, 10))
+		}
+		if v.ScaleDownStabilizationWindow != nil {
+			args = append(args, "--set", "scaling.hpa.scaleDown.stabilizationWindowSeconds="+strconv.FormatInt(*v.ScaleDownStabilizationWindow, 10))
+		}
+		if v.ScaleUpPeriodSeconds != nil {
+			args = append(args, "--set", "scaling.hpa.scaleUp.periodSeconds="+strconv.FormatInt(*v.ScaleUpPeriodSeconds, 10))
+		}
+		if v.ScaleDownPeriodSeconds != nil {
+			args = append(args, "--set", "scaling.hpa.scaleDown.periodSeconds="+strconv.FormatInt(*v.ScaleDownPeriodSeconds, 10))
 		}
 	}
 	if v.AutoUpgrade.Enabled {

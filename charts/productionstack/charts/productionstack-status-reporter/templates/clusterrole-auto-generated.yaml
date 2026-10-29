@@ -19,6 +19,7 @@ rules:
   - ""
   resources:
   - namespaces
+  - nodes
   - pods
   verbs:
   - get
@@ -33,6 +34,7 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - daemonsets
   - deployments
   verbs:
   - get
@@ -62,7 +64,7 @@ rules:
   - kaito.sh
   resources:
   - inferencesets
-  - workspaces
+  - modelmirrors
   verbs:
   - get
   - list

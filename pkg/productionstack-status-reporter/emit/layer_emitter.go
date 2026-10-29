@@ -55,10 +55,10 @@ func newStartupGate(clock func() time.Time, grace time.Duration) startupGate {
 // inside its startup window; an old-but-broken resource surfaces immediately,
 // and this survives reporter restarts (the timestamp is persistent).
 //
-// Scheme 1 (debounce): for findings without a backing object (missing CRDs or
-// Deployments) the warning is withheld until the problem has persisted for the
-// grace window, so a chart that has not finished installing at reporter start
-// does not flap the event stream.
+// Scheme 1 (debounce): for findings without a timestamp (e.g. a Deployment
+// with no pods, such as one scaled to zero) the warning is withheld until the
+// problem has persisted for the grace window, so a rollout that has not
+// finished at reporter start does not flap the event stream.
 func (g *startupGate) withholdDuringStartup(f evaluator.Finding, now time.Time, touched map[string]bool) bool {
 	if f.StartupGraceExempt {
 		return false
@@ -96,7 +96,7 @@ func (g *startupGate) prune(touched map[string]bool) {
 // Emitter turns one reporting layer's Findings into events. It owns the layer's
 // startup-grace debounce state and clock across passes; the pass logger is
 // carried on the context. It is shared by every layer (cluster, modelharness,
-// modeldeployment, weight-download): each layer's evaluator already yields at
+// modeldeployment, model-download): each layer's evaluator already yields at
 // most one finding per (subject, reason), so no per-layer aggregation strategy
 // is needed.
 type Emitter struct {
@@ -105,13 +105,14 @@ type Emitter struct {
 	label string
 }
 
-// NewEmitter constructs a layer Emitter.
-func NewEmitter(cs kubernetes.Interface, clock func() time.Time, grace time.Duration, label string) *Emitter {
-	return &Emitter{w: newWriter(cs), gate: newStartupGate(clock, grace), label: label}
+// NewEmitter constructs a layer Emitter. refreshInterval is the minimum
+// interval between two writes of the same active Event (§1.1).
+func NewEmitter(cs kubernetes.Interface, clock func() time.Time, grace, refreshInterval time.Duration, label string) *Emitter {
+	return &Emitter{w: newWriter(cs, clock, refreshInterval), gate: newStartupGate(clock, grace), label: label}
 }
 
-// Emit gates transient startup findings, then writes one Event per surviving
-// finding. Each reason is an independent signal that must surface, so there is
+// Emit gates transient startup findings, then creates or refreshes one Event
+// per surviving finding. Each reason is an independent signal that must surface, so there is
 // no priority collapse — the absence of a Warning is the only "healthy" signal.
 // Findings that resolve to the same Event identity (eventName) within one pass
 // are collapsed to a single write (keeping the last, in first-seen order), so an

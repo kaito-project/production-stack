@@ -305,9 +305,20 @@ func buildProbeContainer(id streamingIdentity, cfg Config, scriptCM string) core
 //
 // The SAS mode installs nothing at all: it lists the container over plain HTTPS
 // with the standard library, so it needs neither torch nor the streamer.
+//
+// Every mode first points requests (Azure SDK) and Python's ssl module at the
+// image's OS CA bundle, which is probed rather than hard-coded so an overridden
+// Azure Linux / RHEL-style image still works. pip needs more: since 24.2 it
+// verifies through truststore and always merges its vendored certifi, ignoring
+// PIP_CERT, and that certifi can lag the OS bundle on distrusted roots (e.g. the
+// roots behind the compromised eMudhra intermediates). legacy-certs makes pip
+// honour PIP_CERT alone; it is only enabled when the image's pip accepts it.
 func probeShellCommand(mode streamingMode) string {
 	var b strings.Builder
 	b.WriteString("set -e\n")
+	b.WriteString("for ca in " + strings.Join(systemCABundlePaths, " ") + "; do\n")
+	b.WriteString(`  if [ -f "$ca" ]; then export PIP_CERT="$ca" REQUESTS_CA_BUNDLE="$ca" SSL_CERT_FILE="$ca"; break; fi` + "\n")
+	b.WriteString("done\n")
 	if mode == streamingModeSAS {
 		b.WriteString(`if [ ! -f "$STREAM_ENV_FILE" ]; then` + "\n")
 		b.WriteString(`  echo "ERROR: SAS env file $STREAM_ENV_FILE not found" >&2; exit 1` + "\n")
@@ -316,6 +327,9 @@ func probeShellCommand(mode streamingMode) string {
 		b.WriteString(`. "$STREAM_ENV_FILE"` + "\n")
 		b.WriteString("set +a\n")
 	} else {
+		b.WriteString(`if [ -n "${PIP_CERT:-}" ] && pip --use-deprecated=legacy-certs --version >/dev/null 2>&1; then` + "\n")
+		b.WriteString("  export PIP_USE_DEPRECATED=legacy-certs\n")
+		b.WriteString("fi\n")
 		fmt.Fprintf(&b, "pip install --no-cache-dir -q --index-url %s torch==%s\n", TorchCPUIndexURL, TorchVersion)
 		fmt.Fprintf(&b, "pip install --no-cache-dir -q 'runai-model-streamer[azure]==%s'\n", RunAIStreamerVersion)
 	}

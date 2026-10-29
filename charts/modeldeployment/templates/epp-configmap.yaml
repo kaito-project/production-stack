@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "modeldeployment.eppServiceName" . }}
+  name: {{ include "modeldeployment.eppName" . }}
   namespace: {{ include "modeldeployment.namespace" . }}
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
@@ -10,10 +10,30 @@ data:
   default-plugins.yaml: |
     apiVersion: inference.networking.x-k8s.io/v1alpha1
     kind: EndpointPickerConfig
+    {{- $flowControl := eq (include "modeldeployment.eppFlowControlEnabled" .) "true" }}
+    {{- $fc := fromYaml (include "modeldeployment.eppFlowControlSettings" .) }}
+    {{- if $flowControl }}
+    featureGates:
+    - flowControl
+    {{- end }}
     plugins:
     - type: queue-scorer
     - type: kv-cache-utilization-scorer
     - type: prefix-cache-scorer
+    {{- if $flowControl }}
+    {{- /*
+    The concurrency detector reports an empty pool as fully saturated (1.0),
+    so requests arriving while the InferenceSet is parked are held in the
+    flow-control queue instead of failing. A large per-endpoint
+    maxConcurrency keeps saturation near 0 whenever a replica exists, so
+    flow control does not queue in front of a running pool and 1 <-> N
+    scaling keeps observing load on the model server metrics.
+    */}}
+    - type: concurrency-detector
+      parameters:
+        concurrencyMode: requests
+        maxConcurrency: {{ $fc.maxConcurrency | int64 }}
+    {{- end }}
     schedulingProfiles:
     - name: default
       plugins:
@@ -23,3 +43,14 @@ data:
         weight: {{ .Values.epp.scorerWeights.kvCacheUtilization }}
       - pluginRef: prefix-cache-scorer
         weight: {{ .Values.epp.scorerWeights.prefixCache }}
+    {{- if $flowControl }}
+    flowControl:
+      saturationDetector:
+        pluginRef: concurrency-detector
+      {{- with $fc.maxBytes }}
+      maxBytes: {{ . | quote }}
+      {{- end }}
+      {{- with $fc.defaultRequestTTL }}
+      defaultRequestTTL: {{ . | quote }}
+      {{- end }}
+    {{- end }}

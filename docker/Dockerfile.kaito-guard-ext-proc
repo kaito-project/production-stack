@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+# Keep pip's vendored certifi from adding roots distrusted by the OS bundle.
+ENV PIP_CERT=/etc/ssl/certs/ca-certificates.crt
+ENV PIP_USE_DEPRECATED=legacy-certs
+RUN pip install --no-cache-dir pip==26.2.2
+
+WORKDIR /app
+
+COPY kaito-guard-ext-proc/setup.py .
+COPY kaito-guard-ext-proc/ext_proc/ ./ext_proc/
+RUN pip install --no-cache-dir .
+
+EXPOSE 9000
+
+CMD ["python", "-m", "ext_proc.server"]
