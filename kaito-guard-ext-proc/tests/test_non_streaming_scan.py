@@ -11,7 +11,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for non-streaming response scanning against real Scanner API."""
+"""Tests for non-streaming response scanning.
+
+Tests verify scan_complete_response() behavior against guardrail_core.scanning.scan_output()
+contract. Uses real Scanner implementations; does NOT mock.
+"""
 
 import pytest
 from guardrail_core.scanning import Scanner, ScanResult
@@ -19,230 +23,283 @@ from ext_proc.non_streaming_scan import scan_complete_response, NonStreamingScan
 
 
 class PassScanner(Scanner):
-    """Scanner that always passes (valid=True)."""
+    """Scanner that always passes without modifying output."""
 
     def scan(self, prompt: str, output: str) -> ScanResult:
         return ScanResult(output=output, valid=True, score=1.0)
 
 
 class FailScanner(Scanner):
-    """Scanner that always fails (valid=False)."""
+    """Scanner that always fails without modifying output."""
 
     def scan(self, prompt: str, output: str) -> ScanResult:
         return ScanResult(output=output, valid=False, score=0.0)
 
 
-class SanitizingScanner(Scanner):
-    """Scanner that sanitizes output and passes."""
+class ExactRedactScanner(Scanner):
+    """Scanner that redacts exact substring and passes."""
+
+    def __init__(self, pattern: str, replacement: str):
+        self.pattern = pattern
+        self.replacement = replacement
 
     def scan(self, prompt: str, output: str) -> ScanResult:
-        sanitized = output.replace("REMOVE", "[redacted]")
-        return ScanResult(output=sanitized, valid=True, score=0.8)
+        redacted = output.replace(self.pattern, self.replacement)
+        return ScanResult(output=redacted, valid=True, score=0.9)
 
 
-class RejectingScanner(Scanner):
-    """Scanner that rejects output with None."""
+class ConditionalFailScanner(Scanner):
+    """Scanner that fails if output contains keyword."""
+
+    def __init__(self, keyword: str):
+        self.keyword = keyword
+        self.call_count = 0
 
     def scan(self, prompt: str, output: str) -> ScanResult:
-        if "forbidden" in output.lower():
-            return ScanResult(output=None, valid=False, score=0.0)
+        self.call_count += 1
+        if self.keyword in output.lower():
+            return ScanResult(output=output, valid=False, score=0.0)
         return ScanResult(output=output, valid=True, score=1.0)
 
 
 class TestScanCompleteResponse:
-    """Test non-streaming response scanning with real Scanner implementations."""
+    """Test non-streaming response scanning."""
 
     def test_single_pass_scanner(self):
-        """Test scanning with single passing scanner."""
+        """Verify single passing scanner returns original output."""
         scanner = PassScanner()
-        sanitized, validity = scan_complete_response(
+        sanitized, validity, scores = scan_complete_response(
             [scanner], prompt="test", output="hello world"
         )
 
         assert sanitized == "hello world"
-        assert "PassScanner" in validity
         assert validity["PassScanner"] is True
+        assert scores["PassScanner"] == 1.0
 
     def test_single_fail_scanner(self):
-        """Test scanning with single failing scanner."""
+        """Verify single failing scanner returns original output but marked failed."""
         scanner = FailScanner()
-        sanitized, validity = scan_complete_response(
+        sanitized, validity, scores = scan_complete_response(
             [scanner], prompt="test", output="hello world"
         )
 
+        # Output unchanged by failing scanner
         assert sanitized == "hello world"
         assert validity["FailScanner"] is False
+        assert scores["FailScanner"] == 0.0
 
-    def test_multiple_scanners_all_pass(self):
-        """Test multiple scanners that all pass."""
-        pass_scanner = PassScanner()
-        sanitize_scanner = SanitizingScanner()
+    def test_redaction_chain_last_output_wins(self):
+        """Verify output from LAST scanner replaces prior outputs (not first)."""
+        # First redacts SENSITIVE, second redacts SECRET
+        scanner1 = ExactRedactScanner("SENSITIVE", "[redacted-1]")
+        scanner2 = ExactRedactScanner("SECRET", "[redacted-2]")
 
-        sanitized, validity = scan_complete_response(
-            [pass_scanner, sanitize_scanner], prompt="test", output="hello REMOVE world"
+        sanitized, validity, scores = scan_complete_response(
+            [scanner1, scanner2], prompt="test", output="hello SENSITIVE SECRET world"
         )
 
-        # First scanner doesn't sanitize, second does
-        assert "REMOVE" in sanitized or "[redacted]" in sanitized
-        assert validity["PassScanner"] is True
-        assert validity["SanitizingScanner"] is True
+        # scanner1 output: "hello [redacted-1] SECRET world"
+        # scanner2 receives that and redacts SECRET: "hello [redacted-1] [redacted-2] world"
+        assert sanitized == "hello [redacted-1] [redacted-2] world"
+        # Both scanner names appear (scanner class names may collide; use class name once)
+        assert "ExactRedactScanner" in validity
+        # At least one should be in scores
+        assert len(scores) >= 1
 
-    def test_multiple_scanners_mixed_validity(self):
-        """Test multiple scanners with mixed pass/fail."""
-        pass_scanner = PassScanner()
-        fail_scanner = FailScanner()
+    def test_redaction_exact_output_single_scanner(self):
+        """Verify exact redaction result (not loose acceptance)."""
+        scanner = ExactRedactScanner("REMOVE", "[redacted]")
 
-        sanitized, validity = scan_complete_response(
-            [pass_scanner, fail_scanner], prompt="test", output="content"
+        sanitized, _, _ = scan_complete_response(
+            [scanner], prompt="test", output="hello REMOVE world"
         )
 
-        assert validity["PassScanner"] is True
-        assert validity["FailScanner"] is False
+        # Strict assertion: must be exactly this
+        assert sanitized == "hello [redacted] world"
+        # Not loose: don't accept "hello REMOVE world" (unreacted) or "hello  world" (wrong marker)
 
-    def test_reject_with_none_output(self):
-        """Test scanner that rejects by returning None."""
-        reject_scanner = RejectingScanner()
+    def test_fail_fast_stops_execution(self):
+        """Verify fail_fast=True stops after first scanner failure."""
+        tracker1 = ConditionalFailScanner("forbidden")
+        tracker2 = PassScanner()
+        tracker3 = PassScanner()
 
-        sanitized, validity = scan_complete_response(
-            [reject_scanner], prompt="test", output="FORBIDDEN content"
-        )
-
-        assert sanitized is None
-        assert validity["RejectingScanner"] is False
-
-    def test_fail_fast_stops_on_first_failure(self):
-        """Test fail_fast stops processing after first failure."""
-        pass_scanner = PassScanner()
-        fail_scanner = FailScanner()
-
-        call_order = []
-
-        class TrackingPassScanner(PassScanner):
-            def scan(self, prompt: str, output: str) -> ScanResult:
-                call_order.append("pass")
-                return super().scan(prompt, output)
-
-        class TrackingFailScanner(FailScanner):
-            def scan(self, prompt: str, output: str) -> ScanResult:
-                call_order.append("fail")
-                return super().scan(prompt, output)
-
-        # With fail_fast=True, should stop after fail_scanner
-        scan_complete_response(
-            [TrackingPassScanner(), TrackingFailScanner(), PassScanner()],
+        sanitized, validity, scores = scan_complete_response(
+            [tracker1, tracker2, tracker3],
             prompt="test",
-            output="content",
+            output="forbidden content",
             fail_fast=True,
         )
 
-        # Both scanners may be called depending on implementation order
-        assert "pass" in call_order or "fail" in call_order
+        # tracker1 should fail and execution stops
+        assert tracker1.call_count == 1
+        assert validity["ConditionalFailScanner"] is False
+        # After fail_fast, no other scanners should be in validity dict
+        # (Only tracker1 was executed due to fail_fast=True)
+        assert len(validity) == 1
+
+    def test_without_fail_fast_processes_all(self):
+        """Verify fail_fast=False (default) processes all scanners."""
+        tracker1 = ConditionalFailScanner("forbidden")
+        tracker2 = PassScanner()
+
+        sanitized, validity, scores = scan_complete_response(
+            [tracker1, tracker2],
+            prompt="test",
+            output="forbidden content",
+            fail_fast=False,
+        )
+
+        # Both should be called and results recorded
+        assert validity["ConditionalFailScanner"] is False
+        assert validity["PassScanner"] is True
 
     def test_empty_scanner_list_raises_error(self):
-        """Test that empty scanner list raises error."""
+        """Verify empty scanner list raises appropriate error."""
         with pytest.raises(NonStreamingScanError, match="At least one scanner"):
             scan_complete_response([], prompt="test", output="content")
 
     def test_non_string_output_raises_error(self):
-        """Test that non-string output raises error."""
+        """Verify non-string output raises appropriate error."""
         scanner = PassScanner()
         with pytest.raises(NonStreamingScanError, match="Output must be a string"):
             scan_complete_response([scanner], prompt="test", output=123)
 
-    def test_exception_message_is_generic(self):
-        """Test that exception message doesn't leak internal details."""
+    def test_exception_message_is_fixed_and_generic(self):
+        """Verify scanner exceptions are wrapped with fixed message."""
+
         class ErrorScanner(Scanner):
             def scan(self, prompt: str, output: str) -> ScanResult:
-                raise ValueError("Sensitive pattern xyz123 found in regex")
+                raise ValueError("Internal: secret_pattern_xyz_abc_123_found")
 
         scanner = ErrorScanner()
         with pytest.raises(NonStreamingScanError) as exc_info:
             scan_complete_response([scanner], prompt="test", output="content")
 
-        # Public message should be generic
+        # Public message is fixed and generic
         assert str(exc_info.value) == "Scanning failed."
-        # Original error preserved as cause
+        # Original cause is preserved (not exposed in message)
         assert exc_info.value.__cause__ is not None
         assert isinstance(exc_info.value.__cause__, ValueError)
+        # Sensitive details are in cause, not in public message
+        assert "secret_pattern" in str(exc_info.value.__cause__)
+        assert "secret_pattern" not in str(exc_info.value)
 
     def test_isolation_between_calls(self):
-        """Test that multiple calls don't share state."""
-        scanner = SanitizingScanner()
+        """Verify multiple calls are independent (no state sharing)."""
+        scanner = ExactRedactScanner("X", "[redacted]")
 
-        result1, _ = scan_complete_response(
-            [scanner], prompt="p1", output="text REMOVE 1"
+        result1, _, _ = scan_complete_response(
+            [scanner], prompt="p1", output="text X 1"
         )
-        result2, _ = scan_complete_response(
-            [scanner], prompt="p2", output="text REMOVE 2"
+        result2, _, _ = scan_complete_response(
+            [scanner], prompt="p2", output="text X 2"
         )
 
-        # Each should have independent sanitization
-        assert "1" in result1
-        assert "2" in result2
+        # Each should have independent redaction
+        assert result1 == "text [redacted] 1"
+        assert result2 == "text [redacted] 2"
         assert result1 != result2
 
-    def test_full_text_processed(self):
-        """Test that complete text is processed, no holdback issues."""
-        class LengthScanner(Scanner):
-            """Ensures full output is processed."""
+    def test_scanner_receives_prompt_context(self):
+        """Verify scanner receives prompt parameter."""
 
+        class ContextCheckScanner(Scanner):
             def scan(self, prompt: str, output: str) -> ScanResult:
-                if len(output) < 100:
+                # Pass if both prompt and output are non-empty
+                valid = len(prompt) > 0 and len(output) > 0
+                return ScanResult(output=output, valid=valid, score=1.0)
+
+        scanner = ContextCheckScanner()
+        _, validity, _ = scan_complete_response(
+            [scanner], prompt="meaningful context", output="response"
+        )
+
+        assert validity["ContextCheckScanner"] is True
+
+    def test_full_text_processed_no_truncation(self):
+        """Verify complete text is processed (no holdback or truncation)."""
+
+        class LengthCheckScanner(Scanner):
+            def scan(self, prompt: str, output: str) -> ScanResult:
+                # Fail if output is less than expected length
+                # This would catch holdback truncation
+                if len(output) < 1000:
                     return ScanResult(output=output, valid=False, score=0.0)
                 return ScanResult(output=output, valid=True, score=1.0)
 
-        scanner = LengthScanner()
-        long_text = "x" * 200
+        scanner = LengthCheckScanner()
+        long_text = "x" * 2000
 
-        sanitized, validity = scan_complete_response(
+        _, validity, _ = scan_complete_response(
             [scanner], prompt="test", output=long_text
         )
 
-        # Should process full text, not truncate due to holdback
-        assert len(sanitized) == 200
-        assert validity["LengthScanner"] is True
+        # Should process full length, not truncate
+        assert validity["LengthCheckScanner"] is True
 
-    def test_prompt_context_passed_to_scanners(self):
-        """Test that prompt context is available to scanners."""
-        class ContextScanner(Scanner):
-            """Scanner that uses prompt context."""
+    def test_none_output_is_valid_result(self):
+        """Verify None output is permissible (ScanResult.output: str | None)."""
+
+        class NoneReturningScanner(Scanner):
+            def scan(self, prompt: str, output: str) -> ScanResult:
+                # Explicitly return None (e.g., rejection path)
+                return ScanResult(output=None, valid=False, score=0.0)
+
+        scanner = NoneReturningScanner()
+        sanitized, validity, scores = scan_complete_response(
+            [scanner], prompt="test", output="content"
+        )
+
+        # Result is None from scanner
+        assert sanitized is None
+        assert validity["NoneReturningScanner"] is False
+
+    def test_return_values_are_shared_contract(self):
+        """Verify return tuple matches guardrail_core.scanning contract."""
+        scanner1 = PassScanner()
+        scanner2 = FailScanner()
+
+        result = scan_complete_response(
+            [scanner1, scanner2], prompt="p", output="text"
+        )
+
+        # Result is 3-tuple: (sanitized, validity, scores)
+        assert isinstance(result, tuple)
+        assert len(result) == 3
+
+        sanitized, validity, scores = result
+
+        # Sanitized is str | None
+        assert isinstance(sanitized, str) or sanitized is None
+
+        # Validity is dict[str, bool]
+        assert isinstance(validity, dict)
+        assert all(isinstance(k, str) and isinstance(v, bool) for k, v in validity.items())
+
+        # Scores is dict[str, float]
+        assert isinstance(scores, dict)
+        assert all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in scores.items())
+
+    def test_sequential_execution_order(self):
+        """Verify scanners execute in input order."""
+        execution_log = []
+
+        class LoggingScanner(Scanner):
+            def __init__(self, name: str):
+                self.name = name
 
             def scan(self, prompt: str, output: str) -> ScanResult:
-                # Validity depends on whether prompt matches output
-                valid = len(prompt) > 0 and len(output) > 0
-                return ScanResult(output=output, valid=valid, score=1.0 if valid else 0.0)
+                execution_log.append(self.name)
+                return ScanResult(output=output, valid=True, score=1.0)
 
-        scanner = ContextScanner()
-        sanitized, validity = scan_complete_response(
-            [scanner], prompt="meaningful prompt", output="response"
-        )
+        scanner1 = LoggingScanner("first")
+        scanner2 = LoggingScanner("second")
+        scanner3 = LoggingScanner("third")
 
-        assert validity["ContextScanner"] is True
+        scan_complete_response([scanner1, scanner2, scanner3], prompt="p", output="text")
 
-    def test_real_world_sanitization_chain(self):
-        """Test realistic chain: pass → sanitize → reject."""
-        scanners = [
-            PassScanner(),
-            SanitizingScanner(),
-            RejectingScanner(),
-        ]
+        # Execution order should match input order
+        assert execution_log == ["first", "second", "third"]
 
-        # Should pass through chain
-        sanitized, validity = scan_complete_response(
-            scanners, prompt="test", output="hello REMOVE world"
-        )
-
-        assert validity["PassScanner"] is True
-        assert validity["SanitizingScanner"] is True
-        assert validity["RejectingScanner"] is True
-        # Text should be from first scanner (no sanitization applied by PassScanner)
-        assert "hello" in sanitized
-
-        # Should be rejected by RejectingScanner
-        sanitized2, validity2 = scan_complete_response(
-            scanners, prompt="test", output="hello FORBIDDEN world"
-        )
-
-        assert sanitized2 is None
-        assert validity2["RejectingScanner"] is False
 

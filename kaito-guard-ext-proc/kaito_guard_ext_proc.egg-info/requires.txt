@@ -1,7 +1,0 @@
-kaito-guardrail-core==0.1.1
-grpcio==1.84.1
-xds-protos==1.84.1
-
-[dev]
-pytest>=7.4.0
-pytest-asyncio>=0.21.0
