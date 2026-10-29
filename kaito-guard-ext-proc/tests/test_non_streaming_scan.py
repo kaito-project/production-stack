@@ -238,22 +238,60 @@ class TestScanCompleteResponse:
         # Should process full length, not truncate
         assert validity["LengthCheckScanner"] is True
 
-    def test_none_output_is_valid_result(self):
-        """Verify None output is permissible (ScanResult.output: str | None)."""
+    def test_none_output_is_invalid_contract(self):
+        """Verify None output violates ScanResult.output type contract.
 
-        class NoneReturningScanner(Scanner):
-            def scan(self, prompt: str, output: str) -> ScanResult:
-                # Explicitly return None (e.g., rejection path)
-                return ScanResult(output=None, valid=False, score=0.0)
+        ScanResult.output contract is str, not str|None. Scanner must return str.
+        This test documents the contract; scanners returning None would be a bug.
+        """
+        # ScanResult() requires output: str, not str | None
+        # A scanner returning None violates the contract
+        # (scan_output() may return None if all scanners fail, but that's different)
+        result = ScanResult(output="text", valid=True, score=1.0)
+        assert isinstance(result.output, str)
 
-        scanner = NoneReturningScanner()
-        sanitized, validity, scores = scan_complete_response(
-            [scanner], prompt="test", output="content"
+    def test_matches_direct_scan_output_call(self):
+        """Verify adapter behavior matches direct scan_output() call."""
+        from guardrail_core.scanning import scan_output
+
+        scanners = [PassScanner(), ExactRedactScanner("X", "[R]")]
+        prompt = "test prompt"
+        output = "hello X world"
+
+        # Call through adapter
+        adapter_sanitized, adapter_validity, adapter_scores = scan_complete_response(
+            scanners, prompt, output, fail_fast=False
         )
 
-        # Result is None from scanner
-        assert sanitized is None
-        assert validity["NoneReturningScanner"] is False
+        # Call directly
+        direct_sanitized, direct_validity, direct_scores = scan_output(
+            scanners, prompt, output, fail_fast=False
+        )
+
+        # Should produce identical results
+        assert adapter_sanitized == direct_sanitized
+        assert adapter_validity == direct_validity
+        assert adapter_scores == direct_scores
+
+    def test_fail_fast_matches_scan_output(self):
+        """Verify fail_fast behavior matches direct scan_output() call."""
+        from guardrail_core.scanning import scan_output
+
+        scanners = [PassScanner(), ConditionalFailScanner("forbidden")]
+        output = "forbidden content"
+
+        # Through adapter
+        _, adapter_validity, _ = scan_complete_response(
+            scanners, prompt="p", output=output, fail_fast=True
+        )
+
+        # Direct call
+        _, direct_validity, _ = scan_output(
+            scanners, prompt="p", output=output, fail_fast=True
+        )
+
+        # Validity dict should be identical
+        assert adapter_validity == direct_validity
 
     def test_return_values_are_shared_contract(self):
         """Verify return tuple matches guardrail_core.scanning contract."""

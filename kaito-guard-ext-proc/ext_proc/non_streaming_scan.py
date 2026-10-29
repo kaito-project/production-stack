@@ -20,9 +20,7 @@ from guardrail_core.scanning import Scanner, scan_output
 class NonStreamingScanError(ValueError):
     """Error during non-streaming response scanning."""
 
-    def __init__(self, message: str) -> None:
-        """Initialize with fixed message; preserve original error as cause."""
-        super().__init__(message)
+    pass
 
 
 def scan_complete_response(
