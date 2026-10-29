@@ -25,11 +25,11 @@ from guardrail_core.streaming.window import (
 )
 
 
-class LogicalStreamError(ValueError):
+class GuardrailStreamError(ValueError):
     """The response violates the single-choice streaming protocol."""
 
 
-class LogicalStream:
+class GuardrailStream:
     """Scan one response's SSE text before releasing it.
 
     Use a separate instance per response. The caller handles upstream closure
@@ -82,7 +82,7 @@ class LogicalStream:
     def _advance(self, chunk: bytes, *, final: bool) -> WindowEmitResult:
         framer, window = self._framer, self._window
         if framer is None or window is None:
-            raise RuntimeError("Logical stream is closed.")
+            raise RuntimeError("Guardrail stream is closed.")
 
         succeeded = False
         try:
@@ -90,7 +90,7 @@ class LogicalStream:
             result = self._consume(events, window)
             if not result.blocked and final:
                 if not self._done_seen:
-                    raise LogicalStreamError("Stream ended without a DONE event.")
+                    raise GuardrailStreamError("Stream ended without a DONE event.")
                 tail = window.flush()
                 result = WindowEmitResult(
                     chunks=() if tail.blocked else result.chunks + tail.chunks,
@@ -113,12 +113,12 @@ class LogicalStream:
             if parsed.status == OpenAIChatChunkParseStatus.NO_DATA:
                 continue
             if self._done_seen:
-                raise LogicalStreamError("Data received after the DONE event.")
+                raise GuardrailStreamError("Data received after the DONE event.")
             if parsed.status == OpenAIChatChunkParseStatus.DONE:
                 self._done_seen = True
                 continue
             if parsed.status != OpenAIChatChunkParseStatus.PARSED:
-                raise LogicalStreamError(
+                raise GuardrailStreamError(
                     f"Invalid OpenAI stream event: {parsed.status}."
                 )
             if not parsed.parsed_choices:
@@ -127,7 +127,7 @@ class LogicalStream:
                 len(parsed.parsed_choices) != 1
                 or parsed.parsed_choices[0].choice_index != 0
             ):
-                raise LogicalStreamError(
+                raise GuardrailStreamError(
                     "Stream requires exactly one choice with index zero."
                 )
             content = parsed.parsed_choices[0].content

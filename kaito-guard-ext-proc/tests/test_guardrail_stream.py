@@ -32,7 +32,7 @@ from guardrail_core.streaming.window import (
     WindowScanResult,
 )
 
-from ext_proc.logical_stream import LogicalStream, LogicalStreamError
+from ext_proc.guardrail_stream import GuardrailStream, GuardrailStreamError
 
 
 def content_event(text):
@@ -69,7 +69,7 @@ def test_stream_at_every_byte_boundary(scanner, ending):
         .encode()
     )
     for offset in range(len(wire) + 1):
-        stream = LogicalStream(scanner, holdback_len=3)
+        stream = GuardrailStream(scanner, holdback_len=3)
         chunks = []
         for part in (wire[:offset], wire[offset:]):
             chunks.extend(stream.feed(part).chunks)
@@ -79,7 +79,7 @@ def test_stream_at_every_byte_boundary(scanner, ending):
 
 
 def test_done_waits_for_normal_eof_before_flushing(scanner):
-    stream = LogicalStream(scanner, holdback_len=5)
+    stream = GuardrailStream(scanner, holdback_len=5)
     assert stream.feed(content_event("hello")) == WindowEmitResult(chunks=())
     assert stream.feed(DONE) == WindowEmitResult(chunks=())
     assert not stream.closed
@@ -93,7 +93,7 @@ def test_context_and_sanitized_output_use_shared_window(scanner):
     scanner.scan.side_effect = lambda text, **_: WindowScanResult(
         sanitized_text=text.replace("secret", "[removed]")
     )
-    stream = LogicalStream(scanner, holdback_len=5)
+    stream = GuardrailStream(scanner, holdback_len=5)
     chunks = []
     for text in ("safe se", "cret end"):
         chunks.extend(stream.feed(content_event(text)).chunks)
@@ -112,7 +112,7 @@ def test_cross_event_match_blocks_and_stops_same_batch(scanner, split):
     scanner.scan.side_effect = lambda text, **_: WindowScanResult(
         blocked="secret" in text
     )
-    stream = LogicalStream(scanner, holdback_len=5)
+    stream = GuardrailStream(scanner, holdback_len=5)
     first = stream.feed(content_event("safe " + "secret"[:split]))
     assert "safe ".startswith("".join(first.chunks))
     result = stream.feed(
@@ -126,7 +126,7 @@ def test_cross_event_match_blocks_and_stops_same_batch(scanner, split):
 
 def test_block_on_final_scan_discards_tail(scanner):
     scanner.scan.return_value = WindowScanResult(blocked=True)
-    stream = LogicalStream(scanner, holdback_len=10)
+    stream = GuardrailStream(scanner, holdback_len=10)
     stream.feed(content_event("secret") + DONE)
     assert stream.finish() == WindowEmitResult(chunks=(), blocked=True)
     scanner.scan.assert_called_once_with("secret", flush=True, preceding_char="")
@@ -146,16 +146,16 @@ def test_block_on_final_scan_discards_tail(scanner):
     ],
 )
 def test_invalid_choice_or_payload_discards_pending(scanner, payload):
-    stream = LogicalStream(scanner, holdback_len=100)
+    stream = GuardrailStream(scanner, holdback_len=100)
     stream.feed(content_event("pending"))
-    with pytest.raises(LogicalStreamError):
+    with pytest.raises(GuardrailStreamError):
         stream.feed(build_sse_data_chunk(payload).encode())
     scanner.scan.assert_not_called()
     assert_closed(stream, scanner)
 
 
 def test_empty_choices_and_non_text_choices_are_metadata(scanner):
-    stream = LogicalStream(scanner, holdback_len=100)
+    stream = GuardrailStream(scanner, holdback_len=100)
     wire = b": heartbeat\n\n"
     for payload in [
         {"choices": [{"index": 0, "delta": {"role": "assistant"}}]},
@@ -171,26 +171,26 @@ def test_empty_choices_and_non_text_choices_are_metadata(scanner):
 
 @pytest.mark.parametrize("invalid", [b"data: {bad}\n\n", b"data: []\n\n"])
 def test_parse_error_discards_even_same_batch_output(scanner, invalid):
-    stream = LogicalStream(scanner, holdback_len=0)
-    with pytest.raises(LogicalStreamError):
+    stream = GuardrailStream(scanner, holdback_len=0)
+    with pytest.raises(GuardrailStreamError):
         stream.feed(content_event("approved") + invalid + DONE)
     assert_closed(stream, scanner)
 
 
 @pytest.mark.parametrize("after_done", [DONE, content_event("late")])
 def test_data_after_done_is_terminal(scanner, after_done):
-    stream = LogicalStream(scanner, holdback_len=100)
+    stream = GuardrailStream(scanner, holdback_len=100)
     stream.feed(content_event("pending") + DONE)
-    with pytest.raises(LogicalStreamError, match="after"):
+    with pytest.raises(GuardrailStreamError, match="after"):
         stream.feed(after_done)
     scanner.scan.assert_not_called()
     assert_closed(stream, scanner)
 
 
 def test_missing_done_discards_pending(scanner):
-    stream = LogicalStream(scanner, holdback_len=100)
+    stream = GuardrailStream(scanner, holdback_len=100)
     stream.feed(content_event("pending"))
-    with pytest.raises(LogicalStreamError, match="without a DONE"):
+    with pytest.raises(GuardrailStreamError, match="without a DONE"):
         stream.finish()
     scanner.scan.assert_not_called()
     assert_closed(stream, scanner)
@@ -198,7 +198,7 @@ def test_missing_done_discards_pending(scanner):
 
 @pytest.mark.parametrize("done", [b"", DONE])
 def test_truncated_eof_is_not_normal_completion(scanner, done):
-    stream = LogicalStream(scanner, holdback_len=100)
+    stream = GuardrailStream(scanner, holdback_len=100)
     stream.feed(content_event("pending") + done + b"data: unfinished")
     with pytest.raises(SSEIncompleteEventError):
         stream.finish()
@@ -214,7 +214,7 @@ def test_truncated_eof_is_not_normal_completion(scanner, done):
     ],
 )
 def test_framing_failure_discards_pending(scanner, wire, error):
-    stream = LogicalStream(scanner, holdback_len=100, max_event_bytes=100)
+    stream = GuardrailStream(scanner, holdback_len=100, max_event_bytes=100)
     stream.feed(content_event("pending"))
     with pytest.raises(error):
         stream.feed(wire)
@@ -227,7 +227,7 @@ def test_framing_failure_discards_pending(scanner, wire, error):
 def test_scanner_failure_or_cancellation_is_terminal(scanner, final, cancelled):
     cause = asyncio.CancelledError() if cancelled else RuntimeError("scanner failed")
     scanner.scan.side_effect = cause
-    stream = LogicalStream(scanner, holdback_len=100 if final else 0)
+    stream = GuardrailStream(scanner, holdback_len=100 if final else 0)
     if final:
         stream.feed(content_event("pending") + DONE)
     with pytest.raises(asyncio.CancelledError if cancelled else WindowScanError) as exc:
@@ -238,7 +238,7 @@ def test_scanner_failure_or_cancellation_is_terminal(scanner, final, cancelled):
 
 
 def test_caller_cancellation_discards_pending(scanner):
-    stream = LogicalStream(scanner, holdback_len=100)
+    stream = GuardrailStream(scanner, holdback_len=100)
     stream.feed(content_event("pending") + DONE)
     stream.cancel()
     scanner.scan.assert_not_called()
@@ -249,8 +249,8 @@ def test_request_state_is_isolated(scanner):
     scanner.scan.side_effect = lambda text, **_: WindowScanResult(
         blocked="secret" in text
     )
-    first = LogicalStream(scanner, holdback_len=5)
-    second = LogicalStream(scanner, holdback_len=5)
+    first = GuardrailStream(scanner, holdback_len=5)
+    second = GuardrailStream(scanner, holdback_len=5)
     first.feed(content_event("se"))
     second.feed(content_event("cret") + DONE)
     assert second.finish().chunks == ("cret",)

@@ -29,15 +29,15 @@ Runtime dependencies are defined in `setup.py`. `kaito-guardrail-core==0.1.1`
 is installed from PyPI. `xds-protos`, published by the gRPC project, supplies
 the generated Envoy protobuf messages and service.
 
-## Logical stream adapter
+## Guardrail stream adapter
 
-`ext_proc.logical_stream.LogicalStream` connects SSE bytes, shared OpenAI
+`ext_proc.guardrail_stream.GuardrailStream` connects SSE bytes, shared OpenAI
 parsing, and the shared scan-before-release window for one response:
 
 ```python
-from ext_proc.logical_stream import LogicalStream
+from ext_proc.guardrail_stream import GuardrailStream
 
-stream = LogicalStream(scanner, holdback_len=holdback_len)
+stream = GuardrailStream(scanner, holdback_len=holdback_len)
 try:
     for wire_bytes in upstream:
         result = stream.feed(wire_bytes)
@@ -65,7 +65,7 @@ subsequent input or finish raises `RuntimeError`. `cancel()` is idempotent and
 discards pending text without scanning or flushing.
 
 Shared framing and scanner exceptions propagate. Invalid parsed events or
-choice policy violations raise `LogicalStreamError`, without including model
+choice policy violations raise `GuardrailStreamError`, without including model
 text. Call `cancel()` on upstream failure/cancellation, never `finish()`.
 This is tested composition code, not an Envoy `Process` implementation; the
 server remains unchanged and does not protect traffic.
@@ -114,7 +114,7 @@ in order, and call `finish()` once at normal EOF.
 - Choice indexes must be explicit integers; omitted indexes are not defaulted
   locally. A bare `[DONE]` without a data field is not an SSE DONE event.
 - The shared parser retains all choices, including non-text entries. It does
-  not enforce a product's single-choice policy. The logical stream adapter
+  not enforce a product's single-choice policy. The guardrail stream adapter
   validates this policy; future `Process` integration must also restrict
   requests to `n=1`. Do not concatenate different choices.
 
@@ -142,13 +142,13 @@ blocking, and safe-prefix release.
   and terminal response state. Unlike `SSEFramer.finish()`, window `flush()` does
   not close the window. Do not reuse a completed or abandoned response's window.
 
-The logical stream adapter manages these lifecycle rules; future `Process`
+The guardrail stream adapter manages these lifecycle rules; future `Process`
 integration must supply transport and policy handling, not duplicate core logic.
 
 ## CI
 
 The `kaito-guard-ext-proc` job installs `.[dev]` with Python 3.12, exercises the
-published framing/parser/window APIs and the logical stream adapter, runs the
+published framing/parser/window APIs and the guardrail stream adapter, runs the
 unchanged gRPC skeleton tests, and builds the container.
 The image is not published; these tests do not claim real Envoy protection.
 
