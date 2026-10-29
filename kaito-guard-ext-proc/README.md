@@ -2,7 +2,7 @@
 
 This package is the Envoy gateway adapter, not a guardrail implementation.
 SSE framing, OpenAI chunk parsing, and scan-before-release holdback come directly
-from the published `kaito-guardrail-core==0.1.1` package. There is no local parser,
+from the KAITO-owned `kaito-guardrail-core` package. There is no local parser,
 holdback algorithm, scanner, or guard engine.
 
 The server registers Envoy's `envoy.service.ext_proc.v3.ExternalProcessor`
@@ -25,9 +25,49 @@ python -m ext_proc.server
 python -m pytest
 ```
 
-Runtime dependencies are defined in `setup.py`. `kaito-guardrail-core==0.1.1`
-is installed from PyPI. `xds-protos`, published by the gRPC project, supplies
-the generated Envoy protobuf messages and service.
+Runtime dependencies are defined in `setup.py`. This draft pins the shared core
+source archive at commit `2aed1ae7da18536d73eaee0f089d8a40559469d7` from
+[kaito-project/kaito#2487](https://github.com/kaito-project/kaito/pull/2487).
+Published core 0.1.1 supplies the streaming APIs but not the new configuration
+APIs. Replace the temporary source pin with an exact PyPI version once the
+prerequisite is merged and released; core's source version 0.2.0 is not a
+published release. `xds-protos`, published by the gRPC project, supplies the
+generated Envoy protobuf messages and service.
+
+## Gateway policy adaptation
+
+`ext_proc.policy.GatewayPolicy` validates an already-decoded gateway policy and
+delegates scanner configuration and construction to `guardrail_core.config`.
+It does not load files, define a local scanner registry, execute a policy, or
+wire scanners into Envoy `Process`.
+
+```python
+from ext_proc.policy import GatewayPolicy
+
+policy = GatewayPolicy.from_dict({
+    "action": "block",
+    "blockMessage": "The response was blocked.",
+    "scanners": [
+        {"type": "ban_substrings", "substrings": ["secret"]},
+        {"type": "regex", "patterns": ["private"], "action": "redact"},
+    ],
+})
+scanners = policy.build_scanners()
+```
+
+Only `action`, `blockMessage`, and `scanners` are accepted at the policy level.
+The default action is `block`; each scanner can override it with `block` or
+`redact`. `blockMessage` defaults to
+`The model output was blocked by output guardrails.` and must be a non-empty
+string. `scanners` must be a non-empty list. Shared core owns scanner names,
+field normalization, validation, and construction; configured order is preserved.
+
+Malformed policies raise `PolicyConfigError` instead of silently disabling
+guardrails or skipping entries. Core validation errors include the scanner
+entry index and retain the original cause. Scanner construction exceptions
+propagate unchanged. Returned scanners implement core's buffered
+`scan(prompt, output)` protocol, not the streaming window scanner protocol;
+execution and streaming policy adaptation are subsequent work.
 
 ## Guardrail stream adapter
 

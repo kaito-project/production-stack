@@ -11,7 +11,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Check the published dependency and a minimal shared API composition."""
+"""Check the pinned dependency and a minimal shared API composition."""
 
 from importlib.metadata import metadata, requires, version
 from unittest.mock import Mock
@@ -30,11 +30,16 @@ from guardrail_core.streaming.window import (
 )
 
 
-def test_published_dependency_contract():
-    assert version("kaito-guardrail-core") == "0.1.1"
+def test_pinned_dependency_contract():
+    assert version("kaito-guardrail-core") == "0.2.0"
     dependencies = requires("kaito-guard-ext-proc")
     assert dependencies is not None
-    assert "kaito-guardrail-core==0.1.1" in dependencies
+    core = next(dep for dep in dependencies if dep.startswith("kaito-guardrail-core"))
+    assert (
+        "https://github.com/xiaoqi-7/kaito/archive/"
+        "2aed1ae7da18536d73eaee0f089d8a40559469d7.tar.gz"
+        "#subdirectory=guardrail_core"
+    ) in core
     assert metadata("kaito-guard-ext-proc")["Requires-Python"] == ">=3.12"
 
 
