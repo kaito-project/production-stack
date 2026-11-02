@@ -227,7 +227,7 @@ failures can be localised.
 
 ### Scale To Zero — Full Scaling Lifecycle
 
-**CI tier:** same jobs as the Scaling group (`make test-e2e-scaling`). Run alone with `E2E_LABEL='ScaleToZero && StandardK8sOnly' E2E_PARALLEL=1`.
+**CI tier:** same jobs as the Scaling group (`make test-e2e-scaling`). Run alone with `E2E_LABEL='ScaleToZero' E2E_PARALLEL=1`.
 
 Warm-bootstrap one replica (GPU-mocked or real H100), then upgrade the same release to a zero-minimum, one-maximum ScaledObject with EPP flow control. Verify the idle model parks and releases its GPU NodeClaim while EPP remains Ready. Sustained authenticated requests must wake one replica and keep it through provisioning; cold-start delivery is best effort, with eventual success and bounded 5xx responses. The temporary one-replica cap prevents cold-start pressure from triggering capacity scaling before the baseline is recorded.
 
