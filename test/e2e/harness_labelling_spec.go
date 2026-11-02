@@ -67,12 +67,6 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 	})
 
 	It("stamps the managed-by discovery label on the workload Namespace", func() {
-		// A managed control plane provisions the workload namespace itself and
-		// stamps only its own marker (kubernetes.azure.com/managedByAIManager),
-		// leaving the discovery label the status reporter selects on absent.
-		// Unskip once that is settled on the AI Manager side.
-		Skip("AI Manager does not stamp the discovery label on namespaces it provisions")
-
 		cl := utils.TestingCluster.KubeClient
 		ns := &corev1.Namespace{}
 		Expect(cl.Get(ctx, types.NamespacedName{Name: namespace}, ns)).To(Succeed())
@@ -81,11 +75,8 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 			"workload namespace must carry the reporter discovery label")
 	})
 
-	// The Namespace above is a built-in kind; everything asserted here is a CR
-	// the harness renders, which a managed control plane does not let the caller
-	// read.
 	It("stamps kaito.sh/owned-by: modelharness on every harness-owned object",
-		utils.GinkgoLabelStandardK8sOnly, func() {
+		func() {
 			cl := utils.TestingCluster.KubeClient
 			gatewayName := namespace
 

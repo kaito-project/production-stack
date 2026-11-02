@@ -197,7 +197,7 @@ var _ = Describe("Filter execution order",
 		// actually deliver requests to the workload pod (vLLM).
 		// ─────────────────────────────────────────────────────────────────
 
-		Context("P0: bbr precedes EPP, full chain delivers traffic", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("P0: bbr precedes EPP, full chain delivers traffic", func() {
 
 			// B2 — Send N valid authenticated requests, then assert that
 			// vLLM's `vllm:request_success_total{model_name=<modelName>}`
@@ -281,13 +281,8 @@ var _ = Describe("Filter execution order",
 			// of the five filters we care about. This is the strongest
 			// possible assertion because it does not depend on any business
 			// request behaviour: it checks the rendered xDS config itself.
-			//
-			// Reaching the admin port means `kubectl exec` into the gateway
-			// pod, which a managed control plane does not allow — hence
-			// StandardK8sOnly. Every other spec here asserts the same
-			// ordering through request behaviour and stays runnable.
 			It("F1: HCM filter order is CORS → ext_authz → bbr → ext_proc → router",
-				utils.GinkgoLabelStandardK8sOnly, func() {
+				func() {
 					gwPod, err := firstRunningPod(ctx, caseNS, gatewayLabel)
 					Expect(err).NotTo(HaveOccurred(),
 						"per-namespace Gateway pod should be Running")

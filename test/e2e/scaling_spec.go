@@ -101,7 +101,7 @@ var scalingVLLMConfig = map[string]string{
 var _ = Describe("InferenceSet Scaling — Infra",
 	// Serial: every scaling container shares the CaseScaling namespace and the
 	// cluster's GPU quota, so they must never overlap.
-	Ordered, Serial, utils.GinkgoLabelScaling, utils.GinkgoLabelStandardK8sOnly, func() {
+	Ordered, Serial, utils.GinkgoLabelScaling, func() {
 
 		// Per-case deployment owned by scaling_spec.go (see cases.go).
 		// Resolved as Describe-local values so the table lookup happens

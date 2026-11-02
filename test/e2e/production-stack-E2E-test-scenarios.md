@@ -149,7 +149,6 @@ the correct pool received the request. EPP-side counters corroborate the schedul
 * Model-specific route wins over catch-all — The catch-all `model-not-found-direct` EnvoyFilter (see *Unknown model handling*) patches an Envoy `direct_response` (status 404) onto the Gateway's virtual host. Requests with a known model name must never hit it: if they did, the response would be 404 instead of 200. Verify by sending requests for each known model and asserting `HTTP 200` plus a body whose `model` field matches the request. Guards against route-ordering regressions where the catch-all rule silently absorbs valid traffic.
 * EPP routing success (metrics) — After the above runs, verify `inference_extension_scheduler_attempts_total{status="success"}` increased by the total requests sent and `{status="failure"}` did not change. Verify `inference_objective_request_total{model_name="routing-phi"}` and `{model_name="routing-ministral"}` match the per-model counts. Proves EPP actively scheduled each request rather than falling through to a default route.
 * Load distribution — With 2 replicas per pool, send 20+ requests per model. Scrape `vllm:request_success_total` from each pod and verify no pod received 0 requests and none received more than 80% of its pool's traffic. Cross-check with `inference_pool_per_pod_queue_size{name, model_server_pod}` to confirm both pods were active. If one pod gets all traffic, EPP's scoring or endpoint list is broken.
-* Debug EnvoyFilter log chain — For **one** representative request in each of the cases above (phi, ministral, concurrent cross-model), tail istio-ingressgateway logs and verify the `inference-debug-filter` Lua chain emitted exactly one `[PRE-BBR]`, one `[POST-EPP]`, and one `[RESPONSE]` line sharing the same `x-request-id`. In the `[POST-EPP]` line, `x-gateway-model-name` equals the request's model field (proves BBR ran) and `x-gateway-destination-endpoint` is a non-empty `IP:port` matching the pod that actually served the request per `vllm:request_success_total` (proves EPP ran and its decision was honoured). Health-check `GET /` traffic must not produce these log lines. This folds the debug/observability surface into the main routing assertions so filter-chain ordering regressions (e.g., Istio upgrade) cannot silently break on-cluster debugging.
 
 ### Model discovery — `GET /v1/models` and `GET /v1/models/{id}`
 
@@ -228,7 +227,7 @@ failures can be localised.
 
 ### Scale To Zero — Full Scaling Lifecycle
 
-**CI tier:** same jobs as the Scaling group (`make test-e2e-scaling`). Run alone with `E2E_LABEL='ScaleToZero && StandardK8sOnly' E2E_PARALLEL=1`.
+**CI tier:** same jobs as the Scaling group (`make test-e2e-scaling`). Run alone with `E2E_LABEL='ScaleToZero' E2E_PARALLEL=1`.
 
 Warm-bootstrap one replica (GPU-mocked or real H100), then upgrade the same release to a zero-minimum, one-maximum ScaledObject with EPP flow control. Verify the idle model parks and releases its GPU NodeClaim while EPP remains Ready. Sustained authenticated requests must wake one replica and keep it through provisioning; cold-start delivery is best effort, with eventual success and bounded 5xx responses. The temporary one-replica cap prevents cold-start pressure from triggering capacity scaling before the baseline is recorded.
 

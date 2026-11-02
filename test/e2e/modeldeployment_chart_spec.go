@@ -54,7 +54,7 @@ func recycleNamespace(ctx context.Context, deploymentName, namespace string) {
 	}
 }
 
-var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.GinkgoLabelStandardK8sOnly, func() {
+var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() {
 	var ctx context.Context
 
 	BeforeEach(func() {

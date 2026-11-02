@@ -87,7 +87,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 	Context("InferenceSet and InferencePool lifecycle", utils.GinkgoLabelInfra, func() {
 
-		Context("InferenceSet lifecycle", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("InferenceSet lifecycle", func() {
 			It("should have EPP pods running for each InferencePool", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
@@ -158,7 +158,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 			})
 		})
 
-		Context("HTTPRoute status", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("HTTPRoute status", func() {
 			It("should have HTTPRoutes with Accepted=True condition for each deployment", func() {
 				dynClient, err := utils.GetDynamicClient()
 				Expect(err).NotTo(HaveOccurred())
@@ -198,7 +198,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 	Context("Fake node and shadow pod lifecycle", utils.GinkgoLabelInfra, func() {
 
-		Context("Fake nodes", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("Fake nodes", func() {
 			It("should have fake nodes with correct labels", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
@@ -240,7 +240,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 			})
 		})
 
-		Context("Shadow pods", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("Shadow pods", func() {
 			It("should have shadow pods running in the shadow namespace", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
@@ -541,7 +541,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 			})
 		})
 
-		Context("Terminating pod reaping", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("Terminating pod reaping", func() {
 			It("should force-delete a KAITO pod stuck Terminating on a fake node", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
@@ -664,7 +664,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 
 	Context("Garbage collection", utils.GinkgoLabelInfra, func() {
 
-		Context("Fake node GC", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("Fake node GC", func() {
 			It("should delete orphaned fake nodes and leases when the NodeClaim is removed", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
@@ -749,7 +749,7 @@ var _ = Describe("GPU Mocker E2E", Ordered, func() {
 			})
 		})
 
-		Context("Shadow pod GC", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("Shadow pod GC", func() {
 			It("should delete shadow pods via native Kubernetes GC when the original pod is removed", func() {
 				clientset, err := utils.GetK8sClientset()
 				Expect(err).NotTo(HaveOccurred())
