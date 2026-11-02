@@ -17,12 +17,16 @@ import pytest
 from guardrail_core.config import build_scanner, parse_scanner_config
 
 from ext_proc import policy as policy_module
-from ext_proc.policy import DEFAULT_BLOCK_MESSAGE, GatewayPolicy, PolicyConfigError
+from ext_proc.policy import (
+    DEFAULT_BLOCK_MESSAGE,
+    GuardrailPolicyConfig,
+    PolicyConfigError,
+)
 
 
 def test_defaults_and_real_core_scanner():
-    policy = GatewayPolicy.from_dict(
-        {"scanners": [{"type": "ban_substrings", "substrings": ["secret"]}]}
+    policy = GuardrailPolicyConfig.from_dict(
+        {"scanner_configs": [{"type": "ban_substrings", "substrings": ["secret"]}]}
     )
     assert policy.action == "block"
     assert policy.block_message == DEFAULT_BLOCK_MESSAGE
@@ -33,11 +37,11 @@ def test_defaults_and_real_core_scanner():
 
 
 def test_policy_actions_order_and_normalization():
-    policy = GatewayPolicy.from_dict(
+    policy = GuardrailPolicyConfig.from_dict(
         {
             "action": "redact",
-            "blockMessage": "Blocked by gateway policy.",
-            "scanners": [
+            "blockMessage": "Blocked by guardrail policy.",
+            "scanner_configs": [
                 {
                     "type": "BanSubstrings",
                     "substrings": ["secret"],
@@ -47,7 +51,7 @@ def test_policy_actions_order_and_normalization():
             ],
         }
     )
-    assert policy.block_message == "Blocked by gateway policy."
+    assert policy.block_message == "Blocked by guardrail policy."
     assert [config.type for config in policy.scanner_configs] == [
         "ban_substrings",
         "regex",
@@ -64,7 +68,7 @@ def test_policy_actions_order_and_normalization():
 
 @pytest.mark.parametrize("action", ["block", "redact"])
 @pytest.mark.parametrize(
-    "scanner",
+    "scanner_config",
     [
         {"type": "ban_substrings", "substrings": ["secret"]},
         {"type": "regex", "patterns": ["secret"]},
@@ -76,10 +80,12 @@ def test_policy_actions_order_and_normalization():
         {"type": "sensitive", "detectors": ["email"]},
     ],
 )
-def test_adapter_matches_direct_shared_core(action, scanner):
-    policy = GatewayPolicy.from_dict({"action": action, "scanners": [scanner]})
+def test_adapter_matches_direct_shared_core(action, scanner_config):
+    policy = GuardrailPolicyConfig.from_dict(
+        {"action": action, "scanner_configs": [scanner_config]}
+    )
     adapted = policy.build_scanners()[0]
-    direct = build_scanner(parse_scanner_config(scanner, default_action=action))
+    direct = build_scanner(parse_scanner_config(scanner_config, default_action=action))
     for text in ("safe output", "a secret", "alice@example.com", '{"ok": 1}'):
         assert adapted.scan("", text) == direct.scan("", text)
 
@@ -90,27 +96,48 @@ def test_adapter_matches_direct_shared_core(action, scanner):
         None,
         [],
         {},
-        {"scanners": None},
-        {"scanners": []},
-        {"scanners": {}},
-        {"scanners": [None]},
-        {"scanners": ["regex"]},
-        {"scanners": [{"type": "invisible_text"}], "action": "ignore"},
-        {"scanners": [{"type": "invisible_text"}], "action": None},
-        {"scanners": [{"type": "invisible_text"}], "blockMessage": ""},
-        {"scanners": [{"type": "invisible_text"}], "blockMessage": " "},
-        {"scanners": [{"type": "invisible_text"}], "blockMessage": 1},
-        {"scanners": [{"type": "invisible_text"}], "failOpen": True},
-        {"scanners": [{"type": "invisible_text"}], 1: True},
+        {"scanner_configs": None},
+        {"scanner_configs": []},
+        {"scanner_configs": {}},
+        {"scanner_configs": [None]},
+        {"scanner_configs": ["regex"]},
+        {"scanner_configs": [{"type": "invisible_text"}], "action": "ignore"},
+        {"scanner_configs": [{"type": "invisible_text"}], "action": None},
+        {"scanner_configs": [{"type": "invisible_text"}], "blockMessage": ""},
+        {"scanner_configs": [{"type": "invisible_text"}], "blockMessage": " "},
+        {"scanner_configs": [{"type": "invisible_text"}], "blockMessage": 1},
+        {"scanner_configs": [{"type": "invisible_text"}], "failOpen": True},
+        {"scanner_configs": [{"type": "invisible_text"}], 1: True},
     ],
 )
-def test_invalid_gateway_config_is_rejected(raw):
+def test_invalid_guardrail_policy_config_is_rejected(raw):
     with pytest.raises(PolicyConfigError):
-        GatewayPolicy.from_dict(raw)
+        GuardrailPolicyConfig.from_dict(raw)
+
+
+@pytest.mark.parametrize("include_scanner_configs", [False, True])
+def test_old_scanners_key_is_rejected(include_scanner_configs):
+    raw = {"scanners": [{"type": "invisible_text"}]}
+    if include_scanner_configs:
+        raw["scanner_configs"] = [{"type": "invisible_text"}]
+    with pytest.raises(
+        PolicyConfigError,
+        match=r"unknown guardrail policy configuration fields: \['scanners'\]",
+    ):
+        GuardrailPolicyConfig.from_dict(raw)
+
+
+def test_non_mapping_scanner_config_error_has_entry_context():
+    with pytest.raises(
+        PolicyConfigError, match=r"scanner_configs\[1\] must be a mapping"
+    ):
+        GuardrailPolicyConfig.from_dict(
+            {"scanner_configs": [{"type": "invisible_text"}, None]}
+        )
 
 
 @pytest.mark.parametrize(
-    "scanner",
+    "scanner_config",
     [
         {},
         {"type": "unknown"},
@@ -121,9 +148,11 @@ def test_invalid_gateway_config_is_rejected(raw):
         {"type": "regex", "patterns": ["secret"], "typo": True},
     ],
 )
-def test_core_validation_errors_have_entry_context(scanner):
-    with pytest.raises(PolicyConfigError, match=r"scanners\[1\]") as exc:
-        GatewayPolicy.from_dict({"scanners": [{"type": "invisible_text"}, scanner]})
+def test_core_validation_errors_have_entry_context(scanner_config):
+    with pytest.raises(PolicyConfigError, match=r"scanner_configs\[1\]") as exc:
+        GuardrailPolicyConfig.from_dict(
+            {"scanner_configs": [{"type": "invisible_text"}, scanner_config]}
+        )
     assert isinstance(exc.value.__cause__, ValueError)
 
 
@@ -131,8 +160,8 @@ def test_validation_does_not_build_scanners(monkeypatch):
     builder = Mock()
     monkeypatch.setattr(policy_module, "build_scanner", builder)
     with pytest.raises(PolicyConfigError):
-        GatewayPolicy.from_dict(
-            {"scanners": [{"type": "invisible_text"}, {"type": "unknown"}]}
+        GuardrailPolicyConfig.from_dict(
+            {"scanner_configs": [{"type": "invisible_text"}, {"type": "unknown"}]}
         )
     builder.assert_not_called()
 
@@ -140,7 +169,9 @@ def test_validation_does_not_build_scanners(monkeypatch):
 def test_build_failure_propagates(monkeypatch):
     failure = RuntimeError("scanner construction failed")
     monkeypatch.setattr(policy_module, "build_scanner", Mock(side_effect=failure))
-    policy = GatewayPolicy.from_dict({"scanners": [{"type": "invisible_text"}]})
+    policy = GuardrailPolicyConfig.from_dict(
+        {"scanner_configs": [{"type": "invisible_text"}]}
+    )
     with pytest.raises(RuntimeError) as exc:
         policy.build_scanners()
     assert exc.value is failure

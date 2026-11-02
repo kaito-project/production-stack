@@ -32,20 +32,21 @@ streaming and configuration/build APIs. See the
 `xds-protos`, published by the gRPC project, supplies the generated Envoy
 protobuf messages and service.
 
-## Gateway policy adaptation
+## Guardrail policy configuration adaptation
 
-`ext_proc.policy.GatewayPolicy` validates an already-decoded gateway policy and
+`ext_proc.policy.GuardrailPolicyConfig` validates an already-decoded guardrail
+policy configuration and
 delegates scanner configuration and construction to `guardrail_core.config`.
 It does not load files, define a local scanner registry, execute a policy, or
 wire scanners into Envoy `Process`.
 
 ```python
-from ext_proc.policy import GatewayPolicy
+from ext_proc.policy import GuardrailPolicyConfig
 
-policy = GatewayPolicy.from_dict({
+policy = GuardrailPolicyConfig.from_dict({
     "action": "block",
     "blockMessage": "The response was blocked.",
-    "scanners": [
+    "scanner_configs": [
         {"type": "ban_substrings", "substrings": ["secret"]},
         {"type": "regex", "patterns": ["private"], "action": "redact"},
     ],
@@ -53,11 +54,12 @@ policy = GatewayPolicy.from_dict({
 scanners = policy.build_scanners()
 ```
 
-Only `action`, `blockMessage`, and `scanners` are accepted at the policy level.
+Only `action`, `blockMessage`, and `scanner_configs` are accepted at the policy level.
 The default action is `block`; each scanner can override it with `block` or
 `redact`. `blockMessage` defaults to
 `The model output was blocked by output guardrails.` and must be a non-empty
-string. `scanners` must be a non-empty list. Shared core owns scanner names,
+string. `scanner_configs` must be a non-empty list of configuration mappings;
+the old `scanners` key is rejected as an unknown field. Shared core owns scanner names,
 field normalization, validation, and construction; configured order is preserved.
 
 Malformed policies raise `PolicyConfigError` instead of silently disabling
