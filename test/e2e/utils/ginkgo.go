@@ -152,8 +152,6 @@ var (
 	//
 	//   - It needs a ModelDeploymentValues setting a managed backend cannot
 	//     express, such as a manual replica count of 0.
-	//   - It fakes state that a controller run by the managed control plane
-	//     reconciles away, such as a ModelMirror download status.
 	//   - It has not been verified on a managed control plane yet: the cloud
 	//     provisioning-failure specs, which skip under gpu-node-mocker.
 	//

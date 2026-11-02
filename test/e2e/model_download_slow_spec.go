@@ -20,6 +20,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/kaito-project/kaito/pkg/utils/plugin"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -33,13 +34,16 @@ import (
 // nothing, and drives the download the reporter observes directly:
 //
 //   - ModelMirror path: a mock ModelMirror whose status the spec patches. It
-//     requires the reporter's modelStreamingEnabled=true and KAITO's
-//     ModelMirror feature gate off, so no controller reconciles the mock.
+//     requires the reporter's modelStreamingEnabled=true. The mock's download
+//     never starts (see utils.CreateModelMirror), so KAITO's ModelMirror
+//     controller, when enabled, leaves its status to the spec.
 //   - vLLM self-download path: the InferenceSet opts out of streaming and a
 //     stub model pod, never Ready, serves the download-speed gauge.
 //
 // The E2E install runs the reporter with a 60s resync, a 60s window at
-// 20 MB/s, a 30s startup grace and a 120s Event refresh interval.
+// 20 MB/s, a 30s startup grace and a 120s Event refresh interval. The refresh
+// interval is read from the running reporter, since a managed install may keep
+// the chart default of 300s.
 var _ = Describe("Model Download Slow Reporter",
 	utils.GinkgoLabelStatusReporter, utils.GinkgoLabelNoGPU, func() {
 
@@ -47,12 +51,7 @@ var _ = Describe("Model Download Slow Reporter",
 			setupTimeout  = 3 * time.Minute
 			emitTimeout   = 5 * time.Minute
 			deleteTimeout = 5 * time.Minute
-			// refreshWait outlasts the E2E Event refresh interval plus a resync.
-			refreshWait = 4 * time.Minute
-			// quietWindow outlasts the E2E refresh interval plus a resync, so a
-			// still-active finding would have been rewritten within it.
-			quietWindow = 3*time.Minute + 30*time.Second
-			resync      = 70 * time.Second
+			resync        = 70 * time.Second
 
 			slowBps int64 = 6_000_000
 			fastBps int64 = 80_000_000
@@ -62,6 +61,12 @@ var _ = Describe("Model Download Slow Reporter",
 			ctx    context.Context
 			ns     string
 			mirror string
+			// refreshWait outlasts the reporter's Event refresh interval plus a
+			// resync.
+			refreshWait time.Duration
+			// quietWindow outlasts the refresh interval plus a resync, so a
+			// still-active finding would have been rewritten within it.
+			quietWindow time.Duration
 		)
 
 		const isName = "download-phi"
@@ -85,7 +90,7 @@ var _ = Describe("Model Download Slow Reporter",
 			Expect(utils.CreateInferenceSet(ctx, spec)).To(Succeed())
 			if !selfDownload {
 				mirror = downloader.ModelMirrorName(presetPhi, "")
-				Expect(utils.CreateModelMirror(ctx, ns, mirror)).To(Succeed())
+				Expect(utils.CreateModelMirror(ctx, ns, mirror, plugin.ResolveHFModelID(presetPhi))).To(Succeed())
 			}
 		}
 
@@ -100,13 +105,13 @@ var _ = Describe("Model Download Slow Reporter",
 
 		BeforeEach(func() {
 			ctx = context.Background()
+			refresh, err := utils.ReporterEventRefreshInterval(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			refreshWait = refresh + resync + 50*time.Second
+			quietWindow = refresh + resync + 20*time.Second
 		})
 
-		// The mock ModelMirror status is patched directly; a managed control
-		// plane that runs KAITO's ModelMirror controller immediately
-		// reconciles it back to Ready, so the sustained-slow window never
-		// fills.
-		It("emits inferencesetModelDownloadSlow for a sustained-slow ModelMirror and stops once it is Ready", utils.GinkgoLabelStandardK8sOnly, func() {
+		It("emits inferencesetModelDownloadSlow for a sustained-slow ModelMirror and stops once it is Ready", func() {
 			setup("e2e-rpt-mm-slow", false)
 			setSpeed(slowBps)
 

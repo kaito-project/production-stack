@@ -94,9 +94,8 @@ does not yet support these endpoints can exclude them with `!ModelDiscovery`.
 `StandardK8sOnly` cuts across the other two. It marks specs that require a
 standard Kubernetes cluster and cannot run on a managed control plane such as
 AKS AI Manager, even with cluster-admin access: they need a setting a managed
-backend cannot express (a manual replica count of 0), they fake state that a
-controller run by the managed control plane reconciles away (a ModelMirror
-download status), or they have not been verified on a managed control plane yet.
+backend cannot express (a manual replica count of 0), or they have not been
+verified on a managed control plane yet.
 Scaling shared Deployments through the scale subresource
 ([`utils/cluster.go`](utils/cluster.go)), patching an InferenceSet's replicas
 ([`utils/scaling.go`](utils/scaling.go)), `kubectl exec` into the Gateway, and
@@ -107,9 +106,8 @@ do not need it. When running against a managed cluster:
 E2E_LABEL='!StandardK8sOnly' make test-e2e
 ```
 
-It currently covers `model_unavailable`, the sustained-slow ModelMirror case of
-`model_download_slow`, and the two cloud provisioning-failure cases of
-`control_plane_error`.
+It currently covers `model_unavailable` and the two cloud provisioning-failure
+cases of `control_plane_error`.
 Label the smallest container that needs it, not the whole file: routing and
 filter-order specs that do not require these mechanisms stay runnable everywhere.
 Note it describes the MECHANISM, not the blast radius: a disruptive spec stays
