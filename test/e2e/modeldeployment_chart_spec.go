@@ -208,9 +208,7 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, func() 
 		})
 	})
 
-	// AutoUpgrade is a ModelDeploymentValues field a managed backend may not
-	// be able to express.
-	Context("modeldeployment chart with autoUpgrade enabled", utils.GinkgoLabelStandardK8sOnly, func() {
+	Context("modeldeployment chart with autoUpgrade enabled", func() {
 		// Reuse the same base deployment values as the install/uninstall
 		// context, but opt into KAITO automatic base image upgrades with a
 		// maintenance window. Each It installs into a fresh random namespace

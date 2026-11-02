@@ -406,17 +406,18 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 	})
 
 	// Spreading identical prompts across replicas requires turning prefix-cache
-	// scoring off, which only a backend that can express EPPScorerWeights can
-	// do, and then restarting the EPP by hand — hence StandardK8sOnly. The rest
-	// of the case routes correctly whatever the scorer weights are, so it stays
-	// runnable everywhere.
-	Context("Load distribution", utils.GinkgoLabelStandardK8sOnly, func() {
+	// scoring off through EPPScorerWeights and then restarting the EPP.
+	Context("Load distribution", func() {
 		const numRequests = 25
 		const maxTrafficFraction = 0.80
 
-		// Scoped to a BeforeEach rather than a BeforeAll: DeferCleanup from a
-		// BeforeAll runs at the end of the whole Ordered Describe, by which
-		// point AfterAll has already uninstalled the releases this restores.
+		// The weights are set in a BeforeEach and restored in an AfterEach, not
+		// in a DeferCleanup: Ginkgo runs AfterAll before cleanups registered by
+		// the last spec of an Ordered container, so a focused or filtered run
+		// in which this is the last spec would restore weights on releases
+		// AfterAll has already uninstalled.
+		var apply func(weights *deploy.EPPScorerWeights)
+
 		BeforeEach(func() {
 			// A weight change rolls the EPP, and the gateway's ext_proc stream
 			// has to reconnect to the new pod before traffic means anything.
@@ -436,7 +437,7 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				}
 			}
 
-			apply := func(weights *deploy.EPPScorerWeights) {
+			apply = func(weights *deploy.EPPScorerWeights) {
 				for _, values := range caseDeployments {
 					values.Namespace = caseNamespace
 					values.EPPScorerWeights = weights
@@ -452,12 +453,12 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				waitServing()
 			}
 
-			// nil restores the chart defaults. Without this the weight change
-			// would leak into every later spec of this Ordered Describe.
-			DeferCleanup(func() { apply(nil) })
-
 			apply(&deploy.EPPScorerWeights{PrefixCache: intPtr(0)})
 		})
+
+		// nil restores the chart defaults. Without this the weight change
+		// would leak into every later spec of this Ordered Describe.
+		AfterEach(func() { apply(nil) })
 
 		It("should distribute traffic across replicas with no pod receiving zero or >80% of requests", func() {
 			clientset, err := utils.GetK8sClientset()

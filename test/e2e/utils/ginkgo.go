@@ -151,8 +151,8 @@ var (
 	// What puts a spec here:
 	//
 	//   - Its assertion only holds under a ModelDeploymentValues field a managed
-	//     backend cannot express: EPPScorerWeights (load distribution, scaling),
-	//     ScalingMetrics (scaling) or AutoUpgrade (modeldeployment chart).
+	//     backend cannot express, such as the ScalingMetrics list the scaling
+	//     specs replace.
 	//   - It fakes state that a controller run by the managed control plane
 	//     reconciles away, such as a ModelMirror download status.
 	//   - It has not been verified on a managed control plane yet: the cloud
