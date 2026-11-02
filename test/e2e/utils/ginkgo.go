@@ -91,15 +91,16 @@ var (
 	// GinkgoLabelOutage marks tests that verify fail-closed / high-availability
 	// behavior when a filter or model-serving component goes down. It spans
 	// two halves:
-	//   - Cluster-wide singletons (BBR ext_proc, llm-gateway-auth ext_authz):
+	//   - Cluster-wide singletons (BBR ext_proc, llm-gateway-auth ext_authz,
+	//     the productionstack-status-reporter behind model discovery):
 	//     HA / single-replica-loss failover and scale-to-zero fail-closed
-	//     behavior. These perturb shared kaito-system Deployments, so the
+	//     behavior. These perturb shared cluster-wide Deployments, so the
 	//     corresponding suites MUST be decorated Serial.
 	//   - Per-namespace data plane (EPP ext_proc fail-closed -> epp_unavailable;
 	//     zero ready inference endpoints -> model_unavailable). These perturb
 	//     only the case's OWN namespace, so they do not need Serial.
-	// See test/e2e/{bbr,ext_authz,epp}_outage_spec.go, model_unavailable_spec.go
-	// and cluster_filter_ha_spec.go.
+	// See test/e2e/{bbr,ext_authz,epp}_outage_spec.go, model_unavailable_spec.go,
+	// gateway_unavailable_spec.go and cluster_filter_ha_spec.go.
 	GinkgoLabelOutage = g.Label("Outage")
 
 	// GinkgoLabelClusterFilterHA marks tests that verify the cluster-wide
