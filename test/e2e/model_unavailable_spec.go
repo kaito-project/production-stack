@@ -54,8 +54,13 @@ import (
 // Not Serial: scaling THIS case's InferenceSet to zero perturbs only its
 // own namespace's inference pool, not any cluster-wide singleton, so the
 // suite is safe to run alongside other (non-overlapping) specs.
+//
+// StandardK8sOnly: it empties the pool with a manual replica count of 0. AKS
+// AI Manager rejects that (scale.manual.replicas must be >= 1), and its only
+// zero-replica mode, autoscaling with minReplicas 0, wakes on the requests
+// this spec sends instead of staying empty.
 var _ = Describe("model_unavailable (zero ready inference endpoints)",
-	Ordered, utils.GinkgoLabelOutage, utils.GinkgoLabelNightly, func() {
+	Ordered, utils.GinkgoLabelOutage, utils.GinkgoLabelNightly, utils.GinkgoLabelStandardK8sOnly, func() {
 
 		var (
 			ctx          context.Context

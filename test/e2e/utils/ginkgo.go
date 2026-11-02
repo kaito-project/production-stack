@@ -150,6 +150,8 @@ var (
 	//
 	// What puts a spec here:
 	//
+	//   - It needs a ModelDeploymentValues setting a managed backend cannot
+	//     express, such as a manual replica count of 0.
 	//   - It fakes state that a controller run by the managed control plane
 	//     reconciles away, such as a ModelMirror download status.
 	//   - It has not been verified on a managed control plane yet: the cloud
@@ -165,9 +167,9 @@ var (
 	//
 	//	E2E_LABEL='!StandardK8sOnly' make test-e2e
 	//
-	// Note this is about the MECHANISM, not the blast radius. A spec that empties
-	// an inference pool through the Deployer (model_unavailable_spec.go) is just
-	// as disruptive but stays unlabelled, because any backend can honour it.
+	// Note this is about the MECHANISM, not the blast radius: a disruptive spec
+	// stays unlabelled when a managed backend can honour it, such as the scaling
+	// specs that park a deployment at zero through autoscaling.
 	// Keep the label as tight as the container that actually needs it: routing
 	// specs that do not require these mechanisms stay runnable everywhere.
 	GinkgoLabelStandardK8sOnly = g.Label("StandardK8sOnly")
