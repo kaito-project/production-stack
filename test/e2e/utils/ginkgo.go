@@ -150,8 +150,8 @@ var (
 	//
 	// What puts a spec here:
 	//
-	//   - It needs a ModelDeploymentValues setting a managed backend cannot
-	//     express, such as a manual replica count of 0.
+	//   - It needs a setting a managed backend cannot express, such as a manual
+	//     replica count of 0 or an exact-origin CORS allowlist.
 	//   - It has not been verified on a managed control plane yet: the cloud
 	//     provisioning-failure specs, which skip under gpu-node-mocker.
 	//
