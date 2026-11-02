@@ -311,7 +311,13 @@ var _ = Describe("Filter execution order",
 						return -1
 					}
 					corsIdx := idx("kaito.cors")
-					authIdx := idx("envoy.filters.http.ext_authz")
+					authIdx := -1
+					for i, f := range filters {
+						if isExtAuthzFilter(f) {
+							authIdx = i
+							break
+						}
+					}
 					bbrIdx := idx("envoy.filters.http.ext_proc.bbr")
 					eppIdx := -1
 					// EPP ext_proc is named generically; pick the first
@@ -673,6 +679,14 @@ func extractGatewayHTTPFilterNames(configDump string) []string {
 	return nil
 }
 
+// isExtAuthzFilter reports whether an HTTP filter name is an ext_authz
+// filter. The modelharness chart uses the canonical
+// envoy.filters.http.ext_authz name; a managed control plane such as AI Manager
+// names one filter per authentication mode (ext_authz.apikey, ext_authz.azure).
+func isExtAuthzFilter(name string) bool {
+	return strings.HasPrefix(name, "envoy.filters.http.ext_authz") || strings.HasPrefix(name, "ext_authz.")
+}
+
 // hasInferenceFilters returns true when the HCM's http_filters list is
 // the one serving inference traffic (i.e. carries both an ext_authz and a
 // router). On Istio Gateway pods there is usually a single dynamic HCM,
@@ -681,7 +695,7 @@ func extractGatewayHTTPFilterNames(configDump string) []string {
 func hasInferenceFilters(names []string) bool {
 	var hasAuthz, hasRouter bool
 	for _, n := range names {
-		if strings.HasPrefix(n, "envoy.filters.http.ext_authz") {
+		if isExtAuthzFilter(n) {
 			hasAuthz = true
 		}
 		if strings.HasPrefix(n, "envoy.filters.http.router") {

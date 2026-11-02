@@ -63,16 +63,16 @@ var _ = Describe("BBR cluster-filter HA",
 	utils.GinkgoLabelStandardK8sOnly, func() {
 
 		const (
-			bbrNamespace  = "kaito-system"
 			bbrDeployment = "body-based-router"
 			bbrHealthPort = 9005
 		)
 
 		var (
-			ctx         context.Context
-			caseGateway deploy.GatewayEndpoint
-			modelName   string
-			replicas    *utils.DeploymentReplicaGuard
+			ctx          context.Context
+			bbrNamespace string
+			caseGateway  deploy.GatewayEndpoint
+			modelName    string
+			replicas     *utils.DeploymentReplicaGuard
 		)
 
 		// sendChat authenticates through the shared gateway request helpers.
@@ -85,6 +85,9 @@ var _ = Describe("BBR cluster-filter HA",
 			DeferCleanup(UninstallCase, CaseClusterFilterHA)
 			caseGateway = InstallCase(CaseClusterFilterHA)
 			modelName = CaseDeployments[CaseClusterFilterHA][0].Name
+			var err error
+			bbrNamespace, err = utils.DeploymentNamespace(ctx, bbrDeployment)
+			Expect(err).NotTo(HaveOccurred())
 			replicas = prepareDeploymentOutage(ctx, bbrNamespace, bbrDeployment)
 
 			// BBR must be HA before we start removing replicas.

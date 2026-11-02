@@ -114,8 +114,8 @@ var _ = Describe("ModelDeployment Chart", utils.GinkgoLabelInferenceSet, utils.G
 
 			presetName, found, _ := unstructured.NestedString(is.Object, "spec", "template", "inference", "preset", "name")
 			Expect(found).To(BeTrue())
-			Expect(presetName).To(Equal(preset),
-				"InferenceSet preset.name should equal the chart `model` value (preset), not the deploymentName")
+			Expect(utils.PresetMatchesModel(presetName, preset)).To(BeTrue(),
+				"InferenceSet preset.name %q should equal the chart `model` value %q (preset), not the deploymentName", presetName, preset)
 
 			instanceType, found, _ := unstructured.NestedString(is.Object, "spec", "template", "resource", "instanceType")
 			Expect(found).To(BeTrue())

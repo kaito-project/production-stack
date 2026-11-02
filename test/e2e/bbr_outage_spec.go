@@ -57,16 +57,14 @@ import (
 var _ = Describe("BBR outage (fail-closed cluster filter)",
 	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelStandardK8sOnly, func() {
 
-		const (
-			bbrNamespace      = "kaito-system"
-			bbrDeploymentName = "body-based-router"
-		)
+		const bbrDeploymentName = "body-based-router"
 
 		var (
-			ctx         context.Context
-			caseGateway deploy.GatewayEndpoint
-			modelName   string
-			replicas    *utils.DeploymentReplicaGuard
+			ctx          context.Context
+			bbrNamespace string
+			caseGateway  deploy.GatewayEndpoint
+			modelName    string
+			replicas     *utils.DeploymentReplicaGuard
 		)
 
 		BeforeAll(func() {
@@ -75,6 +73,9 @@ var _ = Describe("BBR outage (fail-closed cluster filter)",
 
 			caseGateway = InstallCase(CaseBBROutage)
 			modelName = CaseDeployments[CaseBBROutage][0].Name
+			var err error
+			bbrNamespace, err = utils.DeploymentNamespace(ctx, bbrDeploymentName)
+			Expect(err).NotTo(HaveOccurred())
 			replicas = prepareDeploymentOutage(ctx, bbrNamespace, bbrDeploymentName)
 
 			// Sanity: a valid request must succeed BEFORE we induce the
