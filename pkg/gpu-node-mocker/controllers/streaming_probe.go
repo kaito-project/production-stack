@@ -231,7 +231,7 @@ func mountPath(mounts []corev1.VolumeMount, name string) string {
 // credential-bootstrap container and before the simulator, so a streaming
 // misconfiguration keeps the shadow pod — and therefore the mocked inference pod
 // — from ever going Ready.
-func buildProbeContainer(id streamingIdentity, cfg Config, scriptCM string) corev1.Container {
+func buildProbeContainer(id streamingIdentity, cfg Config) corev1.Container {
 	env := []corev1.EnvVar{
 		{Name: "PROBE_MODE", Value: string(id.mode)},
 		{Name: "PROBE_TIMEOUT_SECONDS", Value: strconv.Itoa(cfg.StreamingProbeTimeoutSec)},
@@ -240,7 +240,7 @@ func buildProbeContainer(id streamingIdentity, cfg Config, scriptCM string) core
 	env = append(env, id.providerEnv...)
 
 	mounts := []corev1.VolumeMount{
-		{Name: scriptCM, MountPath: StreamingProbeMountPath, ReadOnly: true},
+		{Name: StreamingProbeVolumeName, MountPath: StreamingProbeMountPath, ReadOnly: true},
 	}
 
 	if id.mode == streamingModeSAS {
