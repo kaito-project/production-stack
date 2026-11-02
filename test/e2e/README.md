@@ -110,7 +110,7 @@ E2E_LABEL='!StandardK8sOnly' make test-e2e
 It currently covers `scaling` (including `scale_to_zero`), the
 `Load distribution` Context of `model_routing` (which turns prefix-cache
 scoring off through `EPPScorerWeights` so identical prompts spread across
-replicas) and its EPP metrics Context, the `autoUpgrade` Context of
+replicas), the `autoUpgrade` Context of
 `modeldeployment_chart`, the sustained-slow ModelMirror case of
 `model_download_slow`, and the two cloud provisioning-failure cases of
 `control_plane_error`.

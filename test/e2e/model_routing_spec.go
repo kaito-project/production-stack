@@ -27,7 +27,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
@@ -344,16 +343,10 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 
-	Context("EPP routing success (metrics)", utils.GinkgoLabelStandardK8sOnly, func() {
+	Context("EPP routing success (metrics)", func() {
 		const numRequests = 5
 
 		It("should show EPP scheduler success counts matching requests sent", func() {
-			// TODO: EPP pods have Istio sidecars that intercept traffic on port 9090,
-			// causing 401 Unauthorized when accessing via K8s API pod proxy.
-			// Re-enable once EPP metrics port is excluded from Istio interception
-			// (e.g., via traffic.sidecar.istio.io/excludeInboundPorts annotation)
-			// or when we switch to scraping via the EPP Service instead of pod proxy.
-			Skip("EPP metrics port is intercepted by Istio sidecar (401 Unauthorized via pod proxy)")
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
 
@@ -513,72 +506,6 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 						"%s pod %s received %.0f%% of traffic (%.0f/%.0f), exceeding %d%% threshold",
 						model, pod, fraction*100, delta, total, int(maxTrafficFraction*100))
 				}
-			}
-		})
-	})
-
-	Context("Debug EnvoyFilter log chain", func() {
-		It("should emit PRE-BBR, POST-EPP, and RESPONSE log lines for inference requests", func() {
-			// The inference-debug-filter EnvoyFilter only applies to
-			// workloads in its own namespace (`default`), so it does not
-			// observe traffic on per-case Gateways. The case's
-			// HTTPRoutes are not parented to the default Gateway either,
-			// so this assertion can no longer be exercised end-to-end
-			// with the per-case dataplane isolation introduced in this
-			// suite. Re-enable once the debug filter is moved into
-			// Istio's rootNamespace (or replicated per-namespace).
-			Skip("debug filter is namespace-scoped to `default`; per-case gateways do not see it")
-
-			clientset, err := utils.GetK8sClientset()
-			Expect(err).NotTo(HaveOccurred())
-
-			// Identify the Gateway pod created by the Kubernetes Gateway API.
-			gwPods, err := clientset.CoreV1().Pods(caseNamespace).List(ctx, metav1.ListOptions{
-				LabelSelector: "gateway.networking.k8s.io/gateway-name=inference-gateway",
-				FieldSelector: "status.phase=Running",
-			})
-			if err != nil || len(gwPods.Items) == 0 {
-				// Fallback: try istio-system with classic label.
-				gwPods, err = clientset.CoreV1().Pods("istio-system").List(ctx, metav1.ListOptions{
-					LabelSelector: "istio=ingressgateway",
-					FieldSelector: "status.phase=Running",
-				})
-			}
-			Expect(err).NotTo(HaveOccurred())
-			Expect(gwPods.Items).NotTo(BeEmpty(), "istio-ingressgateway pods should be running")
-			gwPod := gwPods.Items[0]
-
-			for _, model := range modelNames {
-				By(fmt.Sprintf("sending a request for %s and checking debug filter logs", model))
-
-				resp, err := utils.SendChatContext(ctx, caseGateway, model)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(resp.StatusCode).To(Equal(http.StatusOK))
-				resp.Body.Close()
-
-				// Allow a brief window for logs to flush.
-				time.Sleep(2 * time.Second)
-
-				// Tail the ingressgateway logs.
-				logs, err := utils.GetPodLogs(clientset, gwPod.Namespace, gwPod.Name, "istio-proxy")
-				Expect(err).NotTo(HaveOccurred())
-
-				// Find a request-id that has all three debug log lines.
-				preBBR, postEPP, response := findDebugLogTriple(logs, model)
-				Expect(preBBR).NotTo(BeEmpty(),
-					"should find [PRE-BBR] log line for %s in ingressgateway logs", model)
-				Expect(postEPP).NotTo(BeEmpty(),
-					"should find [POST-EPP] log line for %s in ingressgateway logs", model)
-				Expect(response).NotTo(BeEmpty(),
-					"should find [RESPONSE] log line for %s in ingressgateway logs", model)
-
-				// Verify POST-EPP line contains expected headers.
-				Expect(postEPP).To(ContainSubstring("x-gateway-model-name"),
-					"[POST-EPP] should log x-gateway-model-name for %s", model)
-				Expect(postEPP).To(ContainSubstring(model),
-					"[POST-EPP] x-gateway-model-name should contain %s", model)
-				Expect(postEPP).To(ContainSubstring("x-gateway-destination-endpoint"),
-					"[POST-EPP] should log x-gateway-destination-endpoint for %s", model)
 			}
 		})
 	})
@@ -745,64 +672,3 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 	})
 })
-
-// findDebugLogTriple searches istio-ingressgateway logs for a request-id that
-// has [PRE-BBR], [POST-EPP], and [RESPONSE] lines, where the POST-EPP line
-// contains the expected model name. Returns the three log lines.
-func findDebugLogTriple(logs, model string) (preBBR, postEPP, response string) {
-	type logEntry struct {
-		preBBR       string
-		postEPPLines []string
-		response     string
-	}
-	entries := make(map[string]*logEntry)
-
-	for _, line := range strings.Split(logs, "\n") {
-		for _, tag := range []string{"[PRE-BBR]", "[POST-EPP]", "[RESPONSE]"} {
-			idx := strings.Index(line, tag)
-			if idx < 0 {
-				continue
-			}
-			// Extract request-id: tag is followed by [<request-id>]
-			rest := line[idx+len(tag):]
-			if len(rest) < 2 || rest[0] != '[' {
-				continue
-			}
-			endBracket := strings.Index(rest, "]")
-			if endBracket < 0 {
-				continue
-			}
-			reqID := rest[1:endBracket]
-			if reqID == "" || reqID == "unknown" {
-				continue
-			}
-
-			e, ok := entries[reqID]
-			if !ok {
-				e = &logEntry{}
-				entries[reqID] = e
-			}
-			switch tag {
-			case "[PRE-BBR]":
-				e.preBBR = line
-			case "[POST-EPP]":
-				e.postEPPLines = append(e.postEPPLines, line)
-			case "[RESPONSE]":
-				e.response = line
-			}
-		}
-	}
-
-	// Find a complete triple where POST-EPP mentions the model.
-	// The Lua filter emits multiple [POST-EPP] lines per request (one per header),
-	// so join them for assertion.
-	for _, e := range entries {
-		if e.preBBR != "" && len(e.postEPPLines) > 0 && e.response != "" {
-			joined := strings.Join(e.postEPPLines, "\n")
-			if strings.Contains(joined, model) {
-				return e.preBBR, joined, e.response
-			}
-		}
-	}
-	return "", "", ""
-}

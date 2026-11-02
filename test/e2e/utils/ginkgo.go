@@ -156,8 +156,7 @@ var (
 	//   - It fakes state that a controller run by the managed control plane
 	//     reconciles away, such as a ModelMirror download status.
 	//   - It has not been verified on a managed control plane yet: the cloud
-	//     provisioning-failure specs (skipped under gpu-node-mocker) and the EPP
-	//     metrics spec (skipped everywhere).
+	//     provisioning-failure specs, which skip under gpu-node-mocker.
 	//
 	// Scaling shared Deployments through the scale subresource, `kubectl exec`
 	// into the Gateway, and scraping pod metrics through pods/proxy do not need
