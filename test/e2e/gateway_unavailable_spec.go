@@ -48,13 +48,10 @@ import (
 //	upstream, so Envoy answers a local 503 with the `UH` flag, which mapper #3
 //	turns into `502 gateway_unavailable`.
 //
-//	The harness is installed without any model deployment, so the spec costs
-//	no GPU node. Like every case namespace, its name is fixed rather than
-//	random: on an App Routing cluster the Gateway is reached through a
-//	per-namespace DNS record, and a new name would need a new record to be
-//	published (and its absence not to be negatively cached) before the
-//	baseline request can resolve. The baseline wait matches the routing
-//	readiness wait of the model cases for the same reason.
+//	The case deploys one model even though the request never reaches it: on
+//	an App Routing cluster the Gateway hostname is published to DNS from the
+//	hostnames of the namespace's HTTPRoutes, which only a modeldeployment
+//	renders. A harness without a model has no resolvable hostname.
 //
 // The reporter Deployment is discovered by its chart label rather than by a
 // fixed namespace and name, which depend on the install (the umbrella release
@@ -64,12 +61,9 @@ import (
 // discovery for every namespace and publishing every control-plane Event, so
 // this suite must not run concurrently with any other spec.
 var _ = Describe("gateway_unavailable (no ready upstream before model routing)",
-	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelModelDiscovery, utils.GinkgoLabelNoGPU, func() {
+	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelModelDiscovery, func() {
 
-		const (
-			namespace        = "e2e-gateway-unavailable"
-			reporterSelector = "app.kubernetes.io/name=productionstack-status-reporter"
-		)
+		const reporterSelector = "app.kubernetes.io/name=productionstack-status-reporter"
 
 		var (
 			ctx         context.Context
@@ -88,17 +82,9 @@ var _ = Describe("gateway_unavailable (no ready upstream before model routing)",
 
 		BeforeAll(func() {
 			ctx = context.Background()
-			Expect(utils.EnsureNamespace(ctx, namespace)).To(Succeed(),
-				"failed to install the modelharness in %s", namespace)
-			DeferCleanup(func(ctx SpecContext) {
-				if err := utils.DeleteNamespace(ctx, namespace); err != nil {
-					GinkgoWriter.Printf("Cleanup warning: %v\n", err)
-				}
-			}, NodeTimeout(5*time.Minute))
+			DeferCleanup(UninstallCase, CaseGatewayUnavailable)
 
-			var err error
-			caseGateway, err = utils.OpenGateway(ctx, namespace, namespace)
-			Expect(err).NotTo(HaveOccurred(), "failed to open the gateway for %s", namespace)
+			caseGateway = InstallCase(CaseGatewayUnavailable)
 
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
@@ -112,7 +98,7 @@ var _ = Describe("gateway_unavailable (no ready upstream before model routing)",
 
 			// Sanity: model discovery must succeed BEFORE we induce the
 			// outage, otherwise a 502 below would be meaningless.
-			Eventually(listModelsStatus, utils.InferenceSetReadyTimeout, 10*time.Second).Should(Equal(http.StatusOK),
+			Eventually(listModelsStatus, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
 				"baseline model listing should succeed before scaling the status reporter to zero")
 		})
 
