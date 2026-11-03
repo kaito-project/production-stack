@@ -8,7 +8,11 @@ setup(
     packages=find_packages(include=["ext_proc", "ext_proc.*"]),
     python_requires=">=3.12",
     install_requires=[
-        "kaito-guardrail-core==0.2.0",
+        (
+            "kaito-guardrail-core @ https://github.com/kaito-project/"
+            "kaito-guardrail-core/archive/"
+            "bab41a5515fe04d4e2306e0652f926c6274cb109.tar.gz"
+        ),
         "grpcio==1.84.1",
         "xds-protos==1.84.1",
     ],

@@ -24,6 +24,8 @@ from guardrail_core.streaming.window import (
     WindowScanner,
 )
 
+from ext_proc.policy import GuardrailPolicyConfig
+
 
 class GuardrailStreamError(ValueError):
     """The response violates the single-choice streaming protocol."""
@@ -51,6 +53,23 @@ class GuardrailStream:
         )
         self._done_seen = False
         self._blocked = False
+
+    @classmethod
+    def from_policy(
+        cls,
+        policy: GuardrailPolicyConfig,
+        *,
+        prompt: str = "",
+        holdback_len: int | None = None,
+        max_event_bytes: int = 1024 * 1024,
+    ) -> "GuardrailStream":
+        """Build fresh core scanners and a correctly sized window for one response."""
+        scanner = policy.build_window_scanner(prompt=prompt, holdback_len=holdback_len)
+        return cls(
+            scanner,
+            holdback_len=scanner.holdback_len,
+            max_event_bytes=max_event_bytes,
+        )
 
     @property
     def closed(self) -> bool:

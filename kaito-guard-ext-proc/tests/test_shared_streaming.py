@@ -31,15 +31,19 @@ from guardrail_core.streaming.window import (
 
 
 def test_pinned_dependency_contract():
-    assert version("kaito-guardrail-core") == "0.2.0"
+    assert version("kaito-guardrail-core") == "0.3.0"
     dependencies = requires("kaito-guard-ext-proc")
     assert dependencies is not None
     core = next(dep for dep in dependencies if dep.startswith("kaito-guardrail-core"))
-    assert core == "kaito-guardrail-core==0.2.0"
+    assert core == (
+        "kaito-guardrail-core @ https://github.com/kaito-project/"
+        "kaito-guardrail-core/archive/"
+        "bab41a5515fe04d4e2306e0652f926c6274cb109.tar.gz"
+    )
     assert metadata("kaito-guard-ext-proc")["Requires-Python"] == ">=3.12"
 
 
-def test_published_streaming_apis_compose():
+def test_shared_streaming_apis_compose():
     scanner = Mock(spec=WindowScanner)
     scanner.scan.return_value = WindowScanResult()
     framer = SSEFramer()
