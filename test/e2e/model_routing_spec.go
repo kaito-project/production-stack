@@ -582,17 +582,23 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 				"valid requests should succeed after non-string model field request")
 		})
 
-		It("should return a well-formed error for non-JSON body", func() {
+		It("should pass through BBR's native 400 for a non-JSON body", func() {
 			body := []byte(`this is not json`)
 			resp, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body,
 				utils.WithHeader("Content-Type", "text/plain"))
 			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
+			respBody, err := utils.ReadResponseBody(resp)
+			Expect(err).NotTo(HaveOccurred())
+			AddReportEntry("non-JSON body response", fmt.Sprintf("status=%d content-type=%q x-kaito-error-source=%q body=%s",
+				resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("x-kaito-error-source"), respBody))
 
-			// BBR should reject or fall through to catch-all; ideally 4xx not 5xx.
-			Expect(resp.StatusCode).To(BeNumerically(">=", 400))
-			Expect(resp.StatusCode).To(BeNumerically("<=", 500),
-				"non-JSON body should not cause an unrecoverable error")
+			// BBR rejects a body it cannot parse with a native plain-text 400
+			// (an ext_proc ImmediateResponse). The gateway passes it through
+			// unchanged: it is deliberately NOT wrapped in the error envelope
+			// (see the data-plane error-handling proposal §2.2), so only the
+			// status is asserted, never the body shape.
+			Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+				"a non-JSON body must be rejected by BBR as a client error, not routed as 404 model_not_found or failed as 5xx")
 
 			// Verify subsequent valid requests still succeed (BBR didn't crash).
 			Eventually(func() int {
