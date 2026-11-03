@@ -193,6 +193,31 @@ Notes:
   on, cut a `release-vX.Y` branch (e.g. `release-v0.3`) and run
   "Create release (manually)" against that branch's tag.
 
+### Hotfixing a released gpu-node-mocker image
+
+To ship a `gpu-node-mocker` fix to users of an existing release without
+cutting a new production-stack release or bumping the chart pins in
+production-stack and KAITO, merge the fix to `main`, then run
+**Actions → "Overwrite gpu-node-mocker release image (manual)"**
+([`overwrite-gpu-node-mocker-image.yaml`](.github/workflows/overwrite-gpu-node-mocker-image.yaml))
+from `main` with `image_tag=X.Y.Z` (typed twice). It builds the image from
+`main`, pushes it as `X.Y.Z-main-<shortsha>`, scans it with Trivy, backs up
+the current `X.Y.Z` as `X.Y.Z-backup-<UTC timestamp>`, and only then
+repoints `ghcr.io/kaito-project/gpu-node-mocker:X.Y.Z` at the new image. The
+git tag and the charts are unchanged, and only existing tags can be
+overwritten.
+
+Notes:
+
+- The chart pulls with `imagePullPolicy: IfNotPresent`, so a node that
+  already cached `X.Y.Z` keeps the old image until it pulls again. Set
+  `image.tag=X.Y.Z-main-<shortsha>` to pick up the fix immediately.
+- To roll back, repoint the tag at the backup; the run's job summary prints
+  the exact `docker buildx imagetools create` command.
+- Everything else on `main` since the release ships with the fix, so
+  overwrite a tag only when `main`'s gpu-node-mocker is compatible with that
+  release's charts.
+
 ## License
 
 Production Stack is licensed under the [Apache License 2.0](LICENSE).
