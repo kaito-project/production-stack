@@ -1,0 +1,176 @@
+name: Overwrite gpu-node-mocker release image (manual)
+
+# Ships a gpu-node-mocker fix to an already-released image tag without cutting
+# a new production-stack release or bumping the KAITO / production-stack chart
+# pins. Builds the image from `main`, then repoints the existing
+# ghcr.io/kaito-project/gpu-node-mocker:<tag> at it. The git tag and every chart
+# are left unchanged.
+#
+# Push this commit to a throwaway branch in kaito-project/production-stack and
+# dispatch the workflow from that branch; the image is always built from main.
+#
+#   1. validate   — tag format, typed confirmation, repository, tag exists
+#   2. stage      — build & push <tag>-main-<shortsha> from main, Trivy-scan it
+#   3. back up    — copy the current <tag> to <tag>-backup-<UTC timestamp>
+#   4. promote    — repoint <tag> at the staged image, verify the digest
+#
+# A failed scan stops the run before the release tag is touched. To roll back,
+# repoint the tag at the backup (the command is printed in the job summary).
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Existing gpu-node-mocker image tag to overwrite (e.g. 0.5.2)'
+        required: true
+        type: string
+      confirm_image_tag:
+        description: 'Type the same tag again to confirm the overwrite'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/kaito-project
+  IMAGE_NAME: gpu-node-mocker
+
+concurrency:
+  group: overwrite-gpu-node-mocker-${{ inputs.image_tag }}
+  cancel-in-progress: false
+
+jobs:
+  overwrite:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450 # v2.19.1
+        with:
+          egress-policy: audit
+          disable-telemetry: true
+
+      - name: Validate inputs
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          CONFIRM_IMAGE_TAG: ${{ inputs.confirm_image_tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "${REPO}" != "kaito-project/production-stack" ]]; then
+            echo "::error::Run this workflow in kaito-project/production-stack (got ${REPO}); only its token can push ghcr.io/kaito-project images."
+            exit 1
+          fi
+          if [[ ! "${IMAGE_TAG}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::image_tag must be a release image tag X.Y.Z without a leading v (got '${IMAGE_TAG}')."
+            exit 1
+          fi
+          if [[ "${IMAGE_TAG}" != "${CONFIRM_IMAGE_TAG}" ]]; then
+            echo "::error::confirm_image_tag ('${CONFIRM_IMAGE_TAG}') does not match image_tag ('${IMAGE_TAG}')."
+            exit 1
+          fi
+          echo "IMG_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+
+      - name: Checkout main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Compute image references
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short=7 HEAD)"
+          timestamp="$(date -u +%Y%m%d%H%M%S)"
+          {
+            echo "GIT_SHA=$(git rev-parse HEAD)"
+            echo "IMAGE_REF=${REGISTRY}/${IMAGE_NAME}"
+            echo "STAGING_TAG=${IMG_TAG}-main-${short_sha}"
+            echo "BACKUP_TAG=${IMG_TAG}-backup-${timestamp}"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check that ${{ env.IMAGE_NAME }}:${{ env.IMG_TAG }} exists
+        run: |
+          set -euo pipefail
+          # Overwrite releases only: a new tag must go through create-release.
+          if ! docker buildx imagetools inspect "${IMAGE_REF}:${IMG_TAG}" >/dev/null 2>&1; then
+            echo "::error::${IMAGE_REF}:${IMG_TAG} does not exist; publish new tags with the Create release workflow."
+            exit 1
+          fi
+          old_digest="$(docker buildx imagetools inspect "${IMAGE_REF}:${IMG_TAG}" --format '{{json .Manifest}}' | jq -r '.digest')"
+          echo "OLD_DIGEST=${old_digest}" >> "$GITHUB_ENV"
+
+      - name: Build and push ${{ env.IMAGE_NAME }}:${{ env.STAGING_TAG }} from main
+        run: |
+          OUTPUT_TYPE=type=registry make docker-buildx
+        env:
+          IMG_TAG: ${{ env.STAGING_TAG }}
+
+      - name: Scan ${{ env.IMAGE_NAME }}:${{ env.STAGING_TAG }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_REF }}:${{ env.STAGING_TAG }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          timeout: '5m0s'
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Back up ${{ env.IMAGE_NAME }}:${{ env.IMG_TAG }} as ${{ env.BACKUP_TAG }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --tag "${IMAGE_REF}:${BACKUP_TAG}" "${IMAGE_REF}@${OLD_DIGEST}"
+
+      - name: Repoint ${{ env.IMAGE_NAME }}:${{ env.IMG_TAG }} at ${{ env.STAGING_TAG }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --tag "${IMAGE_REF}:${IMG_TAG}" "${IMAGE_REF}:${STAGING_TAG}"
+
+          digest_of() {
+            docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' | jq -r '.digest'
+          }
+          new_digest="$(digest_of "${IMAGE_REF}:${IMG_TAG}")"
+          staged_digest="$(digest_of "${IMAGE_REF}:${STAGING_TAG}")"
+          if [[ "${new_digest}" != "${staged_digest}" ]]; then
+            echo "::error::${IMG_TAG} resolves to ${new_digest}, expected the staged ${staged_digest}."
+            exit 1
+          fi
+          echo "NEW_DIGEST=${new_digest}" >> "$GITHUB_ENV"
+
+      - name: Summary
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## ${IMAGE_NAME}:${IMG_TAG} overwritten from main
+
+          | | Reference |
+          | --- | --- |
+          | Source commit | \`${GIT_SHA}\` |
+          | \`${IMG_TAG}\` now | \`${NEW_DIGEST}\` (same as \`${STAGING_TAG}\`) |
+          | \`${IMG_TAG}\` before | \`${OLD_DIGEST}\`, backed up as \`${BACKUP_TAG}\` |
+
+          The chart pulls with \`imagePullPolicy: IfNotPresent\`, so a node that
+          already cached \`${IMG_TAG}\` keeps running the old image until it is
+          pulled again (for example on a new node, or after removing the cached
+          image). Pin \`image.tag\` to \`${STAGING_TAG}\` to pick up the fix
+          immediately.
+
+          Roll back:
+
+          \`\`\`
+          docker buildx imagetools create --tag ${IMAGE_REF}:${IMG_TAG} ${IMAGE_REF}:${BACKUP_TAG}
+          \`\`\`
+          EOF
