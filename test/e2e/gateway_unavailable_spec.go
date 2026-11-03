@@ -49,7 +49,12 @@ import (
 //	turns into `502 gateway_unavailable`.
 //
 //	The harness is installed without any model deployment, so the spec costs
-//	no GPU node.
+//	no GPU node. Like every case namespace, its name is fixed rather than
+//	random: on an App Routing cluster the Gateway is reached through a
+//	per-namespace DNS record, and a new name would need a new record to be
+//	published (and its absence not to be negatively cached) before the
+//	baseline request can resolve. The baseline wait matches the routing
+//	readiness wait of the model cases for the same reason.
 //
 // The reporter Deployment is discovered by its chart label rather than by a
 // fixed namespace and name, which depend on the install (the umbrella release
@@ -61,7 +66,10 @@ import (
 var _ = Describe("gateway_unavailable (no ready upstream before model routing)",
 	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelModelDiscovery, utils.GinkgoLabelNoGPU, func() {
 
-		const reporterSelector = "app.kubernetes.io/name=productionstack-status-reporter"
+		const (
+			namespace        = "e2e-gateway-unavailable"
+			reporterSelector = "app.kubernetes.io/name=productionstack-status-reporter"
+		)
 
 		var (
 			ctx         context.Context
@@ -80,7 +88,6 @@ var _ = Describe("gateway_unavailable (no ready upstream before model routing)",
 
 		BeforeAll(func() {
 			ctx = context.Background()
-			namespace := generateNamespace("e2e-gateway-unavailable")
 			Expect(utils.EnsureNamespace(ctx, namespace)).To(Succeed(),
 				"failed to install the modelharness in %s", namespace)
 			DeferCleanup(func(ctx SpecContext) {
@@ -105,7 +112,7 @@ var _ = Describe("gateway_unavailable (no ready upstream before model routing)",
 
 			// Sanity: model discovery must succeed BEFORE we induce the
 			// outage, otherwise a 502 below would be meaningless.
-			Eventually(listModelsStatus, 2*time.Minute, 5*time.Second).Should(Equal(http.StatusOK),
+			Eventually(listModelsStatus, utils.InferenceSetReadyTimeout, 10*time.Second).Should(Equal(http.StatusOK),
 				"baseline model listing should succeed before scaling the status reporter to zero")
 		})
 
