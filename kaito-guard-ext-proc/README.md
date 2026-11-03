@@ -2,7 +2,7 @@
 
 This package is the Envoy gateway adapter, not a guardrail implementation.
 SSE framing, OpenAI chunk parsing, and scan-before-release holdback come directly
-from the published `kaito-guardrail-core==0.1.1` package. There is no local parser,
+from the KAITO-owned `kaito-guardrail-core` package. There is no local parser,
 holdback algorithm, scanner, or guard engine.
 
 The server registers Envoy's `envoy.service.ext_proc.v3.ExternalProcessor`
@@ -25,9 +25,49 @@ python -m ext_proc.server
 python -m pytest
 ```
 
-Runtime dependencies are defined in `setup.py`. `kaito-guardrail-core==0.1.1`
-is installed from PyPI. `xds-protos`, published by the gRPC project, supplies
-the generated Envoy protobuf messages and service.
+Runtime dependencies are defined in `setup.py`. The shared core is pinned to
+the published PyPI package `kaito-guardrail-core==0.2.0`, which supplies both
+streaming and configuration/build APIs. See the
+[0.2.0 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.0).
+`xds-protos`, published by the gRPC project, supplies the generated Envoy
+protobuf messages and service.
+
+## Guardrail policy configuration adaptation
+
+`ext_proc.policy.GuardrailPolicyConfig` validates an already-decoded guardrail
+policy configuration and
+delegates scanner configuration and construction to `guardrail_core.config`.
+It does not load files, define a local scanner registry, execute a policy, or
+wire scanners into Envoy `Process`.
+
+```python
+from ext_proc.policy import GuardrailPolicyConfig
+
+policy = GuardrailPolicyConfig.from_dict({
+    "action": "block",
+    "blockMessage": "The response was blocked.",
+    "scanner_configs": [
+        {"type": "ban_substrings", "substrings": ["secret"]},
+        {"type": "regex", "patterns": ["private"], "action": "redact"},
+    ],
+})
+scanners = policy.build_scanners()
+```
+
+Only `action`, `blockMessage`, and `scanner_configs` are accepted at the policy level.
+The default action is `block`; each scanner can override it with `block` or
+`redact`. `blockMessage` defaults to
+`The model output was blocked by output guardrails.` and must be a non-empty
+string. `scanner_configs` must be a non-empty list of configuration mappings;
+the old `scanners` key is rejected as an unknown field. Shared core owns scanner names,
+field normalization, validation, and construction; configured order is preserved.
+
+Malformed policies raise `PolicyConfigError` instead of silently disabling
+guardrails or skipping entries. Core validation errors include the scanner
+entry index and retain the original cause. Scanner construction exceptions
+propagate unchanged. Returned scanners implement core's buffered
+`scan(prompt, output)` protocol, not the streaming window scanner protocol;
+execution and streaming policy adaptation are subsequent work.
 
 ## Guardrail stream adapter
 
