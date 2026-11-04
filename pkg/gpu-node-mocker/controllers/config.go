@@ -191,6 +191,12 @@ const (
 	// StreamingProbeMountPath is where the probe script ConfigMap is mounted.
 	StreamingProbeMountPath = "/probe"
 
+	// StreamingProbeVolumeName is the shadow pod volume carrying the probe
+	// script. It is fixed because volume names are DNS labels (at most 63
+	// characters), while the content-addressed ConfigMap name embeds the
+	// shadow pod name and can be much longer.
+	StreamingProbeVolumeName = "streamer-probe-script"
+
 	// StreamingProbeScriptFileName is the probe script's name within its mount.
 	StreamingProbeScriptFileName = "streaming_probe.py"
 

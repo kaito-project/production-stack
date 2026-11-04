@@ -197,7 +197,7 @@ var _ = Describe("Filter execution order",
 		// actually deliver requests to the workload pod (vLLM).
 		// ─────────────────────────────────────────────────────────────────
 
-		Context("P0: bbr precedes EPP, full chain delivers traffic", utils.GinkgoLabelStandardK8sOnly, func() {
+		Context("P0: bbr precedes EPP, full chain delivers traffic", func() {
 
 			// B2 — Send N valid authenticated requests, then assert that
 			// vLLM's `vllm:request_success_total{model_name=<modelName>}`
@@ -281,13 +281,8 @@ var _ = Describe("Filter execution order",
 			// of the five filters we care about. This is the strongest
 			// possible assertion because it does not depend on any business
 			// request behaviour: it checks the rendered xDS config itself.
-			//
-			// Reaching the admin port means `kubectl exec` into the gateway
-			// pod, which a managed control plane does not allow — hence
-			// StandardK8sOnly. Every other spec here asserts the same
-			// ordering through request behaviour and stays runnable.
 			It("F1: HCM filter order is CORS → ext_authz → bbr → ext_proc → router",
-				utils.GinkgoLabelStandardK8sOnly, func() {
+				func() {
 					gwPod, err := firstRunningPod(ctx, caseNS, gatewayLabel)
 					Expect(err).NotTo(HaveOccurred(),
 						"per-namespace Gateway pod should be Running")
@@ -311,7 +306,13 @@ var _ = Describe("Filter execution order",
 						return -1
 					}
 					corsIdx := idx("kaito.cors")
-					authIdx := idx("envoy.filters.http.ext_authz")
+					authIdx := -1
+					for i, f := range filters {
+						if isExtAuthzFilter(f) {
+							authIdx = i
+							break
+						}
+					}
 					bbrIdx := idx("envoy.filters.http.ext_proc.bbr")
 					eppIdx := -1
 					// EPP ext_proc is named generically; pick the first
@@ -673,6 +674,14 @@ func extractGatewayHTTPFilterNames(configDump string) []string {
 	return nil
 }
 
+// isExtAuthzFilter reports whether an HTTP filter name is an ext_authz
+// filter. The modelharness chart uses the canonical
+// envoy.filters.http.ext_authz name; a managed control plane such as AI Manager
+// names one filter per authentication mode (ext_authz.apikey, ext_authz.azure).
+func isExtAuthzFilter(name string) bool {
+	return strings.HasPrefix(name, "envoy.filters.http.ext_authz") || strings.HasPrefix(name, "ext_authz.")
+}
+
 // hasInferenceFilters returns true when the HCM's http_filters list is
 // the one serving inference traffic (i.e. carries both an ext_authz and a
 // router). On Istio Gateway pods there is usually a single dynamic HCM,
@@ -681,7 +690,7 @@ func extractGatewayHTTPFilterNames(configDump string) []string {
 func hasInferenceFilters(names []string) bool {
 	var hasAuthz, hasRouter bool
 	for _, n := range names {
-		if strings.HasPrefix(n, "envoy.filters.http.ext_authz") {
+		if isExtAuthzFilter(n) {
 			hasAuthz = true
 		}
 		if strings.HasPrefix(n, "envoy.filters.http.router") {

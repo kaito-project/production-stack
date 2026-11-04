@@ -19,6 +19,8 @@ package utils
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,7 +35,46 @@ const (
 	// ReporterEventSource is the Event source.component the reporter stamps;
 	// it is the field-selector used to scope all reporter-event assertions.
 	ReporterEventSource = "productionstack-status-reporter"
+
+	// reporterSelector matches the reporter Deployment, wherever it is
+	// installed (kaito-system for the E2E install, kube-system on AI Manager).
+	reporterSelector = "app.kubernetes.io/name=productionstack-status-reporter"
+
+	// defaultReporterEventRefresh is the chart's eventRefreshSeconds default,
+	// used when the reporter runs without --event-refresh-seconds.
+	defaultReporterEventRefresh = 300 * time.Second
 )
+
+// ReporterEventRefreshInterval returns how often the running reporter rewrites
+// a still-active Warning (--event-refresh-seconds). The E2E install shortens it
+// to 120s, while a managed install may keep the chart default.
+func ReporterEventRefreshInterval(ctx context.Context) (time.Duration, error) {
+	cs, err := GetK8sClientset()
+	if err != nil {
+		return 0, err
+	}
+	list, err := cs.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: reporterSelector})
+	if err != nil {
+		return 0, fmt.Errorf("list reporter Deployments: %w", err)
+	}
+	if len(list.Items) != 1 {
+		return 0, fmt.Errorf("expected one Deployment matching %q, found %d", reporterSelector, len(list.Items))
+	}
+	for _, c := range list.Items[0].Spec.Template.Spec.Containers {
+		for _, arg := range c.Args {
+			value, ok := strings.CutPrefix(arg, "--event-refresh-seconds=")
+			if !ok {
+				continue
+			}
+			seconds, err := strconv.Atoi(value)
+			if err != nil || seconds <= 0 {
+				return 0, fmt.Errorf("invalid reporter flag %q", arg)
+			}
+			return time.Duration(seconds) * time.Second, nil
+		}
+	}
+	return defaultReporterEventRefresh, nil
+}
 
 // ListReporterEvents returns every Event in kube-system emitted by the
 // productionstack-status-reporter (source.component selector), newest first

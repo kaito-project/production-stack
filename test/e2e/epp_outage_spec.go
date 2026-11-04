@@ -57,8 +57,7 @@ import (
 // namespace's request path, not any cluster-wide singleton, so the suite
 // is safe to run alongside other (non-overlapping) specs.
 var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
-	Ordered, utils.GinkgoLabelOutage, utils.GinkgoLabelNightly,
-	utils.GinkgoLabelStandardK8sOnly, func() {
+	Ordered, utils.GinkgoLabelOutage, utils.GinkgoLabelNightly, func() {
 
 		var (
 			ctx         context.Context

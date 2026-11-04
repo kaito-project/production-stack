@@ -67,12 +67,6 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 	})
 
 	It("stamps the managed-by discovery label on the workload Namespace", func() {
-		// A managed control plane provisions the workload namespace itself and
-		// stamps only its own marker (kubernetes.azure.com/managedByAIManager),
-		// leaving the discovery label the status reporter selects on absent.
-		// Unskip once that is settled on the AI Manager side.
-		Skip("AI Manager does not stamp the discovery label on namespaces it provisions")
-
 		cl := utils.TestingCluster.KubeClient
 		ns := &corev1.Namespace{}
 		Expect(cl.Get(ctx, types.NamespacedName{Name: namespace}, ns)).To(Succeed())
@@ -81,19 +75,19 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 			"workload namespace must carry the reporter discovery label")
 	})
 
-	// The Namespace above is a built-in kind; everything asserted here is a CR
-	// the harness renders, which a managed control plane does not let the caller
-	// read.
 	It("stamps kaito.sh/owned-by: modelharness on every harness-owned object",
-		utils.GinkgoLabelStandardK8sOnly, func() {
+		func() {
 			cl := utils.TestingCluster.KubeClient
 			gatewayName := namespace
 
 			// Each entry: a harness-owned object identified by GVK + name.
+			// altNames lists names the same object takes in another chart
+			// mode; the first one that exists is asserted.
 			owned := []struct {
-				desc string
-				gvk  schema.GroupVersionKind
-				name string
+				desc     string
+				gvk      schema.GroupVersionKind
+				name     string
+				altNames []string
 			}{
 				{
 					desc: "Gateway",
@@ -119,6 +113,8 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 					desc: "ext-authz EnvoyFilter",
 					gvk:  schema.GroupVersionKind{Group: "networking.istio.io", Version: "v1alpha3", Kind: "EnvoyFilter"},
 					name: "apikey-ext-authz",
+					// cloudprovider=azure renders templates/azure/envoyfilter-ext-authz.yaml.
+					altNames: []string{"ext-authz"},
 				},
 				{
 					desc: "APIKey",
@@ -132,10 +128,12 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 				obj := &unstructured.Unstructured{}
 				obj.SetGroupVersionKind(o.gvk)
 				Eventually(func() map[string]string {
-					if err := cl.Get(ctx, types.NamespacedName{Namespace: namespace, Name: o.name}, obj); err != nil {
-						return nil
+					for _, name := range append([]string{o.name}, o.altNames...) {
+						if err := cl.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, obj); err == nil {
+							return obj.GetLabels()
+						}
 					}
-					return obj.GetLabels()
+					return nil
 				}, utils.InferenceSetReadyTimeout, utils.PollInterval).Should(
 					HaveKeyWithValue("kaito.sh/owned-by", "modelharness"),
 					"%s must carry kaito.sh/owned-by: modelharness", o.desc)

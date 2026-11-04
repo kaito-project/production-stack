@@ -51,7 +51,7 @@ import (
 //     gpu-node-mocker fakes provisioning — and the az CLI to confirm the
 //     precondition, and skip otherwise.
 var _ = Describe("Control-plane Error Reporter",
-	utils.GinkgoLabelStatusReporter, utils.GinkgoLabelNoGPU, utils.GinkgoLabelStandardK8sOnly, func() {
+	utils.GinkgoLabelStatusReporter, utils.GinkgoLabelNoGPU, func() {
 
 		const (
 			setupTimeout     = 3 * time.Minute
@@ -176,7 +176,7 @@ var _ = Describe("Control-plane Error Reporter",
 			Expect(found).To(BeFalse(), "a missing EPP Deployment must not be reported")
 		})
 
-		It("passes through the terminal provisioning failure of an instance type without quota", func() {
+		It("passes through the terminal provisioning failure of an instance type without quota", utils.GinkgoLabelStandardK8sOnly, func() {
 			requireRealProvisioner()
 			instanceType := envOr(envZeroQuotaInstanceType, "Standard_NV36ads_A10_v5")
 			family := envOr(envZeroQuotaFamily, "StandardNVADSA10v5Family")
@@ -216,7 +216,7 @@ var _ = Describe("Control-plane Error Reporter",
 			expectPassThrough(kaitoReason, isName, emitTimeout)
 		})
 
-		It("passes through an AsyncProvisioningError for an instance type the subscription cannot use", func() {
+		It("passes through an AsyncProvisioningError for an instance type the subscription cannot use", utils.GinkgoLabelStandardK8sOnly, func() {
 			requireRealProvisioner()
 			region, err := utils.ClusterRegion(ctx)
 			Expect(err).NotTo(HaveOccurred())

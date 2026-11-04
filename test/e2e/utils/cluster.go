@@ -57,6 +57,36 @@ func BBRNamespace(ctx context.Context) (string, error) {
 	return pods.Items[0].Namespace, nil
 }
 
+// DeploymentNamespace discovers the namespace of the cluster-wide Deployment
+// named name. Like BBRNamespace, it avoids assuming the umbrella chart's
+// release namespaces (kaito-system, llm-gateway-auth): a managed control plane
+// installs the same workloads into its own add-on namespace. Exactly one
+// Deployment with that name must exist.
+func DeploymentNamespace(ctx context.Context, name string) (string, error) {
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return "", err
+	}
+	deployments, err := clientset.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		FieldSelector: "metadata.name=" + name,
+	})
+	if err != nil {
+		return "", fmt.Errorf("list Deployments named %q: %w", name, err)
+	}
+	switch len(deployments.Items) {
+	case 0:
+		return "", fmt.Errorf("no Deployment named %q in any namespace", name)
+	case 1:
+		return deployments.Items[0].Namespace, nil
+	default:
+		namespaces := make([]string, 0, len(deployments.Items))
+		for _, d := range deployments.Items {
+			namespaces = append(namespaces, d.Namespace)
+		}
+		return "", fmt.Errorf("Deployment %q exists in several namespaces %v", name, namespaces)
+	}
+}
+
 var (
 	scheme         = runtime.NewScheme()
 	TestingCluster = NewCluster(scheme)
@@ -92,9 +122,6 @@ func GetClusterClient(cluster *Cluster) {
 // ScaleDeployment sets the named Deployment's replica count via the scale
 // subresource. It updates spec only and does NOT wait for the rollout to
 // converge — use WaitForDeploymentReplicas for that.
-//
-// Callers MUST carry GinkgoLabelStandardK8sOnly: a managed cluster such as AKS
-// Automatic does not allow the suite to reshape running workloads this way.
 func ScaleDeployment(ctx context.Context, namespace, name string, replicas int32) error {
 	cs, err := GetK8sClientset()
 	if err != nil {
@@ -171,7 +198,6 @@ func deploymentReplicasReady(deployment *appsv1.Deployment, want int32, exact bo
 }
 
 // DeploymentReplicaGuard preserves the replica count across fault injection.
-// Like ScaleDeployment, callers must carry GinkgoLabelStandardK8sOnly.
 type DeploymentReplicaGuard struct {
 	clientset        kubernetes.Interface
 	namespace        string

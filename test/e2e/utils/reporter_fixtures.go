@@ -28,6 +28,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -237,10 +238,46 @@ func CreateStubEPP(ctx context.Context, namespace, inferenceSet string, timeout 
 	return name, WaitForDeploymentReplicas(ctx, namespace, name, 1, timeout)
 }
 
-// CreateModelMirror creates a static mock ModelMirror. KAITO's ModelMirror
-// controller must be disabled (ModelMirror feature gate off) so it does not
-// reconcile the mock.
-func CreateModelMirror(ctx context.Context, namespace, name string) error {
+// UnprovisionedStorageClass is a StorageClass whose provisioner does not exist,
+// so a PVC that names it never binds. KAITO's ModelMirror webhook requires a
+// Managed mirror to name an existing StorageClass but does not check that it
+// can provision.
+const UnprovisionedStorageClass = "e2e-unprovisioned"
+
+// EnsureUnprovisionedStorageClass creates UnprovisionedStorageClass if it does
+// not exist. It holds no data and is shared by every spec, so it is left in
+// place rather than deleted while a parallel spec may still use it.
+func EnsureUnprovisionedStorageClass(ctx context.Context) error {
+	clientset, err := GetK8sClientset()
+	if err != nil {
+		return err
+	}
+	sc := &storagev1.StorageClass{
+		ObjectMeta:        metav1.ObjectMeta{Name: UnprovisionedStorageClass},
+		Provisioner:       "e2e.kaito.sh/never-provisions",
+		VolumeBindingMode: ptr.To(storagev1.VolumeBindingImmediate),
+	}
+	_, err = clientset.StorageV1().StorageClasses().Create(ctx, sc, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
+}
+
+// CreateModelMirror creates a mock ModelMirror whose download never starts, so
+// the spec owns its status.
+//
+// It is a Managed mirror on UnprovisionedStorageClass: when KAITO's ModelMirror
+// controller runs, it creates the PVC and download Job, but the PVC never binds
+// and the Job pod is never scheduled, so the controller has no download
+// progress to report and leaves the status untouched. A Static mirror would
+// not work there: the controller marks it Ready immediately. When the
+// controller does not run (ModelMirror feature gate off), nothing reconciles
+// the mirror at all.
+func CreateModelMirror(ctx context.Context, namespace, name, modelID string) error {
+	if err := EnsureUnprovisionedStorageClass(ctx); err != nil {
+		return fmt.Errorf("ensure StorageClass %s: %w", UnprovisionedStorageClass, err)
+	}
 	dyn, err := GetDynamicClient()
 	if err != nil {
 		return err
@@ -249,7 +286,11 @@ func CreateModelMirror(ctx context.Context, namespace, name string) error {
 		"apiVersion": "kaito.sh/v1alpha1",
 		"kind":       "ModelMirror",
 		"metadata":   map[string]interface{}{"name": name, "namespace": namespace},
-		"spec":       map[string]interface{}{"mode": "Static"},
+		"spec": map[string]interface{}{
+			"mode":    "Managed",
+			"source":  map[string]interface{}{"registry": "huggingface", "modelID": modelID},
+			"storage": map[string]interface{}{"size": "1Gi", "storageClassName": UnprovisionedStorageClass},
+		},
 	}}
 	_, err = dyn.Resource(ModelMirrorGVR).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{})
 	return err

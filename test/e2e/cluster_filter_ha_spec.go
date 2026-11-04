@@ -49,7 +49,7 @@ import (
 //	so that the loss of ONE replica is a transparent failover and the
 //	fail-closed `502` path only fires when ALL replicas are down.
 //
-//	This suite perturbs the shared kaito-system BBR Deployment, so it is
+//	This suite perturbs the shared BBR Deployment, so it is
 //	decorated Serial — no other spec may run while BBR is degraded.
 //
 // Scope note: the structured `502 bbr_unavailable` envelope (+
@@ -59,20 +59,19 @@ import (
 // It is intentionally NOT asserted here; the all-replicas-down case below
 // asserts only that the request fails closed (5xx, never a silent 404).
 var _ = Describe("BBR cluster-filter HA",
-	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelSmoke,
-	utils.GinkgoLabelStandardK8sOnly, func() {
+	Ordered, Serial, utils.GinkgoLabelOutage, utils.GinkgoLabelSmoke, func() {
 
 		const (
-			bbrNamespace  = "kaito-system"
 			bbrDeployment = "body-based-router"
 			bbrHealthPort = 9005
 		)
 
 		var (
-			ctx         context.Context
-			caseGateway deploy.GatewayEndpoint
-			modelName   string
-			replicas    *utils.DeploymentReplicaGuard
+			ctx          context.Context
+			bbrNamespace string
+			caseGateway  deploy.GatewayEndpoint
+			modelName    string
+			replicas     *utils.DeploymentReplicaGuard
 		)
 
 		// sendChat authenticates through the shared gateway request helpers.
@@ -85,6 +84,9 @@ var _ = Describe("BBR cluster-filter HA",
 			DeferCleanup(UninstallCase, CaseClusterFilterHA)
 			caseGateway = InstallCase(CaseClusterFilterHA)
 			modelName = CaseDeployments[CaseClusterFilterHA][0].Name
+			var err error
+			bbrNamespace, err = utils.DeploymentNamespace(ctx, bbrDeployment)
+			Expect(err).NotTo(HaveOccurred())
 			replicas = prepareDeploymentOutage(ctx, bbrNamespace, bbrDeployment)
 
 			// BBR must be HA before we start removing replicas.

@@ -175,7 +175,11 @@ var _ = Describe("API Key Authentication", Ordered, utils.GinkgoLabelAuth, utils
 		})
 	})
 
-	Context("Browser CORS", utils.GinkgoLabelCORS, func() {
+	// Exact-origin CORS needs the modelharness allowlist configured per
+	// namespace. AKS AI Manager installs the harness with the chart's wildcard
+	// default and has no setting for it, hence StandardK8sOnly; the wildcard
+	// Context below matches that default and runs everywhere.
+	Context("Browser CORS", utils.GinkgoLabelCORS, utils.GinkgoLabelStandardK8sOnly, func() {
 		const disallowedOrigin = "https://disallowed.e2e.test"
 
 		sendPreflight := func(origin, method, headers string) (*http.Response, error) {

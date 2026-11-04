@@ -55,7 +55,7 @@ const (
 // under test only uses chart upgrades.
 var _ = Describe("InferenceSet Scaling — Configuration Transitions",
 	Ordered, Serial, ContinueOnFailure,
-	utils.GinkgoLabelScaling, utils.GinkgoLabelScalingTransitions, utils.GinkgoLabelStandardK8sOnly, func() {
+	utils.GinkgoLabelScaling, utils.GinkgoLabelScalingTransitions, func() {
 
 		scalingValues := CaseDeployments[CaseScalingTransitions][0]
 		model := scalingValues.Name

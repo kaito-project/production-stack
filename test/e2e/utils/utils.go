@@ -182,3 +182,17 @@ func pollUntilReady(ctx context.Context, timeout time.Duration, description stri
 	}
 	return nil
 }
+
+// PresetMatchesModel reports whether an InferenceSet preset name identifies
+// model. KAITO accepts both the short preset name (phi-4-mini-instruct) and the
+// Hugging Face model ID (microsoft/Phi-4-mini-instruct); managed backends may
+// record the latter, so the comparison ignores case and the organization prefix.
+func PresetMatchesModel(preset, model string) bool {
+	normalize := func(name string) string {
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		return strings.ToLower(name)
+	}
+	return preset != "" && normalize(preset) == normalize(model)
+}

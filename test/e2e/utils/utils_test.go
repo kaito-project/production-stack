@@ -61,3 +61,22 @@ func TestPollUntilReadyReportsDeadlineWithoutEarlierDiagnostic(t *testing.T) {
 		t.Fatalf("expected the deadline as the last check, got %v", err)
 	}
 }
+
+func TestPresetMatchesModel(t *testing.T) {
+	cases := []struct {
+		preset, model string
+		want          bool
+	}{
+		{"phi-4-mini-instruct", "phi-4-mini-instruct", true},
+		{"microsoft/Phi-4-mini-instruct", "phi-4-mini-instruct", true},
+		{"Qwen/Qwen3.5-122B-A10B-GPTQ-Int4", "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4", true},
+		{"microsoft/Phi-4-mini-instruct", "ministral-3-3b-instruct", false},
+		{"gpu-mocker-phi", "phi-4-mini-instruct", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		if got := PresetMatchesModel(c.preset, c.model); got != c.want {
+			t.Errorf("PresetMatchesModel(%q, %q) = %v, want %v", c.preset, c.model, got, c.want)
+		}
+	}
+}

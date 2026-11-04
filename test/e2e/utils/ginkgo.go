@@ -91,15 +91,16 @@ var (
 	// GinkgoLabelOutage marks tests that verify fail-closed / high-availability
 	// behavior when a filter or model-serving component goes down. It spans
 	// two halves:
-	//   - Cluster-wide singletons (BBR ext_proc, llm-gateway-auth ext_authz):
+	//   - Cluster-wide singletons (BBR ext_proc, llm-gateway-auth ext_authz,
+	//     the productionstack-status-reporter behind model discovery):
 	//     HA / single-replica-loss failover and scale-to-zero fail-closed
-	//     behavior. These perturb shared kaito-system Deployments, so the
+	//     behavior. These perturb shared cluster-wide Deployments, so the
 	//     corresponding suites MUST be decorated Serial.
 	//   - Per-namespace data plane (EPP ext_proc fail-closed -> epp_unavailable;
 	//     zero ready inference endpoints -> model_unavailable). These perturb
 	//     only the case's OWN namespace, so they do not need Serial.
-	// See test/e2e/{bbr,ext_authz,epp}_outage_spec.go, model_unavailable_spec.go
-	// and cluster_filter_ha_spec.go.
+	// See test/e2e/{bbr,ext_authz,epp}_outage_spec.go, model_unavailable_spec.go,
+	// gateway_unavailable_spec.go and cluster_filter_ha_spec.go.
 	GinkgoLabelOutage = g.Label("Outage")
 
 	// GinkgoLabelClusterFilterHA marks tests that verify the cluster-wide
@@ -145,18 +146,19 @@ var (
 	GinkgoLabelNoGPU = g.Label("NoGPU")
 
 	// GinkgoLabelStandardK8sOnly marks tests that require a standard Kubernetes
-	// cluster and cannot run on an opinionated managed one such as AKS Automatic.
+	// cluster and cannot run on a managed control plane such as AKS AI Manager,
+	// even with cluster-admin access.
 	//
-	// Three things put a spec here:
+	// What puts a spec here:
 	//
-	//   - It reshapes running workloads directly, bypassing the deploy.Deployer:
-	//     ScaleDeployment on a Deployment's scale subresource (utils/cluster.go)
-	//     or SetInferenceSetReplicas patching an InferenceSet (utils/scaling.go).
-	//   - Its assertion only holds under a ModelDeploymentValues field a managed
-	//     backend cannot express, such as the EPPScorerWeights override the
-	//     load-distribution spec needs to disable prefix-cache scoring.
-	//   - It scrapes pod metrics through the pods/proxy subresource, directly
-	//     or through the helpers in utils/metrics.go.
+	//   - It needs a setting a managed backend cannot express, such as a manual
+	//     replica count of 0 or an exact-origin CORS allowlist.
+	//   - It has not been verified on a managed control plane yet: the cloud
+	//     provisioning-failure specs, which skip under gpu-node-mocker.
+	//
+	// Scaling shared Deployments through the scale subresource, `kubectl exec`
+	// into the Gateway, and scraping pod metrics through pods/proxy do not need
+	// it: those work on AI Manager with cluster-admin access.
 	//
 	// It cuts ACROSS the feature-area labels — a spec keeps its own (Outage,
 	// StatusReporter, Scaling, ...) and carries this one in addition, so a run
@@ -164,9 +166,9 @@ var (
 	//
 	//	E2E_LABEL='!StandardK8sOnly' make test-e2e
 	//
-	// Note this is about the MECHANISM, not the blast radius. A spec that empties
-	// an inference pool through the Deployer (model_unavailable_spec.go) is just
-	// as disruptive but stays unlabelled, because any backend can honour it.
+	// Note this is about the MECHANISM, not the blast radius: a disruptive spec
+	// stays unlabelled when a managed backend can honour it, such as the scaling
+	// specs that park a deployment at zero through autoscaling.
 	// Keep the label as tight as the container that actually needs it: routing
 	// specs that do not require these mechanisms stay runnable everywhere.
 	GinkgoLabelStandardK8sOnly = g.Label("StandardK8sOnly")

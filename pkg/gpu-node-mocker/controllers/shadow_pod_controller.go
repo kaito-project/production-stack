@@ -295,10 +295,10 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 			labels[k] = v
 		}
 		probeInitCtrs = append(probeInitCtrs, identity.initContainers...)
-		probeInitCtrs = append(probeInitCtrs, buildProbeContainer(identity, r.Config, probeCMName))
+		probeInitCtrs = append(probeInitCtrs, buildProbeContainer(identity, r.Config))
 		probeVolumes = append(probeVolumes, identity.volumes...)
 		probeVolumes = append(probeVolumes, corev1.Volume{
-			Name: probeCMName,
+			Name: StreamingProbeVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{Name: probeCMName},

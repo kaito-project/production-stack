@@ -206,9 +206,6 @@ func GetInferenceSetReadyReplicas(ctx context.Context, model, namespace string) 
 // the live count; it can only move the min-replicas floor.
 // Everything else must change replicas through UpgradeModelDeployment so the
 // declared configuration stays the source of truth.
-//
-// Callers MUST carry GinkgoLabelStandardK8sOnly: a managed cluster such as AKS
-// Automatic does not allow the suite to reshape running workloads this way.
 func SetInferenceSetReplicas(ctx context.Context, model, namespace string, replicas int32) error {
 	dynClient, err := GetDynamicClient()
 	if err != nil {
