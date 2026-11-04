@@ -26,11 +26,9 @@ python -m pytest
 ```
 
 Runtime dependencies are defined in `setup.py`. The shared core is pinned to
-an immutable source commit of `kaito-guardrail-core`:
-[`bab41a5515fe04d4e2306e0652f926c6274cb109`](https://github.com/kaito-project/kaito-guardrail-core/commit/bab41a5515fe04d4e2306e0652f926c6274cb109).
-This prerequisite prepares the **unreleased** 0.3.0 configured streaming scanner
-API; the published 0.2.0 package does not contain it. The source pin is temporary
-and must be replaced with a published version after shared-core review/release.
+the published PyPI package `kaito-guardrail-core==0.2.1`, which supplies scanner
+configuration, real scanner/window adaptation, and SSE/parser/window APIs. See
+the [0.2.1 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.1).
 `xds-protos`, published by the gRPC project, supplies the generated Envoy
 protobuf messages and service.
 
@@ -61,7 +59,8 @@ The default action is `block`; each scanner can override it with `block` or
 `The model output was blocked by output guardrails.` and must be a non-empty
 string. `scanner_configs` must be a non-empty list of configuration mappings;
 the old `scanners` key is rejected as an unknown field. Shared core owns scanner names,
-field normalization, validation, and construction; configured order is preserved.
+field normalization, validation, and construction. Buffered scanner construction
+preserves configured order; streaming execution follows the core ordering below.
 
 Malformed policies raise `PolicyConfigError` instead of silently disabling
 guardrails or skipping entries. Core validation errors include the scanner
@@ -86,7 +85,6 @@ policy = GuardrailPolicyConfig.from_dict({
         {
             "type": "ban_substrings",
             "substrings": ["secret"],
-            "match_type": "str",
         },
         {"type": "invisible_text", "action": "redact"},
     ],
@@ -109,23 +107,31 @@ finally:
     upstream.close()
 ```
 
-`from_policy()` builds fresh real core scanners for each response, preserves
-configured order and per-scanner action overrides, and forwards the request
-prompt. Core derives the minimum holdback; an explicitly smaller
-`holdback_len` is rejected. Blocking discards the current batch and retained
+`from_policy()` builds fresh real core scanners for each response, forwards the
+request prompt, and honors per-scanner action overrides. Core runs **all redactors
+before blockers**, even when a blocker is configured first; relative order is
+preserved within each group. Core derives the minimum holdback with a **256
+Unicode-code-point floor**, increasing it for longer configured substrings.
+An explicitly smaller `holdback_len` is rejected. Short responses are retained
+until valid completion rather than immediately scanned or progressively emitted.
+Blocking discards the current batch and retained
 tail; redaction is applied before release, including an empty sanitized output.
 The existing `GuardrailStream(scanner, holdback_len=...)` API remains available
 for caller-supplied `WindowScanner` implementations.
 
-Finite-window support is limited to substring matching (`ban_substrings` with
-`match_type="str"`, `contains_all=False`, and no whitespace-only substrings) and
-`invisible_text`. Non-ASCII substrings require `case_sensitive=True`.
-Word matching, regexes, JSON, reading/token limits, secrets, and sensitive-data
-scanners need richer shared streaming contracts and raise an indexed
-`StreamingPolicyError` before a stream is created. Buffered construction still
-supports all eight scanner types. Core also rejects unstable redaction rather
-than repeatedly transforming retained tails; these errors propagate through
-`WindowScanError` and close the stream without flushing.
+Core 0.2.1 supports `ban_substrings` in default `word` or explicit `str` mode,
+`invisible_text`, `secrets`, and `sensitive`, in block/redact modes. Word matching
+uses the previously released character as left context and defers an unconfirmed
+right boundary until more text or normal EOF. Secrets redaction requires
+`redact_mode="all"`; core rescans the sanitized text and blocks if verification
+fails. There is no blanket requirement that every redactor be a fixed point.
+
+`contains_all=True`, regexes, JSON, and cumulative reading/token limits remain
+unsupported for streaming and raise an indexed `StreamingPolicyError` before a
+stream is created. Buffered construction still supports all eight scanner types.
+Detection is bounded by the retained window, not a whole-response guarantee;
+the core owns these scanner-specific semantics. Scanner exceptions propagate
+through `WindowScanError` and close the stream without flushing.
 
 The caller supplies upstream ownership, emission, and refusal/error policy.
 Only emit returned chunks; stop and refuse on block.
