@@ -251,13 +251,9 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 		return nil, fmt.Errorf("ensure sim configmap: %w", err)
 	}
 
-	shadowPodLabel := original.Namespace + "." + original.Name
-	if len(shadowPodLabel) > MaxLabelValueLength {
-		shadowPodLabel = shadowPodLabel[:MaxLabelValueLength]
-	}
 	labels := map[string]string{
 		LabelManagedBy:    ControllerName,
-		ShadowPodLabelKey: shadowPodLabel,
+		ShadowPodLabelKey: shadowPodLabelValue(original),
 		// Stamp the production-stack ownership label so the modelharness
 		// `inference-pods-ingress` CiliumNetworkPolicy positively selects
 		// this shadow pod. That policy's endpointSelector matches
@@ -317,7 +313,8 @@ func (r *ShadowPodReconciler) ensureShadowPod(ctx context.Context, original *cor
 			Labels:          labels,
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 			Annotations: map[string]string{
-				"kaito.sh/original-pod": original.Namespace + "/" + original.Name,
+				AnnotationOriginalPod:           original.Namespace + "/" + original.Name,
+				AnnotationKarpenterDoNotDisrupt: "true",
 			},
 		},
 		Spec: corev1.PodSpec{
@@ -457,23 +454,46 @@ func (r *ShadowPodReconciler) patchOriginalPodStatus(ctx context.Context, origin
 }
 
 // shadowPodToOriginalPod maps a shadow pod back to a reconcile.
+//
+// The original pod is resolved from the controller OwnerReference, then the
+// AnnotationOriginalPod annotation. The ShadowPodLabelKey label is only a
+// fallback for shadow pods that carry neither: its value is truncated for long
+// "<namespace>.<pod>" pairs, and a truncated name would resolve to a missing
+// pod, so a deleted shadow pod would never be recreated.
 func (r *ShadowPodReconciler) shadowPodToOriginalPod(_ context.Context, obj client.Object) []reconcile.Request {
 	pod, ok := obj.(*corev1.Pod)
-	if !ok {
+	if !ok || !isShadowPod(pod) {
 		return nil
 	}
-	ref, ok := pod.Labels[ShadowPodLabelKey]
-	if !ok {
-		return nil
+	request := func(namespace, name string) []reconcile.Request {
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}}}
+	}
+
+	if owner := metav1.GetControllerOf(pod); owner != nil && owner.APIVersion == "v1" && owner.Kind == "Pod" && owner.Name != "" {
+		return request(pod.Namespace, owner.Name)
+	}
+	if ref := pod.Annotations[AnnotationOriginalPod]; ref != "" {
+		if parts := strings.SplitN(ref, "/", 2); len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			return request(parts[0], parts[1])
+		}
 	}
 	// Label value uses "." as separator (not "/" which is invalid in labels).
-	parts := strings.SplitN(ref, ".", 2)
+	parts := strings.SplitN(pod.Labels[ShadowPodLabelKey], ".", 2)
 	if len(parts) != 2 {
 		return nil
 	}
-	return []reconcile.Request{
-		{NamespacedName: types.NamespacedName{Namespace: parts[0], Name: parts[1]}},
+	return request(parts[0], parts[1])
+}
+
+// shadowPodLabelValue returns the ShadowPodLabelKey value for the original pod:
+// "<namespace>.<pod>", truncated to a valid label value. A label value must end
+// with an alphanumeric character, so separators left at the cut are trimmed.
+func shadowPodLabelValue(original *corev1.Pod) string {
+	value := original.Namespace + "." + original.Name
+	if len(value) > MaxLabelValueLength {
+		value = strings.TrimRight(value[:MaxLabelValueLength], "-_.")
 	}
+	return value
 }
 
 // isKaitoPodOnFakeNode reports whether the pod is a KAITO-provisioned pod

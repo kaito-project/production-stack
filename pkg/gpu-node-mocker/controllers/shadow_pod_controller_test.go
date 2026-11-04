@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -200,6 +201,14 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	}
 	if shadow.Labels[ShadowPodLabelKey] != "default.falcon-0" {
 		t.Errorf("shadow label = %q", shadow.Labels[ShadowPodLabelKey])
+	}
+	if got := shadow.Annotations[AnnotationOriginalPod]; got != "default/falcon-0" {
+		t.Errorf("original-pod annotation = %q, want default/falcon-0", got)
+	}
+	// Karpenter must not consolidate the node a shadow pod runs on: that
+	// would take the mocked replica offline until the pod is rescheduled.
+	if got := shadow.Annotations[AnnotationKarpenterDoNotDisrupt]; got != "true" {
+		t.Errorf("do-not-disrupt annotation = %q, want true", got)
 	}
 	// Regression guard for issue #83: the modelharness NetworkPolicies
 	// positively select on `kaito.sh/owned-by: modeldeployment`. Without
@@ -404,6 +413,44 @@ func TestPatchOriginalPodStatus(t *testing.T) {
 func TestShadowPodToOriginalPod(t *testing.T) {
 	r := &ShadowPodReconciler{}
 
+	// Regression: the label value is truncated to 63 characters, so for a long
+	// "<namespace>.<pod>" it named a missing pod and a preempted shadow pod
+	// was never recreated.
+	longNS := "e2e-model-download-regression"
+	longPod := "model-download-regression-phi-rdr8d-0"
+	longLabel := shadowPodLabelValue(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: longNS, Name: longPod}})
+	want := types.NamespacedName{Namespace: longNS, Name: longPod}
+
+	t.Run("long name resolved from owner reference", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: longNS,
+				Labels:    map[string]string{ShadowPodLabelKey: longLabel},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "v1", Kind: "Pod", Name: longPod, UID: "uid-1", Controller: ptr.To(true),
+				}},
+			},
+		}
+		reqs := r.shadowPodToOriginalPod(context.Background(), pod)
+		if len(reqs) != 1 || reqs[0].NamespacedName != want {
+			t.Fatalf("got %v, want [%v]", reqs, want)
+		}
+	})
+
+	t.Run("long name resolved from original-pod annotation", func(t *testing.T) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace:   longNS,
+				Labels:      map[string]string{ShadowPodLabelKey: longLabel},
+				Annotations: map[string]string{AnnotationOriginalPod: longNS + "/" + longPod},
+			},
+		}
+		reqs := r.shadowPodToOriginalPod(context.Background(), pod)
+		if len(reqs) != 1 || reqs[0].NamespacedName != want {
+			t.Fatalf("got %v, want [%v]", reqs, want)
+		}
+	})
+
 	t.Run("valid shadow pod", func(t *testing.T) {
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
@@ -597,6 +644,62 @@ func TestShadowPodReconcile_RecreatesShadowWhenMissing(t *testing.T) {
 	shadow := &corev1.Pod{}
 	if err := cl.Get(ctx, types.NamespacedName{Name: "shadow-default-falcon-0", Namespace: "default"}, shadow); err != nil {
 		t.Fatalf("shadow pod was not recreated: %v", err)
+	}
+}
+
+// TestShadowPodToOriginalPod_LongNameRoundTrip maps a shadow pod created for a
+// long "<namespace>.<pod>" back to its original pod, so the delete event of a
+// preempted shadow pod re-queues the right pod and the shadow is recreated.
+func TestShadowPodToOriginalPod_LongNameRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme()
+	cfg := testConfig()
+
+	nsName := "e2e-model-download-regression"
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+	original := newPendingPodOnFakeNode("model-download-regression-phi-rdr8d-0", nsName, "fake-ws1")
+	original.UID = "original-uid"
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns, original).Build()
+	r := &ShadowPodReconciler{Client: cl, Config: cfg}
+
+	shadow, err := r.ensureShadowPod(ctx, original, shadowPodName(original))
+	if err != nil {
+		t.Fatalf("ensureShadowPod: %v", err)
+	}
+	if label := shadow.Labels[ShadowPodLabelKey]; len(label) <= len(original.Name) {
+		t.Fatalf("test needs a truncated label, got %q", label)
+	}
+
+	reqs := r.shadowPodToOriginalPod(ctx, shadow)
+	want := types.NamespacedName{Namespace: nsName, Name: original.Name}
+	if len(reqs) != 1 || reqs[0].NamespacedName != want {
+		t.Fatalf("got %v, want [%v]", reqs, want)
+	}
+}
+
+func TestShadowPodLabelValue(t *testing.T) {
+	tests := []struct {
+		namespace, name, want string
+	}{
+		{"default", "falcon-0", "default.falcon-0"},
+		{
+			"e2e-model-download-regression", "model-download-regression-phi-rdr8d-0",
+			"e2e-model-download-regression.model-download-regression-phi-rdr",
+		},
+		// The cut lands right after "-": it must be trimmed to stay valid.
+		{
+			strings.Repeat("a", 30), strings.Repeat("b", 31) + "-c-0",
+			strings.Repeat("a", 30) + "." + strings.Repeat("b", 31),
+		},
+	}
+	for _, tt := range tests {
+		got := shadowPodLabelValue(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: tt.namespace, Name: tt.name}})
+		if got != tt.want {
+			t.Errorf("shadowPodLabelValue(%s/%s) = %q, want %q", tt.namespace, tt.name, got, tt.want)
+		}
+		if errs := validation.IsValidLabelValue(got); len(errs) != 0 {
+			t.Errorf("shadowPodLabelValue(%s/%s) = %q is not a valid label value: %v", tt.namespace, tt.name, got, errs)
+		}
 	}
 }
 

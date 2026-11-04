@@ -76,8 +76,20 @@ const (
 	// rather than deleting it.
 	FakeProviderIDPrefix = "fake://"
 
-	// ShadowPodLabelKey marks shadow pods so we can watch only those.
+	// ShadowPodLabelKey marks shadow pods so we can watch only those. Its value
+	// is "<namespace>.<pod>" truncated to MaxLabelValueLength, so it cannot be
+	// used to resolve the original pod; use AnnotationOriginalPod instead.
 	ShadowPodLabelKey = "kaito.sh/shadow-pod-for"
+
+	// AnnotationOriginalPod records "<namespace>/<pod>" of the original pod on
+	// its shadow pod. Unlike ShadowPodLabelKey it is never truncated.
+	AnnotationOriginalPod = "kaito.sh/original-pod"
+
+	// AnnotationKarpenterDoNotDisrupt stops Karpenter from voluntarily
+	// disrupting (e.g. consolidating) the real node hosting a shadow pod.
+	// Shadow pods spill onto surge nodes when the system pool is full, and
+	// consolidating those nodes would take a mocked replica offline.
+	AnnotationKarpenterDoNotDisrupt = "karpenter.sh/do-not-disrupt"
 
 	// ShadowPodInferenceSetLabelKey records the InferenceSet (modeldeployment)
 	// that the shadow pod mirrors. Intentionally distinct from the upstream

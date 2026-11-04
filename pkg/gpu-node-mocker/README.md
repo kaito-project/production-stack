@@ -58,6 +58,8 @@
 - **Creates a shadow pod** for each inference pod that's Pending on a fake node — the shadow pod runs the `llm-mocker` image on a real AKS node and gets a real CNI IP.
 - **Patches the inference pod's status** — copies the shadow pod's IP into the inference pod's `status.podIP`, sets `phase=Running`, `conditions[Ready]=True`, and builds fake `containerStatuses`. This makes KAITO think the inference pod is running.
 - **Annotates the inference pod** with `kaito.sh/shadow-pod-ref` pointing to the shadow pod, so future reconciles can correlate them.
+- **Recreates a deleted shadow pod** (preempted, evicted, or lost with its node) and re-patches the inference pod's `status.podIP`. The shadow pod is mapped back to its inference pod through its owner reference or `kaito.sh/original-pod` annotation, never the `kaito.sh/shadow-pod-for` label: that label is truncated to 63 characters.
+- **Opts shadow pods out of Karpenter consolidation** with `karpenter.sh/do-not-disrupt: "true"`. When the system pool is full they land on surge nodes, and consolidating those would take a mocked replica offline.
 
 ## Streaming probe
 
