@@ -465,11 +465,18 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(err).NotTo(HaveOccurred())
 
 			for _, model := range modelNames {
+				// A shadow pod can be briefly gone (preempted or rescheduled
+				// off a consolidated node) while the gateway still serves via
+				// the other replica, so wait for every replica to be back.
 				By(fmt.Sprintf("snapshotting metrics before sending %d requests to %s", numRequests, model))
-				before, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(len(before)).To(BeNumerically(">=", 2),
-					"%s should have at least 2 shadow pods for load distribution test", model)
+				var before utils.PodMetricSnapshot
+				Eventually(func(g Gomega) {
+					snapshot, err := utils.ScrapeRequestSuccessTotal(ctx, clientset, caseNamespace, model)
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(len(snapshot)).To(BeNumerically(">=", 2),
+						"%s should have at least 2 shadow pods for load distribution test", model)
+					before = snapshot
+				}, utils.InferenceSetReadyTimeout, utils.PollInterval).Should(Succeed())
 
 				By(fmt.Sprintf("sending %d requests to %s", numRequests, model))
 				for i := 0; i < numRequests; i++ {
