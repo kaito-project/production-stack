@@ -1,0 +1,1709 @@
+{
+  "run": "20261105",
+  "providers": {
+    "aimanager": {
+      "label": "AI Manager (production-stack)",
+      "base": "https://<aimanager-endpoint>/v1",
+      "model": "qwen3-8-27b",
+      "unknownRoute": {
+        "GET": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]",
+        "DELETE": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]",
+        "POST": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "llmprobe": {
+        "version": "llmprobe 1.4.0",
+        "rewrites": [
+          "max_tokens → max_completion_tokens"
+        ]
+      }
+    },
+    "foundry": {
+      "label": "Azure AI Foundry",
+      "base": "https://<foundry-endpoint>/openai/v1",
+      "model": "gpt-6-astra",
+      "unknownRoute": {
+        "GET": "404: Resource not found",
+        "DELETE": "404: Resource not found",
+        "POST": "404: Resource not found"
+      },
+      "llmprobe": {
+        "version": "llmprobe 1.4.0",
+        "rewrites": [
+          "max_tokens → max_completion_tokens"
+        ]
+      }
+    }
+  },
+  "summary": {
+    "aimanager": {
+      "cases": {
+        "total": 80,
+        "supported": 29
+      },
+      "endpoints": {
+        "total": 59,
+        "supported": 8
+      }
+    },
+    "foundry": {
+      "cases": {
+        "total": 80,
+        "supported": 41
+      },
+      "endpoints": {
+        "total": 59,
+        "supported": 31
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "models-list",
+      "group": "A. Models",
+      "endpoint": "GET /v1/models",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "1 model(s)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "252 model(s)"
+      }
+    },
+    {
+      "id": "models-get",
+      "group": "A. Models",
+      "endpoint": "GET /v1/models/{model}",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "id gpt-6-astra-2026-09-03"
+      }
+    },
+    {
+      "id": "chat",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "chat-stream",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "1 extra non-standard chunk(s) (object \"\"; keys choices,created,id,model,object,prompt_filter_results)"
+      }
+    },
+    {
+      "id": "chat-logprobs",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Unsupported parameter: 'logprobs' is not supported with this model."
+      }
+    },
+    {
+      "id": "chat-json_object",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "chat-json_object-stream",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "1 extra non-standard chunk(s) (object \"\"; keys choices,created,id,model,object,prompt_filter_results)"
+      }
+    },
+    {
+      "id": "chat-json_schema",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "chat-json_schema-stream",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "1 extra non-standard chunk(s) (object \"\"; keys choices,created,id,model,object,prompt_filter_results)"
+      }
+    },
+    {
+      "id": "tools-named",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+      }
+    },
+    {
+      "id": "tools-named-stream",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+      }
+    },
+    {
+      "id": "tools-required",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+      }
+    },
+    {
+      "id": "tools-required-stream",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+      }
+    },
+    {
+      "id": "tools-auto",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+      }
+    },
+    {
+      "id": "tools-auto-stream",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+      }
+    },
+    {
+      "id": "tools-none",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "no tool_calls returned (model behaviour, not judged)"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+      }
+    },
+    {
+      "id": "tools-roundtrip",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: Function tools with reasoning_effort are not supported for gpt-6-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'."
+      }
+    },
+    {
+      "id": "chat-n2",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "chat-n2-stream",
+      "group": "B. Chat Completions",
+      "endpoint": "POST /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "1 extra non-standard chunk(s) (object \"\"; keys choices,created,id,model,object,prompt_filter_results)"
+      }
+    },
+    {
+      "id": "llmprobe-chat-sse",
+      "group": "C. llmprobe",
+      "endpoint": "POST /v1/chat/completions (llmprobe)",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "llmprobe status healthy"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "1 extra non-standard chunk(s) (object \"\"; keys choices,created,id,model,object,prompt_filter_results); llmprobe status healthy"
+      }
+    },
+    {
+      "id": "llmprobe-json-sse",
+      "group": "C. llmprobe",
+      "endpoint": "POST /v1/chat/completions (llmprobe)",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "llmprobe status healthy"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": "1 extra non-standard chunk(s) (object \"\"; keys choices,created,id,model,object,prompt_filter_results); llmprobe status healthy"
+      }
+    },
+    {
+      "id": "completions",
+      "group": "D. Legacy Completions",
+      "endpoint": "POST /v1/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The requested operation is unsupported."
+      }
+    },
+    {
+      "id": "completions-stream",
+      "group": "D. Legacy Completions",
+      "endpoint": "POST /v1/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The requested operation is unsupported."
+      }
+    },
+    {
+      "id": "completions-batch",
+      "group": "D. Legacy Completions",
+      "endpoint": "POST /v1/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The requested operation is unsupported."
+      }
+    },
+    {
+      "id": "responses",
+      "group": "E. Responses",
+      "endpoint": "POST /v1/responses",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "responses-stream",
+      "group": "E. Responses",
+      "endpoint": "POST /v1/responses",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "responses-get",
+      "group": "E. Responses",
+      "endpoint": "GET /v1/responses/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 400,
+        "note": "route recognized (400: Invalid 'response_id': 'probe-nonexistent'. Expected an ID that begins with 'resp'.)"
+      }
+    },
+    {
+      "id": "responses-input-items",
+      "group": "E. Responses",
+      "endpoint": "GET /v1/responses/{id}/input_items",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 400,
+        "note": "route recognized (400: Invalid 'response_id': 'probe-nonexistent'. Expected an ID that begins with 'resp'.)"
+      }
+    },
+    {
+      "id": "responses-delete",
+      "group": "E. Responses",
+      "endpoint": "DELETE /v1/responses/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 400,
+        "note": "route recognized (400: Invalid 'response_id': 'probe-nonexistent'. Expected an ID that begins with 'resp'.)"
+      }
+    },
+    {
+      "id": "responses-cancel",
+      "group": "E. Responses",
+      "endpoint": "POST /v1/responses/{id}/cancel",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 400,
+        "note": "route recognized (400: Invalid 'response_id': 'probe-nonexistent'. Expected an ID that begins with 'resp'.)"
+      }
+    },
+    {
+      "id": "chat-completions-list",
+      "group": "F. Stored chat completions",
+      "endpoint": "GET /v1/chat/completions",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "chat-completions-get",
+      "group": "F. Stored chat completions",
+      "endpoint": "GET /v1/chat/completions/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 404,
+        "note": "resource-level not-found (404: The specified entity cannot be found.); unknown route replies 404: Resource not found"
+      }
+    },
+    {
+      "id": "chat-completions-messages",
+      "group": "F. Stored chat completions",
+      "endpoint": "GET /v1/chat/completions/{id}/messages",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 404,
+        "note": "resource-level not-found (404: The specified entity cannot be found.); unknown route replies 404: Resource not found"
+      }
+    },
+    {
+      "id": "embeddings",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/embeddings",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": true,
+        "status": 404,
+        "note": "platform supports this API; the deployed model does not (404: Not Found [x-kaito-error-source: inferenceset])"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": true,
+        "status": 400,
+        "note": "platform supports this API; the deployed model does not (400: The embeddings operation does not work with the specified model, gpt-6-astra. Please choose different model and try again. You can learn more about which models can be used with each operation here: https://go.microsoft.)"
+      }
+    },
+    {
+      "id": "embeddings-batch",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/embeddings",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": true,
+        "status": 404,
+        "note": "platform supports this API; the deployed model does not (404: Not Found [x-kaito-error-source: inferenceset])"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": true,
+        "status": 400,
+        "note": "platform supports this API; the deployed model does not (400: The embeddings operation does not work with the specified model, gpt-6-astra. Please choose different model and try again. You can learn more about which models can be used with each operation here: https://go.microsoft.)"
+      }
+    },
+    {
+      "id": "moderations",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/moderations",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /v1/moderations [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "images-generations",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/images/generations",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /v1/images/generations [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": true,
+        "status": 400,
+        "note": "platform supports this API; the deployed model does not (400: The imageGenerations operation does not work with the specified model, gpt-6-astra. Please choose different model and try again. You can learn more about which models can be used with each operation here: https://go.micr)"
+      }
+    },
+    {
+      "id": "images-edits",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/images/edits",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - failed to parse request body: invalid character '-' in numeric literal"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": true,
+        "status": 400,
+        "note": "platform supports this API; the deployed model does not (400: Model not supported with Responses API.)"
+      }
+    },
+    {
+      "id": "images-variations",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/images/variations",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - failed to parse request body: invalid character '-' in numeric literal"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "audio-speech",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/audio/speech",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /v1/audio/speech [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": true,
+        "status": 400,
+        "note": "platform supports this API; the deployed model does not (400: The audioSpeech operation does not work with the specified model, gpt-6-astra. Please choose different model and try again. You can learn more about which models can be used with each operation here: https://go.microsoft)"
+      }
+    },
+    {
+      "id": "audio-transcriptions",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/audio/transcriptions",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - failed to parse request body: invalid character '-' in numeric literal"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": true,
+        "status": 404,
+        "note": "platform supports this API; the deployed model does not (404: The API deployment for this resource does not exist. If you created the deployment within the last 5 minutes, please wait a moment and try again.)"
+      }
+    },
+    {
+      "id": "audio-translations",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/audio/translations",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - failed to parse request body: invalid character '-' in numeric literal"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": true,
+        "status": 404,
+        "note": "platform supports this API; the deployed model does not (404: The API deployment for this resource does not exist. If you created the deployment within the last 5 minutes, please wait a moment and try again.)"
+      }
+    },
+    {
+      "id": "chat-vision",
+      "group": "G. Model-type endpoints",
+      "endpoint": "POST /v1/chat/completions (image input)",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "files-list",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/files",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "files-get",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/files/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 404,
+        "note": "resource-level not-found (404: The specified entity cannot be found.); unknown route replies 404: Resource not found"
+      }
+    },
+    {
+      "id": "files-content",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/files/{id}/content",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 404,
+        "note": "resource-level not-found (404: The specified entity cannot be found.); unknown route replies 404: Resource not found"
+      }
+    },
+    {
+      "id": "batches-list",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/batches",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "batches-get",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/batches/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 404,
+        "note": "route recognized (404: The requested job 'probe-nonexistent' does not exist under the account '<foundry-account>'. Please check the account name, deployment name and th)"
+      }
+    },
+    {
+      "id": "fine-tuning-jobs-list",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/fine_tuning/jobs",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "fine-tuning-jobs-get",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/fine_tuning/jobs/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 404,
+        "note": "resource-level not-found (404: The specified entity cannot be found.); unknown route replies 404: Resource not found"
+      }
+    },
+    {
+      "id": "fine-tuning-events",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/fine_tuning/jobs/{id}/events",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 404,
+        "note": "resource-level not-found (404: The specified entity cannot be found.); unknown route replies 404: Resource not found"
+      }
+    },
+    {
+      "id": "fine-tuning-checkpoints",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/fine_tuning/jobs/{id}/checkpoints",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 404,
+        "note": "resource-level not-found (404: The specified entity cannot be found.); unknown route replies 404: Resource not found"
+      }
+    },
+    {
+      "id": "assistants-list",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/assistants",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "assistants-get",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/assistants/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found (same reply as an unknown route)"
+      }
+    },
+    {
+      "id": "vector-stores-list",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/vector_stores",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 200,
+        "note": ""
+      }
+    },
+    {
+      "id": "vector-stores-get",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/vector_stores/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 400,
+        "note": "route recognized (400: Invalid 'vector_store_id': 'probe-nonexistent'. Expected an ID that begins with 'vs'.)"
+      }
+    },
+    {
+      "id": "vector-stores-files",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/vector_stores/{id}/files",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": true,
+        "needsModel": false,
+        "status": 400,
+        "note": "route recognized (400: Invalid 'vector_store_id': 'probe-nonexistent'. Expected an ID that begins with 'vs'.)"
+      }
+    },
+    {
+      "id": "threads-get",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/threads/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found (same reply as an unknown route)"
+      }
+    },
+    {
+      "id": "threads-messages",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/threads/{id}/messages",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found (same reply as an unknown route)"
+      }
+    },
+    {
+      "id": "threads-runs",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/threads/{id}/runs",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found (same reply as an unknown route)"
+      }
+    },
+    {
+      "id": "conversations-get",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/conversations/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found (same reply as an unknown route)"
+      }
+    },
+    {
+      "id": "conversations-items",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/conversations/{id}/items",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found (same reply as an unknown route)"
+      }
+    },
+    {
+      "id": "uploads-get",
+      "group": "H. Resource APIs",
+      "endpoint": "GET /v1/uploads/{id}",
+      "routeOnly": true,
+      "deploymentDependent": false,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr] (same reply as an unknown route)"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found (same reply as an unknown route)"
+      }
+    },
+    {
+      "id": "realtime-upgrade",
+      "group": "I. Realtime",
+      "endpoint": "GET /v1/realtime?model={model}",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": false,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 0,
+        "note": "0: request error: timeout"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "chat-batch-endpoint",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "POST /v1/chat/completions/batch",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /v1/chat/completions/batch [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: The specified entity cannot be found."
+      }
+    },
+    {
+      "id": "v1-score",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "POST /v1/score",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /v1/score [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "v1-rerank",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "POST /v1/rerank",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /v1/rerank [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "health",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "GET /health",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "ping",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "GET /ping",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "version",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "GET /version",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "metrics",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "GET /metrics",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "openapi-json",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "GET /openapi.json",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "docs",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "GET /docs",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "load",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "GET /load",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "server-info",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "GET /server_info",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: The request body did not specify a model; the \"model\" field is required. [x-kaito-error-source: bbr]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "tokenize",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "POST /tokenize",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /tokenize [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "detokenize",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "POST /detokenize",
+      "routeOnly": false,
+      "deploymentDependent": false,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /detokenize [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "pooling",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "POST /pooling",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /pooling [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "score",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "POST /score",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /score [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    },
+    {
+      "id": "rerank",
+      "group": "J. vLLM extensions & runtime paths",
+      "endpoint": "POST /rerank",
+      "routeOnly": false,
+      "deploymentDependent": true,
+      "extension": true,
+      "aimanager": {
+        "supported": false,
+        "needsModel": false,
+        "status": 400,
+        "note": "400: inference error: BadRequest - no parser registered matching path suffix for: /rerank [x-kaito-error-source: inferenceset]"
+      },
+      "foundry": {
+        "supported": false,
+        "needsModel": false,
+        "status": 404,
+        "note": "404: Resource not found"
+      }
+    }
+  ],
+  "compat": {
+    "aimanager": [
+      {
+        "id": "compat-max_tokens",
+        "note": "Chat with `max_tokens` instead of `max_completion_tokens`",
+        "status": 200,
+        "accepted": true,
+        "detail": "accepted"
+      },
+      {
+        "id": "compat-temperature0",
+        "note": "Chat with `temperature: 0`",
+        "status": 200,
+        "accepted": true,
+        "detail": "accepted"
+      },
+      {
+        "id": "compat-tools-reasoning_effort-none",
+        "note": "Chat with function tools (`tool_choice: auto`) plus `reasoning_effort: \"none\"`",
+        "status": 200,
+        "accepted": true,
+        "detail": "accepted"
+      }
+    ],
+    "foundry": [
+      {
+        "id": "compat-max_tokens",
+        "note": "Chat with `max_tokens` instead of `max_completion_tokens`",
+        "status": 400,
+        "accepted": false,
+        "detail": "400: Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."
+      },
+      {
+        "id": "compat-temperature0",
+        "note": "Chat with `temperature: 0`",
+        "status": 400,
+        "accepted": false,
+        "detail": "400: Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported."
+      },
+      {
+        "id": "compat-tools-reasoning_effort-none",
+        "note": "Chat with function tools (`tool_choice: auto`) plus `reasoning_effort: \"none\"`",
+        "status": 400,
+        "accepted": false,
+        "detail": "400: Unsupported value: 'reasoning_effort' does not support 'none' with this model. Supported values are: 'low', 'medium', 'high', and 'xhigh'."
+      }
+    ]
+  }
+}

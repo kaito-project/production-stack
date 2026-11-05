@@ -1,0 +1,5 @@
+# Raw per-case evidence and per-provider intermediate results stay local.
+# They contain the real endpoints; report.md and results.json are masked.
+*/raw/
+*/endpoints-*.json
+*/llmprobe-*.json
