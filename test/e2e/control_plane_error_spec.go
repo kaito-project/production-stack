@@ -133,7 +133,11 @@ var _ = Describe("Control-plane Error Reporter",
 			By("scaling the EPP Deployment to zero")
 			Expect(utils.ScaleDeployment(ctx, ns, eppName, 0)).To(Succeed())
 
-			ev, err := utils.WaitForReporterEventSince(ctx, "inferencesetEPPNotReady", ns, metav1Zero, emitTimeout)
+			// A Deployment scaled to zero is debounced by the reporter's
+			// startup grace, which an install may leave at the chart default.
+			timings, err := utils.GetReporterTimings(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			ev, err := utils.WaitForReporterEventSince(ctx, "inferencesetEPPNotReady", ns, metav1Zero, timings.DebouncedEmitTimeout())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ev.Message).To(ContainSubstring(isName))
 			Expect(ev.Message).To(ContainSubstring("scaled to zero"))
