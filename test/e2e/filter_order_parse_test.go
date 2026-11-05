@@ -37,7 +37,7 @@ func TestExtractGatewayHTTPFilterNames(t *testing.T) {
 	cases := map[string][]string{
 		"modelharness chart": {"kaito.cors", "envoy.filters.http.ext_authz", "envoy.filters.http.ext_proc.bbr",
 			"envoy.filters.http.ext_proc", "envoy.filters.http.router"},
-		"AI Manager": {"kaito.cors", "lua-classify-authmode", "ext_authz.apikey", "ext_authz.azure",
+		"managed control plane": {"kaito.cors", "lua-classify-authmode", "ext_authz.apikey", "ext_authz.azure",
 			"envoy.filters.http.ext_proc.bbr", "envoy.filters.http.ext_proc", "envoy.filters.http.router"},
 	}
 	for name, filters := range cases {

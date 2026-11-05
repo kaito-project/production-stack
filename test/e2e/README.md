@@ -92,8 +92,8 @@ specs. They remain enabled by default upstream. Consumers whose deployed stack
 does not yet support these endpoints can exclude them with `!ModelDiscovery`.
 
 `StandardK8sOnly` cuts across the other two. It marks specs that require a
-standard Kubernetes cluster and cannot run on a managed control plane such as
-AKS AI Manager, even with cluster-admin access: they need a setting a managed
+standard Kubernetes cluster and cannot run on a managed control plane, even with
+cluster-admin access: they need a setting a managed
 backend cannot express (a manual replica count of 0, an exact-origin CORS
 allowlist), or they have not been verified on a managed control plane yet.
 Scaling shared Deployments through the scale subresource
@@ -282,11 +282,11 @@ out-of-tree backends can import it cheaply.
 
 The specs live in ordinary `*_spec.go` files (not `_test.go`), so another module
 can import this package to register all of them and run them against its own
-backend — for example an Azure AI Manager backend built on
-`armcontainerserviceaimanager`:
+backend — for example a managed control plane that provisions modelharnesses
+and modeldeployments through its own API:
 
 ```go
-package azuree2e
+package managede2e
 
 import (
     "testing"
@@ -299,9 +299,9 @@ import (
 )
 
 func TestE2E(t *testing.T) {
-    utils.SetDeployer(aimanager.New(cfg)) // must run before any spec
+    utils.SetDeployer(managed.New(cfg)) // must run before any spec
     RegisterFailHandler(Fail)
-    RunSpecs(t, "AKS AI Manager E2E")
+    RunSpecs(t, "Managed control plane E2E")
 }
 ```
 

@@ -57,7 +57,7 @@ var _ = Describe("Cluster Status Reporter",
 
 		// The control-plane namespaces are discovered rather than assumed: a
 		// managed control plane installs these workloads into its own add-on
-		// namespace (kube-system on AI Manager).
+		// namespace, such as kube-system.
 		var (
 			ctx                  context.Context
 			bbrNamespace         string

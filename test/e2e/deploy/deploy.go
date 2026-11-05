@@ -19,9 +19,8 @@ limitations under the License.
 //
 // The package intentionally depends on nothing but the standard library so it
 // can be imported by out-of-tree repositories that supply their own Deployer
-// (for example an Azure AI Manager implementation backed by
-// armcontainerserviceaimanager) without pulling in Helm, Ginkgo, or
-// Kubernetes client dependencies.
+// (for example one backed by a managed control plane's API) without pulling in
+// Helm, Ginkgo, or Kubernetes client dependencies.
 package deploy
 
 import "context"
