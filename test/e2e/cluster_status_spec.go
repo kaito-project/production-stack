@@ -22,6 +22,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
@@ -90,18 +92,22 @@ var _ = Describe("Cluster Status Reporter",
 			}
 		})
 
-		// scaleToZeroAndAssert scales a Deployment to zero, registers a
-		// safety-net restore (so a failed assertion cannot leave the shared
-		// control plane degraded), then runs assert while the Deployment is
-		// down. The restore returns the Deployment to its original replica
-		// count and waits for that many ready replicas.
-		scaleToZeroAndAssert := func(ns, name string, original int32, assert func()) {
+		// scaleToZeroAndWait scales a Deployment to zero, registers a safety-net
+		// restore (so a failed assertion cannot leave the shared control plane
+		// degraded), and returns the reporter Event for reason. It keeps the
+		// Deployment at zero while waiting: an add-on manager may reconcile it
+		// back to its declared replicas mid-wait, which would reset the
+		// reporter's debounce. The restore returns the Deployment to its
+		// original replica count and waits for that many ready replicas.
+		scaleToZeroAndWait := func(ns, name string, original int32, reason, objectName string, since metav1.Time) corev1.Event {
 			DeferCleanup(func() {
 				_ = utils.ScaleDeployment(ctx, ns, name, original)
 				_ = utils.WaitForDeploymentReplicas(ctx, ns, name, original, clearTimeout)
 			})
 			Expect(utils.ScaleDeployment(ctx, ns, name, 0)).To(Succeed())
-			assert()
+			ev, err := utils.WaitForReporterEventHoldingScaledToZero(ctx, ns, name, reason, objectName, since, emitTimeout)
+			Expect(err).NotTo(HaveOccurred())
+			return ev
 		}
 
 		It("emits clusterBBRNotReady when BBR is scaled to zero and clears on recovery",
@@ -112,12 +118,9 @@ var _ = Describe("Cluster Status Reporter",
 				Expect(err).NotTo(HaveOccurred())
 
 				By("scaling BBR to zero and waiting for the clusterBBRNotReady Warning")
-				scaleToZeroAndAssert(bbrNamespace, bbrDeployment, desired, func() {
-					ev, err := utils.WaitForReporterEventSince(ctx, "clusterBBRNotReady", "", baseline, emitTimeout)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(ev.Message).NotTo(ContainSubstring("http://"))
-					Expect(ev.Message).NotTo(ContainSubstring("https://"))
-				})
+				ev := scaleToZeroAndWait(bbrNamespace, bbrDeployment, desired, "clusterBBRNotReady", "", baseline)
+				Expect(ev.Message).NotTo(ContainSubstring("http://"))
+				Expect(ev.Message).NotTo(ContainSubstring("https://"))
 
 				By("restoring BBR and waiting for it to become ready")
 				Expect(utils.ScaleDeployment(ctx, bbrNamespace, bbrDeployment, desired)).To(Succeed())
@@ -142,12 +145,9 @@ var _ = Describe("Cluster Status Reporter",
 			Expect(err).NotTo(HaveOccurred())
 
 			By("scaling llm-gateway-auth to zero and waiting for the clusterGatewayAuthNotReady Warning")
-			scaleToZeroAndAssert(gatewayAuthNamespace, gatewayAuthDeployment, desired, func() {
-				ev, err := utils.WaitForReporterEventSince(ctx, "clusterGatewayAuthNotReady", "", baseline, emitTimeout)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(ev.Message).NotTo(ContainSubstring("http://"))
-				Expect(ev.Message).NotTo(ContainSubstring("https://"))
-			})
+			ev := scaleToZeroAndWait(gatewayAuthNamespace, gatewayAuthDeployment, desired, "clusterGatewayAuthNotReady", "", baseline)
+			Expect(ev.Message).NotTo(ContainSubstring("http://"))
+			Expect(ev.Message).NotTo(ContainSubstring("https://"))
 		})
 
 		It("emits clusterKaitoControllerNotReady when the KAITO controller is scaled to zero", func() {
@@ -158,12 +158,9 @@ var _ = Describe("Cluster Status Reporter",
 			Expect(err).NotTo(HaveOccurred())
 
 			By("scaling the KAITO controller to zero and waiting for the clusterKaitoControllerNotReady Warning")
-			scaleToZeroAndAssert(kaitoNamespace, kaitoDeployment, desired, func() {
-				ev, err := utils.WaitForReporterEventSince(ctx, "clusterKaitoControllerNotReady", "", baseline, emitTimeout)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(ev.Message).NotTo(ContainSubstring("http://"))
-				Expect(ev.Message).NotTo(ContainSubstring("https://"))
-			})
+			ev := scaleToZeroAndWait(kaitoNamespace, kaitoDeployment, desired, "clusterKaitoControllerNotReady", "", baseline)
+			Expect(ev.Message).NotTo(ContainSubstring("http://"))
+			Expect(ev.Message).NotTo(ContainSubstring("https://"))
 		})
 
 		It("emits clusterGatewayAuthNotReady when apikey-operator is scaled to zero", func() {
@@ -173,13 +170,10 @@ var _ = Describe("Cluster Status Reporter",
 			Expect(err).NotTo(HaveOccurred())
 
 			By("scaling apikey-operator to zero and waiting for the clusterGatewayAuthNotReady Warning")
-			scaleToZeroAndAssert(gatewayAuthNamespace, gatewayAuthOperator, desired, func() {
-				ev, err := utils.WaitForReporterEventSince(ctx, "clusterGatewayAuthNotReady", "", baseline, emitTimeout)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(ev.Message).To(ContainSubstring(gatewayAuthOperator))
-				Expect(ev.Message).NotTo(ContainSubstring("http://"))
-				Expect(ev.Message).NotTo(ContainSubstring("https://"))
-			})
+			ev := scaleToZeroAndWait(gatewayAuthNamespace, gatewayAuthOperator, desired, "clusterGatewayAuthNotReady", "", baseline)
+			Expect(ev.Message).To(ContainSubstring(gatewayAuthOperator))
+			Expect(ev.Message).NotTo(ContainSubstring("http://"))
+			Expect(ev.Message).NotTo(ContainSubstring("https://"))
 		})
 
 		It("emits clusterLocalCSIDriverNotReady when the local CSI driver manager is scaled to zero", func() {
@@ -189,12 +183,9 @@ var _ = Describe("Cluster Status Reporter",
 			Expect(err).NotTo(HaveOccurred())
 
 			By("scaling csi-local-manager to zero and waiting for the clusterLocalCSIDriverNotReady Warning")
-			scaleToZeroAndAssert(localCSINamespace, localCSIManager, desired, func() {
-				ev, err := utils.WaitForReporterEventSince(ctx, "clusterLocalCSIDriverNotReady", localCSINamespace, baseline, emitTimeout)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(ev.Message).To(ContainSubstring(localCSIManager))
-				Expect(ev.Message).NotTo(ContainSubstring("http://"))
-				Expect(ev.Message).NotTo(ContainSubstring("https://"))
-			})
+			ev := scaleToZeroAndWait(localCSINamespace, localCSIManager, desired, "clusterLocalCSIDriverNotReady", localCSINamespace, baseline)
+			Expect(ev.Message).To(ContainSubstring(localCSIManager))
+			Expect(ev.Message).NotTo(ContainSubstring("http://"))
+			Expect(ev.Message).NotTo(ContainSubstring("https://"))
 		})
 	})
