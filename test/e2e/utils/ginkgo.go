@@ -146,8 +146,8 @@ var (
 	GinkgoLabelNoGPU = g.Label("NoGPU")
 
 	// GinkgoLabelStandardK8sOnly marks tests that require a standard Kubernetes
-	// cluster and cannot run on a managed control plane such as AKS AI Manager,
-	// even with cluster-admin access.
+	// cluster and cannot run on a managed control plane, even with
+	// cluster-admin access.
 	//
 	// What puts a spec here:
 	//
@@ -158,7 +158,7 @@ var (
 	//
 	// Scaling shared Deployments through the scale subresource, `kubectl exec`
 	// into the Gateway, and scraping pod metrics through pods/proxy do not need
-	// it: those work on AI Manager with cluster-admin access.
+	// it: those work on a managed control plane with cluster-admin access.
 	//
 	// It cuts ACROSS the feature-area labels — a spec keeps its own (Outage,
 	// StatusReporter, Scaling, ...) and carries this one in addition, so a run

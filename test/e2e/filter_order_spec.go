@@ -676,8 +676,8 @@ func extractGatewayHTTPFilterNames(configDump string) []string {
 
 // isExtAuthzFilter reports whether an HTTP filter name is an ext_authz
 // filter. The modelharness chart uses the canonical
-// envoy.filters.http.ext_authz name; a managed control plane such as AI Manager
-// names one filter per authentication mode (ext_authz.apikey, ext_authz.azure).
+// envoy.filters.http.ext_authz name; a managed control plane may name one
+// filter per authentication mode (ext_authz.apikey, ext_authz.azure).
 func isExtAuthzFilter(name string) bool {
 	return strings.HasPrefix(name, "envoy.filters.http.ext_authz") || strings.HasPrefix(name, "ext_authz.")
 }

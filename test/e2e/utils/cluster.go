@@ -38,8 +38,8 @@ const BBRPodSelector = "app.kubernetes.io/name=body-based-routing"
 
 // BBRNamespace discovers the namespace the cluster-wide body-based-router runs
 // in, rather than assuming the umbrella chart's release namespace: a managed
-// control plane installs the same workload into its own add-on namespace
-// (kube-system on AI Manager) instead of kaito-system.
+// control plane installs the same workload into its own add-on namespace (such
+// as kube-system) instead of kaito-system.
 func BBRNamespace(ctx context.Context) (string, error) {
 	clientset, err := GetK8sClientset()
 	if err != nil {

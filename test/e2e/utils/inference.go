@@ -63,9 +63,9 @@ func EPPSelector(deploymentName string) string {
 // route a request — the EPP picks the endpoint, the pod holds the model.
 //
 // Readiness is read off built-in kinds rather than the InferencePool or
-// InferenceSet status: a managed control plane such as AI Manager grants the
-// caller read access to built-in kinds only, so waiting on a CRD would fail
-// with 403 before any spec gets to run.
+// InferenceSet status: a managed control plane may grant the caller read access
+// to built-in kinds only, so waiting on a CRD would fail with 403 before any
+// spec gets to run.
 func WaitForInferenceSetReady(ctx context.Context, values deploy.ModelDeploymentValues, timeout time.Duration) error {
 	clientset, err := GetK8sClientset()
 	if err != nil {

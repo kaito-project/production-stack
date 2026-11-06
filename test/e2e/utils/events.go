@@ -37,7 +37,8 @@ const (
 	ReporterEventSource = "productionstack-status-reporter"
 
 	// reporterSelector matches the reporter Deployment, wherever it is
-	// installed (kaito-system for the E2E install, kube-system on AI Manager).
+	// installed (kaito-system for the E2E install, an add-on namespace such as
+	// kube-system on a managed control plane).
 	reporterSelector = "app.kubernetes.io/name=productionstack-status-reporter"
 
 	// reporterEmitSlack covers what DebouncedEmitTimeout does not model: the
