@@ -137,7 +137,7 @@ var _ = Describe("Control-plane Error Reporter",
 			// startup grace, which an install may leave at the chart default.
 			timings, err := utils.GetReporterTimings(ctx)
 			Expect(err).NotTo(HaveOccurred())
-			ev, err := utils.WaitForReporterEventSince(ctx, "inferencesetEPPNotReady", ns, metav1Zero, timings.DebouncedEmitTimeout())
+			ev, err := utils.WaitForReporterEventHoldingScaledToZero(ctx, ns, eppName, "inferencesetEPPNotReady", ns, metav1Zero, timings.DebouncedEmitTimeout())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(ev.Message).To(ContainSubstring(isName))
 			Expect(ev.Message).To(ContainSubstring("scaled to zero"))

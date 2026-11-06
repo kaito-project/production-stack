@@ -23,8 +23,10 @@ import (
 	"strings"
 	"time"
 
+	g "github.com/onsi/ginkgo/v2"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 const (
@@ -142,6 +144,10 @@ func ListReporterEvents(ctx context.Context) ([]corev1.Event, error) {
 	if err != nil {
 		return nil, err
 	}
+	return listReporterEvents(ctx, cs)
+}
+
+func listReporterEvents(ctx context.Context, cs kubernetes.Interface) ([]corev1.Event, error) {
 	list, err := cs.CoreV1().Events(ReporterEventNamespace).List(ctx, metav1.ListOptions{
 		FieldSelector: fmt.Sprintf("source=%s", ReporterEventSource),
 	})
@@ -155,7 +161,15 @@ func ListReporterEvents(ctx context.Context) ([]corev1.Event, error) {
 // reason whose involvedObject name matches objectName (pass "" to match any
 // object). found=false when none matches.
 func FindReporterEvent(ctx context.Context, reason, objectName string) (corev1.Event, bool, error) {
-	events, err := ListReporterEvents(ctx)
+	cs, err := GetK8sClientset()
+	if err != nil {
+		return corev1.Event{}, false, err
+	}
+	return findReporterEvent(ctx, cs, reason, objectName)
+}
+
+func findReporterEvent(ctx context.Context, cs kubernetes.Interface, reason, objectName string) (corev1.Event, bool, error) {
+	events, err := listReporterEvents(ctx, cs)
 	if err != nil {
 		return corev1.Event{}, false, err
 	}
@@ -204,6 +218,54 @@ func WaitForReporterEventSince(ctx context.Context, reason, objectName string, s
 	}
 	return corev1.Event{}, fmt.Errorf("timed out waiting for reporter event reason=%s object=%q newer than %s",
 		reason, objectName, since)
+}
+
+// maxScaledToZeroRestores bounds how often WaitForReporterEventHoldingScaledToZero
+// re-applies the scale-down, so a controller that reverts it continuously fails
+// the wait instead of extending it forever.
+const maxScaledToZeroRestores = 3
+
+// WaitForReporterEventHoldingScaledToZero is WaitForReporterEventSince for a
+// finding caused by scaling namespace/name to zero, which it keeps at zero while
+// waiting. Another controller may scale the Deployment back up mid-wait: a
+// managed control plane's add-on manager reconciles drift on its own schedule.
+// The pods then come back and the reporter's debounce starts over, so the
+// Deployment is scaled to zero again and the timeout restarts, at most
+// maxScaledToZeroRestores times.
+func WaitForReporterEventHoldingScaledToZero(ctx context.Context, namespace, name, reason, objectName string, since metav1.Time, timeout time.Duration) (corev1.Event, error) {
+	cs, err := GetK8sClientset()
+	if err != nil {
+		return corev1.Event{}, err
+	}
+	return waitForReporterEventHoldingScaledToZero(ctx, cs, namespace, name, reason, objectName, since, timeout)
+}
+
+func waitForReporterEventHoldingScaledToZero(ctx context.Context, cs kubernetes.Interface, namespace, name, reason, objectName string, since metav1.Time, timeout time.Duration) (corev1.Event, error) {
+	restores := 0
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ev, found, err := findReporterEvent(ctx, cs, reason, objectName)
+		if err == nil && found && ev.LastTimestamp.After(since.Time) {
+			return ev, nil
+		}
+		deployment, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err == nil && (deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 0) {
+			if restores == maxScaledToZeroRestores {
+				return corev1.Event{}, fmt.Errorf("deployment %s/%s was scaled back up %d times while waiting for reporter event reason=%s",
+					namespace, name, restores+1, reason)
+			}
+			restores++
+			g.GinkgoWriter.Printf("deployment %s/%s was scaled back up by another controller; scaling it to zero again (%d/%d)\n",
+				namespace, name, restores, maxScaledToZeroRestores)
+			if err := scaleDeployment(ctx, cs, namespace, name, 0); err != nil {
+				return corev1.Event{}, err
+			}
+			deadline = time.Now().Add(timeout)
+		}
+		time.Sleep(PollInterval)
+	}
+	return corev1.Event{}, fmt.Errorf("timed out waiting for reporter event reason=%s object=%q newer than %s (deployment %s/%s scaled to zero again %d times)",
+		reason, objectName, since, namespace, name, restores)
 }
 
 // ReporterEventBaseline returns the LastTimestamp of the most recent reporter
