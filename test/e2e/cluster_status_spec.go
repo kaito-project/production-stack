@@ -39,8 +39,8 @@ var _ = Describe("Cluster Status Reporter",
 	Serial, utils.GinkgoLabelStatusReporter, utils.GinkgoLabelNoGPU, func() {
 
 		const (
-			// Allow a couple of resyncs plus startup grace and rollout slack.
-			emitTimeout  = 3 * time.Minute
+			// The recovery check requires no fresh Warning over this window.
+			quietWindow  = 3 * time.Minute
 			clearTimeout = 5 * time.Minute
 
 			bbrDeployment = "body-based-router"
@@ -64,10 +64,17 @@ var _ = Describe("Cluster Status Reporter",
 			gatewayAuthNamespace string
 			localCSINamespace    string
 			kaitoNamespace       string
+			// emitTimeout bounds the Warning for a Deployment scaled to zero.
+			// It follows the running reporter's resync and startup grace: with
+			// the chart's 60s grace, 3 minutes was only just enough.
+			emitTimeout time.Duration
 		)
 
 		BeforeEach(func() {
 			ctx = context.Background()
+			timings, err := utils.GetReporterTimings(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			emitTimeout = timings.DebouncedEmitTimeout()
 			for _, target := range []struct {
 				namespace  *string
 				deployment string
@@ -123,7 +130,7 @@ var _ = Describe("Cluster Status Reporter",
 				By("waiting for clusterBBRNotReady to stop firing once BBR is restored")
 				recoverBaseline, err := utils.ReporterEventBaseline(ctx, "clusterBBRNotReady", "")
 				Expect(err).NotTo(HaveOccurred())
-				Expect(utils.EnsureNoReporterEventSince(ctx, "clusterBBRNotReady", "", recoverBaseline, emitTimeout)).
+				Expect(utils.EnsureNoReporterEventSince(ctx, "clusterBBRNotReady", "", recoverBaseline, quietWindow)).
 					To(Succeed())
 			})
 

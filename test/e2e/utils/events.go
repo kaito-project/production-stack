@@ -40,40 +40,98 @@ const (
 	// installed (kaito-system for the E2E install, kube-system on AI Manager).
 	reporterSelector = "app.kubernetes.io/name=productionstack-status-reporter"
 
-	// defaultReporterEventRefresh is the chart's eventRefreshSeconds default,
-	// used when the reporter runs without --event-refresh-seconds.
-	defaultReporterEventRefresh = 300 * time.Second
+	// reporterEmitSlack covers what DebouncedEmitTimeout does not model: the
+	// scaled-down pod terminating before the Deployment counts as podless, the
+	// evaluation pass itself, and the Event write.
+	reporterEmitSlack = 90 * time.Second
 )
 
-// ReporterEventRefreshInterval returns how often the running reporter rewrites
-// a still-active Warning (--event-refresh-seconds). The E2E install shortens it
-// to 120s, while a managed install may keep the chart default.
-func ReporterEventRefreshInterval(ctx context.Context) (time.Duration, error) {
+// ReporterTimings are the running reporter's timing flags. Fields default to the
+// chart values when the reporter runs without the flag.
+type ReporterTimings struct {
+	// Resync is how often every reason is re-evaluated (--resync-seconds).
+	Resync time.Duration
+	// StartupGrace is how long a finding without a backing timestamp, such as
+	// a Deployment scaled to zero, must persist before it is published
+	// (--startup-grace-seconds).
+	StartupGrace time.Duration
+	// EventRefresh is how often a still-active Warning is rewritten
+	// (--event-refresh-seconds).
+	EventRefresh time.Duration
+}
+
+// defaultReporterTimings are the productionstack-status-reporter chart defaults.
+// The E2E install shortens StartupGrace to 30s and EventRefresh to 120s; other
+// installs may keep these.
+var defaultReporterTimings = ReporterTimings{
+	Resync:       60 * time.Second,
+	StartupGrace: 60 * time.Second,
+	EventRefresh: 300 * time.Second,
+}
+
+// DebouncedEmitTimeout bounds how long the reporter takes to publish a finding
+// it debounces by first observation, such as a Deployment scaled to zero. It
+// first sees the problem on the next resync, withholds it until a later resync
+// finds it has persisted for StartupGrace, and when StartupGrace is a multiple
+// of Resync, tick jitter can push that to one resync later still.
+func (t ReporterTimings) DebouncedEmitTimeout() time.Duration {
+	graceTicks := (t.StartupGrace + t.Resync - 1) / t.Resync
+	return t.Resync + graceTicks*t.Resync + t.Resync + reporterEmitSlack
+}
+
+// GetReporterTimings reads the timing flags of the running reporter Deployment.
+func GetReporterTimings(ctx context.Context) (ReporterTimings, error) {
 	cs, err := GetK8sClientset()
 	if err != nil {
-		return 0, err
+		return ReporterTimings{}, err
 	}
 	list, err := cs.AppsV1().Deployments(metav1.NamespaceAll).List(ctx, metav1.ListOptions{LabelSelector: reporterSelector})
 	if err != nil {
-		return 0, fmt.Errorf("list reporter Deployments: %w", err)
+		return ReporterTimings{}, fmt.Errorf("list reporter Deployments: %w", err)
 	}
 	if len(list.Items) != 1 {
-		return 0, fmt.Errorf("expected one Deployment matching %q, found %d", reporterSelector, len(list.Items))
+		return ReporterTimings{}, fmt.Errorf("expected one Deployment matching %q, found %d", reporterSelector, len(list.Items))
 	}
+	var args []string
 	for _, c := range list.Items[0].Spec.Template.Spec.Containers {
-		for _, arg := range c.Args {
-			value, ok := strings.CutPrefix(arg, "--event-refresh-seconds=")
+		args = append(args, c.Args...)
+	}
+	return reporterTimingsFromArgs(args)
+}
+
+func reporterTimingsFromArgs(args []string) (ReporterTimings, error) {
+	timings := defaultReporterTimings
+	flags := map[string]*time.Duration{
+		"--resync-seconds=":        &timings.Resync,
+		"--startup-grace-seconds=": &timings.StartupGrace,
+		"--event-refresh-seconds=": &timings.EventRefresh,
+	}
+	for _, arg := range args {
+		for prefix, field := range flags {
+			value, ok := strings.CutPrefix(arg, prefix)
 			if !ok {
 				continue
 			}
 			seconds, err := strconv.Atoi(value)
-			if err != nil || seconds <= 0 {
-				return 0, fmt.Errorf("invalid reporter flag %q", arg)
+			// The reporter accepts a zero startup grace; the other two must be positive.
+			if err != nil || seconds < 0 || (seconds == 0 && prefix != "--startup-grace-seconds=") {
+				return ReporterTimings{}, fmt.Errorf("invalid reporter flag %q", arg)
 			}
-			return time.Duration(seconds) * time.Second, nil
+			*field = time.Duration(seconds) * time.Second
 		}
 	}
-	return defaultReporterEventRefresh, nil
+	return timings, nil
+}
+
+// ReporterEventRefreshInterval returns how often the running reporter rewrites
+// a still-active Warning (--event-refresh-seconds). The E2E install shortens it
+// to 120s, while other installs may keep the chart default.
+func ReporterEventRefreshInterval(ctx context.Context) (time.Duration, error) {
+	timings, err := GetReporterTimings(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return timings.EventRefresh, nil
 }
 
 // ListReporterEvents returns every Event in kube-system emitted by the
