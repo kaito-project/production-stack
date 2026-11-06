@@ -1,0 +1,17 @@
+{{- if .Values.adapters }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "modeldeployment.adapterRoutingConfigMapName" . }}
+  namespace: {{ include "modeldeployment.namespace" . }}
+  labels:
+    {{- include "modeldeployment.labels" . | nindent 4 }}
+    {{- include "modeldeployment.identifyingLabels" . | nindent 4 }}
+    inference.networking.k8s.io/bbr-managed: "true"
+data:
+  baseModel: {{ include "modeldeployment.name" . | quote }}
+  adapters: |
+    {{- range .Values.adapters }}
+    - {{ .source.name | quote }}
+    {{- end }}
+{{- end }}
