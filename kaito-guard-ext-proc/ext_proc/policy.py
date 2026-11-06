@@ -22,6 +22,7 @@ from guardrail_core.config import (
     parse_scanner_config,
 )
 from guardrail_core.scanning import Scanner
+from guardrail_core.streaming.scanners import ScannerWindowAdapter
 
 DEFAULT_BLOCK_MESSAGE = "The model output was blocked by output guardrails."
 
@@ -42,7 +43,9 @@ class GuardrailPolicyConfig:
         if not isinstance(raw, Mapping):
             raise PolicyConfigError("guardrail policy configuration must be a mapping")
         if any(not isinstance(key, str) for key in raw):
-            raise PolicyConfigError("guardrail policy configuration keys must be strings")
+            raise PolicyConfigError(
+                "guardrail policy configuration keys must be strings"
+            )
         unknown = set(raw) - {"action", "blockMessage", "scanner_configs"}
         if unknown:
             raise PolicyConfigError(
@@ -80,4 +83,15 @@ class GuardrailPolicyConfig:
         return tuple(
             build_scanner(config, default_action=self.action)
             for config in self.scanner_configs
+        )
+
+    def build_window_scanner(
+        self, *, prompt: str = "", holdback_len: int | None = None
+    ) -> ScannerWindowAdapter:
+        """Delegate streaming support, holdback validation, and construction to core."""
+        return ScannerWindowAdapter(
+            self.scanner_configs,
+            prompt=prompt,
+            default_action=self.action,
+            holdback_len=holdback_len,
         )

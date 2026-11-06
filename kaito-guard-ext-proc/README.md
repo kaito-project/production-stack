@@ -26,18 +26,17 @@ python -m pytest
 ```
 
 Runtime dependencies are defined in `setup.py`. The shared core is pinned to
-the published PyPI package `kaito-guardrail-core==0.2.0`, which supplies both
-streaming and configuration/build APIs. See the
-[0.2.0 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.0).
+the published PyPI package `kaito-guardrail-core==0.2.1`, which supplies scanner
+configuration, real scanner/window adaptation, and SSE/parser/window APIs. See
+the [0.2.1 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.1).
 `xds-protos`, published by the gRPC project, supplies the generated Envoy
 protobuf messages and service.
 
 ## Guardrail policy configuration adaptation
 
 `ext_proc.policy.GuardrailPolicyConfig` validates an already-decoded guardrail
-policy configuration and
-delegates scanner configuration and construction to `guardrail_core.config`.
-It does not load files, define a local scanner registry, execute a policy, or
+policy configuration and delegates scanner configuration and construction to
+`guardrail_core.config`. It does not load files, define a local scanner registry, or
 wire scanners into Envoy `Process`.
 
 ```python
@@ -60,14 +59,16 @@ The default action is `block`; each scanner can override it with `block` or
 `The model output was blocked by output guardrails.` and must be a non-empty
 string. `scanner_configs` must be a non-empty list of configuration mappings;
 the old `scanners` key is rejected as an unknown field. Shared core owns scanner names,
-field normalization, validation, and construction; configured order is preserved.
+field normalization, validation, and construction. Buffered scanner construction
+preserves configured order; streaming execution follows the core ordering below.
 
 Malformed policies raise `PolicyConfigError` instead of silently disabling
 guardrails or skipping entries. Core validation errors include the scanner
 entry index and retain the original cause. Scanner construction exceptions
 propagate unchanged. Returned scanners implement core's buffered
-`scan(prompt, output)` protocol, not the streaming window scanner protocol;
-execution and streaming policy adaptation are subsequent work.
+`scan(prompt, output)` protocol. `build_window_scanner(prompt=..., holdback_len=...)`
+delegates streaming adaptation and fresh scanner construction to the shared
+`ScannerWindowAdapter`; no local scanner execution or detection logic is added.
 
 ## Guardrail stream adapter
 
@@ -76,27 +77,64 @@ parsing, and the shared scan-before-release window for one response:
 
 ```python
 from ext_proc.guardrail_stream import GuardrailStream
+from ext_proc.policy import GuardrailPolicyConfig
 
-stream = GuardrailStream(scanner, holdback_len=holdback_len)
+policy = GuardrailPolicyConfig.from_dict({
+    "action": "block",
+    "scanner_configs": [
+        {
+            "type": "ban_substrings",
+            "substrings": ["secret"],
+        },
+        {"type": "invisible_text", "action": "redact"},
+    ],
+})
+stream = GuardrailStream.from_policy(policy, prompt=prompt)
 try:
     for wire_bytes in upstream:
         result = stream.feed(wire_bytes)
         emit(result.chunks)
         if result.blocked:
-            refuse()
+            refuse(policy.block_message)
             break
     else:
         result = stream.finish()
         emit(result.chunks)
         if result.blocked:
-            refuse()
+            refuse(policy.block_message)
 finally:
     stream.cancel()
     upstream.close()
 ```
 
-The caller supplies `scanner`, `holdback_len`, upstream ownership, emission,
-and refusal/error policy. Only emit returned chunks; stop and refuse on block.
+`from_policy()` builds fresh real core scanners for each response, forwards the
+request prompt, and honors per-scanner action overrides. Core runs **all redactors
+before blockers**, even when a blocker is configured first; relative order is
+preserved within each group. Core derives the minimum holdback with a **256
+Unicode-code-point floor**, increasing it for longer configured substrings.
+An explicitly smaller `holdback_len` is rejected. Short responses are retained
+until valid completion rather than immediately scanned or progressively emitted.
+Blocking discards the current batch and retained
+tail; redaction is applied before release, including an empty sanitized output.
+The existing `GuardrailStream(scanner, holdback_len=...)` API remains available
+for caller-supplied `WindowScanner` implementations.
+
+Core 0.2.1 supports `ban_substrings` in default `word` or explicit `str` mode,
+`invisible_text`, `secrets`, and `sensitive`, in block/redact modes. Word matching
+uses the previously released character as left context and defers an unconfirmed
+right boundary until more text or normal EOF. Secrets redaction requires
+`redact_mode="all"`; core rescans the sanitized text and blocks if verification
+fails. There is no blanket requirement that every redactor be a fixed point.
+
+`contains_all=True`, regexes, JSON, and cumulative reading/token limits remain
+unsupported for streaming and raise an indexed `StreamingPolicyError` before a
+stream is created. Buffered construction still supports all eight scanner types.
+Detection is bounded by the retained window, not a whole-response guarantee;
+the core owns these scanner-specific semantics. Scanner exceptions propagate
+through `WindowScanError` and close the stream without flushing.
+
+The caller supplies upstream ownership, emission, and refusal/error policy.
+Only emit returned chunks; stop and refuse on block.
 The adapter accepts empty choices as metadata; non-empty choices must contain
 exactly one choice with index zero. It requires `[DONE]` **and** successful EOF
 framing validation before flushing. Data after DONE is rejected; comments are
@@ -169,8 +207,8 @@ blocking, and safe-prefix release.
   The caller must choose enough holdback for the scanner's cross-chunk matching
   requirements; an insufficient value cannot prevent partial-match release.
 - The scanner implements `WindowScanner.scan(text, *, flush, preceding_char)`
-  and returns `WindowScanResult`. The future integration supplies scanner/policy
-  adaptation, not a second local scanner or holdback implementation.
+  and returns `WindowScanResult`. Configured real scanners use core's
+  `ScannerWindowAdapter`, not a second local scanner or holdback implementation.
 - Stop emission and discard the response window when a result is blocked.
   Scanner exceptions permanently block the shared window and raise
   `WindowScanError` with the original exception chained.
@@ -188,8 +226,8 @@ integration must supply transport and policy handling, not duplicate core logic.
 ## CI
 
 The `kaito-guard-ext-proc` job installs `.[dev]` with Python 3.12, exercises the
-published framing/parser/window APIs and the guardrail stream adapter, runs the
-unchanged gRPC skeleton tests, and builds the container.
+pinned shared framing/parser/window APIs and the policy-created real scanners,
+runs the unchanged gRPC skeleton tests, and builds the container.
 The image is not published; these tests do not claim real Envoy protection.
 
 ## Container
