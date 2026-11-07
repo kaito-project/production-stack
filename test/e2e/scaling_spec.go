@@ -117,21 +117,21 @@ var _ = Describe("InferenceSet Scaling — Infra",
 			// Resolved in the outer BeforeAll once per suite run so all
 			// nested Describes (Scale-Up → Scale-Down, Anti-Flapping) share it.
 			gateway deploy.GatewayEndpoint
-			// NodeClaims that existed before the case was installed; any
-			// other NodeClaim must be gone after teardown.
+			// Workspace NodeClaims in the case namespace that existed before
+			// the case was installed; any other must be gone after teardown.
 			nodeClaimsBeforeInstall []string
 		)
 
 		BeforeAll(func() {
 			ctx := context.Background()
-			nodeClaimsBeforeInstall = snapshotNodeClaimNames(ctx)
+			nodeClaimsBeforeInstall = snapshotNodeClaimNames(ctx, scalingNamespace)
 			gateway = installScalingCase(ctx, CaseScaling)
 		})
 
 		AfterAll(func() {
 			UninstallCase(CaseScaling)
 			if nodeClaimsBeforeInstall != nil {
-				expectNoNewNodeClaims(context.Background(), nodeClaimsBeforeInstall, scalingNodeRemovalTimeout)
+				expectNoNewNodeClaims(context.Background(), scalingNamespace, nodeClaimsBeforeInstall, scalingNodeRemovalTimeout)
 			}
 		})
 
@@ -197,7 +197,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 						Should(Equal(int32(0)))
 					expectReadyModelPods(ctx, scalingValues, 0, scalingPodRemovalTimeout)
 					Expect(assertEPPReady(ctx, scalingNamespace, scalingModel)).To(Succeed())
-					expectNoNewNodeClaims(ctx, nodeClaimsBeforeInstall, scalingNodeRemovalTimeout)
+					expectNoNewNodeClaims(ctx, scalingNamespace, nodeClaimsBeforeInstall, scalingNodeRemovalTimeout)
 				})
 
 				It("wakes from sustained EPP demand and serves traffic at one replica", func() {
@@ -296,10 +296,11 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 					base.pods = expectReadyModelPods(ctx, scalingValues, int(base.replicas), scalingEndpointTimeout)
 					seenPods = maps.Clone(base.pods)
-					claimsByNode = currentNodeClaimsByNode(ctx)
+					claimsByNode = currentNodeClaimsByNode(ctx, scalingNamespace)
 					for pod, node := range base.pods {
 						Expect(claimsByNode).To(HaveKey(node),
-							"baseline pod %s runs on node %s, which must be backed by a NodeClaim", pod, node)
+							"baseline pod %s runs on node %s, which must be backed by a Workspace NodeClaim in %s",
+							pod, node, scalingNamespace)
 					}
 					GinkgoWriter.Printf("Baseline model pods → nodes: %v\n", base.pods)
 
@@ -447,9 +448,9 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 						nodeClaims, err := utils.ListNodeClaims(ctx, dynClient)
 						g.Expect(err).NotTo(HaveOccurred())
-						byNode = utils.NodeClaimsByNode(nodeClaims)
+						byNode = utils.NodeClaimsByNode(utils.WorkspaceNodeClaims(nodeClaims, scalingNamespace))
 						g.Expect(byNode).To(HaveKey(nodeName),
-							"node %s must be backed by a NodeClaim", nodeName)
+							"node %s must be backed by a Workspace NodeClaim in %s", nodeName, scalingNamespace)
 
 						newPod = candidate.Name
 						newNode = nodeName
@@ -696,7 +697,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 						Should(Equal(int32(0)))
 					expectReadyModelPods(ctx, scalingValues, 0, scalingPodRemovalTimeout)
 					Expect(assertEPPReady(ctx, scalingNamespace, scalingModel)).To(Succeed())
-					expectNoNewNodeClaims(ctx, nodeClaimsBeforeInstall, scalingNodeRemovalTimeout)
+					expectNoNewNodeClaims(ctx, scalingNamespace, nodeClaimsBeforeInstall, scalingNodeRemovalTimeout)
 					parked = true
 				})
 			},
@@ -733,7 +734,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 				base.replicas, err = utils.GetInferenceSetReplicas(ctx, scalingModel, scalingNamespace)
 				Expect(err).NotTo(HaveOccurred())
 				base.pods = expectReadyModelPods(ctx, scalingValues, int(base.replicas), scalingPodRemovalTimeout)
-				base.nodeClaims = snapshotNodeClaimNames(ctx)
+				base.nodeClaims = snapshotNodeClaimNames(ctx, scalingNamespace)
 				GinkgoWriter.Printf("Anti-flapping baseline: replicas=%d pods=%v nodeClaims=%d\n",
 					base.replicas, base.pods, len(base.nodeClaims))
 			})
@@ -795,7 +796,7 @@ var _ = Describe("InferenceSet Scaling — Infra",
 
 					nodeClaims, err := utils.ListNodeClaims(ctx, dynClient)
 					Expect(err).NotTo(HaveOccurred())
-					added := utils.NewNodeClaimNames(base.nodeClaims, nodeClaims)
+					added := utils.NewNodeClaimNames(base.nodeClaims, utils.WorkspaceNodeClaims(nodeClaims, scalingNamespace))
 					Expect(added).To(BeEmpty(), "no NodeClaim should be added; got %v", added)
 
 					time.Sleep(sampleEvery)
@@ -1032,37 +1033,38 @@ func expectReadyModelPods(ctx context.Context, values deploy.ModelDeploymentValu
 }
 
 // currentNodeClaimsByNode returns node name → NodeClaim name for every
-// NodeClaim that has registered a node.
-func currentNodeClaimsByNode(ctx context.Context) map[string]string {
+// Workspace NodeClaim in namespace that has registered a node.
+func currentNodeClaimsByNode(ctx context.Context, namespace string) map[string]string {
 	dynClient, err := utils.GetDynamicClient()
 	Expect(err).NotTo(HaveOccurred())
 	nodeClaims, err := utils.ListNodeClaims(ctx, dynClient)
 	Expect(err).NotTo(HaveOccurred())
-	return utils.NodeClaimsByNode(nodeClaims)
+	return utils.NodeClaimsByNode(utils.WorkspaceNodeClaims(nodeClaims, namespace))
 }
 
-// snapshotNodeClaimNames returns the names of all NodeClaims in the cluster.
-func snapshotNodeClaimNames(ctx context.Context) []string {
+// snapshotNodeClaimNames returns the names of the Workspace NodeClaims KAITO
+// provisioned in namespace.
+func snapshotNodeClaimNames(ctx context.Context, namespace string) []string {
 	dynClient, err := utils.GetDynamicClient()
 	Expect(err).NotTo(HaveOccurred())
 	nodeClaims, err := utils.ListNodeClaims(ctx, dynClient)
 	Expect(err).NotTo(HaveOccurred())
-	return utils.NodeClaimNames(nodeClaims)
+	return utils.NodeClaimNames(utils.WorkspaceNodeClaims(nodeClaims, namespace))
 }
 
-// expectNoNewNodeClaims waits until every NodeClaim not in before is gone,
-// including NodeClaims that never registered a node (e.g. a scale-up cancelled
-// before its GPU node joined). It attributes NodeClaims by snapshot rather
-// than by name, so it assumes nothing else provisions nodes while the
-// Scaling specs run serially.
-func expectNoNewNodeClaims(ctx context.Context, before []string, timeout time.Duration) {
+// expectNoNewNodeClaims waits until every Workspace NodeClaim in namespace
+// that is not in before is gone, including NodeClaims that never registered a
+// node (e.g. a scale-up cancelled before its GPU node joined). Only NodeClaims
+// KAITO provisioned for the namespace count: a managed cluster may add system
+// pool nodes for the case's CPU pods and keep them after the case.
+func expectNoNewNodeClaims(ctx context.Context, namespace string, before []string, timeout time.Duration) {
 	dynClient, err := utils.GetDynamicClient()
 	Expect(err).NotTo(HaveOccurred())
 	By(fmt.Sprintf("Waiting up to %s for NodeClaims created by the case to be removed", timeout))
 	Eventually(func(g Gomega) {
 		nodeClaims, err := utils.ListNodeClaims(ctx, dynClient)
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(utils.NewNodeClaimNames(before, nodeClaims)).To(BeEmpty(),
+		g.Expect(utils.NewNodeClaimNames(before, utils.WorkspaceNodeClaims(nodeClaims, namespace))).To(BeEmpty(),
 			"NodeClaims created during the case must be removed")
 	}, timeout, 30*time.Second).Should(Succeed())
 }

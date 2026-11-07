@@ -205,6 +205,30 @@ func TestNodeClaimHelpers(t *testing.T) {
 	}
 }
 
+func TestWorkspaceNodeClaims(t *testing.T) {
+	labeled := func(name string, labels map[string]string) unstructured.Unstructured {
+		nc := nodeClaim(name, "")
+		nc.SetLabels(labels)
+		return nc
+	}
+	claims := []unstructured.Unstructured{
+		// Created by KAITO directly (gpu-provisioner mode).
+		labeled("ws-a", map[string]string{"kaito.sh/workspace": "a", "kaito.sh/workspacenamespace": "e2e-scaling"}),
+		// Launched by Karpenter from the Workspace's NodePool.
+		labeled("e2e-scaling-ws-b-xyz", map[string]string{"karpenter.kaito.sh/workspace-name": "b", "karpenter.kaito.sh/workspace-namespace": "e2e-scaling"}),
+		// Another case's Workspace.
+		labeled("ws-c", map[string]string{"kaito.sh/workspace": "c", "kaito.sh/workspacenamespace": "e2e-other"}),
+		// System pool capacity added by the cluster, not by KAITO.
+		labeled("system-surge-1", map[string]string{"karpenter.sh/nodepool": "system-surge"}),
+	}
+	if got, want := NodeClaimNames(WorkspaceNodeClaims(claims, "e2e-scaling")), []string{"e2e-scaling-ws-b-xyz", "ws-a"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("workspace claims=%v, want %v", got, want)
+	}
+	if got := WorkspaceNodeClaims(claims, "e2e-none"); len(got) != 0 {
+		t.Fatalf("no claims expected for an empty namespace, got %v", NodeClaimNames(got))
+	}
+}
+
 func TestEnsureConfigMapCreatesThenReplacesData(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()

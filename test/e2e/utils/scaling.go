@@ -388,6 +388,30 @@ func NodeClaimsByNode(nodeClaims []unstructured.Unstructured) map[string]string 
 	return byNode
 }
 
+// KAITO labels the NodeClaims it provisions for a Workspace with the Workspace
+// namespace: workspaceNamespaceLabel when KAITO creates the NodeClaim itself,
+// karpenterWorkspaceNamespaceLabel when Karpenter launches it from the
+// Workspace's NodePool.
+const (
+	workspaceNamespaceLabel          = "kaito.sh/workspacenamespace"
+	karpenterWorkspaceNamespaceLabel = "karpenter.kaito.sh/workspace-namespace"
+)
+
+// WorkspaceNodeClaims returns the NodeClaims KAITO provisioned for Workspaces
+// in namespace. NodeClaims from other provisioners are left out, such as the
+// CPU nodes a managed cluster adds to its system pool when a case's pods fill
+// it.
+func WorkspaceNodeClaims(nodeClaims []unstructured.Unstructured, namespace string) []unstructured.Unstructured {
+	var owned []unstructured.Unstructured
+	for _, nc := range nodeClaims {
+		labels := nc.GetLabels()
+		if labels[workspaceNamespaceLabel] == namespace || labels[karpenterWorkspaceNamespaceLabel] == namespace {
+			owned = append(owned, nc)
+		}
+	}
+	return owned
+}
+
 // NewNodeClaimNames returns the sorted names in current that are not in
 // before. Callers snapshot before installing a case and use the result to
 // find every NodeClaim the case caused, including ones that never registered

@@ -156,9 +156,10 @@ var _ = Describe("InferenceSet Scaling — Configuration Transitions",
 			}, transitionSettleTimeout, 5*time.Second).Should(Succeed())
 		}
 
-		// expectGPUCapacityMatchesModelPods waits until every NodeClaim created
-		// during the case backs a node running one of the model pods, so a
-		// replica removed by a transition has also released its GPU node.
+		// expectGPUCapacityMatchesModelPods waits until every Workspace NodeClaim
+		// KAITO created in the namespace during the case backs a node running
+		// one of the model pods, so a replica removed by a transition has also
+		// released its GPU node.
 		expectGPUCapacityMatchesModelPods := func(timeout time.Duration) {
 			clientset, err := utils.GetK8sClientset()
 			Expect(err).NotTo(HaveOccurred())
@@ -180,7 +181,7 @@ var _ = Describe("InferenceSet Scaling — Configuration Transitions",
 					}
 				}
 				var extra []string
-				for _, claim := range utils.NewNodeClaimNames(nodeClaimsBeforeInstall, nodeClaims) {
+				for _, claim := range utils.NewNodeClaimNames(nodeClaimsBeforeInstall, utils.WorkspaceNodeClaims(nodeClaims, namespace)) {
 					if !backing[claim] {
 						extra = append(extra, claim)
 					}
@@ -282,14 +283,14 @@ var _ = Describe("InferenceSet Scaling — Configuration Transitions",
 
 		BeforeAll(func() {
 			ctx = context.Background()
-			nodeClaimsBeforeInstall = snapshotNodeClaimNames(ctx)
+			nodeClaimsBeforeInstall = snapshotNodeClaimNames(ctx, namespace)
 			gateway = installScalingCase(ctx, CaseScalingTransitions)
 		})
 
 		AfterAll(func() {
 			UninstallCase(CaseScalingTransitions)
 			if nodeClaimsBeforeInstall != nil {
-				expectNoNewNodeClaims(context.Background(), nodeClaimsBeforeInstall, scalingNodeRemovalTimeout)
+				expectNoNewNodeClaims(context.Background(), namespace, nodeClaimsBeforeInstall, scalingNodeRemovalTimeout)
 			}
 		})
 
