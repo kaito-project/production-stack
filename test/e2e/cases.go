@@ -499,6 +499,14 @@ func CaseGatewayName(caseName string) string {
 //
 // Intended to be called from a Ginkgo Ordered Describe's BeforeAll.
 func InstallCase(caseName string) deploy.GatewayEndpoint {
+	return InstallCaseDeployments(caseName, CaseDeployments[caseName])
+}
+
+// InstallCaseDeployments is InstallCase with the case's deployments supplied
+// by the caller, for a spec that adjusts their values for the cluster it runs
+// on. The deployments must keep the case's names and namespace so
+// UninstallCase still removes them.
+func InstallCaseDeployments(caseName string, deployments []deploy.ModelDeploymentValues) deploy.GatewayEndpoint {
 	ns := CaseNamespace(caseName)
 	gatewayName := CaseGatewayName(caseName)
 	Expect(ns).NotTo(BeEmpty(), "case %q has no namespace declared in CaseDeployments", caseName)
@@ -510,7 +518,7 @@ func InstallCase(caseName string) deploy.GatewayEndpoint {
 	gateway, err := utils.OpenGateway(ctx, ns, gatewayName)
 	Expect(err).NotTo(HaveOccurred(), "failed to open gateway for case %s", caseName)
 
-	utils.SetupInferenceSetsWithRouting(CaseDeployments[caseName], ns, gateway)
+	utils.SetupInferenceSetsWithRouting(deployments, ns, gateway)
 	return gateway
 }
 
