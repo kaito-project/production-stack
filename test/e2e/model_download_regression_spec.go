@@ -42,8 +42,12 @@ import (
 // finishes, the InferenceSet never becomes Ready, and KAITO's
 // inferencesetNotReady is surfaced once it outlasts the reporter's grace
 // period.
+//
+// The spec is Serial: any Warning in its quiet window fails it, including true
+// ones caused by other specs, e.g. its EPP pod waiting for a new node, or being
+// preempted by a higher-priority pod, while parallel cases fill the cluster.
 var _ = Describe("Status Reporter GPU Regression",
-	Ordered, utils.GinkgoLabelStatusReporter, func() {
+	Ordered, Serial, utils.GinkgoLabelStatusReporter, func() {
 
 		const quietDwell = 2 * time.Minute
 
