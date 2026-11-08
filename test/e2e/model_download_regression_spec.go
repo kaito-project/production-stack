@@ -18,12 +18,15 @@ package e2e
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/kaito-project/production-stack/test/e2e/deploy"
 	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
 
@@ -33,6 +36,12 @@ import (
 // reporter Warning for the workload namespace: no pass-through KAITO failure
 // and no inferencesetModelDownloadSlow. This spec provisions a real GPU node;
 // set E2E_GPU_INSTANCE_TYPE to a SKU with quota in the cluster's region.
+//
+// On the GPU node mocker the case runs without KAITO's post-load benchmark:
+// the benchmark reads the inference pod's logs from its fake node, so it never
+// finishes, the InferenceSet never becomes Ready, and KAITO's
+// inferencesetNotReady is surfaced once it outlasts the reporter's grace
+// period.
 var _ = Describe("Status Reporter GPU Regression",
 	Ordered, utils.GinkgoLabelStatusReporter, func() {
 
@@ -41,13 +50,23 @@ var _ = Describe("Status Reporter GPU Regression",
 		var (
 			ctx     context.Context
 			caseNS  string
+			values  deploy.ModelDeploymentValues
 			started metav1.Time
 		)
 
 		BeforeAll(func() {
 			ctx = context.Background()
+			mocked, err := utils.GPUNodeMockerDeployed(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			deployments := slices.Clone(CaseDeployments[CaseModelDownloadRegression])
+			if mocked {
+				for i := range deployments {
+					deployments[i].DisableBenchmark = true
+				}
+			}
+			values = deployments[0]
 			started = metav1.Now()
-			InstallCase(CaseModelDownloadRegression)
+			InstallCaseDeployments(CaseModelDownloadRegression, deployments)
 			caseNS = CaseNamespace(CaseModelDownloadRegression)
 		})
 
@@ -56,8 +75,18 @@ var _ = Describe("Status Reporter GPU Regression",
 		})
 
 		It("publishes no reporter Warning for a healthy deployment", func() {
-			// The deployment is serving by now; keep watching for a quiet dwell
-			// in case a finding was still inside its debounce.
+			// Serving through the gateway does not mean KAITO counts the
+			// replicas as Ready; wait for that too, so a deployment that never
+			// becomes Ready fails here instead of racing the reporter's grace
+			// period.
+			By(fmt.Sprintf("Waiting for InferenceSet %s/%s to report %d ready replica(s)", caseNS, values.Name, values.Replicas))
+			Eventually(func() (int32, error) {
+				return utils.GetInferenceSetReadyReplicas(ctx, values.Name, caseNS)
+			}, utils.InferenceSetReadyTimeout, 10*time.Second).Should(BeEquivalentTo(values.Replicas),
+				"InferenceSet %s/%s must report every replica Ready", caseNS, values.Name)
+
+			// Keep watching for a quiet dwell in case a finding was still
+			// inside its debounce.
 			time.Sleep(quietDwell)
 			events, err := utils.ReporterEventsForObjectSince(ctx, caseNS, started)
 			Expect(err).NotTo(HaveOccurred())
