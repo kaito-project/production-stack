@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -67,6 +68,7 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 	// Installed in a dedicated namespace by BeforeAll so this case can run in
 	// parallel with other Ordered Describes.
 	model := CaseDeployments[CasePrefixCache][0].Name
+	replicas := int(CaseDeployments[CasePrefixCache][0].Replicas)
 	caseNamespace := CaseNamespace(CasePrefixCache)
 
 	var ctx context.Context
@@ -78,6 +80,20 @@ var _ = Describe("Prefix Cache Aware Routing", Ordered, utils.GinkgoLabelPrefixC
 
 	BeforeAll(func() {
 		caseGateway = InstallCase(CasePrefixCache)
+
+		// The gateway serves as soon as one replica is up, but the specs
+		// compare per-pod counters across every replica. A shadow pod can
+		// also still be (re)scheduling, e.g. after a higher-priority pod
+		// preempted it, so wait until every replica reports metrics.
+		clientset, err := utils.GetK8sClientset()
+		Expect(err).NotTo(HaveOccurred())
+		By(fmt.Sprintf("Waiting for %d shadow pods of %s to report metrics", replicas, model))
+		Eventually(func(g Gomega) {
+			snapshot, err := utils.ScrapeRequestSuccessTotal(context.Background(), clientset, caseNamespace, model)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(len(snapshot)).To(BeNumerically(">=", replicas),
+				"every replica's shadow pod must report metrics")
+		}, utils.InferenceSetReadyTimeout, 5*time.Second).Should(Succeed())
 	})
 
 	AfterAll(func() {
