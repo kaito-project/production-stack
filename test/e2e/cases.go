@@ -191,8 +191,8 @@ const (
 	// per-InferenceSet EPP (InferencePool ext_proc, failureMode: FailClose)
 	// is unavailable, a request is mapped to a 502 `epp_unavailable` outage
 	// reply (x-kaito-error-source: epp) by the consolidated per-namespace
-	// local_reply (mapper #4: model header present + local 5xx, no router
-	// flag), and NOT to a misleading 404 model_not_found. Scaling the EPP
+	// local_reply (mapper #4a: model header present + Envoy ext_proc_error
+	// details), and NOT to a misleading 404 model_not_found. Scaling the EPP
 	// Deployment to zero touches only this case's namespace, so the suite
 	// does not need Serial. Non-auth so only BBR + EPP are in path.
 	CaseEPPOutage = "epp-outage"
@@ -202,8 +202,10 @@ const (
 	// InferenceSet is scaled to replicas=0) while the HTTPRoute and EPP
 	// remain healthy, a request is mapped to a 503 `model_unavailable`
 	// outage reply (x-kaito-error-source: inferenceset, Retry-After) by the
-	// consolidated per-namespace local_reply (mapper #2: model header
-	// present + router flag), and NOT to a 404. Touches only this case's
+	// consolidated per-namespace local_reply (mapper #4b: the EPP rejects
+	// the request it cannot place; mapper #2 while the pool drains: model
+	// header present + router flag), held in steady state, and NOT to a 404
+	// or epp_unavailable. Touches only this case's
 	// namespace (its InferenceSet replicas), so the suite does not need
 	// Serial. Non-auth so only BBR + EPP are in path.
 	CaseModelUnavailable = "model-unavailable"

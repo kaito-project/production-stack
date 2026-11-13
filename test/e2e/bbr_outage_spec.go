@@ -49,7 +49,8 @@ import (
 //	`x-kaito-error-source: bbr`, and explicitly NOT a `404 model_not_found`.
 //	BBR's ext_proc `status_on_error` is pinned to 503
 //	(charts/modelharness/templates/envoyfilter-bbr.yaml); the client-facing
-//	status is the 502 the local_reply rewrites it to.
+//	status is the 502 the local_reply rewrites it to (mapper #5: model
+//	header absent + Envoy `ext_proc_error` response code details).
 //
 // Why Serial: BBR is a cluster-wide singleton shared by every Gateway in
 // the mesh. Scaling it to zero breaks every other in-flight inference

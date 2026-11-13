@@ -9,7 +9,8 @@
 # EnvoyFilter) removes the non-deterministic cross-EnvoyFilter merge order on
 # the shared Gateway HCM.
 #
-# Component attribution model. Two orthogonal signals locate the at-fault hop:
+# Component attribution model. Three orthogonal signals locate the at-fault
+# hop:
 #   * `X-Gateway-Model-Name` request header — injected by BBR, which runs
 #     BEFORE route matching (EPP and the upstream run after). Header ABSENT =>
 #     the failure is at/before BBR (infrastructure side: ext_authz, BBR, or the
@@ -19,23 +20,33 @@
 #     `X-Gateway-Model-Name` at ingress so it cannot be spoofed.
 #   * Envoy response flag — a router/upstream flag (UH/LH/UT/UPE/UF/UC/NC)
 #     means the routed upstream or the gateway dataplane failed; UAEX means
-#     ext_authz; NO router flag on a local 5xx means an ext_proc filter
-#     (BBR or EPP) fail-closed (their fail-close local reply carries no router
-#     flag — BBR is pinned to 503, EPP takes the ext_proc default 500).
+#     ext_authz. An ext_proc filter (BBR or EPP) never sets a response flag.
+#   * Envoy response code details — Envoy prefixes the details of every local
+#     reply it generates because an ext_proc call FAILED (server unreachable,
+#     gRPC error, per-message timeout) with `ext_proc_error`. An ext_proc
+#     server that is up and deliberately rejects the request with an
+#     ImmediateResponse sets no such prefix. This separates "the EPP is down"
+#     from "the EPP is up but has no endpoint to serve the request" WITHOUT
+#     depending on which status code the EPP picks for the latter (the
+#     llm-d EPP answers an empty pool with 503 today; any other 5xx it might
+#     choose maps the same way). Matched with the CEL access-log filter
+#     (`envoy.access_loggers.extension_filters.cel`) on
+#     `response.code_details`.
 #
 # Envoy's `local_reply` mapper filter is an AccessLogFilter, which has
 # `and_filter` / `or_filter` / `response_flag_filter` / `header_filter` but NO
 # `not_filter`. "No router flag" therefore cannot be written directly; it is
-# expressed by ORDERING — every flag-bearing mapper precedes the two no-flag
-# fallbacks, so a request that reaches mapper 4 or 5 provably carries no router
-# flag. Mappers are evaluated top-to-bottom, first-match wins:
+# expressed by ORDERING — every flag-bearing mapper precedes the no-flag
+# mappers, so a request that reaches mapper 4a, 4b or 5 provably carries no
+# router flag. Mappers are evaluated top-to-bottom, first-match wins:
 #
-#   1. ext_authz outage   - UAEX + status >= 500                -> 502 ext_authz_unavailable (authz)
-#   2. inference pods     - model header PRESENT + router flag   -> 503 model_unavailable     (inferenceset)
-#   3. gateway dataplane  - model header ABSENT  + router flag   -> 502 gateway_unavailable   (gateway)
-#   4. EPP ext_proc outage - model header PRESENT + 5xx (no flag) -> 502 epp_unavailable       (epp)
-#   5. BBR ext_proc outage - model header ABSENT  + 5xx (no flag) -> 502 bbr_unavailable       (bbr)
-#   6. catch-all          - any remaining status >= 500          -> gateway_internal_error    (gateway)
+#   1.  ext_authz outage     - UAEX + status >= 500                          -> 502 ext_authz_unavailable (authz)
+#   2.  inference pods       - model header PRESENT + router flag             -> 503 model_unavailable     (inferenceset)
+#   3.  gateway dataplane    - model header ABSENT  + router flag             -> 502 gateway_unavailable   (gateway)
+#   4a. EPP ext_proc outage  - model header PRESENT + ext_proc_error details  -> 502 epp_unavailable       (epp)
+#   4b. EPP rejects request  - model header PRESENT + 5xx (no flag)           -> 503 model_unavailable     (inferenceset)
+#   5.  BBR ext_proc outage  - model header ABSENT  + ext_proc_error details  -> 502 bbr_unavailable       (bbr)
+#   6.  catch-all            - any remaining status >= 500                    -> gateway_internal_error    (gateway)
 #
 # Per-component `code`s are deliberately coarse: one code per at-fault
 # component (plus a stable `x-kaito-error-source`). The fine-grained root cause
@@ -85,7 +96,7 @@ spec:
                 # status_on_error 503, see envoyfilter-ext-authz.yaml). Placed
                 # first so an ext_authz outage (which is always model-header
                 # ABSENT, as ext_authz runs before BBR) is attributed to authz
-                # rather than falling through to the BBR no-flag fallback (#5).
+                # rather than falling through to the catch-all (#6).
                 - filter:
                     and_filter:
                       filters:
@@ -115,14 +126,14 @@ spec:
                 # Model header PRESENT (request was routed to a model) AND a
                 # router/upstream flag fired: the routed inference upstream
                 # failed. Covers zero ready endpoints (UH: warm-up / crash /
-                # OOM / eviction), upstream request timeout (UT), upstream
-                # protocol error (UPE), and upstream connection failures
-                # (UF/UC/NC). Root-cause-neutral by design — every sub-cause
-                # shares the same client behaviour (back off on Retry-After and
-                # retry); the operator root cause is a kube-system Event. Must
-                # precede the EPP no-flag fallback (#4) so a flagged failure on
-                # the model-serving side is attributed to the inference pods,
-                # not to the EPP ext_proc filter.
+                # OOM / eviction, or the EPP picked a pod the gateway has not
+                # yet received through EDS), upstream request timeout (UT),
+                # upstream protocol error (UPE), and upstream connection
+                # failures (UF/UC/NC). Root-cause-neutral by design — every
+                # sub-cause shares the same client behaviour (back off on
+                # Retry-After and retry); the operator root cause is a
+                # kube-system Event. The zero-ready-endpoint case where the EPP
+                # itself rejects the request (no router flag) is #4b.
                 - filter:
                     and_filter:
                       filters:
@@ -161,9 +172,7 @@ spec:
                 # a router/upstream flag fired: the namespace Gateway dataplane
                 # itself could not forward — no healthy upstream (UH/LH) or the
                 # listener/cluster is not yet programmed while the harness
-                # converges (UF/UC/NC). Must precede the BBR no-flag fallback
-                # (#5) so a flagged infrastructure-side failure is attributed to
-                # the gateway, not to a BBR ext_proc outage.
+                # converges (UF/UC/NC).
                 - filter:
                     and_filter:
                       filters:
@@ -194,14 +203,15 @@ spec:
                         key: content-type
                         value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
-                # 4. EPP ext_proc outage -> 502 epp_unavailable (epp).
-                # Model header PRESENT and NO router flag (guaranteed: every
-                # PRESENT + router-flag case was already taken by #2). The only
-                # local 5xx left on the model-serving side is the EPP
-                # (InferencePool endpointPickerRef: FailClose) ext_proc filter
-                # failing closed when it cannot reach the EPP — Envoy emits the
-                # ext_proc default 500 with no router flag. A genuine vLLM 5xx
-                # is a proxied upstream response, NOT a local reply, so it never
+                # 4a. EPP ext_proc outage -> 502 epp_unavailable (epp).
+                # Model header PRESENT and the local reply was generated by
+                # Envoy because the EPP ext_proc call FAILED: the EPP
+                # (InferencePool endpointPickerRef: FailClose) is unreachable,
+                # returned a gRPC error, or timed out. Envoy marks every such
+                # reply with `ext_proc_error` response code details; a router
+                # flag never accompanies it, and every PRESENT + router-flag
+                # case was already taken by #2 anyway. A genuine vLLM 5xx is a
+                # proxied upstream response, NOT a local reply, so it never
                 # reaches here.
                 - filter:
                     and_filter:
@@ -216,6 +226,11 @@ spec:
                               value:
                                 default_value: 500
                                 runtime_key: productionstack_epp_min_status
+                        - extension_filter:
+                            name: envoy.access_loggers.extension_filters.cel
+                            typed_config:
+                              "@type": type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter
+                              expression: "response.code_details.startsWith('ext_proc_error')"
                   status_code: 502
                   body:
                     inline_string: |
@@ -229,16 +244,55 @@ spec:
                         key: content-type
                         value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                # 4b. EPP rejects the request -> 503 model_unavailable
+                # (inferenceset). Model header PRESENT, no router flag, and NOT
+                # an Envoy ext_proc failure (#4a): the EPP is up and answered
+                # with an ImmediateResponse 5xx because it cannot place the
+                # request — no ready endpoint (warm-up / crash / OOM /
+                # eviction / scaled to zero) or a scale-from-zero queue wait
+                # that expired. The status the EPP picks is deliberately NOT
+                # matched (llm-d answers 503 today), so a future change of
+                # that code keeps the same attribution. Same envelope,
+                # Retry-After and source as #2.
+                - filter:
+                    and_filter:
+                      filters:
+                        - header_filter:
+                            header:
+                              name: X-Gateway-Model-Name
+                              present_match: true
+                        - status_code_filter:
+                            comparison:
+                              op: GE
+                              value:
+                                default_value: 500
+                                runtime_key: productionstack_epp_reject_min_status
+                  status_code: 503
+                  body:
+                    inline_string: |
+                      {"error":{"type":"service_unavailable","code":"model_unavailable","message":"The requested model is temporarily unavailable. Back off and retry; see Events in kube-system for the root cause.","param":null}}
+                  headers_to_add:
+                    - header:
+                        key: x-kaito-error-source
+                        value: inferenceset
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                    - header:
+                        key: content-type
+                        value: application/json
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                    - header:
+                        key: retry-after
+                        value: "10"
+                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
                 # 5. BBR ext_proc outage -> 502 bbr_unavailable (bbr).
-                # Model header ABSENT and NO router flag (guaranteed: UAEX was
-                # taken by #1, ABSENT + router-flag by #3). The only local 5xx
-                # left on the infrastructure side is the BBR ext_proc filter
-                # failing closed before it could inject X-Gateway-Model-Name —
-                # pinned to status_on_error 503 (see envoyfilter-bbr.yaml). The
-                # `>= 500` guard (not `== 503`) keeps this robust if the pinned
-                # status ever changes. Because the header is absent, this can
-                # never be confused with the EPP outage (#4), which is
-                # header-present.
+                # Model header ABSENT and the local reply was generated by
+                # Envoy because the BBR ext_proc call FAILED before BBR could
+                # inject X-Gateway-Model-Name (`ext_proc_error` details; the
+                # filter is pinned to status_on_error 503, see
+                # envoyfilter-bbr.yaml). BBR itself only ever rejects with a
+                # 400 (body is not JSON), so requiring the details prefix loses
+                # no BBR outage, and keeps any other unflagged header-absent
+                # 5xx from being blamed on BBR — those fall through to #6.
                 - filter:
                     and_filter:
                       filters:
@@ -253,6 +307,11 @@ spec:
                               value:
                                 default_value: 500
                                 runtime_key: productionstack_bbr_min_status
+                        - extension_filter:
+                            name: envoy.access_loggers.extension_filters.cel
+                            typed_config:
+                              "@type": type.googleapis.com/envoy.extensions.access_loggers.filters.cel.v3.ExpressionFilter
+                              expression: "response.code_details.startsWith('ext_proc_error')"
                   status_code: 502
                   body:
                     inline_string: |

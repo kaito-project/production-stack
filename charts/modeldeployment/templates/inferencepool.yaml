@@ -30,8 +30,10 @@ spec:
     # API only exposes `failureMode` (FailOpen/FailClose) — it does NOT expose
     # the ext_proc `status_on_error` knob. The fail-closed local-reply status
     # therefore takes the Envoy ext_proc default of 500 (Internal Server
-    # Error); the gateway local_reply matches that 500 with the model header
-    # PRESENT and maps it to 502 epp_unavailable (x-kaito-error-source: epp).
-    # A 504 timeout on this hop is reported as a router flag (UT) and mapped
-    # separately.
+    # Error). The gateway local_reply does not match on that status: it
+    # identifies an EPP failure by the model header PRESENT plus Envoy's
+    # `ext_proc_error` response code details and maps it to 502
+    # epp_unavailable (x-kaito-error-source: epp). A 5xx the EPP returns on
+    # purpose (no ready endpoint) carries no such details and is mapped to
+    # 503 model_unavailable instead.
     failureMode: FailClose
