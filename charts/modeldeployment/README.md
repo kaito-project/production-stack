@@ -217,19 +217,18 @@ signal; serving them is best effort:
 - A cold start (GPU node provisioning + model load) can take many minutes and
   may outlast the queue. Once `epp.flowControl.defaultRequestTTL` (`600s`)
   expires the EPP rejects the request with `503`, which the modelharness
-  gateway reports as `502 epp_unavailable` (`x-kaito-error-source: epp`); it
-  fails earlier if the client times out or disconnects. Istio also bounds
-  each EPP exchange to 1000s.
+  gateway reports as `503 model_unavailable` (`x-kaito-error-source:
+  inferenceset`, `Retry-After: 10`); it fails earlier if the client times out
+  or disconnects. Istio also bounds each EPP exchange to 1000s.
 - When the first replica becomes Ready, the EPP (which watches Pods directly)
   can release the queued requests before the gateway has received the new
   endpoint (EndpointSlice → istiod → EDS). Requests dispatched in that window
   fail with `no healthy upstream`, which the modelharness gateway maps to
   `503 model_unavailable` with `Retry-After: 10`.
 
-Clients should therefore treat `503 model_unavailable` and
-`502 epp_unavailable` from a parked or waking deployment as retryable and
-back off (honouring `Retry-After` when present); once the replica is Ready
-and propagated, retries are served normally.
+Clients should therefore treat `503 model_unavailable` from a parked or waking
+deployment as retryable and back off (honouring `Retry-After`); once the
+replica is Ready and propagated, retries are served normally.
 
 Things to keep in mind:
 

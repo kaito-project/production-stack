@@ -66,9 +66,11 @@ spec:
             # (also pinned to 503), so every fail-closed cluster-filter outage
             # surfaces a consistent 503 upstream of the gateway local_reply.
             # The local_reply matches this 5xx with the model header ABSENT and
-            # maps it to 502 bbr_unavailable (x-kaito-error-source: bbr). NOTE:
-            # an ext_proc TIMEOUT is reported as 504 regardless of this field;
-            # that path is mapped separately as a router-flag (UT) case.
+            # Envoy's `ext_proc_error` response code details, and maps it to
+            # 502 bbr_unavailable (x-kaito-error-source: bbr). In
+            # FULL_DUPLEX_STREAMED mode Envoy does not enforce the ext_proc
+            # message timeout, so a hung BBR holds the request rather than
+            # producing a separate 504 local reply.
             status_on_error:
               code: ServiceUnavailable
             allow_mode_override: true

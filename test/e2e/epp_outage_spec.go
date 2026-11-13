@@ -36,16 +36,19 @@ import (
 //	Gateway as the InferencePool ext_proc filter. The InferencePool is
 //	configured failureMode: FailClose
 //	(charts/modeldeployment/templates/inferencepool.yaml), so when the EPP
-//	Deployment is unreachable Envoy generates a LOCAL reply (the
-//	ext_proc default 500) rather than routing blindly.
+//	Deployment is unreachable the ext_proc call fails and Envoy generates
+//	a LOCAL reply (the ext_proc default 500) rather than routing blindly.
 //
 //	Because BBR has already injected X-Gateway-Model-Name by the time the
-//	EPP ext_proc runs, this local 500 carries the model header PRESENT and
-//	NO router/upstream flag (the EPP failed before a backend was picked).
-//	That combination is mapper #4 of the consolidated per-namespace outage
-//	local_reply (charts/modelharness/templates/envoyfilter-outage-reply.yaml),
-//	which rewrites it to a structured `502 epp_unavailable` envelope
-//	carrying `x-kaito-error-source: epp`.
+//	EPP ext_proc runs, this local 500 carries the model header PRESENT, NO
+//	router/upstream flag, and Envoy's `ext_proc_error` response code
+//	details (the ext_proc call itself failed). That combination is mapper
+//	#4a of the consolidated per-namespace outage local_reply
+//	(charts/modelharness/templates/envoyfilter-outage-reply.yaml), which
+//	rewrites it to a structured `502 epp_unavailable` envelope carrying
+//	`x-kaito-error-source: epp`. A 5xx the EPP sends on purpose (no ready
+//	endpoint) has no such details and is covered by
+//	model_unavailable_spec.go instead.
 //
 //	This suite scales the EPP Deployment to zero and asserts that mapping,
 //	and explicitly that the outage is NOT misreported as a
@@ -106,7 +109,7 @@ var _ = Describe("EPP outage (fail-closed InferencePool ext_proc)",
 				g.Expect(code).NotTo(Equal("model_not_found"),
 					"EPP outage must not surface as model_not_found")
 
-				// Unified outage envelope produced by mapper #4 of the
+				// Unified outage envelope produced by mapper #4a of the
 				// consolidated per-namespace local_reply
 				// (charts/modelharness/templates/envoyfilter-outage-reply.yaml).
 				g.Expect(status).To(Equal(http.StatusBadGateway),
