@@ -70,9 +70,9 @@
 # `operation: MERGE` on the http_connection_manager merges `local_reply_config`
 # without replacing the Istio-managed filter chain. Only Envoy-generated local
 # replies are rewritten; responses proxied back from an upstream pod (e.g. a
-# genuine vLLM 500, or a vLLM-native 429) are NOT local replies and are left
-# unchanged — those carry `x-kaito-error-source: inferenceset` stamped by the
-# modeldeployment HTTPRoute ResponseHeaderModifier instead.
+# genuine vLLM 500, or a vLLM-native 429) are NOT local replies and are passed
+# through unchanged, without `x-kaito-error-source`: the header marks only
+# errors the gateway generated itself.
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
