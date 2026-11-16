@@ -48,10 +48,10 @@ import (
 //	upstream, so Envoy answers a local 503 with the `UH` flag, which mapper #3
 //	turns into `502 gateway_unavailable`.
 //
-//	The case deploys one model even though the request never reaches it: on
-//	an App Routing cluster the Gateway hostname is published to DNS from the
-//	hostnames of the namespace's HTTPRoutes, which only a modeldeployment
-//	renders. A harness without a model has no resolvable hostname.
+//	The case deploys one model even though the request never reaches it: a
+//	case declares its namespace through CaseDeployments. The Gateway hostname
+//	does not depend on it; on an App Routing cluster the harness's own
+//	`models-api` HTTPRoute publishes it to DNS.
 //
 // The reporter Deployment is discovered by its chart label rather than by a
 // fixed namespace and name, which depend on the install (the umbrella release

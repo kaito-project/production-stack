@@ -152,7 +152,7 @@ the correct pool received the request. EPP-side counters corroborate the schedul
 
 ### Model discovery — `GET /v1/models` and `GET /v1/models/{id}`
 
-The namespace Gateway routes both paths to the cluster-wide `productionstack-status-reporter`, which answers from an informer cache of the `InferenceSet`s in the caller's own namespace. The routes are rendered ahead of the catch-all routes in `model-not-found-direct`; without them a bodyless GET gets no `X-Gateway-Model-Name` from BBR and falls through to the unconditional `400 invalid_request_body`.
+The namespace Gateway routes both paths to the cluster-wide `productionstack-status-reporter`, which answers from an informer cache of the `InferenceSet`s in the caller's own namespace. The route is the harness-owned `models-api` HTTPRoute, which Istio places ahead of the catch-all routes in `model-not-found-direct`; without it a bodyless GET gets no `X-Gateway-Model-Name` from BBR and falls through to the unconditional `400 invalid_request_body`.
 
 The endpoint is a **registry**, not a health check: a model is listed as soon as its `InferenceSet` exists, whether or not it is currently serving.
 
@@ -161,7 +161,7 @@ The endpoint is a **registry**, not a health check: a model is listed as soon as
 * Single-model retrieve — `GET /v1/models/{id}` returns `200` with a **bare** model object (no `data` envelope) that is field-for-field identical to that model's entry in the listing.
 * Unknown model — `GET /v1/models/unknown` returns `404` with `code: model_not_found` and `type: invalid_request_error`, the same envelope the Gateway catch-all uses for an unroutable model, so "model does not exist" has one representation across the data plane.
 * Method enforcement — `POST /v1/models` returns `405` with an `Allow: GET` header.
-* Prefix isolation — `GET /v1/modelsfoo` must NOT be answered by the registry. The route pair is `exact /v1/models` plus `prefix /v1/models/`; a single bare `prefix /v1/models` would wrongly absorb sibling paths.
+* Prefix isolation — `GET /v1/modelsfoo` must NOT be answered by the registry. The `models-api` route is a Gateway API `PathPrefix: /v1/models`, which matches whole path elements, so it covers `/v1/models/{id}` but not sibling paths.
 * Authentication (see *API Key Authentication*) — with `auth.enabled`, both discovery paths return `401` without a key and with an invalid key, and `200` with a valid one. `ext_authz` is an HTTP filter and therefore runs before route selection, so discovery is covered by the same policy as inference traffic.
 
 ## Prefix Cache Aware Routing — PrefixCache

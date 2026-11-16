@@ -125,10 +125,15 @@ bbr:
 # cluster-wide productionstack-status-reporter, which answers with the
 # InferenceSets registered in this namespace.
 #
-# The routes are rendered into the same `model-not-found-direct`
-# EnvoyFilter, AHEAD of the catch-all routes: a bodyless GET gets no
-# `X-Gateway-Model-Name` from BBR, so without them it would fall through
-# to the unconditional 400 invalid_request_body.
+# The route is the harness-owned `models-api` HTTPRoute
+# (templates/httproute-models.yaml, templates/azure/httproute-models.yaml),
+# which Istio places AHEAD of the catch-all routes: a bodyless GET gets no
+# `X-Gateway-Model-Name` from BBR, so without it it would fall through to
+# the unconditional 400 invalid_request_body. On an App Routing cluster this
+# route is also what publishes the namespace hostname to DNS before any
+# modeldeployment exists. A ReferenceGrant rendered into `serviceNamespace`
+# (templates/referencegrant-models.yaml) authorises the cross-namespace
+# backend reference.
 #
 # Auth is unaffected and still applies: ext_authz is an HTTP filter and
 # runs before route selection, so an unauthenticated caller cannot
@@ -141,7 +146,8 @@ bbr:
 modelsAPI:
   serviceNamespace: kube-system
   servicePort: 8082
-  # Route timeout for the discovery hop. The reporter answers from an
+  # Request timeout for the discovery route (HTTPRoute `timeouts.request`,
+  # a Gateway API duration such as `10s`). The reporter answers from an
   # in-memory informer cache, so this only has to cover a cold start.
   timeout: 10s
 

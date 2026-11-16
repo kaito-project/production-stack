@@ -218,9 +218,8 @@ const (
 	// mapped to a 502 `gateway_unavailable` outage reply
 	// (x-kaito-error-source: gateway) by the consolidated per-namespace
 	// local_reply (mapper #3: model header absent + router flag). The single
-	// model is never requested; its HTTPRoute is what publishes the Gateway
-	// hostname to DNS on an App Routing cluster. The reporter is shared by
-	// the whole cluster, so the suite is Serial.
+	// model is never requested; it only declares the case namespace. The
+	// reporter is shared by the whole cluster, so the suite is Serial.
 	CaseGatewayUnavailable = "gateway-unavailable"
 
 	// CaseModelDownloadRegression covers model_download_regression_spec.go

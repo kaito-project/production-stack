@@ -100,6 +100,11 @@ var _ = Describe("ModelHarness Labelling", utils.GinkgoLabelInferenceSet, func()
 					name: "model-not-found-direct",
 				},
 				{
+					desc: "model discovery HTTPRoute",
+					gvk:  schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: "v1", Kind: "HTTPRoute"},
+					name: "models-api",
+				},
+				{
 					desc: "gateway error local-reply EnvoyFilter",
 					gvk:  schema.GroupVersionKind{Group: "networking.istio.io", Version: "v1alpha3", Kind: "EnvoyFilter"},
 					name: "gateway-filter-outage-local-reply",

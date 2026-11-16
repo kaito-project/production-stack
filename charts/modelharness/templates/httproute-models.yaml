@@ -1,0 +1,57 @@
+{{- if eq .Values.cloudprovider "" }}
+{{/*
+Model discovery route: `GET /v1/models` and `GET /v1/models/{id}` go to the
+cluster-wide productionstack-status-reporter, which lists the InferenceSets
+registered in this namespace. The Azure variant
+(templates/azure/httproute-models.yaml) differs only in `hostnames`.
+
+It is an HTTPRoute rather than a route patched in by an EnvoyFilter so the
+harness owns a Route on its Gateway from install time, before any
+modeldeployment exists. On an App Routing cluster that is what publishes the
+Gateway hostname to DNS (see the Azure variant).
+
+Path matching: PathPrefix matches by path element, so it covers `/v1/models`
+and `/v1/models/{id}` but not a sibling such as `/v1/modelsfoo`, which falls
+through to the catch-all. Gateway API orders it ahead of the per-model
+`PathPrefix: /` routes (longer path), and Istio emits every HTTPRoute ahead of
+the catch-all routes the model-not-found-direct EnvoyFilter appends. A
+bodyless GET gets no model header from BBR, so it would otherwise reach the
+unconditional 400 invalid_request_body.
+
+X-Kaito-Gateway-Namespace is the reporter's namespace-scoping input and is SET
+(overwritten) here, so a client cannot forge it to enumerate another tenant's
+models. Host is deliberately not used for this: it is caller-supplied.
+
+The backend lives in `modelsAPI.serviceNamespace`; the cross-namespace
+reference is authorised by templates/referencegrant-models.yaml.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: models-api
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "modelharness.gatewayName" . | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/models
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Kaito-Gateway-Namespace
+                value: {{ include "modelharness.namespace" . | quote }}
+      backendRefs:
+        - name: {{ include "modelharness.modelsServiceName" . }}
+          namespace: {{ .Values.modelsAPI.serviceNamespace | quote }}
+          port: {{ .Values.modelsAPI.servicePort }}
+      timeouts:
+        request: {{ .Values.modelsAPI.timeout | quote }}
+{{- end }}

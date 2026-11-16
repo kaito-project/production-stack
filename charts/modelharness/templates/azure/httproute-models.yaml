@@ -1,0 +1,51 @@
+{{- if eq .Values.cloudprovider "azure" }}
+{{/*
+Model discovery route, Azure variant. Same route as
+templates/httproute-models.yaml (see there for the matching, ordering and
+header rationale), plus `hostnames` set to the Gateway's default-domain
+listener hostname.
+
+On an App Routing cluster the default-domain external-dns publishes DNS
+records only from the Routes attached to a Gateway listener (sources
+gateway-httproute / gateway-grpcroute), never from the Gateway alone. Before
+this route the namespace hostname existed only while a modeldeployment's
+HTTPRoute did, so a harness without a model was unreachable and deleting the
+last model withdrew the name. This route keeps `<namespace>.<zoneName>`
+published for the whole lifetime of the harness.
+
+`hostnames` mirrors the listener hostname, like the modeldeployment chart's
+templates/azure/httproute.yaml, so the route attaches to the host-scoped
+HTTPS listener exactly like the per-model routes do.
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: models-api
+  namespace: {{ include "modelharness.namespace" . }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "modelharness.gatewayName" . | quote }}
+  hostnames:
+    - {{ printf "%s.%s" (include "modelharness.namespace" .) (.Values.azure.defaultDomain.zoneName | trimPrefix ".") | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /v1/models
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-Kaito-Gateway-Namespace
+                value: {{ include "modelharness.namespace" . | quote }}
+      backendRefs:
+        - name: {{ include "modelharness.modelsServiceName" . }}
+          namespace: {{ .Values.modelsAPI.serviceNamespace | quote }}
+          port: {{ .Values.modelsAPI.servicePort }}
+      timeouts:
+        request: {{ .Values.modelsAPI.timeout | quote }}
+{{- end }}

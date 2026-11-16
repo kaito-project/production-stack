@@ -27,9 +27,9 @@ import (
 
 const (
 	// NamespaceHeader carries the workload namespace a request was admitted
-	// through. It is stamped by the per-namespace Gateway route rendered by
-	// charts/modelharness with OVERWRITE_IF_EXISTS_OR_ADD, so a client-supplied
-	// value is always discarded before the request reaches this server. Host is
+	// through. It is set (overwritten) by the per-namespace `models-api`
+	// HTTPRoute rendered by charts/modelharness, so a client-supplied value is
+	// always discarded before the request reaches this server. Host is
 	// deliberately NOT used for this: it is caller-controlled and forgeable.
 	NamespaceHeader = "X-Kaito-Gateway-Namespace"
 
