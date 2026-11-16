@@ -162,6 +162,7 @@ The endpoint is a **registry**, not a health check: a model is listed as soon as
 * Unknown model — `GET /v1/models/unknown` returns `404` with `code: model_not_found` and `type: invalid_request_error`, the same envelope the Gateway catch-all uses for an unroutable model, so "model does not exist" has one representation across the data plane.
 * Method enforcement — `POST /v1/models` returns `405` with an `Allow: GET` header.
 * Prefix isolation — `GET /v1/modelsfoo` must NOT be answered by the registry. The `models-api` route is a Gateway API `PathPrefix: /v1/models`, which matches whole path elements, so it covers `/v1/models/{id}` but not sibling paths.
+* No model deployed — in a namespace with only the modelharness installed, `GET /v1/models` returns `200` with an empty `data` list and `GET /v1/models/{id}` returns `404 model_not_found`. On an App Routing cluster the request goes to the namespace hostname, so this also proves the harness's `models-api` route publishes it to DNS before any modeldeployment exists.
 * Authentication (see *API Key Authentication*) — with `auth.enabled`, both discovery paths return `401` without a key and with an invalid key, and `200` with a valid one. `ext_authz` is an HTTP filter and therefore runs before route selection, so discovery is covered by the same policy as inference traffic.
 
 ## Prefix Cache Aware Routing — PrefixCache
