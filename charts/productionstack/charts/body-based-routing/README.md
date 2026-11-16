@@ -34,7 +34,7 @@ comments, and recapped here:
 |---|---|
 | EnvoyFilter rendering moved OUT of this chart into `charts/modelharness` | BBR's ext_proc EnvoyFilter is now rendered per workload namespace and scoped to that namespace's Gateway pod via `workloadSelector`, so production-stack's BBR never patches unrelated Istio Gateways elsewhere in the mesh. This chart renders only the BBR workload (Deployment + Service + RBAC). |
 | `EnvoyFilter` has **no** `spec.targetRefs` and the `inferenceGateway.name` value is removed | Upstream pins the filter to a single Gateway named `inference-gateway` in the EnvoyFilter's own namespace. The per-namespace EnvoyFilter rendered by `modelharness` instead selects each namespace's Gateway pod directly via `workloadSelector` + `match.context: GATEWAY`. |
-| Filter anchored INSERT_BEFORE the InferencePool `envoy.filters.http.ext_proc` (configured in `modelharness`) | Enforces the gateway HTTP filter-chain order required by this repo: `ext_authz (if any) → bbr → ext_proc/epp → router`. BBR must inject `X-Gateway-Model-Name` before the InferencePool ext_proc resolves its per-route override. |
+| Filter inserted directly after the ext_authz filters (configured in `modelharness`) | Enforces the gateway HTTP filter-chain order required by this repo: `ext_authz (if any) → bbr → ext_proc/epp → router`. BBR must inject `X-Gateway-Model-Name` before the InferencePool ext_proc resolves its per-route override. |
 | BBR always serves plaintext HTTP/2; the `bbr.secureServing` toggle and the upstream `DestinationRule` are removed | The gateway↔BBR hop never leaves the pod network, so upstream TLS adds a per-request self-signed-cert handshake for no benefit. `--secure-serving=false` is hardcoded and no `DestinationRule` is rendered. |
 | `bbr.multiNamespace` value removed; RBAC is **always** cluster-wide | Upstream defaults `multiNamespace: false` and renders a namespace-scoped `Role`/`RoleBinding`, which would leave BBR blind to the LoRA-adapter → base-model ConfigMaps living in workload namespaces and silently break adapter-aware routing. This fork ships a single `ClusterRole` + `ClusterRoleBinding` unconditionally. |
 | `namespaceOverride` value retained | Lets the umbrella `productionstack` chart place BBR in a namespace independent of the parent release namespace if needed. Empty string falls back to the release namespace (`kaito-system`). BBR no longer needs to live in Istio's root namespace. |
@@ -112,8 +112,9 @@ so the per-namespace EnvoyFilter targets the right Service FQDN.
 | `bbr.plugins`                                    | upstream defaults                                                             | Plugin pipeline. Empty list ⇒ runner auto-loads its built-in defaults.                                                          |
 | `bbr.tracing.*`                                  | disabled                                                                      | OpenTelemetry exporter configuration.                                                                                          |
 
-> The ext_proc EnvoyFilter placement (`operation`, `anchorSubFilter`),
-> the `supportedEvents` processing modes, and the passive
+> The ext_proc EnvoyFilter (placed directly after the ext_authz
+> filters, ahead of the InferencePool ext_proc), the `supportedEvents`
+> processing modes, and the passive
 > `outlierDetection` CLUSTER patch are configured in the
 > [`modelharness`](../../../modelharness/values.yaml) chart under `bbr:`,
 > not here — this chart no longer renders an EnvoyFilter.

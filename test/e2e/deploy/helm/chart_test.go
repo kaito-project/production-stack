@@ -460,6 +460,129 @@ func TestModelDeploymentNameLength(t *testing.T) {
 	}
 }
 
+// TestModelHarnessBBRPlacement pins where BBR enters the Gateway HTTP filter
+// chain: directly after the last ext_authz filter the auth EnvoyFilters insert,
+// or first when auth renders none. It must not anchor on the InferencePool
+// ext_proc filter, which Istio adds only to a Gateway that has an InferencePool
+// attached, or BBR would be missing until the first modeldeployment exists.
+func TestModelHarnessBBRPlacement(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	azure := []string{"cloudprovider=azure", "azure.defaultDomain.zoneName=example.aksapp.io",
+		"azure.entra.tenantId=00000000-0000-0000-0000-000000000000", "azure.entra.audiences[0]=api://test"}
+	for _, tt := range []struct {
+		name   string
+		values []string
+		anchor string // empty: no auth filter, so BBR is inserted first
+	}{
+		{name: "auth disabled"},
+		{name: "apikey", values: []string{"auth.enabled=true"}, anchor: "envoy.filters.http.ext_authz"},
+		{name: "apikey after jwt_authn", values: []string{"auth.enabled=true", "auth.extAuthz.operation=INSERT_AFTER"},
+			anchor: "envoy.filters.http.ext_authz"},
+		{name: "apikey on azure", values: append([]string{"auth.enabled=true"}, azure...),
+			anchor: "envoy.filters.http.ext_authz"},
+		{name: "azure", values: append([]string{"auth.enabled=true", "auth.mode=azure"}, azure...),
+			anchor: "envoy.filters.http.ext_authz"},
+		{name: "hybrid", values: append([]string{"auth.enabled=true", "auth.mode=hybrid"}, azure...),
+			anchor: "ext_authz.azure"},
+		{name: "hybrid without azure renders no auth", values: []string{"auth.enabled=true", "auth.mode=hybrid"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			chart := filepath.Join("..", "..", "..", "..", "charts", "modelharness")
+			args := []string{"template", "harness", chart, "--set", "namespace=ns"}
+			for _, value := range tt.values {
+				args = append(args, "--set", value)
+			}
+			output, err := exec.Command("helm", args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, output)
+			}
+
+			type envoyFilter struct {
+				Kind     string            `json:"kind"`
+				Metadata metav1.ObjectMeta `json:"metadata"`
+				Spec     struct {
+					Priority      int `json:"priority"`
+					ConfigPatches []struct {
+						ApplyTo string `json:"applyTo"`
+						Match   struct {
+							Listener struct {
+								FilterChain struct {
+									Filter struct {
+										SubFilter struct {
+											Name string `json:"name"`
+										} `json:"subFilter"`
+									} `json:"filter"`
+								} `json:"filterChain"`
+							} `json:"listener"`
+						} `json:"match"`
+						Patch struct {
+							Operation string `json:"operation"`
+							Value     struct {
+								Name string `json:"name"`
+							} `json:"value"`
+						} `json:"patch"`
+					} `json:"configPatches"`
+				} `json:"spec"`
+			}
+			var bbr, cors *envoyFilter
+			authPriority := map[string]int{} // inserted ext_authz filter name -> its EnvoyFilter priority
+			for _, doc := range strings.Split(string(output), "\n---") {
+				var ef envoyFilter
+				if err := yaml.Unmarshal([]byte(doc), &ef); err != nil {
+					t.Fatalf("parse rendered object: %v\n%s", err, doc)
+				}
+				if ef.Kind != "EnvoyFilter" {
+					continue
+				}
+				switch ef.Metadata.Name {
+				case "bbr-ext-proc":
+					bbr = &ef
+				case "gateway-cors":
+					cors = &ef
+				}
+				for _, patch := range ef.Spec.ConfigPatches {
+					if patch.ApplyTo == "HTTP_FILTER" && strings.Contains(patch.Patch.Value.Name, "ext_authz") {
+						authPriority[patch.Patch.Value.Name] = ef.Spec.Priority
+					}
+				}
+			}
+			if bbr == nil {
+				t.Fatal("bbr-ext-proc EnvoyFilter not rendered")
+			}
+			patch := bbr.Spec.ConfigPatches[0]
+			if patch.Patch.Value.Name != "envoy.filters.http.ext_proc.bbr" {
+				t.Fatalf("first bbr-ext-proc patch inserts %q, want the BBR filter", patch.Patch.Value.Name)
+			}
+			anchor := patch.Match.Listener.FilterChain.Filter.SubFilter.Name
+			if tt.anchor == "" {
+				if patch.Patch.Operation != "INSERT_FIRST" || anchor != "" {
+					t.Errorf("BBR placement = %s %q, want INSERT_FIRST without an anchor", patch.Patch.Operation, anchor)
+				}
+				if len(authPriority) != 0 {
+					t.Errorf("auth renders ext_authz filters %v, so BBR must follow them", authPriority)
+				}
+			} else {
+				if patch.Patch.Operation != "INSERT_AFTER" || anchor != tt.anchor {
+					t.Errorf("BBR placement = %s %q, want INSERT_AFTER %q", patch.Patch.Operation, anchor, tt.anchor)
+				}
+				// The anchor must be a filter the auth EnvoyFilters insert, applied
+				// before BBR's patch, or Istio drops the BBR insertion silently.
+				if priority, ok := authPriority[anchor]; !ok {
+					t.Errorf("anchor %q is not inserted by any auth EnvoyFilter (inserted: %v)", anchor, authPriority)
+				} else if bbr.Spec.Priority <= priority {
+					t.Errorf("bbr-ext-proc priority %d must exceed the auth EnvoyFilter priority %d", bbr.Spec.Priority, priority)
+				}
+			}
+			if cors != nil && bbr.Spec.Priority >= cors.Spec.Priority {
+				t.Errorf("bbr-ext-proc priority %d must stay below gateway-cors %d so kaito.cors stays first",
+					bbr.Spec.Priority, cors.Spec.Priority)
+			}
+		})
+	}
+}
+
 func renderModelDeployment(t *testing.T, values ...string) ([]byte, error) {
 	t.Helper()
 	chart := filepath.Join("..", "..", "..", "..", "charts", "modeldeployment")

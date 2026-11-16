@@ -356,8 +356,8 @@ install_productionstack() {
   #     subchart renders just the Deployment + Service + RBAC and NO
   #     EnvoyFilter, so it no longer has to live in Istio's root
   #     namespace. The ext_proc EnvoyFilter that injects BBR into each
-  #     Gateway's HCM (anchored INSERT_BEFORE the InferencePool
-  #     ext_proc, giving ext_authz → bbr → ext_proc/epp → router) is
+  #     Gateway's HCM (inserted directly after the ext_authz filters,
+  #     giving ext_authz → bbr → ext_proc/epp → router) is
   #     rendered per-namespace by charts/modelharness and scoped to that
   #     namespace's Gateway pod.
   #   * keda-kaito-scaler  → ${KEDA_NAMESPACE}  (co-located with KEDA so
@@ -375,9 +375,9 @@ install_productionstack() {
   # the namespace.
   #
   # Note: the BBR EnvoyFilter rendered per-namespace by
-  # charts/modelharness only slots into the runtime filter chain once
-  # Istio has injected the InferencePool ext_proc anchor; it is created
-  # up-front and attaches lazily, which is fine.
+  # charts/modelharness anchors on the auth filters, not on the
+  # InferencePool ext_proc, so BBR is in the filter chain even before the
+  # namespace's first modeldeployment is installed.
 
   echo "⏳ Ensuring per-subchart target namespaces exist..."
   kubectl create namespace "${KEDA_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
