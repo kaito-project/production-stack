@@ -156,6 +156,187 @@ func TestModelDeploymentScalingAnnotations(t *testing.T) {
 	}
 }
 
+// TestModelHarnessModelsAPIRoute pins the model-discovery route: a
+// harness-owned HTTPRoute (so an App Routing cluster publishes the namespace
+// hostname before any modeldeployment exists), the ReferenceGrant that lets
+// it reach the status reporter across namespaces, and no discovery routes
+// left in the catch-all EnvoyFilter.
+func TestModelHarnessModelsAPIRoute(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	const ns = "team-a"
+	for _, tt := range []struct {
+		name          string
+		values        []string
+		wantHostnames bool
+		wantGrant     bool
+	}{
+		{name: "non-cloud", wantGrant: true},
+		{name: "azure", values: []string{"cloudprovider=azure", "azure.defaultDomain.zoneName=example.aksapp.io"},
+			wantHostnames: true, wantGrant: true},
+		{name: "reporter in the workload namespace", values: []string{"modelsAPI.serviceNamespace=" + ns}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			chart := filepath.Join("..", "..", "..", "..", "charts", "modelharness")
+			args := []string{"template", "harness", chart, "--set", "namespace=" + ns}
+			for _, value := range tt.values {
+				args = append(args, "--set", value)
+			}
+			output, err := exec.Command("helm", args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, output)
+			}
+
+			type object struct {
+				Kind     string            `json:"kind"`
+				Metadata metav1.ObjectMeta `json:"metadata"`
+				Spec     json.RawMessage   `json:"spec"`
+			}
+			var route struct {
+				ParentRefs []struct {
+					Name string `json:"name"`
+				} `json:"parentRefs"`
+				Hostnames []string `json:"hostnames"`
+				Rules     []struct {
+					Matches []struct {
+						Path struct {
+							Type  string `json:"type"`
+							Value string `json:"value"`
+						} `json:"path"`
+					} `json:"matches"`
+					Filters []struct {
+						Type                  string `json:"type"`
+						RequestHeaderModifier struct {
+							Set []struct {
+								Name  string `json:"name"`
+								Value string `json:"value"`
+							} `json:"set"`
+						} `json:"requestHeaderModifier"`
+					} `json:"filters"`
+					BackendRefs []struct {
+						Name      string `json:"name"`
+						Namespace string `json:"namespace"`
+						Port      int    `json:"port"`
+					} `json:"backendRefs"`
+					Timeouts struct {
+						Request string `json:"request"`
+					} `json:"timeouts"`
+				} `json:"rules"`
+			}
+			var grant struct {
+				From []struct {
+					Group     string `json:"group"`
+					Kind      string `json:"kind"`
+					Namespace string `json:"namespace"`
+				} `json:"from"`
+				To []struct {
+					Kind string `json:"kind"`
+					Name string `json:"name"`
+				} `json:"to"`
+			}
+			var listenerHostname string
+			var routeFound, grantFound bool
+			for _, doc := range strings.Split(string(output), "\n---") {
+				var obj object
+				if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+					t.Fatalf("parse rendered object: %v\n%s", err, doc)
+				}
+				switch {
+				case obj.Kind == "HTTPRoute" && obj.Metadata.Name == "models-api":
+					if obj.Metadata.Namespace != ns {
+						t.Errorf("models-api HTTPRoute namespace = %q, want %q", obj.Metadata.Namespace, ns)
+					}
+					if err := json.Unmarshal(obj.Spec, &route); err != nil {
+						t.Fatalf("decode models-api HTTPRoute: %v", err)
+					}
+					routeFound = true
+				case obj.Kind == "ReferenceGrant" && obj.Metadata.Name == "modelharness-"+ns+"-models-api":
+					if obj.Metadata.Namespace != "kube-system" {
+						t.Errorf("ReferenceGrant namespace = %q, want the reporter namespace kube-system", obj.Metadata.Namespace)
+					}
+					if err := json.Unmarshal(obj.Spec, &grant); err != nil {
+						t.Fatalf("decode ReferenceGrant: %v", err)
+					}
+					grantFound = true
+				case obj.Kind == "Gateway":
+					var gw struct {
+						Listeners []struct {
+							Hostname string `json:"hostname"`
+						} `json:"listeners"`
+					}
+					if err := json.Unmarshal(obj.Spec, &gw); err != nil {
+						t.Fatalf("decode Gateway: %v", err)
+					}
+					if len(gw.Listeners) > 0 {
+						listenerHostname = gw.Listeners[0].Hostname
+					}
+				case obj.Kind == "EnvoyFilter" && obj.Metadata.Name == "model-not-found-direct":
+					if strings.Contains(string(obj.Spec), "productionstack-status-reporter") {
+						t.Errorf("model-not-found-direct still routes to the status reporter; discovery belongs to the models-api HTTPRoute")
+					}
+				}
+			}
+
+			if !routeFound {
+				t.Fatal("models-api HTTPRoute not rendered")
+			}
+			if len(route.ParentRefs) != 1 || route.ParentRefs[0].Name != ns {
+				t.Errorf("models-api parentRefs = %+v, want the namespace Gateway %q", route.ParentRefs, ns)
+			}
+			if tt.wantHostnames {
+				if len(route.Hostnames) != 1 || route.Hostnames[0] != listenerHostname {
+					t.Errorf("models-api hostnames = %v, want the Gateway listener hostname %q", route.Hostnames, listenerHostname)
+				}
+			} else if len(route.Hostnames) != 0 {
+				t.Errorf("models-api hostnames = %v, want none", route.Hostnames)
+			}
+			if len(route.Rules) != 1 || len(route.Rules[0].Matches) != 1 || len(route.Rules[0].BackendRefs) != 1 {
+				t.Fatalf("models-api rules = %+v, want one rule with one match and one backend", route.Rules)
+			}
+			rule := route.Rules[0]
+			if path := rule.Matches[0].Path; path.Type != "PathPrefix" || path.Value != "/v1/models" {
+				t.Errorf("models-api path match = %+v, want PathPrefix /v1/models", path)
+			}
+			var namespaceHeader string
+			for _, filter := range rule.Filters {
+				for _, header := range filter.RequestHeaderModifier.Set {
+					if filter.Type == "RequestHeaderModifier" && header.Name == "X-Kaito-Gateway-Namespace" {
+						namespaceHeader = header.Value
+					}
+				}
+			}
+			if namespaceHeader != ns {
+				t.Errorf("models-api sets X-Kaito-Gateway-Namespace = %q, want %q", namespaceHeader, ns)
+			}
+			wantNamespace := "kube-system"
+			if !tt.wantGrant {
+				wantNamespace = ns
+			}
+			if backend := rule.BackendRefs[0]; backend.Name != "productionstack-status-reporter" ||
+				backend.Namespace != wantNamespace || backend.Port != 8082 {
+				t.Errorf("models-api backend = %+v, want productionstack-status-reporter in %s on 8082", backend, wantNamespace)
+			}
+			if rule.Timeouts.Request != "10s" {
+				t.Errorf("models-api timeouts.request = %q, want 10s", rule.Timeouts.Request)
+			}
+
+			if grantFound != tt.wantGrant {
+				t.Fatalf("models-api ReferenceGrant rendered = %v, want %v", grantFound, tt.wantGrant)
+			}
+			if tt.wantGrant {
+				if len(grant.From) != 1 || grant.From[0].Group != "gateway.networking.k8s.io" ||
+					grant.From[0].Kind != "HTTPRoute" || grant.From[0].Namespace != ns {
+					t.Errorf("ReferenceGrant from = %+v, want HTTPRoutes in %s", grant.From, ns)
+				}
+				if len(grant.To) != 1 || grant.To[0].Kind != "Service" || grant.To[0].Name != "productionstack-status-reporter" {
+					t.Errorf("ReferenceGrant to = %+v, want the productionstack-status-reporter Service", grant.To)
+				}
+			}
+		})
+	}
+}
+
 func TestModelDeploymentScalingValidation(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm is required for chart rendering tests")

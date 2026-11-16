@@ -57,8 +57,8 @@
         },
         "timeout": {
           "type": "string",
-          "minLength": 1,
-          "description": "Envoy route timeout for the discovery hop (e.g. '10s')."
+          "pattern": "^([0-9]{1,5}(h|m|s|ms)){1,4}$",
+          "description": "Request timeout for the discovery route (HTTPRoute timeouts.request), in Gateway API duration format (e.g. '10s')."
         }
       }
     },

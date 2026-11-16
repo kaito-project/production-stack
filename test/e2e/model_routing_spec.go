@@ -193,8 +193,9 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 		})
 
 		It("should not swallow sibling paths that merely share the prefix", func() {
-			// The route pair is `exact /v1/models` + `prefix /v1/models/`; a bare
-			// `prefix /v1/models` would wrongly capture this path too.
+			// The models-api route is a Gateway API `PathPrefix: /v1/models`,
+			// which matches whole path elements; a plain string prefix would
+			// wrongly capture this path too.
 			resp, err := utils.SendModels(caseGateway, "/v1/modelsfoo")
 			Expect(err).NotTo(HaveOccurred())
 			defer resp.Body.Close()

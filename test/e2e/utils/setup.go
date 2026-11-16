@@ -33,8 +33,9 @@ import (
 // modelharness owns in it: the Istio Gateway (named "<name>-gw" by chart
 // default), the catch-all `model-not-found-direct` EnvoyFilter (Envoy
 // `direct_response` returning 404 + OpenAI-compatible JSON for any request not
-// matched by a deployment-specific HTTPRoute, plus the model-discovery routes),
-// the browser CORS EnvoyFilter used by protocol/auth coverage, the
+// matched by a deployment-specific HTTPRoute), the `models-api` HTTPRoute that
+// serves model discovery, the browser CORS EnvoyFilter used by protocol/auth
+// coverage, the
 // AuthorizationPolicy + APIKey CR that wire the Gateway into the cluster-wide
 // apikey-ext-authz CUSTOM provider, and the
 // CiliumNetworkPolicy that locks down East-West ingress while keeping the

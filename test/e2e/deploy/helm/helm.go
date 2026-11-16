@@ -143,8 +143,8 @@ func (d *Deployer) Name() string { return BackendName }
 // `helm upgrade --install` for the modelharness chart in it. It provisions the
 // per-namespace Gateway (named "<namespace>" by chart default), the
 // catch-all `model-not-found-direct` EnvoyFilter (Envoy `direct_response`
-// returning 404 + OpenAI-compatible JSON, plus the model-discovery routes),
-// the optional browser CORS EnvoyFilter, and — when AuthEnabled is true — the
+// returning 404 + OpenAI-compatible JSON), the `models-api` model-discovery
+// HTTPRoute, the optional browser CORS EnvoyFilter, and — when AuthEnabled is true — the
 // per-namespace AuthorizationPolicy + APIKey CR. When the chart's networkPolicy values are enabled it additionally
 // renders the CiliumNetworkPolicy that locks down East-West ingress while
 // keeping the gateway pod reachable.

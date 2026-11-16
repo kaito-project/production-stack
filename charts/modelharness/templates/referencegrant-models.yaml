@@ -1,0 +1,30 @@
+{{- if ne .Values.modelsAPI.serviceNamespace (include "modelharness.namespace" .) }}
+# ReferenceGrant: authorises the `models-api` HTTPRoute in THIS workload
+# namespace to reference the cluster-wide productionstack-status-reporter
+# Service in `modelsAPI.serviceNamespace`. Gateway API does not resolve a
+# cross-namespace backendRef unless a ReferenceGrant in the referent's
+# namespace permits it: the route reports ResolvedRefs=False
+# (RefNotPermitted) and requests to it get a 500.
+#
+# Written OUTSIDE this chart's workload namespace — the grant must live in the
+# Service's namespace, like templates/azure/referencegrant.yaml for the TLS
+# Secret. Named after the workload namespace so modelharness releases in
+# different namespaces don't collide, and removed together with the route on
+# uninstall.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ printf "modelharness-%s-models-api" (include "modelharness.namespace" .) | quote }}
+  namespace: {{ .Values.modelsAPI.serviceNamespace | quote }}
+  labels:
+    {{- include "modelharness.labels" . | nindent 4 }}
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: {{ include "modelharness.namespace" . | quote }}
+  to:
+    - group: ""
+      kind: Service
+      name: {{ include "modelharness.modelsServiceName" . }}
+{{- end }}
