@@ -1,5 +1,5 @@
 # Build stage
-FROM --platform=$BUILDPLATFORM golang:1.26.10 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.11 AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 WORKDIR /workspace

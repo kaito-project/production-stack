@@ -35,14 +35,24 @@ import (
 //	The modeldeployment chart always renders the HTTPRoute, InferencePool,
 //	and EPP for a model regardless of whether the pool currently has ready
 //	endpoints. When the InferenceSet is scaled to replicas=0, the route +
-//	EPP stay healthy but the EPP can pick NO backend, so Envoy raises a
-//	router/upstream flag (no healthy upstream). Because BBR has already
-//	injected X-Gateway-Model-Name, the local reply carries the model header
-//	PRESENT together with that router flag — mapper #2 of the consolidated
-//	per-namespace outage local_reply
-//	(charts/modelharness/templates/envoyfilter-outage-reply.yaml) — which
-//	rewrites it to a `503 model_unavailable` envelope carrying
-//	`x-kaito-error-source: inferenceset` and a `Retry-After` header.
+//	EPP stay healthy but the pool has no ready endpoint. Two local replies
+//	can then reach the client, both carrying the BBR-injected
+//	X-Gateway-Model-Name header, and the consolidated per-namespace outage
+//	local_reply (charts/modelharness/templates/envoyfilter-outage-reply.yaml)
+//	maps both to a `503 model_unavailable` envelope carrying
+//	`x-kaito-error-source: inferenceset` and a `Retry-After` header:
+//	  * steady state: the EPP itself finds no endpoint candidate and rejects
+//	    the request with the endpoint picker protocol's ImmediateResponse
+//	    503. No router flag + 503 -> mapper #4a. This is the case that must
+//	    NOT be mistaken for an EPP outage (`epp_unavailable` is for any other
+//	    5xx, e.g. Envoy's ext_proc default 500 when the EPP is down, mapper
+//	    #4b).
+//	  * transition: the EPP's pod view and the gateway's EDS view briefly
+//	    disagree, e.g. the EPP still picks a terminating pod the gateway has
+//	    already dropped (UH) or that refuses the connection (UF/UC) ->
+//	    router flag -> mapper #2.
+//	The spec therefore keeps asserting the envelope for a while after the
+//	first match, so a pass cannot come from the transition window alone.
 //
 //	The `code` is deliberately root-cause-neutral (proposal §2.3 item 3):
 //	warm-up / crash / OOM / eviction all surface the SAME response shape,
@@ -114,7 +124,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 			Expect(scaleTo(0)).To(Succeed(), "failed to scale InferenceSet to zero")
 
 			By("sending a valid chat completion and asserting the model_unavailable envelope")
-			Eventually(func(g Gomega) {
+			expectModelUnavailable := func(g Gomega) {
 				resp, sErr := utils.SendChat(caseGateway, modelName)
 				g.Expect(sErr).NotTo(HaveOccurred(), "request to gateway failed")
 				status := resp.StatusCode
@@ -130,9 +140,14 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 					"empty pool must not surface as 404")
 				g.Expect(code).NotTo(Equal("model_not_found"),
 					"empty pool must not surface as model_not_found")
+				// Regression guard: a healthy EPP rejecting the request
+				// because it has no endpoint must not be blamed on the EPP.
+				g.Expect(code).NotTo(Equal("epp_unavailable"),
+					"empty pool behind a healthy EPP must not surface as epp_unavailable")
 
-				// Unified outage envelope produced by mapper #2 of the
-				// consolidated per-namespace local_reply.
+				// Unified outage envelope produced by mapper #4a (EPP
+				// rejection) or #2 (router flag) of the consolidated
+				// per-namespace local_reply.
 				g.Expect(status).To(Equal(http.StatusServiceUnavailable),
 					"empty pool should surface as 503")
 				g.Expect(code).To(Equal("model_unavailable"),
@@ -141,7 +156,11 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 					"empty pool should carry x-kaito-error-source: inferenceset")
 				g.Expect(retryAfter).NotTo(BeEmpty(),
 					"model_unavailable should carry a Retry-After header")
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+			}
+			Eventually(expectModelUnavailable, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("asserting the envelope holds once the pool has settled empty")
+			Consistently(expectModelUnavailable, 30*time.Second, 5*time.Second).Should(Succeed())
 		})
 
 		It("recovers once the InferenceSet is scaled back up", func() {

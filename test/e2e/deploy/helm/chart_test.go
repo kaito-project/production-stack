@@ -18,6 +18,7 @@ package helm
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os/exec"
 	"path/filepath"
@@ -292,4 +293,188 @@ func renderModelDeployment(t *testing.T, values ...string) ([]byte, error) {
 		args = append(args, "--set", value)
 	}
 	return exec.Command("helm", args...).CombinedOutput()
+}
+
+// TestModelHarnessOutageReplyMappers pins the attribution contract of the
+// consolidated outage local_reply: mapper order (first match wins) and the
+// status each unflagged mapper keys on. With the model header present, the
+// 503 an EPP returns on purpose because it cannot place a request (endpoint
+// picker protocol) is model_unavailable and any other 5xx is
+// epp_unavailable; with it absent, only the status BBR's ext_proc filter is
+// pinned to is bbr_unavailable. The mappers must use only core
+// AccessLogFilter types, so the patch needs no optional Envoy extension.
+func TestModelHarnessOutageReplyMappers(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	chart := filepath.Join("..", "..", "..", "..", "charts", "modelharness")
+	render := func(template string) []byte {
+		t.Helper()
+		output, err := exec.Command("helm", "template", "harness", chart, "--set", "namespace=ns",
+			"--show-only", template).CombinedOutput()
+		if err != nil {
+			t.Fatalf("helm template %s: %v\n%s", template, err, output)
+		}
+		return output
+	}
+
+	type filter struct {
+		HeaderFilter *struct {
+			Header struct {
+				Name        string `json:"name"`
+				InvertMatch bool   `json:"invert_match"`
+			} `json:"header"`
+		} `json:"header_filter"`
+		ResponseFlagFilter *struct {
+			Flags []string `json:"flags"`
+		} `json:"response_flag_filter"`
+		StatusCodeFilter *struct {
+			Comparison struct {
+				Op    string `json:"op"`
+				Value struct {
+					DefaultValue int `json:"default_value"`
+				} `json:"value"`
+			} `json:"comparison"`
+		} `json:"status_code_filter"`
+		ExtensionFilter *struct {
+			Name string `json:"name"`
+		} `json:"extension_filter"`
+		AndFilter *struct {
+			Filters []filter `json:"filters"`
+		} `json:"and_filter"`
+	}
+	type envoyFilter struct {
+		Spec struct {
+			ConfigPatches []struct {
+				Patch struct {
+					Value struct {
+						TypedConfig struct {
+							StatusOnError *struct {
+								Code json.RawMessage `json:"code"`
+							} `json:"status_on_error"`
+							LocalReplyConfig struct {
+								Mappers []struct {
+									Filter       filter `json:"filter"`
+									StatusCode   int    `json:"status_code"`
+									HeadersToAdd []struct {
+										Header struct {
+											Key   string `json:"key"`
+											Value string `json:"value"`
+										} `json:"header"`
+									} `json:"headers_to_add"`
+									Body struct {
+										InlineString string `json:"inline_string"`
+									} `json:"body"`
+								} `json:"mappers"`
+							} `json:"local_reply_config"`
+						} `json:"typed_config"`
+					} `json:"value"`
+				} `json:"patch"`
+			} `json:"configPatches"`
+		} `json:"spec"`
+	}
+
+	// BBR's ext_proc status_on_error is what mapper #5 must match exactly.
+	var bbr envoyFilter
+	if err := yaml.Unmarshal(render("templates/envoyfilter-bbr.yaml"), &bbr); err != nil {
+		t.Fatalf("decode BBR EnvoyFilter: %v", err)
+	}
+	bbrStatus := 0
+	for _, p := range bbr.Spec.ConfigPatches {
+		if p.Patch.Value.TypedConfig.StatusOnError == nil {
+			continue
+		}
+		var code any
+		if err := json.Unmarshal(p.Patch.Value.TypedConfig.StatusOnError.Code, &code); err != nil {
+			t.Fatalf("decode BBR status_on_error: %v", err)
+		}
+		statusCodes := map[string]int{"InternalServerError": 500, "BadGateway": 502, "ServiceUnavailable": 503, "GatewayTimeout": 504}
+		switch c := code.(type) {
+		case float64:
+			bbrStatus = int(c)
+		case string:
+			bbrStatus = statusCodes[c]
+		}
+	}
+	if bbrStatus < 500 {
+		t.Fatalf("BBR ext_proc status_on_error = %d, want a pinned 5xx (extend the status code names above if it is valid)", bbrStatus)
+	}
+
+	var ef envoyFilter
+	if err := yaml.Unmarshal(render("templates/envoyfilter-outage-reply.yaml"), &ef); err != nil {
+		t.Fatalf("decode outage EnvoyFilter: %v", err)
+	}
+	if len(ef.Spec.ConfigPatches) != 1 {
+		t.Fatalf("expected 1 config patch, got %d", len(ef.Spec.ConfigPatches))
+	}
+	mappers := ef.Spec.ConfigPatches[0].Patch.Value.TypedConfig.LocalReplyConfig.Mappers
+
+	for _, tt := range []struct {
+		code        string
+		status      int
+		source      string
+		modelHeader string // "present", "absent" or "" (not matched)
+		routerFlag  bool
+		match       string // status_code_filter, e.g. "GE 500", or "" (none)
+		retryAfter  bool
+	}{
+		{code: "ext_authz_unavailable", status: 502, source: "authz", match: "GE 500"},
+		{code: "model_unavailable", status: 503, source: "inferenceset", modelHeader: "present", routerFlag: true, retryAfter: true},
+		{code: "gateway_unavailable", status: 502, source: "gateway", modelHeader: "absent", routerFlag: true},
+		{code: "model_unavailable", status: 503, source: "inferenceset", modelHeader: "present", match: "EQ 503", retryAfter: true},
+		{code: "epp_unavailable", status: 502, source: "epp", modelHeader: "present", match: "GE 500"},
+		{code: "bbr_unavailable", status: 502, source: "bbr", modelHeader: "absent", match: fmt.Sprintf("EQ %d", bbrStatus)},
+		{code: "gateway_internal_error", source: "gateway", match: "GE 500"},
+	} {
+		if len(mappers) == 0 {
+			t.Fatalf("missing mapper for %s", tt.code)
+		}
+		m := mappers[0]
+		mappers = mappers[1:]
+		if !strings.Contains(m.Body.InlineString, `"code":"`+tt.code+`"`) {
+			t.Errorf("mapper order: want %s, got body %s", tt.code, m.Body.InlineString)
+			continue
+		}
+		if m.StatusCode != tt.status {
+			t.Errorf("%s: status_code = %d, want %d", tt.code, m.StatusCode, tt.status)
+		}
+		headers := map[string]string{}
+		for _, h := range m.HeadersToAdd {
+			headers[h.Header.Key] = h.Header.Value
+		}
+		if headers["x-kaito-error-source"] != tt.source {
+			t.Errorf("%s: x-kaito-error-source = %q, want %q", tt.code, headers["x-kaito-error-source"], tt.source)
+		}
+		if _, ok := headers["retry-after"]; ok != tt.retryAfter {
+			t.Errorf("%s: retry-after present = %v, want %v", tt.code, ok, tt.retryAfter)
+		}
+		filters := []filter{m.Filter}
+		if m.Filter.AndFilter != nil {
+			filters = m.Filter.AndFilter.Filters
+		}
+		modelHeader, routerFlag, match := "", false, ""
+		for _, f := range filters {
+			switch {
+			case f.HeaderFilter != nil && f.HeaderFilter.Header.Name == "X-Gateway-Model-Name":
+				modelHeader = "present"
+				if f.HeaderFilter.Header.InvertMatch {
+					modelHeader = "absent"
+				}
+			case f.ResponseFlagFilter != nil && slices.Contains(f.ResponseFlagFilter.Flags, "UH"):
+				routerFlag = true
+			case f.StatusCodeFilter != nil:
+				match = fmt.Sprintf("%s %d", f.StatusCodeFilter.Comparison.Op, f.StatusCodeFilter.Comparison.Value.DefaultValue)
+			case f.ExtensionFilter != nil:
+				t.Errorf("%s: extension filter %q: the mappers must use only core AccessLogFilter types",
+					tt.code, f.ExtensionFilter.Name)
+			}
+		}
+		if modelHeader != tt.modelHeader || routerFlag != tt.routerFlag || match != tt.match {
+			t.Errorf("%s: match (model header %q, router flag %v, status %q), want (%q, %v, %q)",
+				tt.code, modelHeader, routerFlag, match, tt.modelHeader, tt.routerFlag, tt.match)
+		}
+	}
+	if len(mappers) != 0 {
+		t.Errorf("%d unexpected trailing mappers", len(mappers))
+	}
 }
