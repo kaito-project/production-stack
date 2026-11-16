@@ -82,15 +82,6 @@ bbr:
     responseBody: false
     responseTrailers: false
 
-  envoyFilter:
-    # Filter-chain placement. Anchor on Istio's auto-injected
-    # InferencePool ext_proc filter and INSERT_BEFORE so BBR injects
-    # `X-Gateway-Model-Name` before the InferencePool/EPP ext_proc and
-    # the HTTPRoute match run. Final chain:
-    #   istio.metadata_exchange → bbr → ext_proc (InferencePool) → … → router
-    operation: INSERT_BEFORE
-    anchorSubFilter: envoy.filters.http.ext_proc
-
   # Passive outlier detection for the BBR ext_proc upstream cluster.
   # A CLUSTER patch MERGEs `outlier_detection` onto the auto-generated
   # `outbound|<port>||body-based-router...` cluster so a BBR replica that

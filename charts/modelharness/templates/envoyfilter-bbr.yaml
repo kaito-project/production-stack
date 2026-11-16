@@ -11,18 +11,31 @@ Filter-chain placement:
   BBR injects `X-Gateway-Model-Name` from the JSON request body so the
   per-Gateway HTTPRoute and the InferencePool ext_proc filter (EPP) can
   route to the correct deployment. BBR MUST run BEFORE the InferencePool
-  ext_proc filter, so it is anchored on Istio's auto-injected
-  `envoy.filters.http.ext_proc` with INSERT_BEFORE, giving the chain:
-    istio.metadata_exchange -> bbr -> ext_proc (InferencePool) -> ... -> router
-  If ext_proc ran first it would resolve its per-route override before the
-  header exists, fall through to the catch-all, and round-robin across the
-  InferencePool pods (bypassing EPP).
+  ext_proc filter: if ext_proc ran first it would resolve its per-route
+  override before the header exists, fall through to the catch-all, and
+  round-robin across the InferencePool pods (bypassing EPP).
+
+  BBR is NOT anchored on that ext_proc filter. Istio adds it only to a
+  Gateway that has an InferencePool attached, and an INSERT_BEFORE whose
+  anchor is missing is dropped without an error, so a namespace without a
+  modeldeployment would run without BBR and answer a request that names a
+  model with 400 invalid_request_body instead of 404 model_not_found.
+  Instead BBR goes directly after the last ext_authz filter the auth
+  EnvoyFilters render (see modelharness.bbrAnchorFilter), or first when
+  auth renders none. Istio appends the InferencePool ext_proc after its own
+  authn/authz filters, giving the chain:
+    kaito.cors -> [ext_authz] -> bbr -> ... -> ext_proc (InferencePool) -> ... -> router
+  BBR therefore still runs after authentication, so an unauthenticated
+  request never reaches it. `priority: 5` applies this patch after the auth
+  EnvoyFilters (priority 0) that create the anchor and before gateway-cors
+  (priority 10), whose INSERT_FIRST keeps kaito.cors ahead of BBR.
 
 Transport:
   BBR serves plaintext HTTP/2; the upstream cluster is plain
   `outbound|<port>||<svc>` with no upstream TLS and no DestinationRule.
   The gateway<->BBR hop never leaves the pod network.
 */}}
+{{- $anchor := include "modelharness.bbrAnchorFilter" . }}
 apiVersion: networking.istio.io/v1alpha3
 kind: EnvoyFilter
 metadata:
@@ -31,6 +44,7 @@ metadata:
   labels:
     {{- include "modelharness.labels" . | nindent 4 }}
 spec:
+  priority: 5
   workloadSelector:
     labels:
       gateway.networking.k8s.io/gateway-name: {{ include "modelharness.gatewayName" . | quote }}
@@ -42,12 +56,12 @@ spec:
           filterChain:
             filter:
               name: "envoy.filters.network.http_connection_manager"
-              {{- if .Values.bbr.envoyFilter.anchorSubFilter }}
+              {{- with $anchor }}
               subFilter:
-                name: {{ .Values.bbr.envoyFilter.anchorSubFilter }}
+                name: {{ . | quote }}
               {{- end }}
       patch:
-        operation: {{ .Values.bbr.envoyFilter.operation }}
+        operation: {{ ternary "INSERT_AFTER" "INSERT_FIRST" (ne $anchor "") }}
         value:
           name: envoy.filters.http.ext_proc.bbr
           typed_config:

@@ -34,6 +34,26 @@ productionstack-status-reporter
 {{- end }}
 
 {{/*
+HTTP filter that BBR is inserted directly after: the last ext_authz filter the
+auth EnvoyFilters splice into the Gateway HCM, or empty when auth renders none.
+Mirrors the render conditions of templates/envoyfilter-ext-authz.yaml (apikey)
+and templates/azure/envoyfilter-ext-authz.yaml (azure, hybrid). In hybrid mode
+the azure filter, which follows jwt_authn, comes after the apikey one.
+*/}}
+{{- define "modelharness.bbrAnchorFilter" -}}
+{{- if .Values.auth.enabled -}}
+{{- $azureMode := default "azure" .Values.auth.mode -}}
+{{- $azureAuth := and (eq .Values.cloudprovider "azure") (has $azureMode (list "azure" "hybrid")) -}}
+{{- $apikeyAuth := or (not .Values.auth.mode) (eq .Values.auth.mode "apikey") -}}
+{{- if and $azureAuth (eq $azureMode "hybrid") -}}
+ext_authz.azure
+{{- else if or $azureAuth $apikeyAuth -}}
+envoy.filters.http.ext_authz
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Common labels applied to every harness-owned resource.
 
 `kaito.sh/owned-by: modelharness` is the stable ownership label the
