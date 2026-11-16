@@ -42,10 +42,11 @@ import (
 //	maps both to a `503 model_unavailable` envelope carrying
 //	`x-kaito-error-source: inferenceset` and a `Retry-After` header:
 //	  * steady state: the EPP itself finds no endpoint candidate and rejects
-//	    the request with an ext_proc ImmediateResponse 5xx. No router flag
-//	    and no Envoy `ext_proc_error` details -> mapper #4b. This is the
-//	    case that must NOT be mistaken for an EPP outage (`epp_unavailable`
-//	    is reserved for Envoy-generated ext_proc failures, mapper #4a).
+//	    the request with the endpoint picker protocol's ImmediateResponse
+//	    503. No router flag + 503 -> mapper #4a. This is the case that must
+//	    NOT be mistaken for an EPP outage (`epp_unavailable` is for any other
+//	    5xx, e.g. Envoy's ext_proc default 500 when the EPP is down, mapper
+//	    #4b).
 //	  * transition: the EPP's pod view and the gateway's EDS view briefly
 //	    disagree, e.g. the EPP still picks a terminating pod the gateway has
 //	    already dropped (UH) or that refuses the connection (UF/UC) ->
@@ -144,7 +145,7 @@ var _ = Describe("model_unavailable (zero ready inference endpoints)",
 				g.Expect(code).NotTo(Equal("epp_unavailable"),
 					"empty pool behind a healthy EPP must not surface as epp_unavailable")
 
-				// Unified outage envelope produced by mapper #4b (EPP
+				// Unified outage envelope produced by mapper #4a (EPP
 				// rejection) or #2 (router flag) of the consolidated
 				// per-namespace local_reply.
 				g.Expect(status).To(Equal(http.StatusServiceUnavailable),
