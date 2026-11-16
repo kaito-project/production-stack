@@ -1,32 +1,232 @@
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 
 import grpc
+from envoy.config.core.v3 import base_pb2
+from envoy.extensions.filters.http.ext_proc.v3 import processing_mode_pb2
 from envoy.service.ext_proc.v3 import (
     external_processor_pb2,
     external_processor_pb2_grpc,
 )
+from envoy.type.v3 import http_status_pb2
+
+from ext_proc.non_streaming_scan import scan_complete_response
+from ext_proc.policy import GuardrailPolicyConfig
 
 logger = logging.getLogger(__name__)
 
+pb = external_processor_pb2
+mode = processing_mode_pb2.ProcessingMode
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError("Non-standard JSON constant")
+
+
+def _immediate_response(status: int, message: str, details: str) -> pb.ProcessingResponse:
+    return pb.ProcessingResponse(
+        immediate_response=pb.ImmediateResponse(
+            status=http_status_pb2.HttpStatus(code=status),
+            headers=pb.HeaderMutation(
+                set_headers=[
+                    base_pb2.HeaderValueOption(
+                        header=base_pb2.HeaderValue(
+                            key="content-type", raw_value=b"text/plain; charset=utf-8"
+                        ),
+                        append_action=base_pb2.HeaderValueOption.OVERWRITE_IF_EXISTS_OR_ADD,
+                    )
+                ]
+            ),
+            body=message.encode("utf-8"),
+            details=details,
+        )
+    )
+
 
 class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorServicer):
+    def __init__(self, policy: GuardrailPolicyConfig | None = None) -> None:
+        self.policy = policy
+        if policy is None:
+            logger.warning(
+                "No guardrail policy configured; response protection is disabled"
+            )
+        else:
+            # Fail startup on scanner construction errors; never silently disable a policy.
+            policy.build_scanners()
+
+    def _scan_body(self, body: bytes) -> bytes | None:
+        policy = self.policy
+        assert policy is not None
+        document = json.loads(body.decode("utf-8"), parse_constant=_reject_json_constant)
+        if not isinstance(document, dict):
+            raise ValueError("Expected a Chat Completions object")
+        choices = document.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("Expected non-empty choices")
+        changed = False
+        for choice in choices:
+            if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+                raise ValueError("Expected a choice message")
+            message = choice["message"]
+            original = message.get("content")
+            if not isinstance(original, str):
+                raise ValueError("Non-text choices are outside the supported scan scope")
+            text = original
+            # Fresh scanners per choice keep mutable scanner state out of other outputs.
+            for config, scanner in zip(
+                policy.scanner_configs, policy.build_scanners(), strict=True
+            ):
+                sanitized, validity, _ = scan_complete_response([scanner], "", text)
+                action = config.action_on_hit or policy.action
+                if not all(validity.values()):
+                    if action == "block" or sanitized is None or sanitized == text:
+                        return None
+                    if config.type == "secrets":
+                        checked, verified, _ = scan_complete_response(
+                            [scanner], "", sanitized
+                        )
+                        if checked != sanitized or not all(verified.values()):
+                            return None
+                if sanitized is None:
+                    return None
+                text = sanitized
+            message["content"] = text
+            changed |= text != original
+        if not changed:
+            return body
+        return json.dumps(document, ensure_ascii=False, allow_nan=False).encode("utf-8")
+
     async def Process(
         self,
-        request_iterator: AsyncIterator[external_processor_pb2.ProcessingRequest],
+        request_iterator: AsyncIterator[pb.ProcessingRequest],
         context: grpc.aio.ServicerContext,
-    ) -> None:
-        await context.abort(
-            grpc.StatusCode.UNIMPLEMENTED,
-            "KAITO guardrail core integration is not implemented",
-        )
+    ) -> AsyncIterator[pb.ProcessingResponse]:
+        headers_seen = False
+        body_seen = False
+        async for request in request_iterator:
+            phase = request.WhichOneof("request")
+            if self.policy is None:
+                if phase is None:
+                    await context.abort(
+                        grpc.StatusCode.INVALID_ARGUMENT, "Missing processing phase"
+                    )
+                    return
+                response = pb.ProcessingResponse()
+                getattr(response, phase).SetInParent()
+                yield response
+                continue
+            if request.observability_mode:
+                await context.abort(
+                    grpc.StatusCode.FAILED_PRECONDITION,
+                    "Guardrails require blocking ext_proc mode",
+                )
+                return
+            if phase == "request_headers" and not headers_seen:
+                yield pb.ProcessingResponse(
+                    request_headers=pb.HeadersResponse(),
+                    mode_override=mode(
+                        request_body_mode=mode.NONE,
+                        request_trailer_mode=mode.SKIP,
+                        response_header_mode=mode.SEND,
+                        response_body_mode=mode.BUFFERED,
+                        response_trailer_mode=mode.SKIP,
+                    ),
+                )
+                continue
+            if phase == "response_headers" and not headers_seen:
+                headers_seen = True
+                headers = {
+                    header.key.lower(): (
+                        header.raw_value.decode("latin-1")
+                        if header.raw_value else header.value
+                    )
+                    for header in request.response_headers.headers.headers
+                }
+                content_type = (
+                    headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                )
+                encoding = headers.get("content-encoding", "identity").strip().lower()
+                if (
+                    content_type != "application/json"
+                    or encoding != "identity"
+                    or request.response_headers.end_of_stream
+                ):
+                    logger.warning("Guardrail rejected unsupported response headers")
+                    yield _immediate_response(
+                        502,
+                        "Unsupported guardrail response.",
+                        "guardrail_unsupported_response",
+                    )
+                    return
+                yield pb.ProcessingResponse(
+                    response_headers=pb.HeadersResponse(),
+                    mode_override=mode(
+                        response_body_mode=mode.BUFFERED,
+                        response_trailer_mode=mode.SKIP,
+                    ),
+                )
+                continue
+            if phase == "response_body" and headers_seen and not body_seen:
+                body_seen = True
+                if not request.response_body.end_of_stream:
+                    logger.warning("Guardrail requires a complete buffered response body")
+                    yield _immediate_response(
+                        502,
+                        "Incomplete guardrail response.",
+                        "guardrail_incomplete_response",
+                    )
+                    return
+                try:
+                    sanitized = await asyncio.to_thread(
+                        self._scan_body, request.response_body.body
+                    )
+                except Exception:
+                    # Do not log model text or chained scanner exceptions.
+                    logger.error("Guardrail response parsing or scanning failed")
+                    yield _immediate_response(
+                        502,
+                        "Guardrail response processing failed.",
+                        "guardrail_processing_error",
+                    )
+                    return
+                if sanitized is None:
+                    logger.info("Guardrail blocked response")
+                    yield _immediate_response(
+                        403, self.policy.block_message, "guardrail_blocked"
+                    )
+                    return
+                response = pb.BodyResponse()
+                if sanitized != request.response_body.body:
+                    response.response.body_mutation.body = sanitized
+                    response.response.header_mutation.remove_headers.extend(
+                        [
+                            "content-length", "etag", "content-md5", "digest",
+                            "content-digest", "repr-digest",
+                        ]
+                    )
+                yield pb.ProcessingResponse(response_body=response)
+                continue
+            logger.warning("Guardrail received an unexpected processing phase")
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT, "Unexpected guardrail processing phase"
+            )
+            return
+        if self.policy is not None and not body_seen:
+            logger.warning("Guardrail stream ended before the complete response body")
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION, "Missing complete guardrail response"
+            )
 
 
-async def serve(host: str = "[::]", port: int = 9000) -> None:
+async def serve(
+    host: str = "[::]", port: int = 9000, *, policy: GuardrailPolicyConfig | None = None
+) -> None:
+    servicer = ExternalProcessorServicer(policy)
     server = grpc.aio.server()
     external_processor_pb2_grpc.add_ExternalProcessorServicer_to_server(
-        ExternalProcessorServicer(), server
+        servicer, server
     )
     address = f"{host}:{port}"
     try:
