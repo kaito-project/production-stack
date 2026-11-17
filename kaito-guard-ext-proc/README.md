@@ -7,7 +7,7 @@ holdback algorithm, scanner, or guard engine.
 
 The server registers Envoy's `envoy.service.ext_proc.v3.ExternalProcessor`
 service and listens on `[::]:9000`. With an injected policy, `Process` scans
-buffered OpenAI Chat Completions JSON responses through the non-streaming adapter.
+buffered OpenAI Chat Completions JSON responses through core's policy scanning API.
 SSE transport integration is not implemented.
 
 **No policy means no protection.** The default CLI entry point has no policy
@@ -31,9 +31,10 @@ python -m pytest
 ```
 
 Runtime dependencies are defined in `setup.py`. The shared core is pinned to
-the published PyPI package `kaito-guardrail-core==0.2.1`, which supplies scanner
-configuration, real scanner/window adaptation, and SSE/parser/window APIs. See
-the [0.2.1 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.1).
+the published PyPI package `kaito-guardrail-core==0.2.2`, which supplies scanner
+configuration, buffered policy scanning, real scanner/window adaptation, and
+SSE/parser/window APIs. See
+the [0.2.2 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.2).
 `xds-protos`, published by the gRPC project, supplies the generated Envoy
 protobuf messages and service.
 
@@ -121,14 +122,15 @@ sent, are acknowledged without capturing a prompt; scans use an empty prompt.
   responses, and bodies without `end_of_stream` are rejected with HTTP 502.
   Responses carrying trailers are outside this phase's scope.
 - Each `choices[*].message.content` must be a string. Every choice is scanned
-  independently with fresh core scanners through `scan_complete_response()`.
+  independently through `guardrail_core.buffered.scan_policy_output()`, which
+  constructs fresh scanners for each choice.
   Empty strings are allowed. Tool-call-only responses, null/missing content,
   multipart content, empty choices, malformed UTF-8/JSON, duplicate JSON object
   keys at any depth (including escaped equivalents), and unexpected
   structures are outside this scope and produce HTTP 502, never a successful
   scan or an uninspected pass-through. Tool arguments and other fields are not
   scanned, even when accompanied by text content.
-- Scanners execute in configured order, respecting per-scanner action overrides.
+- Core executes scanners in configured order, respecting per-scanner action overrides.
   A blocker hit rejects the entire response with HTTP 403 and `blockMessage`,
   including when a later choice is blocked. A redactor hit uses its sanitized
   string, including an empty string; missing or unchanged sanitization blocks.
@@ -209,7 +211,7 @@ tail; redaction is applied before release, including an empty sanitized output.
 The existing `GuardrailStream(scanner, holdback_len=...)` API remains available
 for caller-supplied `WindowScanner` implementations.
 
-Core 0.2.1 supports `ban_substrings` in default `word` or explicit `str` mode,
+Core 0.2.2 supports `ban_substrings` in default `word` or explicit `str` mode,
 `invisible_text`, `secrets`, and `sensitive`, in block/redact modes. Word matching
 uses the previously released character as left context and defers an unconfirmed
 right boundary until more text or normal EOF. Secrets redaction requires

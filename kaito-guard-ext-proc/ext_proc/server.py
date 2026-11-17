@@ -11,8 +11,8 @@ from envoy.service.ext_proc.v3 import (
     external_processor_pb2_grpc,
 )
 from envoy.type.v3 import http_status_pb2
+from guardrail_core.buffered import scan_policy_output
 
-from ext_proc.non_streaming_scan import scan_complete_response
 from ext_proc.policy import GuardrailPolicyConfig
 
 logger = logging.getLogger(__name__)
@@ -88,27 +88,15 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
             original = message.get("content")
             if not isinstance(original, str):
                 raise ValueError("Non-text choices are outside the supported scan scope")
-            text = original
-            # Fresh scanners per choice keep mutable scanner state out of other outputs.
-            for config, scanner in zip(
-                policy.scanner_configs, policy.build_scanners(), strict=True
-            ):
-                sanitized, validity, _ = scan_complete_response([scanner], "", text)
-                action = config.action_on_hit or policy.action
-                if not all(validity.values()):
-                    if action == "block" or sanitized is None or sanitized == text:
-                        return None
-                    if config.type == "secrets":
-                        checked, verified, _ = scan_complete_response(
-                            [scanner], "", sanitized
-                        )
-                        if checked != sanitized or not all(verified.values()):
-                            return None
-                if sanitized is None:
-                    return None
-                text = sanitized
-            message["content"] = text
-            changed |= text != original
+            result = scan_policy_output(
+                policy.scanner_configs, "", original, default_action=policy.action
+            )
+            if result.blocked:
+                return None
+            if result.output is None:
+                raise ValueError("Allowed guardrail result is missing output")
+            message["content"] = result.output
+            changed |= result.output != original
         if not changed:
             return body
         return json.dumps(document, ensure_ascii=False, allow_nan=False).encode("utf-8")

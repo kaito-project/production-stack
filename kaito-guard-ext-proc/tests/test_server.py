@@ -24,6 +24,7 @@ from envoy.service.ext_proc.v3 import (
     external_processor_pb2,
     external_processor_pb2_grpc,
 )
+from guardrail_core.buffered import scan_policy_output
 
 from ext_proc import __version__
 from ext_proc.policy import GuardrailPolicyConfig
@@ -216,6 +217,20 @@ async def test_process_redacts_each_choice_preserving_other_fields():
 
 
 @pytest.mark.asyncio
+async def test_process_delegates_each_choice_to_core_policy_scanning(monkeypatch):
+    policy = make_policy(action="redact")
+    scan = Mock(wraps=scan_policy_output)
+    monkeypatch.setattr("ext_proc.server.scan_policy_output", scan)
+    async with processor(policy) as stub:
+        _, result = await exchange(stub, chat_body("secret", "safe reply", ""))
+    assert result.HasField("response_body")
+    assert scan.call_args_list == [
+        ((policy.scanner_configs, "", text), {"default_action": "redact"})
+        for text in ("secret", "safe reply", "")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_process_blocks_whole_response_on_later_choice():
     async with processor(make_policy()) as stub:
         _, result = await exchange(stub, chat_body("safe first choice", "a secret"))
@@ -288,9 +303,13 @@ async def test_process_blocks_failed_secrets_revalidation(monkeypatch, valid, ch
         ]
     )
     monkeypatch.setattr(GuardrailPolicyConfig, "build_scanners", lambda self: (scanner,))
+    monkeypatch.setattr(
+        "guardrail_core.buffered.build_scanner", lambda *args, **kwargs: scanner
+    )
     async with processor(policy) as stub:
-        _, result = await exchange(stub, chat_body("secret"))
+        _, result = await exchange(stub, chat_body("original secret"))
     assert result.immediate_response.status.code == 403
+    assert scanner.scan.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -379,6 +398,10 @@ async def test_scanner_error_fails_closed_without_leaking(monkeypatch, caplog):
 
     monkeypatch.setattr(
         GuardrailPolicyConfig, "build_scanners", lambda self: (BrokenScanner(),)
+    )
+    monkeypatch.setattr(
+        "guardrail_core.buffered.build_scanner",
+        lambda *args, **kwargs: BrokenScanner(),
     )
     async with processor(make_policy()) as stub:
         _, result = await exchange(stub, chat_body("private-model-text"))
