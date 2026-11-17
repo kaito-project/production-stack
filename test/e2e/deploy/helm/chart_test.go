@@ -782,3 +782,69 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 		t.Errorf("%d unexpected trailing mappers", len(mappers))
 	}
 }
+
+// TestModelDeploymentHTTPRouteSetsNoErrorSource pins that responses proxied
+// from the inference pods carry no x-kaito-error-source. The header marks only
+// errors the gateway generates itself (the modelharness local_reply mappers and
+// catch-all routes), so the model's HTTPRoute must not stamp it on every
+// response, successes included.
+func TestModelDeploymentHTTPRouteSetsNoErrorSource(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	chart := filepath.Join("..", "..", "..", "..", "charts", "modeldeployment")
+	for _, tt := range []struct {
+		name     string
+		template string
+		values   []string
+	}{
+		{name: "default", template: "templates/httproute.yaml"},
+		{name: "azure", template: "templates/azure/httproute.yaml",
+			values: []string{"cloudprovider=azure", "azure.defaultDomain.zoneName=example.aksapp.io"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"template", "model", chart, "--show-only", tt.template, "--set", "model=test-model"}
+			for _, value := range tt.values {
+				args = append(args, "--set", value)
+			}
+			output, err := exec.Command("helm", args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, output)
+			}
+			type header struct {
+				Name string `json:"name"`
+			}
+			var route struct {
+				Kind string `json:"kind"`
+				Spec struct {
+					Rules []struct {
+						Filters []struct {
+							ResponseHeaderModifier *struct {
+								Set []header `json:"set"`
+								Add []header `json:"add"`
+							} `json:"responseHeaderModifier"`
+						} `json:"filters"`
+					} `json:"rules"`
+				} `json:"spec"`
+			}
+			if err := yaml.Unmarshal(output, &route); err != nil {
+				t.Fatalf("decode HTTPRoute: %v\n%s", err, output)
+			}
+			if route.Kind != "HTTPRoute" || len(route.Spec.Rules) == 0 {
+				t.Fatalf("expected an HTTPRoute with rules, got kind %q with %d rules", route.Kind, len(route.Spec.Rules))
+			}
+			for _, rule := range route.Spec.Rules {
+				for _, filter := range rule.Filters {
+					if filter.ResponseHeaderModifier == nil {
+						continue
+					}
+					for _, h := range append(filter.ResponseHeaderModifier.Set, filter.ResponseHeaderModifier.Add...) {
+						if strings.EqualFold(h.Name, "x-kaito-error-source") {
+							t.Errorf("the HTTPRoute stamps %s on every proxied response, successes included", h.Name)
+						}
+					}
+				}
+			}
+		})
+	}
+}
