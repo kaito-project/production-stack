@@ -1,4 +1,4 @@
-# KAITO guardrail ext_proc skeleton
+# KAITO guardrail ext_proc
 
 This package is the Envoy gateway adapter, not a guardrail implementation.
 SSE framing, OpenAI chunk parsing, and scan-before-release holdback come directly
@@ -6,9 +6,14 @@ from the KAITO-owned `kaito-guardrail-core` package. There is no local parser,
 holdback algorithm, scanner, or guard engine.
 
 The server registers Envoy's `envoy.service.ext_proc.v3.ExternalProcessor`
-service and listens on `[::]:9000`. `Process` still returns gRPC `UNIMPLEMENTED`.
-The shared APIs are not wired into request handling yet; this skeleton does not
-inspect or protect traffic and must not be used as an active guardrail.
+service and listens on `[::]:9000`. With an injected policy, `Process` scans
+single-choice text SSE responses using the shared core parser and holdback window.
+This Phase 3.2 branch is independent of the buffered JSON integration; JSON/SSE
+dispatch will be unified after Phase 3.1 merges.
+
+**No policy means no protection.** The default CLI entry point has no policy
+loader, logs a warning, and acknowledges traffic without scanning. It must not
+be deployed as an enabled guardrail.
 
 ## Run and test
 
@@ -36,8 +41,7 @@ protobuf messages and service.
 
 `ext_proc.policy.GuardrailPolicyConfig` validates an already-decoded guardrail
 policy configuration and delegates scanner configuration and construction to
-`guardrail_core.config`. It does not load files, define a local scanner registry, or
-wire scanners into Envoy `Process`.
+`guardrail_core.config`. It does not load files or define a local scanner registry.
 
 ```python
 from ext_proc.policy import GuardrailPolicyConfig
@@ -145,8 +149,106 @@ discards pending text without scanning or flushing.
 Shared framing and scanner exceptions propagate. Invalid parsed events or
 choice policy violations raise `GuardrailStreamError`, without including model
 text. Call `cancel()` on upstream failure/cancellation, never `finish()`.
-This is tested composition code, not an Envoy `Process` implementation; the
-server remains unchanged and does not protect traffic.
+`sse_output=True` opts into rebuilt SSE instead of plain approved text chunks.
+It preserves allowlisted protocol metadata and defers terminal metadata and
+one `[DONE]` until normal completion. The default text-only API is unchanged.
+
+## Streaming Envoy processing (Phase 3.2)
+
+Inject an already validated policy when constructing
+`ExternalProcessorServicer(policy)` or calling `serve(policy=policy)`:
+
+```python
+import asyncio
+
+from ext_proc.policy import GuardrailPolicyConfig
+from ext_proc.server import serve
+
+policy = GuardrailPolicyConfig.from_dict({
+    "action": "block",
+    "scanner_configs": [
+        {"type": "ban_substrings", "substrings": ["secret"]},
+    ],
+})
+asyncio.run(serve(policy=policy))
+```
+
+Core streaming-policy validation and scanner construction run before startup.
+Unsupported policies fail startup rather than silently disabling protection.
+Policy-file loading and control-plane integration are not part of this phase.
+Request headers, if supplied, are acknowledged without capturing a prompt;
+scans use an empty prompt.
+
+Configure Envoy with `failure_mode_allow: false`, `allow_mode_override: true`,
+and the following modes (the complete runnable test configuration is in
+[`tests/envoy_sse.yaml`](tests/envoy_sse.yaml)):
+
+```yaml
+processing_mode:
+  request_header_mode: SKIP
+  request_body_mode: NONE
+  request_trailer_mode: SKIP
+  response_header_mode: SEND
+  response_body_mode: STREAMED
+  response_trailer_mode: SKIP
+```
+
+Use normal blocking ext_proc, not observability, buffered, partial-buffered, or
+full-duplex mode. Responses must be uncompressed `text/event-stream`; media-type
+parameters are accepted. HTTP trailers are outside this phase. JSON and ordinary
+text responses fail closed rather than passing uninspected.
+
+Every Envoy body chunk gets exactly one body response, including an explicit
+empty replacement while the core holds text. Upstream bytes are never forwarded
+directly. The header response removes content length and stale validators and
+sets `Cache-Control: no-store`; streaming output has no fixed content length.
+
+### Wire fields and terminal ordering
+
+- Only `choices[0].delta.content` goes through the shared scanner/window.
+  Exactly one choice with index zero is supported.
+- `id`, `object`, `created`, `model`, choice index, and `delta.role="assistant"`
+  are type-checked and rebuilt as protocol-only events in input order. Chunk
+  boundaries and formatting can change; metadata can precede held-back text.
+- A parsed `finish_reason` is preserved after the final approved text. It
+  neither flushes the window nor substitutes for `[DONE]`.
+- **Usage output is outside this PR.** The current adapter has no usage-output
+  contract; usage and non-allowlisted top-level metadata are not forwarded.
+  No entire upstream payload is passed through to preserve metadata.
+- `tool_calls`, `function_call`, `refusal`, other non-text delta fields, and
+  unsupported choice fields fail closed instead of being silently dropped.
+- An upstream `[DONE]` only records a marker. Only a body request carrying normal
+  HTTP `end_of_stream` permits `finish()`: core first validates complete SSE
+  framing and the marker, then flushes once and emits terminal metadata followed
+  by exactly one `[DONE]`.
+- Missing DONE, truncated SSE (even after DONE), or any extra data event after
+  DONE is an error. Comments after DONE remain harmless. RPC EOF is not HTTP EOF.
+
+### Fail-closed boundary and cancellation
+
+Blocking and parse/scanner errors discard the current output batch and holdback.
+The processor requests HTTP 403 with `blockMessage` for a policy block, or a
+fixed HTTP 502 for processing/unsupported-response errors. Envoy can substitute
+these responses only while downstream headers remain replaceable. **After
+headers have committed, including when no body bytes have been sent yet, Envoy
+aborts the stream instead; no terminal event or `[DONE]` is emitted.** A client
+may therefore see HTTP 200 followed by an incomplete stream, not a late 403.
+
+Fail closed prevents later content and the retained tail from being sent.
+Already-delivered approved prefixes and protocol metadata cannot be retracted.
+Scanner exception details and model text are not logged or returned.
+Client cancellation and upstream resets discard the per-RPC state without
+calling `finish()` or flushing. A missing HTTP EOF also aborts the RPC.
+
+Tests cover real gRPC transport and real Envoy 1.36.11: successful redaction,
+DONE waiting for HTTP EOF, an error before headers, blocking/scanner errors after
+headers with zero body bytes, upstream truncation after DONE, late blocking after
+an approved prefix, and client disconnect. This is not the full Phase 3.4 matrix.
+Locally, real Envoy tests are explicitly skipped unless a binary is available:
+
+```sh
+ENVOY_BINARY=/path/to/envoy python -m pytest tests/test_envoy_sse.py
+```
 
 ## Shared streaming contracts
 
@@ -169,7 +271,7 @@ from guardrail_core.streaming.window import (
 
 The old `ext_proc.streaming.sse_parser` module and its `split_sse_events`,
 `parse_sse_event`, `is_done_event`, and `SSEParseError` interfaces are removed.
-They had no production callers; the server remains unchanged. This intentionally
+They had no production callers. This intentionally
 adopts the shared contracts rather than reproducing the old compatibility rules.
 
 ### Framing and parsing
@@ -220,15 +322,16 @@ blocking, and safe-prefix release.
   and terminal response state. Unlike `SSEFramer.finish()`, window `flush()` does
   not close the window. Do not reuse a completed or abandoned response's window.
 
-The guardrail stream adapter manages these lifecycle rules; future `Process`
-integration must supply transport and policy handling, not duplicate core logic.
+The guardrail stream adapter manages these lifecycle rules; `Process` supplies
+transport and policy handling, not a second scanner or holdback implementation.
 
 ## CI
 
 The `kaito-guard-ext-proc` job installs `.[dev]` with Python 3.12, exercises the
 pinned shared framing/parser/window APIs and the policy-created real scanners,
-runs the unchanged gRPC skeleton tests, and builds the container.
-The image is not published; these tests do not claim real Envoy protection.
+runs the gRPC lifecycle tests, downloads the checksum-pinned official Envoy
+1.36.11 binary for the streaming integration tests, and builds the container.
+The image is not published.
 
 ## Container
 
