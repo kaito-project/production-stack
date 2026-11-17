@@ -207,8 +207,12 @@ async def test_process_redacts_each_choice_preserving_other_fields():
     expected["choices"][2]["message"]["content"] = "\u53e6\u4e00\u4e2a [REDACTED]"
     assert json.loads(common.body_mutation.body) == expected
     assert set(common.header_mutation.remove_headers) == {
-        "content-length", "etag", "content-md5", "digest", "content-digest", "repr-digest"
+        "etag", "content-md5", "digest", "content-digest", "repr-digest"
     }
+    assert common.header_mutation.set_headers[0].header.key == "content-length"
+    assert int(common.header_mutation.set_headers[0].header.raw_value) == len(
+        common.body_mutation.body
+    )
 
 
 @pytest.mark.asyncio
@@ -315,6 +319,27 @@ async def test_process_rejects_malformed_or_non_text_responses(body):
     assert result.immediate_response.status.code == 502
     assert result.immediate_response.body == b"Guardrail response processing failed."
     assert "secret" not in str(result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"choices":[{"message":{"content":"secret","content":"safe"}}]}',
+        b'{"choices":[{"message":{"content":"secret","\\u0063ontent":"safe"}}]}',
+        b'{"choices":[{"message":{"content":"secret"},"message":{"content":"safe"}}]}',
+        b'{"choices":[{"message":{"content":"secret"}}],"choices":[{"message":{"content":"safe"}}]}',
+        b'{"choices":[{"message":{"content":"safe"}}],"usage":{"total_tokens":1,"total_tokens":2}}',
+    ],
+)
+async def test_process_rejects_duplicate_json_keys_without_releasing_original(body):
+    async with processor(make_policy()) as stub:
+        _, result = await exchange(stub, body)
+    assert result.WhichOneof("response") == "immediate_response"
+    assert result.immediate_response.status.code == 502
+    assert result.immediate_response.body == b"Guardrail response processing failed."
+    assert body not in result.SerializeToString()
+    assert b"secret" not in result.SerializeToString()
 
 
 @pytest.mark.asyncio

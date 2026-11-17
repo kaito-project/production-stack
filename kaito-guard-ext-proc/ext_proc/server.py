@@ -25,18 +25,29 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError("Non-standard JSON constant")
 
 
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _header_value(key: str, value: bytes) -> base_pb2.HeaderValueOption:
+    return base_pb2.HeaderValueOption(
+        header=base_pb2.HeaderValue(key=key, raw_value=value),
+        append_action=base_pb2.HeaderValueOption.OVERWRITE_IF_EXISTS_OR_ADD,
+    )
+
+
 def _immediate_response(status: int, message: str, details: str) -> pb.ProcessingResponse:
     return pb.ProcessingResponse(
         immediate_response=pb.ImmediateResponse(
             status=http_status_pb2.HttpStatus(code=status),
             headers=pb.HeaderMutation(
                 set_headers=[
-                    base_pb2.HeaderValueOption(
-                        header=base_pb2.HeaderValue(
-                            key="content-type", raw_value=b"text/plain; charset=utf-8"
-                        ),
-                        append_action=base_pb2.HeaderValueOption.OVERWRITE_IF_EXISTS_OR_ADD,
-                    )
+                    _header_value("content-type", b"text/plain; charset=utf-8")
                 ]
             ),
             body=message.encode("utf-8"),
@@ -59,7 +70,11 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
     def _scan_body(self, body: bytes) -> bytes | None:
         policy = self.policy
         assert policy is not None
-        document = json.loads(body.decode("utf-8"), parse_constant=_reject_json_constant)
+        document = json.loads(
+            body.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
         if not isinstance(document, dict):
             raise ValueError("Expected a Chat Completions object")
         choices = document.get("choices")
@@ -200,9 +215,14 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                 response = pb.BodyResponse()
                 if sanitized != request.response_body.body:
                     response.response.body_mutation.body = sanitized
+                    response.response.header_mutation.set_headers.append(
+                        _header_value(
+                            "content-length", str(len(sanitized)).encode("ascii")
+                        )
+                    )
                     response.response.header_mutation.remove_headers.extend(
                         [
-                            "content-length", "etag", "content-md5", "digest",
+                            "etag", "content-md5", "digest",
                             "content-digest", "repr-digest",
                         ]
                     )

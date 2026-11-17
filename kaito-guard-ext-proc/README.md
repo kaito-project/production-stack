@@ -123,7 +123,8 @@ sent, are acknowledged without capturing a prompt; scans use an empty prompt.
 - Each `choices[*].message.content` must be a string. Every choice is scanned
   independently with fresh core scanners through `scan_complete_response()`.
   Empty strings are allowed. Tool-call-only responses, null/missing content,
-  multipart content, empty choices, malformed UTF-8/JSON, and unexpected
+  multipart content, empty choices, malformed UTF-8/JSON, duplicate JSON object
+  keys at any depth (including escaped equivalents), and unexpected
   structures are outside this scope and produce HTTP 502, never a successful
   scan or an uninspected pass-through. Tool arguments and other fields are not
   scanned, even when accompanied by text content.
@@ -136,16 +137,28 @@ sent, are acknowledged without capturing a prompt; scans use an empty prompt.
 - Passing responses retain the original body bytes. Redaction replaces only the
   corresponding content strings, preserving other JSON fields, including
   `usage` and `finish_reason`. JSON whitespace/escaping may change. Body
-  replacement removes stale `content-length` and digest/cache-validator headers
-  through the buffered body response's header mutation.
+  replacement sets `content-length` to the actual UTF-8 body byte count and removes
+  stale digest/cache-validator headers through the buffered body response's
+  header mutation.
 - Parsing/scanning errors return a fixed HTTP 502 response and a generic server
   log without model text or scanner exception details. Unexpected ext_proc
   sequences and early EOF abort the RPC; Envoy must fail closed on RPC errors.
   Cancellation discards the call without releasing a pending body.
 
 The gRPC tests use the real protobuf service, transport, and core scanners to
-verify pass, redact, block, and failure paths. They are not a live Envoy
-end-to-end deployment test.
+verify pass, redact, block, and failure paths. Two additional tests run a real
+Envoy 1.36.11 between an HTTP client, a split-write upstream, and the gRPC
+processor. They assert HTTP 403 with exactly the block message and no original
+body content, and HTTP 200 with the expected redacted JSON, correct byte-level
+`Content-Length`, and no stale ETag. This is not the full deployment E2E matrix.
+
+CI downloads the checksum-pinned official Envoy binary and runs these tests.
+Locally, provide an Envoy binary to include them (otherwise they are explicitly
+skipped):
+
+```sh
+ENVOY_BINARY=/path/to/envoy python -m pytest tests/test_envoy.py
+```
 
 ## Guardrail stream adapter
 
@@ -305,8 +318,8 @@ core logic.
 
 The `kaito-guard-ext-proc` job installs `.[dev]` with Python 3.12, exercises the
 pinned shared framing/parser/window APIs and the policy-created real scanners,
-runs the buffered `Process` gRPC tests, and builds the container.
-The image is not published; these tests do not claim live Envoy validation.
+runs the buffered `Process` gRPC tests and the two real Envoy integration tests,
+and builds the container. The image is not published.
 
 ## Container
 
