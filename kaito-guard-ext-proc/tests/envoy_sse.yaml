@@ -26,7 +26,7 @@ static_resources:
                         timeout: 5s
                       message_timeout: 5s
                       failure_mode_allow: false
-                      allow_mode_override: true
+                      allow_mode_override: false
                       processing_mode:
                         request_header_mode: SKIP
                         request_body_mode: NONE

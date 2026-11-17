@@ -179,8 +179,8 @@ Policy-file loading and control-plane integration are not part of this phase.
 Request headers, if supplied, are acknowledged without capturing a prompt;
 scans use an empty prompt.
 
-Configure Envoy with `failure_mode_allow: false`, `allow_mode_override: true`,
-and the following modes (the complete runnable test configuration is in
+Configure Envoy with `failure_mode_allow: false`, `allow_mode_override: false`,
+and the following static modes (the complete runnable test configuration is in
 [`tests/envoy_sse.yaml`](tests/envoy_sse.yaml)):
 
 ```yaml
@@ -197,6 +197,9 @@ Use normal blocking ext_proc, not observability, buffered, partial-buffered, or
 full-duplex mode. Responses must be uncompressed `text/event-stream`; media-type
 parameters are accepted. HTTP trailers are outside this phase. JSON and ordinary
 text responses fail closed rather than passing uninspected.
+Configuration owns mode selection: neither request-header nor response-header
+acknowledgements contain a mode override. Explicitly declared incompatible modes
+are still rejected.
 
 Every Envoy body chunk gets exactly one body response, including an explicit
 empty replacement while the core holds text. Upstream bytes are never forwarded
@@ -207,9 +210,13 @@ sets `Cache-Control: no-store`; streaming output has no fixed content length.
 
 - Only `choices[0].delta.content` goes through the shared scanner/window.
   Exactly one choice with index zero is supported.
-- `id`, `object`, `created`, `model`, choice index, and `delta.role="assistant"`
-  are type-checked and rebuilt as protocol-only events in input order. Chunk
-  boundaries and formatting can change; metadata can precede held-back text.
+- Every rebuilt text, role, and finish chunk carries the same validated upstream
+  `id`, `object="chat.completion.chunk"`, `created`, and `model`, plus choice index
+  zero. A complete envelope is required before emitting a choice; later chunks
+  may omit already-cached fields but cannot change them. Missing fields are not
+  fabricated. Envelope-only input does not produce empty metadata delta events.
+- Actual `delta.role="assistant"` events are preserved separately. Chunk
+  boundaries and formatting can change; a role can precede held-back text.
 - A parsed `finish_reason` is preserved after the final approved text. It
   neither flushes the window nor substitutes for `[DONE]`.
 - **Usage output is outside this PR.** The current adapter has no usage-output
@@ -243,7 +250,12 @@ calling `finish()` or flushing. A missing HTTP EOF also aborts the RPC.
 Tests cover real gRPC transport and real Envoy 1.36.11: successful redaction,
 DONE waiting for HTTP EOF, an error before headers, blocking/scanner errors after
 headers with zero body bytes, upstream truncation after DONE, late blocking after
-an approved prefix, and client disconnect. This is not the full Phase 3.4 matrix.
+an approved prefix, and client disconnect. A real OpenAI Python SDK test reads
+through Envoy using `chat.completions.stream()` and `get_final_completion()`,
+verifying each chunk's envelope and the final accumulated redacted text, response
+identity, role, and finish reason. The SDK is a development/test-only dependency.
+All eight Envoy tests run with mode overrides disabled. This is not the full
+Phase 3.4 matrix.
 Locally, real Envoy tests are explicitly skipped unless a binary is available:
 
 ```sh

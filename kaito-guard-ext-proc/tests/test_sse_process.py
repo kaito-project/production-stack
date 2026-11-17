@@ -23,7 +23,6 @@ from envoy.extensions.filters.http.ext_proc.v3.processing_mode_pb2 import Proces
 from envoy.service.ext_proc.v3 import external_processor_pb2 as pb
 from envoy.service.ext_proc.v3.external_processor_pb2_grpc import ExternalProcessorStub
 from guardrail_core.streaming.openai import (
-    build_openai_chat_delta_sse_chunk,
     build_sse_data_chunk,
     build_sse_done_chunk,
 )
@@ -35,10 +34,23 @@ from ext_proc.policy import GuardrailPolicyConfig
 from ext_proc.server import ExternalProcessorServicer, serve
 
 DONE = build_sse_done_chunk().encode()
+ENVELOPE = {
+    "id": "chat-test",
+    "object": "chat.completion.chunk",
+    "created": 1,
+    "model": "test",
+}
 
 
 def event(content):
-    return build_openai_chat_delta_sse_chunk(content).encode()
+    return build_sse_data_chunk(
+        {
+            **ENVELOPE,
+            "choices": [
+                {"index": 0, "delta": {"content": content}, "finish_reason": None}
+            ],
+        }
+    ).encode()
 
 
 def policy(action="block"):
@@ -101,7 +113,7 @@ async def open_call(stub):
     await call.write(headers("Text/Event-Stream; charset=utf-8"))
     response = await call.read()
     assert response.HasField("response_headers")
-    assert response.mode_override.response_body_mode == ProcessingMode.STREAMED
+    assert not response.HasField("mode_override")
     assert (
         "content-length"
         in response.response_headers.response.header_mutation.remove_headers
@@ -139,7 +151,9 @@ async def test_done_and_finish_reason_wait_for_normal_http_eof(unused_tcp_port):
             "object": "chat.completion.chunk",
             "created": 1,
             "model": "test",
-            "choices": [{"index": 0, "delta": {"role": "assistant"}}],
+            "choices": [
+                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+            ],
         }
     ).encode()
     finish = build_sse_data_chunk(
@@ -304,3 +318,19 @@ async def test_declared_non_streamed_mode_fails_closed(unused_tcp_port, mode):
         response = await stub.Process(iter([request]), timeout=5).read()
     assert response.immediate_response.status.code == 502
     assert response.immediate_response.details == "guardrail_unsupported_mode"
+
+
+@pytest.mark.asyncio
+async def test_header_responses_do_not_override_configured_mode(unused_tcp_port):
+    async with processor(policy(), unused_tcp_port) as stub:
+        call = stub.Process(timeout=5)
+        await call.write(pb.ProcessingRequest(request_headers=pb.HttpHeaders()))
+        request_ack = await call.read()
+        assert request_ack.HasField("request_headers")
+        assert not request_ack.HasField("mode_override")
+        await call.write(headers())
+        response_ack = await call.read()
+        assert response_ack.HasField("response_headers")
+        assert not response_ack.HasField("mode_override")
+        result = await body(call, event("hello") + DONE, final=True)
+    assert text(output(result)) == "hello"

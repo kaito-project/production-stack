@@ -15,6 +15,7 @@ import asyncio
 import os
 import shutil
 from contextlib import asynccontextmanager, suppress
+from email.parser import BytesHeaderParser
 from http.client import HTTPConnection, IncompleteRead
 from pathlib import Path
 from string import Template
@@ -22,9 +23,11 @@ from unittest.mock import Mock
 
 import pytest
 from guardrail_core.streaming.scanners import ScannerWindowAdapter
+from guardrail_core.streaming.openai import build_sse_data_chunk
+from openai import AsyncOpenAI
 
 from ext_proc.guardrail_stream import GuardrailStream
-from tests.test_sse_process import DONE, event, policy, processor, text
+from tests.test_sse_process import DONE, ENVELOPE, event, policy, processor, text
 
 
 @pytest.fixture
@@ -56,7 +59,11 @@ async def proxy(
         task = asyncio.current_task()
         handlers.add(task)
         try:
-            await reader.readuntil(b"\r\n\r\n")
+            request = await reader.readuntil(b"\r\n\r\n")
+            request_headers = BytesHeaderParser().parsebytes(
+                request.split(b"\r\n", 1)[1]
+            )
+            await reader.readexactly(int(request_headers.get("content-length", "0")))
             writer.write(
                 b"HTTP/1.1 200 OK\r\n"
                 + f"Content-Type: {content_type}\r\n".encode()
@@ -171,6 +178,80 @@ def get_response(port, on_headers=None, on_body=None):
         return response.status, response.headers, bytes(received), complete
     finally:
         connection.close()
+
+
+@pytest.mark.asyncio
+async def test_real_openai_sdk_accumulates_enveloped_redacted_stream(
+    envoy_binary,
+    tmp_path,
+    unused_tcp_port_factory,
+):
+    role = build_sse_data_chunk(
+        {
+            **ENVELOPE,
+            "choices": [
+                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+            ],
+        }
+    ).encode()
+    finish = build_sse_data_chunk(
+        {
+            **ENVELOPE,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+    ).encode()
+    prefix = "safe " * 70
+    async with proxy(
+        envoy_binary,
+        tmp_path,
+        unused_tcp_port_factory,
+        policy("redact"),
+        [role, event(prefix + "se"), event("cret \u56de\u590d"), finish, DONE],
+    ) as (port, _):
+        async with AsyncOpenAI(
+            base_url=f"http://127.0.0.1:{port}/v1",
+            api_key="local-test",
+            max_retries=0,
+            timeout=5,
+        ) as client:
+            async with client.chat.completions.stream(
+                model=ENVELOPE["model"],
+                messages=[{"role": "user", "content": "local integration test"}],
+            ) as stream:
+                deltas = []
+                chunks = []
+                event_types = []
+                async for item in stream:
+                    event_types.append(item.type)
+                    if item.type == "chunk":
+                        chunk = item.chunk
+                        assert {
+                            "id": chunk.id,
+                            "object": chunk.object,
+                            "created": chunk.created,
+                            "model": chunk.model,
+                        } == ENVELOPE
+                        chunks.append(chunk)
+                    elif item.type == "content.delta":
+                        deltas.append(item.delta)
+                completion = await stream.get_final_completion()
+    expected = prefix + "[REDACTED] \u56de\u590d"
+    assert "content.delta" in event_types, event_types
+    assert "".join(deltas) == expected
+    assert completion.id == ENVELOPE["id"]
+    assert completion.model == ENVELOPE["model"]
+    assert completion.created == ENVELOPE["created"]
+    assert completion.object == "chat.completion"
+    assert completion.choices[0].message.role == "assistant"
+    assert completion.choices[0].message.content == expected
+    assert completion.choices[0].finish_reason == "stop"
+    assert all(
+        choice.delta.content is not None
+        or choice.delta.role == "assistant"
+        or choice.finish_reason == "stop"
+        for chunk in chunks
+        for choice in chunk.choices
+    )
 
 
 @pytest.mark.asyncio

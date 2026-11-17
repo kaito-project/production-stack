@@ -16,7 +16,6 @@
 from guardrail_core.streaming.openai import (
     OpenAIChatChunkParseStatus,
     OpenAIChatChunkParseResult,
-    build_openai_chat_delta_sse_chunk,
     build_sse_data_chunk,
     build_sse_done_chunk,
     parse_openai_chat_sse_event,
@@ -59,7 +58,8 @@ class GuardrailStream:
         self._done_seen = False
         self._blocked = False
         self._sse_output = sse_output
-        self._finish_event: dict[str, object] | None = None
+        self._envelope: dict[str, object] | None = None
+        self._finish_reason: str | None = None
 
     @classmethod
     def from_policy(
@@ -106,11 +106,29 @@ class GuardrailStream:
         """Discard pending state without scanning or emitting; idempotent."""
         self._window = None
         self._framer = None
-        self._finish_event = None
+        self._envelope = None
+        self._finish_reason = None
+
+    def _sse_chunk(
+        self, delta: dict[str, object], *, finish_reason: str | None = None
+    ) -> str:
+        assert self._envelope is not None
+        return build_sse_data_chunk(
+            {
+                **self._envelope,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": finish_reason,
+                    }
+                ],
+            }
+        )
 
     def _emit_text(self, chunks: tuple[str, ...]) -> tuple[str, ...]:
         if self._sse_output:
-            return tuple(build_openai_chat_delta_sse_chunk(text) for text in chunks)
+            return tuple(self._sse_chunk({"content": text}) for text in chunks)
         return chunks
 
     def _metadata(self, parsed: OpenAIChatChunkParseResult) -> tuple[str, ...]:
@@ -126,11 +144,18 @@ class GuardrailStream:
                 and (isinstance(value, bool) or not isinstance(value, int))
             ) or (key != "created" and not isinstance(value, str)):
                 raise GuardrailStreamError("Invalid OpenAI protocol metadata.")
+            if key == "object" and value != "chat.completion.chunk":
+                raise GuardrailStreamError("Unsupported OpenAI chunk object.")
             envelope[key] = value
+        if self._envelope is None:
+            if len(envelope) == 4:
+                self._envelope = envelope
+            elif parsed.parsed_choices:
+                raise GuardrailStreamError("Missing OpenAI response envelope.")
+        elif any(value != self._envelope[key] for key, value in envelope.items()):
+            raise GuardrailStreamError("OpenAI response envelope changed.")
         if not parsed.parsed_choices:
-            return (
-                (build_sse_data_chunk({**envelope, "choices": []}),) if envelope else ()
-            )
+            return ()
         choice = parsed.parsed_choices[0]
         assert choice.choice is not None
         if set(choice.choice) - {"index", "delta", "finish_reason"}:
@@ -140,29 +165,12 @@ class GuardrailStream:
             raise GuardrailStreamError("Unsupported non-text OpenAI delta.")
         if "role" in delta and delta["role"] != "assistant":
             raise GuardrailStreamError("Unsupported OpenAI role.")
-        if self._finish_event is not None:
+        if self._finish_reason is not None:
             raise GuardrailStreamError("Choice received after finish_reason.")
         if choice.finish_reason is not None:
-            self._finish_event = {
-                **envelope,
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {},
-                        "finish_reason": choice.finish_reason,
-                    }
-                ],
-            }
-        metadata_delta = {"role": delta["role"]} if "role" in delta else {}
-        if envelope or metadata_delta:
-            return (
-                build_sse_data_chunk(
-                    {
-                        **envelope,
-                        "choices": [{"index": 0, "delta": metadata_delta}],
-                    }
-                ),
-            )
+            self._finish_reason = choice.finish_reason
+        if "role" in delta:
+            return (self._sse_chunk({"role": delta["role"]}),)
         return ()
 
     def _advance(self, chunk: bytes, *, final: bool) -> WindowEmitResult:
@@ -177,11 +185,15 @@ class GuardrailStream:
             if not result.blocked and final:
                 if not self._done_seen:
                     raise GuardrailStreamError("Stream ended without a DONE event.")
+                if self._sse_output and self._envelope is None:
+                    raise GuardrailStreamError("Missing OpenAI response envelope.")
                 tail = window.flush()
                 ending: tuple[str, ...] = ()
                 if self._sse_output and not tail.blocked:
-                    if self._finish_event is not None:
-                        ending += (build_sse_data_chunk(self._finish_event),)
+                    if self._finish_reason is not None:
+                        ending += (
+                            self._sse_chunk({}, finish_reason=self._finish_reason),
+                        )
                     ending += (build_sse_done_chunk(),)
                 result = WindowEmitResult(
                     chunks=()

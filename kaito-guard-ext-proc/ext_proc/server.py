@@ -78,13 +78,6 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     request_headers_seen = True
                     yield pb.ProcessingResponse(
                         request_headers=pb.HeadersResponse(),
-                        mode_override=ProcessingMode(
-                            request_body_mode=ProcessingMode.NONE,
-                            request_trailer_mode=ProcessingMode.SKIP,
-                            response_header_mode=ProcessingMode.SEND,
-                            response_body_mode=ProcessingMode.STREAMED,
-                            response_trailer_mode=ProcessingMode.SKIP,
-                        ),
                     )
                     continue
                 if (
@@ -151,10 +144,6 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                                     ],
                                 )
                             )
-                        ),
-                        mode_override=ProcessingMode(
-                            response_body_mode=ProcessingMode.STREAMED,
-                            response_trailer_mode=ProcessingMode.SKIP,
                         ),
                     )
                     continue

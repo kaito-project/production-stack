@@ -15,7 +15,45 @@ import pytest
 from guardrail_core.streaming.openai import build_sse_data_chunk
 
 from ext_proc.guardrail_stream import GuardrailStream, GuardrailStreamError
-from tests.test_sse_process import DONE, event, payloads, policy, text
+from tests.test_sse_process import DONE, ENVELOPE, event, payloads, policy, text
+
+
+def test_body_events_are_self_contained_without_empty_metadata_events():
+    stream = GuardrailStream.from_policy(policy("redact"), sse_output=True)
+    initial = stream.feed(
+        build_sse_data_chunk(
+            {
+                **ENVELOPE,
+                "choices": [{"index": 0, "delta": {"content": "hello secret"}}],
+            }
+        ).encode()
+        + build_sse_data_chunk(
+            {
+                **ENVELOPE,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ).encode()
+        + DONE
+    )
+    assert initial.chunks == ()
+    wire = "".join(stream.finish().chunks).encode()
+    assert payloads(wire) == [
+        {
+            **ENVELOPE,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "hello [REDACTED]"},
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            **ENVELOPE,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        },
+    ]
+    assert wire.endswith(DONE)
 
 
 @pytest.mark.parametrize(
@@ -84,24 +122,84 @@ def test_finish_reason_does_not_replace_done():
     assert stream.closed
 
 
-def test_metadata_order_is_preserved_and_terminal_event_follows_text():
+def test_cached_envelope_is_reused_on_text_and_terminal_events():
     stream = GuardrailStream.from_policy(policy(), sse_output=True)
-    wire = b""
-    for model in ("first", "second"):
-        wire += "".join(
-            stream.feed(
-                build_sse_data_chunk(
-                    {
-                        "model": model,
-                        "choices": [{"index": 0, "delta": {"role": "assistant"}}],
-                    }
-                ).encode()
-            ).chunks
-        ).encode()
-    stream.feed(event("hello") + DONE)
+    wire = "".join(
+        stream.feed(
+            build_sse_data_chunk(
+                {
+                    **ENVELOPE,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}}],
+                }
+            ).encode()
+        ).chunks
+    ).encode()
+    assert (
+        stream.feed(
+            build_sse_data_chunk(
+                {
+                    "choices": [{"index": 0, "delta": {"content": "hello"}}],
+                }
+            ).encode()
+        ).chunks
+        == ()
+    )
+    assert (
+        stream.feed(
+            build_sse_data_chunk(
+                {
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+            ).encode()
+            + DONE
+        ).chunks
+        == ()
+    )
     wire += "".join(stream.finish().chunks).encode()
-    assert [item["model"] for item in payloads(wire) if "model" in item] == [
-        "first",
-        "second",
-    ]
+    events = payloads(wire)
+    assert len(events) == 3
+    assert all({key: item[key] for key in ENVELOPE} == ENVELOPE for item in events)
+    assert events[0]["choices"][0]["delta"] == {"role": "assistant"}
     assert text(wire) == "hello"
+    assert events[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+@pytest.mark.parametrize("key", list(ENVELOPE))
+def test_missing_initial_envelope_fails_without_fabricating_fields(key):
+    stream = GuardrailStream.from_policy(policy(), sse_output=True)
+    envelope = {name: value for name, value in ENVELOPE.items() if name != key}
+    with pytest.raises(GuardrailStreamError, match="Missing"):
+        stream.feed(
+            build_sse_data_chunk(
+                {
+                    **envelope,
+                    "choices": [{"index": 0, "delta": {"content": "pending"}}],
+                }
+            ).encode()
+        )
+    assert stream.closed
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("id", "other-response"),
+        ("model", "other-model"),
+        ("created", 2),
+        ("object", "chat.completion"),
+    ],
+)
+def test_changing_response_envelope_fails_closed(key, value):
+    stream = GuardrailStream.from_policy(policy(), sse_output=True)
+    stream.feed(event("pending"))
+    with pytest.raises(GuardrailStreamError):
+        stream.feed(
+            build_sse_data_chunk(
+                {
+                    **ENVELOPE,
+                    key: value,
+                    "choices": [],
+                }
+            ).encode()
+        )
+    assert stream.closed
