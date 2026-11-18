@@ -278,10 +278,10 @@ var _ = Describe("Filter execution order",
 
 			// F1 — Read the HCM's `http_filters` list directly from the
 			// Gateway pod's Envoy admin port and assert the relative order
-			// of the five filters we care about. This is the strongest
+			// of the six filters we care about. This is the strongest
 			// possible assertion because it does not depend on any business
 			// request behaviour: it checks the rendered xDS config itself.
-			It("F1: HCM filter order is CORS → ext_authz → bbr → ext_proc → router",
+			It("F1: HCM filter order is CORS → ext_authz → strip routing headers → bbr → ext_proc → router",
 				func() {
 					gwPod, err := firstRunningPod(ctx, caseNS, gatewayLabel)
 					Expect(err).NotTo(HaveOccurred(),
@@ -314,6 +314,7 @@ var _ = Describe("Filter execution order",
 						}
 					}
 					bbrIdx := idx("envoy.filters.http.ext_proc.bbr")
+					stripIdx := idx("kaito.strip-routing-headers")
 					eppIdx := -1
 					// EPP ext_proc is named generically; pick the first
 					// `envoy.filters.http.ext_proc*` that is NOT the BBR one.
@@ -341,6 +342,8 @@ var _ = Describe("Filter execution order",
 						"CORS must precede ext_authz (got %v)", filters)
 					Expect(authIdx).To(BeNumerically("<", bbrIdx),
 						"ext_authz must precede BBR (got %v)", filters)
+					Expect(stripIdx).To(Equal(bbrIdx-1),
+						"kaito.strip-routing-headers must run directly before BBR (got %v)", filters)
 					Expect(bbrIdx).To(BeNumerically("<", eppIdx),
 						"BBR must precede InferencePool ext_proc (got %v)", filters)
 					Expect(eppIdx).To(BeNumerically("<", routerIdx),
