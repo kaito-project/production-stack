@@ -115,7 +115,7 @@ def envoy_config(listener_port, upstream_port, processor_port):
                                                     },
                                                     "message_timeout": "5s",
                                                     "failure_mode_allow": False,
-                                                    "allow_mode_override": True,
+                                                    "allow_mode_override": False,
                                                     "processing_mode": {
                                                         "request_header_mode": "SKIP",
                                                         "request_body_mode": "NONE",

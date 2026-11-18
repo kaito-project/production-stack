@@ -100,7 +100,7 @@ construction errors fail startup rather than disabling protection. File loading
 and control-plane integration are separate work.
 
 Configure Envoy's ext_proc filter with `failure_mode_allow: false`,
-`allow_mode_override: true`, and these processing modes:
+`allow_mode_override: false`, and these processing modes:
 
 ```yaml
 processing_mode:
@@ -113,9 +113,13 @@ processing_mode:
 ```
 
 Keep Envoy's response buffering limit configured for the deployment. Do not use
-observability mode, partial buffering, or streamed body modes. Header responses
-also request `BUFFERED` response bodies via `mode_override`. Request headers, if
-sent, are acknowledged without capturing a prompt; scans use an empty prompt.
+observability mode, partial buffering, or streamed body modes. Envoy configuration
+owns mode selection; the processor never returns `mode_override`. When Envoy
+provides `protocol_config`, an explicit response-body mode other than `BUFFERED`
+is rejected with HTTP 502. Without that field, the processor still requires a
+complete body but cannot independently verify the configured mode. Request
+headers, if sent, are acknowledged without capturing a prompt; scans use an
+empty prompt.
 
 - Only uncompressed `application/json` responses are supported. Content-type
   parameters are accepted. SSE, plain text, compressed bodies, header-only

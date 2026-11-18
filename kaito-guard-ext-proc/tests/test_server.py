@@ -172,7 +172,7 @@ async def exchange(stub, body, *, headers=None, complete=True):
             assert await call.read() is grpc.aio.EOF
             return head, None
         assert head.WhichOneof("response") == "response_headers"
-        assert head.mode_override.response_body_mode == ProcessingMode.BUFFERED
+        assert not head.HasField("mode_override")
         await call.write(
             pb.ProcessingRequest(
                 response_body=pb.HttpBody(body=body, end_of_stream=complete)
@@ -412,16 +412,17 @@ async def test_scanner_error_fails_closed_without_leaking(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_process_acknowledges_request_headers_and_requests_buffering():
+async def test_process_acknowledges_headers_without_overriding_configured_modes():
     async with processor(make_policy()) as stub:
         call = stub.Process(timeout=5)
         await call.write(pb.ProcessingRequest(request_headers=pb.HttpHeaders()))
         response = await call.read()
         assert response.HasField("request_headers")
-        assert response.mode_override.response_body_mode == ProcessingMode.BUFFERED
-        assert response.mode_override.request_body_mode == ProcessingMode.NONE
+        assert not response.HasField("mode_override")
         await call.write(response_headers())
-        assert (await call.read()).HasField("response_headers")
+        response = await call.read()
+        assert response.HasField("response_headers")
+        assert not response.HasField("mode_override")
         await call.write(
             pb.ProcessingRequest(
                 response_body=pb.HttpBody(body=chat_body("safe"), end_of_stream=True)
@@ -430,6 +431,49 @@ async def test_process_acknowledges_request_headers_and_requests_buffering():
         assert (await call.read()).HasField("response_body")
         await call.done_writing()
         assert await call.read() is grpc.aio.EOF
+
+
+@pytest.mark.asyncio
+async def test_process_accepts_explicit_buffered_protocol_configuration():
+    headers = response_headers()
+    headers.protocol_config.response_body_mode = ProcessingMode.BUFFERED
+    async with processor(make_policy()) as stub:
+        _, result = await exchange(stub, chat_body("safe"), headers=headers)
+    assert result == pb.ProcessingResponse(response_body=pb.BodyResponse())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body_mode",
+    [
+        ProcessingMode.NONE,
+        ProcessingMode.STREAMED,
+        ProcessingMode.BUFFERED_PARTIAL,
+        ProcessingMode.FULL_DUPLEX_STREAMED,
+        ProcessingMode.GRPC,
+    ],
+)
+@pytest.mark.parametrize("phase", ["request_headers", "response_headers", "response_body"])
+async def test_process_rejects_explicit_incompatible_body_modes(body_mode, phase):
+    if phase == "request_headers":
+        request = pb.ProcessingRequest(request_headers=pb.HttpHeaders())
+    elif phase == "response_headers":
+        request = response_headers()
+    else:
+        request = pb.ProcessingRequest(
+            response_body=pb.HttpBody(body=chat_body("safe"), end_of_stream=True)
+        )
+    request.protocol_config.response_body_mode = body_mode
+    requests = [response_headers(), request] if phase == "response_body" else [request]
+    async with processor(make_policy()) as stub:
+        responses = [
+            response async for response in stub.Process(iter(requests), timeout=5)
+        ]
+    assert all(not response.HasField("mode_override") for response in responses)
+    assert responses[-1].WhichOneof("response") == "immediate_response"
+    assert responses[-1].immediate_response.status.code == 502
+    assert responses[-1].immediate_response.body == b"Unsupported guardrail mode."
+    assert responses[-1].immediate_response.details == "guardrail_unsupported_mode"
 
 
 @pytest.mark.asyncio

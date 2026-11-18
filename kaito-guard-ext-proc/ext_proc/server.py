@@ -126,16 +126,18 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     "Guardrails require blocking ext_proc mode",
                 )
                 return
+            if (
+                request.HasField("protocol_config")
+                and request.protocol_config.response_body_mode != mode.BUFFERED
+            ):
+                logger.warning("Guardrail requires BUFFERED response body mode")
+                yield _immediate_response(
+                    502, "Unsupported guardrail mode.", "guardrail_unsupported_mode"
+                )
+                return
             if phase == "request_headers" and not headers_seen:
                 yield pb.ProcessingResponse(
                     request_headers=pb.HeadersResponse(),
-                    mode_override=mode(
-                        request_body_mode=mode.NONE,
-                        request_trailer_mode=mode.SKIP,
-                        response_header_mode=mode.SEND,
-                        response_body_mode=mode.BUFFERED,
-                        response_trailer_mode=mode.SKIP,
-                    ),
                 )
                 continue
             if phase == "response_headers" and not headers_seen:
@@ -165,10 +167,6 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     return
                 yield pb.ProcessingResponse(
                     response_headers=pb.HeadersResponse(),
-                    mode_override=mode(
-                        response_body_mode=mode.BUFFERED,
-                        response_trailer_mode=mode.SKIP,
-                    ),
                 )
                 continue
             if phase == "response_body" and headers_seen and not body_seen:
