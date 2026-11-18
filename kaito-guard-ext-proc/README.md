@@ -123,7 +123,8 @@ sent, are acknowledged without capturing a prompt; scans use an empty prompt.
   Responses carrying trailers are outside this phase's scope.
 - Each `choices[*].message.content` must be a string. Every choice is scanned
   independently through `guardrail_core.buffered.scan_policy_output()`, which
-  constructs fresh scanners for each choice.
+  constructs fresh scanners for each choice. The gateway delegates policy
+  execution directly to core rather than maintaining a local scanning wrapper.
   Empty strings are allowed. Tool-call-only responses, null/missing content,
   multipart content, empty choices, malformed UTF-8/JSON, duplicate JSON object
   keys at any depth (including escaped equivalents), and unexpected
