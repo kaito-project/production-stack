@@ -45,13 +45,13 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[pb.ProcessingResponse]:
         stream: GuardrailStream | None = None
-        request_headers_seen = False
+        request_headers_received = False
         try:
             async for request in request_iterator:
-                phase = request.WhichOneof("request")
-                if self.policy is None and phase is not None:
+                request_type = request.WhichOneof("request")
+                if self.policy is None and request_type is not None:
                     response = pb.ProcessingResponse()
-                    getattr(response, phase).SetInParent()
+                    getattr(response, request_type).SetInParent()
                     yield response
                     continue
                 if request.observability_mode:
@@ -71,17 +71,17 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     )
                     return
                 if (
-                    phase == "request_headers"
+                    request_type == "request_headers"
                     and stream is None
-                    and not request_headers_seen
+                    and not request_headers_received
                 ):
-                    request_headers_seen = True
+                    request_headers_received = True
                     yield pb.ProcessingResponse(
                         request_headers=pb.HeadersResponse(),
                     )
                     continue
                 if (
-                    phase == "response_headers"
+                    request_type == "response_headers"
                     and stream is None
                     and self.policy is not None
                 ):
@@ -147,7 +147,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         ),
                     )
                     continue
-                if phase == "response_body" and stream is not None:
+                if request_type == "response_body" and stream is not None:
                     try:
                         result = await asyncio.to_thread(
                             stream.feed, request.response_body.body

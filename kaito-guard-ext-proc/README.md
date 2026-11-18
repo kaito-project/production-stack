@@ -8,8 +8,24 @@ holdback algorithm, scanner, or guard engine.
 The server registers Envoy's `envoy.service.ext_proc.v3.ExternalProcessor`
 service and listens on `[::]:9000`. With an injected policy, `Process` scans
 single-choice text SSE responses using the shared core parser and holdback window.
-This Phase 3.2 branch is independent of the buffered JSON integration; JSON/SSE
-dispatch will be unified after Phase 3.1 merges.
+This Phase 3.2 branch is independent of the buffered JSON integration.
+
+## Review guide and integration boundary
+
+Read [ext_proc/server.py](ext_proc/server.py) first for Envoy/gRPC message handling,
+body replacement, and stream cleanup. Then read
+[ext_proc/guardrail_stream.py](ext_proc/guardrail_stream.py) for composition of the
+shared parser/window APIs, streaming protocol validation, and SSE rebuilding.
+Scanner decisions and holdback algorithms remain in the shared core.
+
+[kaito-project/production-stack#281](https://github.com/kaito-project/production-stack/pull/281)
+implements buffered JSON; this SSE-only work is
+[kaito-project/production-stack#282](https://github.com/kaito-project/production-stack/pull/282).
+Whichever PR merges second must integrate both paths into one `Process()`,
+coordinate `BUFFERED`/`STREAMED` mode validation, reconcile the core dependency
+pins (currently 0.2.2 for JSON and 0.2.1 for SSE), and rerun both regression suites.
+Normal completion, truncation, scanner failure, cancellation, and the real
+Envoy/OpenAI SDK compatibility tests remain part of the SSE review scope.
 
 **No policy means no protection.** The default CLI entry point has no policy
 loader, logs a warning, and acknowledges traffic without scanning. It must not
