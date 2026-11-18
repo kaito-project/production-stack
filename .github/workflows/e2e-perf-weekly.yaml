@@ -130,7 +130,8 @@ jobs:
         if: ${{ always() && needs.e2e_perf_tests.result == 'failure' }}
         run: |
           if az aks show --subscription "${AZURE_SUBSCRIPTION_ID}" --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
-            az aks get-credentials --subscription "${AZURE_SUBSCRIPTION_ID}" --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" --overwrite-existing
+            # --admin: the cluster has Entra ID enabled (see hack/e2e/scripts/setup-cluster.sh).
+            az aks get-credentials --subscription "${AZURE_SUBSCRIPTION_ID}" --resource-group "${RESOURCE_GROUP}" --name "${CLUSTER_NAME}" --admin --overwrite-existing
           fi
 
       - name: Dump cluster state
