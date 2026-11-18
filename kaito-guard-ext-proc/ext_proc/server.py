@@ -18,7 +18,7 @@ from ext_proc.policy import GuardrailPolicyConfig
 logger = logging.getLogger(__name__)
 
 pb = external_processor_pb2
-mode = processing_mode_pb2.ProcessingMode
+ProcessingMode = processing_mode_pb2.ProcessingMode
 
 
 def _reject_json_constant(value: str) -> None:
@@ -80,24 +80,24 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         choices = document.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ValueError("Expected non-empty choices")
-        changed = False
+        content_changed = False
         for choice in choices:
             if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
                 raise ValueError("Expected a choice message")
             message = choice["message"]
-            original = message.get("content")
-            if not isinstance(original, str):
+            original_content = message.get("content")
+            if not isinstance(original_content, str):
                 raise ValueError("Non-text choices are outside the supported scan scope")
             result = scan_policy_output(
-                policy.scanner_configs, "", original, default_action=policy.action
+                policy.scanner_configs, "", original_content, default_action=policy.action
             )
             if result.blocked:
                 return None
             if result.output is None:
                 raise ValueError("Allowed guardrail result is missing output")
             message["content"] = result.output
-            changed |= result.output != original
-        if not changed:
+            content_changed |= result.output != original_content
+        if not content_changed:
             return body
         return json.dumps(document, ensure_ascii=False, allow_nan=False).encode("utf-8")
 
@@ -106,8 +106,8 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         request_iterator: AsyncIterator[pb.ProcessingRequest],
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[pb.ProcessingResponse]:
-        headers_seen = False
-        body_seen = False
+        response_headers_received = False
+        response_body_received = False
         async for request in request_iterator:
             request_type = request.WhichOneof("request")
             if self.policy is None:
@@ -128,20 +128,20 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                 return
             if (
                 request.HasField("protocol_config")
-                and request.protocol_config.response_body_mode != mode.BUFFERED
+                and request.protocol_config.response_body_mode != ProcessingMode.BUFFERED
             ):
                 logger.warning("Guardrail requires BUFFERED response body mode")
                 yield _immediate_response(
                     502, "Unsupported guardrail mode.", "guardrail_unsupported_mode"
                 )
                 return
-            if request_type == "request_headers" and not headers_seen:
+            if request_type == "request_headers" and not response_headers_received:
                 yield pb.ProcessingResponse(
                     request_headers=pb.HeadersResponse(),
                 )
                 continue
-            if request_type == "response_headers" and not headers_seen:
-                headers_seen = True
+            if request_type == "response_headers" and not response_headers_received:
+                response_headers_received = True
                 headers = {
                     header.key.lower(): (
                         header.raw_value.decode("latin-1")
@@ -152,10 +152,12 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                 content_type = (
                     headers.get("content-type", "").split(";", 1)[0].strip().lower()
                 )
-                encoding = headers.get("content-encoding", "identity").strip().lower()
+                content_encoding = (
+                    headers.get("content-encoding", "identity").strip().lower()
+                )
                 if (
                     content_type != "application/json"
-                    or encoding != "identity"
+                    or content_encoding != "identity"
                     or request.response_headers.end_of_stream
                 ):
                     logger.warning("Guardrail rejected unsupported response headers")
@@ -169,8 +171,12 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     response_headers=pb.HeadersResponse(),
                 )
                 continue
-            if request_type == "response_body" and headers_seen and not body_seen:
-                body_seen = True
+            if (
+                request_type == "response_body"
+                and response_headers_received
+                and not response_body_received
+            ):
+                response_body_received = True
                 if not request.response_body.end_of_stream:
                     logger.warning("Guardrail requires a complete buffered response body")
                     yield _immediate_response(
@@ -180,7 +186,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     )
                     return
                 try:
-                    sanitized = await asyncio.to_thread(
+                    scanned_body = await asyncio.to_thread(
                         self._scan_body, request.response_body.body
                     )
                 except Exception:
@@ -192,18 +198,18 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         "guardrail_processing_error",
                     )
                     return
-                if sanitized is None:
+                if scanned_body is None:
                     logger.info("Guardrail blocked response")
                     yield _immediate_response(
                         403, self.policy.block_message, "guardrail_blocked"
                     )
                     return
                 response = pb.BodyResponse()
-                if sanitized != request.response_body.body:
-                    response.response.body_mutation.body = sanitized
+                if scanned_body != request.response_body.body:
+                    response.response.body_mutation.body = scanned_body
                     response.response.header_mutation.set_headers.append(
                         _header_value(
-                            "content-length", str(len(sanitized)).encode("ascii")
+                            "content-length", str(len(scanned_body)).encode("ascii")
                         )
                     )
                     response.response.header_mutation.remove_headers.extend(
@@ -219,7 +225,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                 grpc.StatusCode.INVALID_ARGUMENT, "Unexpected guardrail processing phase"
             )
             return
-        if self.policy is not None and not body_seen:
+        if self.policy is not None and not response_body_received:
             logger.warning("Guardrail stream ended before the complete response body")
             await context.abort(
                 grpc.StatusCode.FAILED_PRECONDITION, "Missing complete guardrail response"
