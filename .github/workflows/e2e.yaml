@@ -1,30 +1,15 @@
 name: E2E tests (PR)
 
 on:
-  # Only run E2E when a change can actually affect cluster behaviour
-  # (controllers, charts, images, the e2e suite or its setup / build inputs).
-  # Docs-only or otherwise unrelated changes are skipped so the singleton
-  # self-hosted E2E runner isn't spent on PRs that can't change the outcome.
+  # Every PR gets the e2e-tests check that main requires; the changes job
+  # decides whether the suite actually runs.
   # No push-to-main trigger: PRs already gate the merge and e2e-nightly.yaml
   # runs the full suite on main daily, so post-merge breakage is caught there.
   pull_request:
-    paths:
-      - 'cmd/**'
-      - 'pkg/**'
-      - 'charts/**'
-      - 'docker/**'
-      - 'test/**'
-      - 'hack/e2e/**'
-      - 'go.mod'
-      - 'go.sum'
-      - 'Makefile'
-      - 'versions.env'
-      - '.github/actions/e2e-base-setup/**'
-      - '.github/workflows/e2e.yaml'
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Branch name to run E2E tests against'
+        description: 'Branch or ref to run E2E tests against, e.g. main, or refs/pull/<number>/merge for a PR'
         required: true
         default: 'main'
       provider:
@@ -75,7 +60,45 @@ permissions:
   contents: read
 
 jobs:
+  # Only run E2E when a change can actually affect cluster behaviour
+  # (controllers, charts, images, the e2e suite or its setup / build inputs).
+  # Docs-only or otherwise unrelated changes, including a change to this
+  # workflow alone, skip e2e-tests, so the singleton self-hosted E2E runner
+  # isn't spent on PRs that can't change the outcome. To run the suite for such
+  # a PR anyway, dispatch this workflow with branch refs/pull/<number>/merge.
+  # This can't be a paths filter on the trigger: a workflow it skips reports
+  # no check, so a PR outside the paths could never merge. A job skipped by
+  # its `if` reports a passing check.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      e2e: ${{ steps.diff.outputs.e2e }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Detect changes the suite can catch
+        id: diff
+        # HEAD is the PR's merge commit and HEAD^1 the base branch it merges
+        # into. A git error counts as a change, so the suite runs.
+        run: |
+          if git diff --quiet HEAD^1 HEAD -- \
+              cmd pkg charts docker test hack/e2e \
+              go.mod go.sum Makefile versions.env \
+              .github/actions/e2e-base-setup; then
+            echo "e2e=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "e2e=true" >> "$GITHUB_OUTPUT"
+          fi
+
   e2e-tests:
+    needs: changes
+    # changes is skipped on workflow_dispatch, and if it fails the suite runs
+    # instead of the check passing unverified.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.e2e == 'true') }}
     runs-on: [ "self-hosted", "hostname:kaito-e2e-github-runner" ]
     environment: e2e-test
     permissions:
