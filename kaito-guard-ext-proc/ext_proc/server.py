@@ -109,15 +109,15 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         headers_seen = False
         body_seen = False
         async for request in request_iterator:
-            phase = request.WhichOneof("request")
+            request_type = request.WhichOneof("request")
             if self.policy is None:
-                if phase is None:
+                if request_type is None:
                     await context.abort(
                         grpc.StatusCode.INVALID_ARGUMENT, "Missing processing phase"
                     )
                     return
                 response = pb.ProcessingResponse()
-                getattr(response, phase).SetInParent()
+                getattr(response, request_type).SetInParent()
                 yield response
                 continue
             if request.observability_mode:
@@ -135,12 +135,12 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     502, "Unsupported guardrail mode.", "guardrail_unsupported_mode"
                 )
                 return
-            if phase == "request_headers" and not headers_seen:
+            if request_type == "request_headers" and not headers_seen:
                 yield pb.ProcessingResponse(
                     request_headers=pb.HeadersResponse(),
                 )
                 continue
-            if phase == "response_headers" and not headers_seen:
+            if request_type == "response_headers" and not headers_seen:
                 headers_seen = True
                 headers = {
                     header.key.lower(): (
@@ -169,7 +169,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     response_headers=pb.HeadersResponse(),
                 )
                 continue
-            if phase == "response_body" and headers_seen and not body_seen:
+            if request_type == "response_body" and headers_seen and not body_seen:
                 body_seen = True
                 if not request.response_body.end_of_stream:
                     logger.warning("Guardrail requires a complete buffered response body")
