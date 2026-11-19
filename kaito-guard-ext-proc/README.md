@@ -145,8 +145,26 @@ discards pending text without scanning or flushing.
 Shared framing and scanner exceptions propagate. Invalid parsed events or
 choice policy violations raise `GuardrailStreamError`, without including model
 text. Call `cancel()` on upstream failure/cancellation, never `finish()`.
-This is tested composition code, not an Envoy `Process` implementation; the
-server remains unchanged and does not protect traffic.
+`sse_output=True` opts into rebuilt SSE instead of plain approved text chunks.
+The default text-only API is unchanged. Envoy `Process` integration is separate;
+the server remains unchanged and does not protect traffic.
+
+### Rebuilt SSE output
+
+Text, role, and finish events carry the upstream `id`,
+`object="chat.completion.chunk"`, `created`, and `model`. Initial response metadata
+must be complete and type-checked; later chunks may omit cached fields but
+cannot change them. Missing fields are never fabricated, and metadata-only
+input produces no empty delta event.
+
+Only one text choice with index zero is supported. Assistant-role events are
+preserved separately; `finish_reason` is recorded and emitted after approved text,
+followed by exactly one `[DONE]`, only when `finish()` validates normal completion.
+Receiving `[DONE]` alone never flushes held-back text. The caller must wait for
+normal upstream EOF before calling `finish()` and use `cancel()` on failure.
+Usage and non-allowlisted top-level metadata are not forwarded. `tool_calls`,
+`function_call`, `refusal`, other non-text delta fields, and unsupported choice
+fields fail closed.
 
 ## Shared streaming contracts
 
