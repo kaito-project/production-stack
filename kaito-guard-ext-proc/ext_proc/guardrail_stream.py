@@ -58,7 +58,7 @@ class GuardrailStream:
         self._done_seen = False
         self._blocked = False
         self._sse_output = sse_output
-        self._envelope: dict[str, object] | None = None
+        self._response_metadata: dict[str, object] | None = None
         self._finish_reason: str | None = None
 
     @classmethod
@@ -106,16 +106,16 @@ class GuardrailStream:
         """Discard pending state without scanning or emitting; idempotent."""
         self._window = None
         self._framer = None
-        self._envelope = None
+        self._response_metadata = None
         self._finish_reason = None
 
     def _sse_chunk(
         self, delta: dict[str, object], *, finish_reason: str | None = None
     ) -> str:
-        assert self._envelope is not None
+        assert self._response_metadata is not None
         return build_sse_data_chunk(
             {
-                **self._envelope,
+                **self._response_metadata,
                 "choices": [
                     {
                         "index": 0,
@@ -147,12 +147,14 @@ class GuardrailStream:
             if key == "object" and value != "chat.completion.chunk":
                 raise GuardrailStreamError("Unsupported OpenAI chunk object.")
             envelope[key] = value
-        if self._envelope is None:
+        if self._response_metadata is None:
             if len(envelope) == 4:
-                self._envelope = envelope
+                self._response_metadata = envelope
             elif parsed.parsed_choices:
                 raise GuardrailStreamError("Missing OpenAI response envelope.")
-        elif any(value != self._envelope[key] for key, value in envelope.items()):
+        elif any(
+            value != self._response_metadata[key] for key, value in envelope.items()
+        ):
             raise GuardrailStreamError("OpenAI response envelope changed.")
         if not parsed.parsed_choices:
             return ()
@@ -185,7 +187,7 @@ class GuardrailStream:
             if not result.blocked and final:
                 if not self._done_seen:
                     raise GuardrailStreamError("Stream ended without a DONE event.")
-                if self._sse_output and self._envelope is None:
+                if self._sse_output and self._response_metadata is None:
                     raise GuardrailStreamError("Missing OpenAI response envelope.")
                 tail = window.flush()
                 ending: tuple[str, ...] = ()
