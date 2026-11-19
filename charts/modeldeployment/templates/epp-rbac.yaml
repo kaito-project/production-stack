@@ -15,14 +15,12 @@ metadata:
     {{- include "modeldeployment.labels" . | nindent 4 }}
 rules:
   {{- /*
-  The EPP watches InferenceObjective in llm-d.ai/v1 when the cluster serves
-  it, else in inference.networking.x-k8s.io/v1alpha2, and
-  InferenceModelRewrite in inference.networking.x-k8s.io only.
+  The EPP watches InferenceObjective (llm-d.ai/v1, else llm-d.ai/v1alpha2)
+  and InferenceModelRewrite (llm-d.ai/v1alpha2) only when the cluster serves
+  their CRDs. If it cannot list and watch a served one, its cache never syncs
+  and it restarts.
   */}}
   - apiGroups: ["llm-d.ai"]
-    resources: ["inferenceobjectives"]
-    verbs: ["get", "watch", "list"]
-  - apiGroups: ["inference.networking.x-k8s.io"]
     resources: ["inferenceobjectives", "inferencemodelrewrites"]
     verbs: ["get", "watch", "list"]
   - apiGroups: ["inference.networking.k8s.io"]
