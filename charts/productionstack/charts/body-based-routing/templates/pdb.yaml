@@ -1,0 +1,18 @@
+{{- /*
+Voluntary disruptions (Karpenter consolidation, node drains and upgrades)
+evict BBR replicas one at a time, so with at least 2 replicas one stays Ready
+to serve ext_proc. Like the anti-affinity in bbr.yaml it is load-bearing for
+HA and is therefore always rendered.
+*/}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Values.bbr.name }}
+  namespace: {{ include "bbr.namespace" . }}
+  labels:
+    {{- include "bbr.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "bbr.selectorLabels" . | nindent 6 }}

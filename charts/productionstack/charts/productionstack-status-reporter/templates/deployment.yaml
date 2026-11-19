@@ -18,6 +18,9 @@ spec:
     spec:
       serviceAccountName: {{ include "productionstack-status-reporter.fullname" . }}
       terminationGracePeriodSeconds: 30
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

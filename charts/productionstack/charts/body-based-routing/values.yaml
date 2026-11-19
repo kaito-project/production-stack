@@ -101,6 +101,14 @@ bbr:
   # toleration for nodes reserved for critical add-ons).
   tolerations: []
 
+  # PriorityClass of the BBR pods. AKS App Routing runs each namespace
+  # gateway at system-cluster-critical, and the scheduler preempts only
+  # lower-priority pods, so at the same class a gateway that does not fit
+  # waits for a new node instead of evicting a BBR replica. Empty omits
+  # the field (priority 0), e.g. where the cluster restricts the built-in
+  # classes to kube-system.
+  priorityClassName: system-cluster-critical
+
   image:
     registry: mcr.microsoft.com
     repository: oss/v2/gateway-api-inference-extension/bbr
