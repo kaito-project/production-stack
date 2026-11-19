@@ -8,24 +8,6 @@ holdback algorithm, scanner, or guard engine.
 The server registers Envoy's `envoy.service.ext_proc.v3.ExternalProcessor`
 service and listens on `[::]:9000`. With an injected policy, `Process` scans
 single-choice text SSE responses using the shared core parser and holdback window.
-This Phase 3.2 branch is independent of the buffered JSON integration.
-
-## Review guide and integration boundary
-
-Read [ext_proc/server.py](ext_proc/server.py) first for Envoy/gRPC message handling,
-body replacement, and stream cleanup. Then read
-[ext_proc/guardrail_stream.py](ext_proc/guardrail_stream.py) for composition of the
-shared parser/window APIs, streaming protocol validation, and SSE rebuilding.
-Scanner decisions and holdback algorithms remain in the shared core.
-
-[kaito-project/production-stack#281](https://github.com/kaito-project/production-stack/pull/281)
-implements buffered JSON; this SSE-only work is
-[kaito-project/production-stack#282](https://github.com/kaito-project/production-stack/pull/282).
-Whichever PR merges second must integrate both paths into one `Process()`,
-coordinate `BUFFERED`/`STREAMED` mode validation, reconcile the core dependency
-pins (currently 0.2.2 for JSON and 0.2.1 for SSE), and rerun both regression suites.
-Normal completion, truncation, scanner failure, cancellation, and the real
-Envoy/OpenAI SDK compatibility tests remain part of the SSE review scope.
 
 **No policy means no protection.** The default CLI entry point has no policy
 loader, logs a warning, and acknowledges traffic without scanning. It must not
@@ -169,31 +151,13 @@ text. Call `cancel()` on upstream failure/cancellation, never `finish()`.
 It preserves allowlisted protocol metadata and defers terminal metadata and
 one `[DONE]` until normal completion. The default text-only API is unchanged.
 
-## Streaming Envoy processing (Phase 3.2)
+## Streaming Envoy processing
 
-Inject an already validated policy when constructing
-`ExternalProcessorServicer(policy)` or calling `serve(policy=policy)`:
-
-```python
-import asyncio
-
-from ext_proc.policy import GuardrailPolicyConfig
-from ext_proc.server import serve
-
-policy = GuardrailPolicyConfig.from_dict({
-    "action": "block",
-    "scanner_configs": [
-        {"type": "ban_substrings", "substrings": ["secret"]},
-    ],
-})
-asyncio.run(serve(policy=policy))
-```
-
-Core streaming-policy validation and scanner construction run before startup.
-Unsupported policies fail startup rather than silently disabling protection.
-Policy-file loading and control-plane integration are not part of this phase.
-Request headers, if supplied, are acknowledged without capturing a prompt;
-scans use an empty prompt.
+Inject a [validated policy](#guardrail-policy-configuration-adaptation) into
+`ExternalProcessorServicer(policy)` or `serve(policy=policy)`. Core streaming-policy
+validation and scanner construction fail startup for unsupported policies.
+There is no policy-file loader or control-plane integration. Request headers
+are acknowledged without capturing a prompt; scans use an empty prompt.
 
 Configure Envoy with `failure_mode_allow: false`, `allow_mode_override: false`,
 and the following static modes (the complete runnable test configuration is in
@@ -209,13 +173,11 @@ processing_mode:
   response_trailer_mode: SKIP
 ```
 
-Use normal blocking ext_proc, not observability, buffered, partial-buffered, or
-full-duplex mode. Responses must be uncompressed `text/event-stream`; media-type
-parameters are accepted. HTTP trailers are outside this phase. JSON and ordinary
-text responses fail closed rather than passing uninspected.
-Configuration owns mode selection: neither request-header nor response-header
-acknowledgements contain a mode override. Explicitly declared incompatible modes
-are still rejected.
+Use blocking ext_proc with uncompressed `text/event-stream` responses; media-type
+parameters are accepted. Observability, buffered, partial-buffered, full-duplex,
+HTTP trailers, JSON, and ordinary text are unsupported. Unsupported response
+types and explicit incompatible modes fail closed. Configuration owns mode
+selection; header acknowledgements never override it.
 
 Every Envoy body chunk gets exactly one body response, including an explicit
 empty replacement while the core holds text. Upstream bytes are never forwarded
@@ -226,55 +188,44 @@ sets `Cache-Control: no-store`; streaming output has no fixed content length.
 
 - Only `choices[0].delta.content` goes through the shared scanner/window.
   Exactly one choice with index zero is supported.
-- Every rebuilt text, role, and finish chunk carries the same validated upstream
-  `id`, `object="chat.completion.chunk"`, `created`, and `model`, plus choice index
-  zero. Complete response metadata is required before emitting a choice; later
-  chunks may omit already-cached fields but cannot change them. Missing fields
-  are not fabricated. Input containing only response metadata does not produce
-  empty metadata delta events.
-- Actual `delta.role="assistant"` events are preserved separately. Chunk
-  boundaries and formatting can change; a role can precede held-back text.
-- A parsed `finish_reason` is preserved after the final approved text. It
-  neither flushes the window nor substitutes for `[DONE]`.
-- **Usage output is outside this PR.** The current adapter has no usage-output
-  contract; usage and non-allowlisted top-level metadata are not forwarded.
-  No entire upstream payload is passed through to preserve metadata.
+- Rebuilt text, role, and finish chunks carry validated upstream `id`,
+  `object="chat.completion.chunk"`, `created`, and `model`. Initial response
+  metadata must be complete; later chunks may omit cached fields but cannot
+  change them. Missing fields are never fabricated, and metadata-only input
+  produces no empty delta event.
+- Actual `delta.role="assistant"` events are preserved separately and may precede
+  held-back text. Chunk boundaries may change. `finish_reason` follows the final
+  approved text; it neither flushes the window nor substitutes for `[DONE]`.
+- Usage and non-allowlisted top-level metadata are not forwarded.
 - `tool_calls`, `function_call`, `refusal`, other non-text delta fields, and
   unsupported choice fields fail closed instead of being silently dropped.
-- An upstream `[DONE]` only records a marker. Only a body request carrying normal
-  HTTP `end_of_stream` permits `finish()`: core first validates complete SSE
-  framing and the marker, then flushes once and emits terminal metadata followed
-  by exactly one `[DONE]`.
+- **Receiving `[DONE]` does not finish the response or release held-back text.**
+  Only a body request carrying normal HTTP EOF (`end_of_stream`) permits
+  `finish()`: validate complete SSE framing and DONE, flush once, then emit the
+  final approved text, finish reason if present, and exactly one `[DONE]`.
 - Missing DONE, truncated SSE (even after DONE), or any extra data event after
   DONE is an error. Comments after DONE remain harmless. RPC EOF is not HTTP EOF.
 
 ### Fail-closed boundary and cancellation
 
-Blocking and parse/scanner errors discard the current output batch and holdback.
-The processor requests HTTP 403 with `blockMessage` for a policy block, or a
-fixed HTTP 502 for processing/unsupported-response errors. Envoy can substitute
-these responses only while downstream headers remain replaceable. **After
-headers have committed, including when no body bytes have been sent yet, Envoy
-aborts the stream instead; no terminal event or `[DONE]` is emitted.** A client
-may therefore see HTTP 200 followed by an incomplete stream, not a late 403.
+Blocks and parse/scanner errors discard the current output batch and holdback.
+While downstream headers remain replaceable, Envoy can return HTTP 403 with
+`blockMessage` for blocks or a fixed 502 for processing/unsupported-response
+errors. **After headers commit, even before any body bytes are sent, Envoy can
+only abort the stream, not change the status to 403/502.** No terminal event or
+`[DONE]` is emitted; clients may see HTTP 200 followed by an incomplete stream.
+Already-delivered approved text and metadata cannot be retracted. Model text
+and scanner exception details are not logged or returned.
 
-Fail closed prevents later content and the retained tail from being sent.
-Already-delivered approved prefixes and protocol metadata cannot be retracted.
-Scanner exception details and model text are not logged or returned.
-Client cancellation and upstream resets discard the per-RPC state without
-calling `finish()` or flushing. A missing HTTP EOF also aborts the RPC.
+Cancellation and upstream resets discard per-RPC state without `finish()` or
+flushing. Missing HTTP EOF aborts the RPC.
 
-Tests cover real gRPC transport and real Envoy 1.36.11: successful redaction,
-DONE waiting for HTTP EOF, an error before headers, blocking/scanner errors after
-headers with zero body bytes, upstream truncation after DONE, late blocking after
-an approved prefix, and client disconnect. A real OpenAI Python SDK test reads
-through Envoy using `chat.completions.stream()` and `get_final_completion()`,
-verifying each chunk's response metadata and the final accumulated redacted text,
-response identity, role, and finish reason. The SDK is a development/test-only
-dependency.
-All eight Envoy tests run with mode overrides disabled. This is not the full
-Phase 3.4 matrix.
-Locally, real Envoy tests are explicitly skipped unless a binary is available:
+### Integration tests
+
+[Real Envoy tests](tests/test_envoy_sse.py) cover completion, truncation, blocks,
+scanner errors, cancellation, and OpenAI SDK stream accumulation. The SDK is
+test-only; CI uses checksum-pinned Envoy 1.36.11 with mode overrides disabled.
+Locally these tests skip unless an Envoy binary is available. From this directory:
 
 ```sh
 ENVOY_BINARY=/path/to/envoy python -m pytest tests/test_envoy_sse.py
