@@ -295,6 +295,10 @@ type Config struct {
 	// ShadowPodImage is the inference simulator container image.
 	ShadowPodImage string
 
+	// ShadowPodPriorityClassName is the PriorityClass of the shadow pods.
+	// Empty leaves it unset.
+	ShadowPodPriorityClassName string
+
 	// TimeToFirstToken / InterTokenLatency tune the llm-d-inference-sim
 	// "constant" latency calculator (values include a unit suffix, e.g.
 	// "100ms"). See llm-d-inference-sim/docs/latency-profiles.md.

@@ -38,6 +38,9 @@ spec:
     spec:
       serviceAccountName: {{ include "modeldeployment.eppName" . }}
       terminationGracePeriodSeconds: 130
+      {{- with .Values.epp.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with .Values.epp.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}

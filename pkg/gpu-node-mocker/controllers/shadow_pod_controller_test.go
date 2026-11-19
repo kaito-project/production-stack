@@ -281,6 +281,29 @@ func TestEnsureShadowPod_Creates(t *testing.T) {
 	}
 }
 
+// The shadow pod runs at the configured PriorityClass, so a namespace gateway
+// at the same class cannot preempt it; without one it keeps priority 0.
+func TestEnsureShadowPod_PriorityClassName(t *testing.T) {
+	for _, priorityClass := range []string{"", "system-cluster-critical"} {
+		t.Run("priorityClassName="+priorityClass, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.ShadowPodPriorityClassName = priorityClass
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+			original := newPendingPodOnFakeNode("falcon-0", "default", "fake-ws1")
+			cl := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(ns, original).Build()
+			r := &ShadowPodReconciler{Client: cl, Config: cfg}
+
+			shadow, err := r.ensureShadowPod(context.Background(), original, "shadow-default-falcon-0")
+			if err != nil {
+				t.Fatalf("ensureShadowPod: %v", err)
+			}
+			if shadow.Spec.PriorityClassName != priorityClass {
+				t.Errorf("priorityClassName = %q, want %q", shadow.Spec.PriorityClassName, priorityClass)
+			}
+		})
+	}
+}
+
 func TestEnsureShadowPod_ReturnsExisting(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme()
