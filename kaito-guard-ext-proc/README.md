@@ -148,8 +148,24 @@ Shared framing and scanner exceptions propagate. Invalid parsed events or
 choice policy violations raise `GuardrailStreamError`, without including model
 text. Call `cancel()` on upstream failure/cancellation, never `finish()`.
 `sse_output=True` opts into rebuilt SSE instead of plain approved text chunks.
-It preserves allowlisted protocol metadata and defers terminal metadata and
-one `[DONE]` until normal completion. The default text-only API is unchanged.
+The default text-only API is unchanged.
+
+### Rebuilt SSE output
+
+Text, role, and finish events carry the upstream `id`,
+`object="chat.completion.chunk"`, `created`, and `model`. Initial response metadata
+must be complete and type-checked; later chunks may omit cached fields but
+cannot change them. Missing fields are never fabricated, and metadata-only
+input produces no empty delta event.
+
+Only one text choice with index zero is supported. Assistant-role events are
+preserved separately; `finish_reason` is recorded and emitted after approved text,
+followed by exactly one `[DONE]`, only when `finish()` validates normal completion.
+Receiving `[DONE]` alone never flushes held-back text. The caller must wait for
+normal upstream EOF before calling `finish()` and use `cancel()` on failure.
+Usage and non-allowlisted top-level metadata are not forwarded. `tool_calls`,
+`function_call`, `refusal`, other non-text delta fields, and unsupported choice
+fields fail closed.
 
 ## Streaming Envoy processing
 
@@ -184,27 +200,14 @@ empty replacement while the core holds text. Upstream bytes are never forwarded
 directly. The header response removes content length and stale validators and
 sets `Cache-Control: no-store`; streaming output has no fixed content length.
 
-### Wire fields and terminal ordering
+### HTTP completion
 
-- Only `choices[0].delta.content` goes through the shared scanner/window.
-  Exactly one choice with index zero is supported.
-- Rebuilt text, role, and finish chunks carry validated upstream `id`,
-  `object="chat.completion.chunk"`, `created`, and `model`. Initial response
-  metadata must be complete; later chunks may omit cached fields but cannot
-  change them. Missing fields are never fabricated, and metadata-only input
-  produces no empty delta event.
-- Actual `delta.role="assistant"` events are preserved separately and may precede
-  held-back text. Chunk boundaries may change. `finish_reason` follows the final
-  approved text; it neither flushes the window nor substitutes for `[DONE]`.
-- Usage and non-allowlisted top-level metadata are not forwarded.
-- `tool_calls`, `function_call`, `refusal`, other non-text delta fields, and
-  unsupported choice fields fail closed instead of being silently dropped.
-- **Receiving `[DONE]` does not finish the response or release held-back text.**
-  Only a body request carrying normal HTTP EOF (`end_of_stream`) permits
-  `finish()`: validate complete SSE framing and DONE, flush once, then emit the
-  final approved text, finish reason if present, and exactly one `[DONE]`.
-- Missing DONE, truncated SSE (even after DONE), or any extra data event after
-  DONE is an error. Comments after DONE remain harmless. RPC EOF is not HTTP EOF.
+Only `choices[0].delta.content` enters the scanner/window. Chunk boundaries may
+change; assistant-role events may precede held-back text.
+**Receiving `[DONE]` does not finish the response or release held-back text.**
+Only a body request carrying normal HTTP EOF (`end_of_stream`) permits
+`finish()`. Missing DONE, truncated SSE (even after DONE), or extra data after
+DONE is an error. Comments after DONE are harmless. RPC EOF is not HTTP EOF.
 
 ### Fail-closed boundary and cancellation
 
@@ -230,7 +233,6 @@ Locally these tests skip unless an Envoy binary is available. From this director
 ```sh
 ENVOY_BINARY=/path/to/envoy python -m pytest tests/test_envoy_sse.py
 ```
-
 ## Shared streaming contracts
 
 Import the APIs from their owning package; no ext_proc compatibility layer is
