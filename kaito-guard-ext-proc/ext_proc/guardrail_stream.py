@@ -134,6 +134,7 @@ class GuardrailStream:
     def _validate_chunk_and_emit_role(
         self, parsed: OpenAIChatChunkParseResult
     ) -> tuple[str, ...]:
+        """Validate the chunk, record finish_reason, and build any role event."""
         payload = parsed.payload
         assert payload is not None
         chunk_metadata: dict[str, object] = {}
