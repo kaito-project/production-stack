@@ -149,7 +149,7 @@ gatewayName: ""
 epp:
   image:
     repository: "mcr.microsoft.com/oss/v2/llm-d/llm-d-router-endpoint-picker"
-    tag: "v0.9.0"
+    tag: "v1.0.0"
     pullPolicy: "IfNotPresent"
   replicas: 1
   # modelServerPort must match KAITO's inference server port.

@@ -14,6 +14,14 @@ metadata:
   labels:
     {{- include "modeldeployment.labels" . | nindent 4 }}
 rules:
+  {{- /*
+  The EPP watches InferenceObjective in llm-d.ai/v1 when the cluster serves
+  it, else in inference.networking.x-k8s.io/v1alpha2, and
+  InferenceModelRewrite in inference.networking.x-k8s.io only.
+  */}}
+  - apiGroups: ["llm-d.ai"]
+    resources: ["inferenceobjectives"]
+    verbs: ["get", "watch", "list"]
   - apiGroups: ["inference.networking.x-k8s.io"]
     resources: ["inferenceobjectives", "inferencemodelrewrites"]
     verbs: ["get", "watch", "list"]
