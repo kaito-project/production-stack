@@ -149,6 +149,11 @@ if [[ "${NODE_PROVISIONER}" == "karpenter" && "${ENABLE_NODE_MOCKER}" != "true" 
   EXTRA_AKS_ARGS+=(--enable-oidc-issuer --enable-workload-identity)
 fi
 
+# --enable-aad turns on AKS-managed Microsoft Entra ID integration: an Azure
+# Policy assigned to a management group above the E2E subscription
+# (CloudGov_KubernAuthN_AAD) denies creating an AKS cluster without it. The
+# cluster keeps its local admin account, which the kubeconfig fetched below
+# uses.
 echo "=== Creating AKS cluster ${CLUSTER_NAME} (provider=${E2E_PROVIDER}, node-provisioner=${NODE_PROVISIONER}) ==="
 az aks create ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
   --resource-group "${RESOURCE_GROUP}" \
@@ -156,6 +161,7 @@ az aks create ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
   --node-count "${NODE_COUNT}" \
   --node-vm-size "${NODE_VM_SIZE}" \
   --enable-managed-identity \
+  --enable-aad \
   --attach-acr "${ACR_NAME}" \
   --network-plugin azure \
   --network-plugin-mode overlay \
@@ -203,9 +209,14 @@ verify_managed_gwie() {
 run_provider_hook verify_cluster
 
 echo "=== Fetching kubeconfig ==="
+# --admin: on an Entra ID cluster the user credentials sign in through
+# kubelogin, and the runner identity would also need a Kubernetes role on the
+# cluster. The local admin account keeps the cluster-admin access the suite
+# has always had.
 az aks get-credentials ${AZ_SUB[@]+"${AZ_SUB[@]}"} \
   --resource-group "${RESOURCE_GROUP}" \
   --name "${CLUSTER_NAME}" \
+  --admin \
   --overwrite-existing
 
 echo "=== Waiting for all nodes to be Ready ==="

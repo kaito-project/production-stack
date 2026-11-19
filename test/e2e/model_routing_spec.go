@@ -564,6 +564,38 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			Expect(errResp.ErrorCode()).To(Equal("invalid_request_body"))
 		})
 
+		// BBR sets the routing headers only from a model it finds in the
+		// body, and the deployment HTTPRoute routes on either one, so the
+		// gateway removes any value the client set itself before BBR runs.
+		// Were it kept, a request without a model would be routed, and the
+		// EPP sends a bodyless one to a random pod, exposing model-server
+		// endpoints such as /metrics through the gateway.
+		DescribeTable("should ignore a routing header the client sets itself",
+			func(header, method, path string, body []byte, opts ...utils.RequestOption) {
+				resp, err := utils.SendGatewayRequest(ctx, caseGateway, method, path, body,
+					append(opts, utils.WithHeader(header, falconModel))...)
+				Expect(err).NotTo(HaveOccurred())
+				defer resp.Body.Close()
+
+				// The request names no model, so it must reach the
+				// ABSENT-header catch-all, not falconModel's pods.
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"a client-set %s must not route the request to %s", header, falconModel)
+				Expect(resp.Header.Get("x-kaito-error-source")).To(Equal("bbr"))
+				errResp, err := utils.ParseErrorResponse(resp)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(errResp.ErrorCode()).To(Equal("invalid_request_body"))
+			},
+			Entry("X-Gateway-Model-Name on a body without a model", "X-Gateway-Model-Name",
+				http.MethodPost, utils.ChatCompletionsPath, []byte(`{"messages": [{"role": "user", "content": "hello"}]}`)),
+			Entry("X-Gateway-Base-Model-Name on a body without a model", "X-Gateway-Base-Model-Name",
+				http.MethodPost, utils.ChatCompletionsPath, []byte(`{"messages": [{"role": "user", "content": "hello"}]}`)),
+			Entry("X-Gateway-Model-Name on a bodyless GET /metrics", "X-Gateway-Model-Name",
+				http.MethodGet, "/metrics", nil, utils.WithOriginPath()),
+			Entry("X-Gateway-Base-Model-Name on a bodyless GET /metrics", "X-Gateway-Base-Model-Name",
+				http.MethodGet, "/metrics", nil, utils.WithOriginPath()),
+		)
+
 		It("should return a well-formed error for non-string model field", func() {
 			body := []byte(`{"model": 42, "messages": [{"role": "user", "content": "hello"}]}`)
 			resp, err := utils.SendGatewayRequest(ctx, caseGateway, http.MethodPost, utils.ChatCompletionsPath, body)
