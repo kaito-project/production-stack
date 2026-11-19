@@ -135,6 +135,7 @@ Set `namespaceOverride: ""` to fall back to the standard Helm
 | `resources.requests.memory`| `256Mi`                                  | Controller container memory request.                                                                         |
 | `resources.limits.cpu`     | `2000m`                                  | Controller container CPU limit.                                                                              |
 | `resources.limits.memory`  | `512Mi`                                  | Controller container memory limit.                                                                           |
+| `priorityClassName`        | `system-cluster-critical`                | PriorityClass of the controller pod. At the class AKS App Routing runs the namespace gateway at, a gateway that does not fit waits for a new node instead of preempting the scaler. Empty omits the field (priority 0). |
 
 ## Upgrade
 

@@ -65,6 +65,7 @@ func main() {
 		metricsAddr            string
 		probeAddr              string
 		shadowPodImage         string
+		shadowPodPriorityClass string
 		timeToFirstToken       string
 		interTokenLatency      string
 		ttftStdDev             string
@@ -100,6 +101,8 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.StringVar(&shadowPodImage, "shadow-pod-image", controllers.DefaultInferenceSimImage,
 		"Container image for the inference simulator running in shadow pods.")
+	flag.StringVar(&shadowPodPriorityClass, "shadow-pod-priority-class-name", "",
+		"PriorityClass of the shadow pods. Empty ⇒ no priorityClassName (priority 0).")
 	flag.StringVar(&timeToFirstToken, "time-to-first-token", "",
 		"Override the selected latency profile's time-to-first-token (e.g. 100ms). Empty ⇒ use the profile value. See llm-d-inference-sim latency-profiles.md.")
 	flag.StringVar(&interTokenLatency, "inter-token-latency", "",
@@ -209,6 +212,7 @@ func main() {
 
 	cfg := controllers.Config{
 		ShadowPodImage:              shadowPodImage,
+		ShadowPodPriorityClassName:  shadowPodPriorityClass,
 		TimeToFirstToken:            timeToFirstToken,
 		InterTokenLatency:           interTokenLatency,
 		TimeToFirstTokenStdDev:      ttftStdDev,

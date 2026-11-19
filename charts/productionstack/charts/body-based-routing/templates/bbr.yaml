@@ -16,6 +16,9 @@ spec:
         {{- include "bbr.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "bbr.serviceAccountName" . }}
+      {{- with .Values.bbr.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
       {{- with .Values.bbr.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
