@@ -15,6 +15,9 @@
 
 from guardrail_core.streaming.openai import (
     OpenAIChatChunkParseStatus,
+    OpenAIChatChunkParseResult,
+    build_sse_data_chunk,
+    build_sse_done_chunk,
     parse_openai_chat_sse_event,
 )
 from guardrail_core.streaming.sse import SSEEvent, SSEFramer
@@ -45,14 +48,18 @@ class GuardrailStream:
         *,
         holdback_len: int,
         max_event_bytes: int = 1024 * 1024,
+        sse_output: bool = False,
     ) -> None:
-        """Set holdback_len in Unicode code points to cover cross-chunk matches."""
+        """Set holdback in code points; sse_output selects rebuilt SSE over text."""
         self._framer: SSEFramer | None = SSEFramer(max_event_bytes=max_event_bytes)
         self._window: StreamingBufferWindow | None = StreamingBufferWindow(
             scanner, holdback_len=holdback_len
         )
         self._done_seen = False
         self._blocked = False
+        self._sse_output = sse_output
+        self._response_metadata: dict[str, object] | None = None
+        self._finish_reason: str | None = None
 
     @classmethod
     def from_policy(
@@ -62,6 +69,7 @@ class GuardrailStream:
         prompt: str = "",
         holdback_len: int | None = None,
         max_event_bytes: int = 1024 * 1024,
+        sse_output: bool = False,
     ) -> "GuardrailStream":
         """Build fresh core scanners and a correctly sized window for one response."""
         scanner = policy.build_window_scanner(prompt=prompt, holdback_len=holdback_len)
@@ -69,6 +77,7 @@ class GuardrailStream:
             scanner,
             holdback_len=scanner.holdback_len,
             max_event_bytes=max_event_bytes,
+            sse_output=sse_output,
         )
 
     @property
@@ -97,6 +106,78 @@ class GuardrailStream:
         """Discard pending state without scanning or emitting; idempotent."""
         self._window = None
         self._framer = None
+        self._response_metadata = None
+        self._finish_reason = None
+
+    def _build_sse_chunk(
+        self, delta: dict[str, object], *, finish_reason: str | None = None
+    ) -> str:
+        assert self._response_metadata is not None
+        return build_sse_data_chunk(
+            {
+                **self._response_metadata,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": finish_reason,
+                    }
+                ],
+            }
+        )
+
+    def _format_text_chunks(self, chunks: tuple[str, ...]) -> tuple[str, ...]:
+        if self._sse_output:
+            return tuple(self._build_sse_chunk({"content": text}) for text in chunks)
+        return chunks
+
+    def _validate_chunk_and_emit_role(
+        self, parsed: OpenAIChatChunkParseResult
+    ) -> tuple[str, ...]:
+        """Validate the chunk, record finish_reason, and build any role event."""
+        payload = parsed.payload
+        assert payload is not None
+        chunk_metadata: dict[str, object] = {}
+        for key in ("id", "object", "created", "model"):
+            if key not in payload:
+                continue
+            value = payload[key]
+            if (
+                key == "created"
+                and (isinstance(value, bool) or not isinstance(value, int))
+            ) or (key != "created" and not isinstance(value, str)):
+                raise GuardrailStreamError("Invalid OpenAI protocol metadata.")
+            if key == "object" and value != "chat.completion.chunk":
+                raise GuardrailStreamError("Unsupported OpenAI chunk object.")
+            chunk_metadata[key] = value
+        if self._response_metadata is None:
+            if len(chunk_metadata) == 4:
+                self._response_metadata = chunk_metadata
+            elif parsed.parsed_choices:
+                raise GuardrailStreamError("Missing OpenAI response metadata.")
+        elif any(
+            value != self._response_metadata[key]
+            for key, value in chunk_metadata.items()
+        ):
+            raise GuardrailStreamError("OpenAI response metadata changed.")
+        if not parsed.parsed_choices:
+            return ()
+        choice = parsed.parsed_choices[0]
+        assert choice.choice is not None
+        if set(choice.choice) - {"index", "delta", "finish_reason"}:
+            raise GuardrailStreamError("Unsupported OpenAI choice fields.")
+        delta = choice.choice.get("delta") or {}
+        if set(delta) - {"role", "content"}:
+            raise GuardrailStreamError("Unsupported non-text OpenAI delta.")
+        if "role" in delta and delta["role"] != "assistant":
+            raise GuardrailStreamError("Unsupported OpenAI role.")
+        if self._finish_reason is not None:
+            raise GuardrailStreamError("Choice received after finish_reason.")
+        if choice.finish_reason is not None:
+            self._finish_reason = choice.finish_reason
+        if "role" in delta:
+            return (self._build_sse_chunk({"role": delta["role"]}),)
+        return ()
 
     def _advance(self, chunk: bytes, *, final: bool) -> WindowEmitResult:
         framer, window = self._framer, self._window
@@ -110,10 +191,27 @@ class GuardrailStream:
             if not result.blocked and final:
                 if not self._done_seen:
                     raise GuardrailStreamError("Stream ended without a DONE event.")
-                tail = window.flush()
+                if self._sse_output and self._response_metadata is None:
+                    raise GuardrailStreamError("Missing OpenAI response metadata.")
+                flush_result = window.flush()
+                terminal_sse_chunks: tuple[str, ...] = ()
+                if self._sse_output and not flush_result.blocked:
+                    if self._finish_reason is not None:
+                        terminal_sse_chunks += (
+                            self._build_sse_chunk(
+                                {}, finish_reason=self._finish_reason
+                            ),
+                        )
+                    terminal_sse_chunks += (build_sse_done_chunk(),)
                 result = WindowEmitResult(
-                    chunks=() if tail.blocked else result.chunks + tail.chunks,
-                    blocked=tail.blocked,
+                    chunks=()
+                    if flush_result.blocked
+                    else (
+                        result.chunks
+                        + self._format_text_chunks(flush_result.chunks)
+                        + terminal_sse_chunks
+                    ),
+                    blocked=flush_result.blocked,
                 )
             self._blocked = result.blocked
             succeeded = True
@@ -128,11 +226,11 @@ class GuardrailStream:
     ) -> WindowEmitResult:
         chunks: list[str] = []
         for event in events:
+            if self._done_seen and event.data is not None:
+                raise GuardrailStreamError("Data received after the DONE event.")
             parsed = parse_openai_chat_sse_event(event)
             if parsed.status == OpenAIChatChunkParseStatus.NO_DATA:
                 continue
-            if self._done_seen:
-                raise GuardrailStreamError("Data received after the DONE event.")
             if parsed.status == OpenAIChatChunkParseStatus.DONE:
                 self._done_seen = True
                 continue
@@ -140,19 +238,21 @@ class GuardrailStream:
                 raise GuardrailStreamError(
                     f"Invalid OpenAI stream event: {parsed.status}."
                 )
-            if not parsed.parsed_choices:
-                continue
-            if (
+            if parsed.parsed_choices and (
                 len(parsed.parsed_choices) != 1
                 or parsed.parsed_choices[0].choice_index != 0
             ):
                 raise GuardrailStreamError(
                     "Stream requires exactly one choice with index zero."
                 )
+            if self._sse_output:
+                chunks.extend(self._validate_chunk_and_emit_role(parsed))
+            if not parsed.parsed_choices:
+                continue
             content = parsed.parsed_choices[0].content
             if content is not None:
                 result = window.feed(content)
                 if result.blocked:
                     return WindowEmitResult(chunks=(), blocked=True)
-                chunks.extend(result.chunks)
+                chunks.extend(self._format_text_chunks(result.chunks))
         return WindowEmitResult(chunks=tuple(chunks))

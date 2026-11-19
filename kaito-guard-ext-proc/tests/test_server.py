@@ -40,14 +40,18 @@ async def test_serve_accepts_ext_proc_requests_and_stops(unused_tcp_port, host, 
         async with grpc.aio.insecure_channel(address) as channel:
             await asyncio.wait_for(channel.channel_ready(), timeout=5)
             stub = external_processor_pb2_grpc.ExternalProcessorStub(channel)
-            with pytest.raises(grpc.aio.AioRpcError) as exc:
-                await stub.Process(
-                    iter([external_processor_pb2.ProcessingRequest()]), timeout=5
-                ).read()
-            assert exc.value.code() == grpc.StatusCode.UNIMPLEMENTED
-            assert (
-                exc.value.details()
-                == "KAITO guardrail core integration is not implemented"
+            response = await stub.Process(
+                iter(
+                    [
+                        external_processor_pb2.ProcessingRequest(
+                            response_headers=external_processor_pb2.HttpHeaders()
+                        )
+                    ]
+                ),
+                timeout=5,
+            ).read()
+            assert response == external_processor_pb2.ProcessingResponse(
+                response_headers=external_processor_pb2.HeadersResponse()
             )
     finally:
         task.cancel()
