@@ -120,6 +120,8 @@ is rejected with HTTP 502. Without that field, the processor still requires a
 complete body but cannot independently verify the configured mode. Request
 headers, if sent, are acknowledged without capturing a prompt; scans use an
 empty prompt.
+Envoy is responsible for message ordering and delivering the buffered body;
+the processor does not maintain per-RPC sequencing state.
 
 - Only uncompressed `application/json` responses are supported. Content-type
   parameters are accepted. SSE, plain text, compressed bodies, header-only
@@ -148,8 +150,8 @@ empty prompt.
   stale digest/cache-validator headers through the buffered body response's
   header mutation.
 - Parsing/scanning errors return a fixed HTTP 502 response and a generic server
-  log without model text or scanner exception details. Unexpected ext_proc
-  sequences and early EOF abort the RPC; Envoy must fail closed on RPC errors.
+  log without model text or scanner exception details. Unsupported processing
+  message types abort the RPC; Envoy must fail closed on RPC errors.
   Cancellation discards the call without releasing a pending body.
 
 The gRPC tests use the real protobuf service, transport, and core scanners to

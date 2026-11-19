@@ -481,17 +481,13 @@ async def test_process_rejects_explicit_incompatible_body_modes(body_mode, phase
     "requests, code",
     [
         ([pb.ProcessingRequest()], grpc.StatusCode.INVALID_ARGUMENT),
-        ([pb.ProcessingRequest(response_body=pb.HttpBody())], grpc.StatusCode.INVALID_ARGUMENT),
-        ([response_headers(), response_headers()], grpc.StatusCode.INVALID_ARGUMENT),
-        ([response_headers()], grpc.StatusCode.FAILED_PRECONDITION),
-        ([], grpc.StatusCode.FAILED_PRECONDITION),
         (
             [pb.ProcessingRequest(response_headers=pb.HttpHeaders(), observability_mode=True)],
             grpc.StatusCode.FAILED_PRECONDITION,
         ),
     ],
 )
-async def test_process_rejects_invalid_sequence_or_mode(requests, code):
+async def test_process_rejects_missing_request_type_or_observability_mode(requests, code):
     async with processor(make_policy()) as stub:
         with pytest.raises(grpc.aio.AioRpcError) as exc:
             async for _ in stub.Process(iter(requests), timeout=5):

@@ -106,8 +106,6 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         request_iterator: AsyncIterator[pb.ProcessingRequest],
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[pb.ProcessingResponse]:
-        response_headers_received = False
-        response_body_received = False
         async for request in request_iterator:
             request_type = request.WhichOneof("request")
             if self.policy is None:
@@ -135,13 +133,12 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     502, "Unsupported guardrail mode.", "guardrail_unsupported_mode"
                 )
                 return
-            if request_type == "request_headers" and not response_headers_received:
+            if request_type == "request_headers":
                 yield pb.ProcessingResponse(
                     request_headers=pb.HeadersResponse(),
                 )
                 continue
-            if request_type == "response_headers" and not response_headers_received:
-                response_headers_received = True
+            if request_type == "response_headers":
                 headers = {
                     header.key.lower(): (
                         header.raw_value.decode("latin-1")
@@ -171,12 +168,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     response_headers=pb.HeadersResponse(),
                 )
                 continue
-            if (
-                request_type == "response_body"
-                and response_headers_received
-                and not response_body_received
-            ):
-                response_body_received = True
+            if request_type == "response_body":
                 if not request.response_body.end_of_stream:
                     logger.warning("Guardrail requires a complete buffered response body")
                     yield _immediate_response(
@@ -225,11 +217,6 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                 grpc.StatusCode.INVALID_ARGUMENT, "Unexpected guardrail processing phase"
             )
             return
-        if self.policy is not None and not response_body_received:
-            logger.warning("Guardrail stream ended before the complete response body")
-            await context.abort(
-                grpc.StatusCode.FAILED_PRECONDITION, "Missing complete guardrail response"
-            )
 
 
 async def serve(
