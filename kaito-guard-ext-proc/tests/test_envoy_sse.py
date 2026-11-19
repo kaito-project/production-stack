@@ -27,7 +27,14 @@ from guardrail_core.streaming.openai import build_sse_data_chunk
 from openai import AsyncOpenAI
 
 from ext_proc.guardrail_stream import GuardrailStream
-from tests.test_sse_process import DONE, ENVELOPE, event, policy, processor, text
+from tests.test_sse_process import (
+    DONE,
+    RESPONSE_METADATA,
+    extract_stream_text,
+    make_content_event,
+    make_policy,
+    running_processor,
+)
 
 
 @pytest.fixture
@@ -39,7 +46,7 @@ def envoy_binary():
 
 
 @asynccontextmanager
-async def proxy(
+async def running_envoy_proxy(
     binary,
     tmp_path,
     unused_tcp_port_factory,
@@ -50,9 +57,9 @@ async def proxy(
     body_gate=None,
     next_chunk_gate=None,
     eof_gate=None,
-    abrupt=False,
+    truncate_upstream_response=False,
 ):
-    sent = asyncio.Event()
+    upstream_chunks_sent = asyncio.Event()
     handlers = set()
 
     async def upstream(reader, writer):
@@ -78,10 +85,10 @@ async def proxy(
                 writer.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
                 await writer.drain()
                 await asyncio.sleep(0.02)
-            sent.set()
+            upstream_chunks_sent.set()
             if eof_gate is not None:
                 await eof_gate.wait()
-            if not abrupt:
+            if not truncate_upstream_response:
                 writer.write(b"0\r\n\r\n")
                 await writer.drain()
         except (ConnectionError, asyncio.IncompleteReadError):
@@ -106,7 +113,7 @@ async def proxy(
         )
     )
     try:
-        async with processor(config, processor_port):
+        async with running_processor(config, processor_port):
             with (tmp_path / "envoy.log").open("wb") as log:
                 process = await asyncio.create_subprocess_exec(
                     binary,
@@ -137,7 +144,7 @@ async def proxy(
                                 writer.close()
                                 await writer.wait_closed()
                                 break
-                    yield listener_port, sent
+                    yield listener_port, upstream_chunks_sent
                 finally:
                     if process.returncode is None:
                         process.terminate()
@@ -181,14 +188,14 @@ def get_response(port, on_headers=None, on_body=None):
 
 
 @pytest.mark.asyncio
-async def test_real_openai_sdk_accumulates_enveloped_redacted_stream(
+async def test_real_openai_sdk_accumulates_redacted_stream_with_response_metadata(
     envoy_binary,
     tmp_path,
     unused_tcp_port_factory,
 ):
     role = build_sse_data_chunk(
         {
-            **ENVELOPE,
+            **RESPONSE_METADATA,
             "choices": [
                 {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
             ],
@@ -196,17 +203,23 @@ async def test_real_openai_sdk_accumulates_enveloped_redacted_stream(
     ).encode()
     finish = build_sse_data_chunk(
         {
-            **ENVELOPE,
+            **RESPONSE_METADATA,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
         }
     ).encode()
     prefix = "safe " * 70
-    async with proxy(
+    async with running_envoy_proxy(
         envoy_binary,
         tmp_path,
         unused_tcp_port_factory,
-        policy("redact"),
-        [role, event(prefix + "se"), event("cret \u56de\u590d"), finish, DONE],
+        make_policy("redact"),
+        [
+            role,
+            make_content_event(prefix + "se"),
+            make_content_event("cret \u56de\u590d"),
+            finish,
+            DONE,
+        ],
     ) as (port, _):
         async with AsyncOpenAI(
             base_url=f"http://127.0.0.1:{port}/v1",
@@ -215,7 +228,7 @@ async def test_real_openai_sdk_accumulates_enveloped_redacted_stream(
             timeout=5,
         ) as client:
             async with client.chat.completions.stream(
-                model=ENVELOPE["model"],
+                model=RESPONSE_METADATA["model"],
                 messages=[{"role": "user", "content": "local integration test"}],
             ) as stream:
                 deltas = []
@@ -230,7 +243,7 @@ async def test_real_openai_sdk_accumulates_enveloped_redacted_stream(
                             "object": chunk.object,
                             "created": chunk.created,
                             "model": chunk.model,
-                        } == ENVELOPE
+                        } == RESPONSE_METADATA
                         chunks.append(chunk)
                     elif item.type == "content.delta":
                         deltas.append(item.delta)
@@ -238,9 +251,9 @@ async def test_real_openai_sdk_accumulates_enveloped_redacted_stream(
     expected = prefix + "[REDACTED] \u56de\u590d"
     assert "content.delta" in event_types, event_types
     assert "".join(deltas) == expected
-    assert completion.id == ENVELOPE["id"]
-    assert completion.model == ENVELOPE["model"]
-    assert completion.created == ENVELOPE["created"]
+    assert completion.id == RESPONSE_METADATA["id"]
+    assert completion.model == RESPONSE_METADATA["model"]
+    assert completion.created == RESPONSE_METADATA["created"]
     assert completion.object == "chat.completion"
     assert completion.choices[0].message.role == "assistant"
     assert completion.choices[0].message.content == expected
@@ -266,24 +279,24 @@ async def test_real_envoy_redacts_and_waits_for_http_eof(
     original_finish = GuardrailStream.finish
     monkeypatch.setattr(GuardrailStream, "finish", lambda self: finish(self))
     finish.side_effect = original_finish
-    async with proxy(
+    async with running_envoy_proxy(
         envoy_binary,
         tmp_path,
         unused_tcp_port_factory,
-        policy("redact"),
-        [event("hello se"), event("cret \u56de\u590d"), DONE],
+        make_policy("redact"),
+        [make_content_event("hello se"), make_content_event("cret \u56de\u590d"), DONE],
         eof_gate=eof_gate,
-    ) as (port, sent):
+    ) as (port, upstream_chunks_sent):
         task = asyncio.create_task(asyncio.to_thread(get_response, port))
         try:
-            await asyncio.wait_for(sent.wait(), timeout=5)
+            await asyncio.wait_for(upstream_chunks_sent.wait(), timeout=5)
             assert not task.done()
             finish.assert_not_called()
         finally:
             eof_gate.set()
         status, headers, received, complete = await task
     assert status == 200 and complete
-    assert text(received) == "hello [REDACTED] \u56de\u590d"
+    assert extract_stream_text(received) == "hello [REDACTED] \u56de\u590d"
     assert received.count(DONE) == 1
     assert received.endswith(DONE)
     assert "content-length" not in headers
@@ -296,12 +309,12 @@ async def test_real_envoy_error_before_headers_is_fixed_502(
     tmp_path,
     unused_tcp_port_factory,
 ):
-    async with proxy(
+    async with running_envoy_proxy(
         envoy_binary,
         tmp_path,
         unused_tcp_port_factory,
-        policy(),
-        [event("original-must-not-leak")],
+        make_policy(),
+        [make_content_event("original-must-not-leak")],
         content_type="application/json",
     ) as (port, _):
         status, _, received, complete = await asyncio.to_thread(get_response, port)
@@ -330,12 +343,12 @@ async def test_real_envoy_error_after_headers_before_any_body_aborts(
         statuses.append(status)
         loop.call_soon_threadsafe(body_gate.set)
 
-    async with proxy(
+    async with running_envoy_proxy(
         envoy_binary,
         tmp_path,
         unused_tcp_port_factory,
-        policy(),
-        [event("a secret"), DONE],
+        make_policy(),
+        [make_content_event("a secret"), DONE],
         body_gate=body_gate,
     ) as (port, _):
         status, _, received, complete = await asyncio.to_thread(
@@ -353,13 +366,13 @@ async def test_real_envoy_upstream_truncation_after_done_does_not_flush(
     tmp_path,
     unused_tcp_port_factory,
 ):
-    async with proxy(
+    async with running_envoy_proxy(
         envoy_binary,
         tmp_path,
         unused_tcp_port_factory,
-        policy(),
-        [event("pending-must-not-leak"), DONE],
-        abrupt=True,
+        make_policy(),
+        [make_content_event("pending-must-not-leak"), DONE],
+        truncate_upstream_response=True,
     ) as (port, _):
         status, _, received, complete = await asyncio.to_thread(get_response, port)
     assert status == 200 and not complete
@@ -375,12 +388,12 @@ async def test_real_envoy_late_block_cannot_retract_approved_prefix(
     next_chunk_gate = asyncio.Event()
     loop = asyncio.get_running_loop()
     safe = "safe " * 100
-    async with proxy(
+    async with running_envoy_proxy(
         envoy_binary,
         tmp_path,
         unused_tcp_port_factory,
-        policy(),
-        [event(safe), event("a secret"), DONE],
+        make_policy(),
+        [make_content_event(safe), make_content_event("a secret"), DONE],
         next_chunk_gate=next_chunk_gate,
     ) as (port, _):
         status, _, received, complete = await asyncio.to_thread(
@@ -390,7 +403,7 @@ async def test_real_envoy_late_block_cannot_retract_approved_prefix(
             lambda: loop.call_soon_threadsafe(next_chunk_gate.set),
         )
     assert status == 200 and not complete
-    released = text(received)
+    released = extract_stream_text(received)
     assert released and safe.startswith(released)
     assert b"secret" not in received
     assert DONE not in received
@@ -422,21 +435,21 @@ async def test_real_client_disconnect_cancels_without_finish(
     monkeypatch.setattr(GuardrailStream, "from_policy", create)
     finish = Mock(side_effect=AssertionError("Must not finish after client disconnect"))
     monkeypatch.setattr(GuardrailStream, "finish", finish)
-    async with proxy(
+    async with running_envoy_proxy(
         envoy_binary,
         tmp_path,
         unused_tcp_port_factory,
-        policy(),
-        [event("pending"), DONE],
+        make_policy(),
+        [make_content_event("pending"), DONE],
         eof_gate=asyncio.Event(),
-    ) as (port, sent):
+    ) as (port, upstream_chunks_sent):
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
         await writer.drain()
         assert b"200" in await asyncio.wait_for(
             reader.readuntil(b"\r\n\r\n"), timeout=5
         )
-        await asyncio.wait_for(sent.wait(), timeout=5)
+        await asyncio.wait_for(upstream_chunks_sent.wait(), timeout=5)
         writer.close()
         await writer.wait_closed()
         await asyncio.wait_for(cancelled.wait(), timeout=5)

@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 pb = external_processor_pb2
 
 
-def _failure(status: int, message: str, details: str) -> pb.ProcessingResponse:
+def _immediate_response(
+    status: int, message: str, details: str
+) -> pb.ProcessingResponse:
     return pb.ProcessingResponse(
         immediate_response=pb.ImmediateResponse(
             status=HttpStatus(code=status),
@@ -44,7 +46,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         request_iterator: AsyncIterator[external_processor_pb2.ProcessingRequest],
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[pb.ProcessingResponse]:
-        stream: GuardrailStream | None = None
+        guardrail_stream: GuardrailStream | None = None
         request_headers_received = False
         try:
             async for request in request_iterator:
@@ -66,13 +68,13 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     != ProcessingMode.STREAMED
                 ):
                     logger.warning("Guardrail requires STREAMED response body mode")
-                    yield _failure(
+                    yield _immediate_response(
                         502, "Unsupported guardrail mode.", "guardrail_unsupported_mode"
                     )
                     return
                 if (
                     request_type == "request_headers"
-                    and stream is None
+                    and guardrail_stream is None
                     and not request_headers_received
                 ):
                     request_headers_received = True
@@ -82,7 +84,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     continue
                 if (
                     request_type == "response_headers"
-                    and stream is None
+                    and guardrail_stream is None
                     and self.policy is not None
                 ):
                     headers = {
@@ -103,19 +105,19 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         logger.warning(
                             "Guardrail rejected unsupported streaming headers"
                         )
-                        yield _failure(
+                        yield _immediate_response(
                             502,
                             "Unsupported guardrail response.",
                             "guardrail_unsupported_response",
                         )
                         return
                     try:
-                        stream = GuardrailStream.from_policy(
+                        guardrail_stream = GuardrailStream.from_policy(
                             self.policy, sse_output=True
                         )
                     except Exception:
                         logger.error("Guardrail streaming initialization failed")
-                        yield _failure(
+                        yield _immediate_response(
                             502,
                             "Guardrail initialization failed.",
                             "guardrail_init_error",
@@ -147,19 +149,19 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         ),
                     )
                     continue
-                if request_type == "response_body" and stream is not None:
+                if request_type == "response_body" and guardrail_stream is not None:
                     try:
                         result = await asyncio.to_thread(
-                            stream.feed, request.response_body.body
+                            guardrail_stream.feed, request.response_body.body
                         )
                         chunks = result.chunks
                         if request.response_body.end_of_stream and not result.blocked:
-                            result = await asyncio.to_thread(stream.finish)
+                            result = await asyncio.to_thread(guardrail_stream.finish)
                             chunks += result.chunks
                     except Exception:
                         # Do not expose model text or chained scanner exception details.
                         logger.error("Guardrail streaming processing failed")
-                        yield _failure(
+                        yield _immediate_response(
                             502,
                             "Guardrail streaming processing failed.",
                             "guardrail_stream_error",
@@ -168,7 +170,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     if result.blocked:
                         logger.info("Guardrail blocked streaming response")
                         assert self.policy is not None
-                        yield _failure(
+                        yield _immediate_response(
                             403, self.policy.block_message, "guardrail_blocked"
                         )
                         return
@@ -197,8 +199,8 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     grpc.StatusCode.FAILED_PRECONDITION, "Incomplete guardrail stream"
                 )
         finally:
-            if stream is not None:
-                stream.cancel()
+            if guardrail_stream is not None:
+                guardrail_stream.cancel()
 
 
 async def serve(

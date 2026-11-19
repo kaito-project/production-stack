@@ -109,7 +109,7 @@ class GuardrailStream:
         self._response_metadata = None
         self._finish_reason = None
 
-    def _sse_chunk(
+    def _build_sse_chunk(
         self, delta: dict[str, object], *, finish_reason: str | None = None
     ) -> str:
         assert self._response_metadata is not None
@@ -126,15 +126,17 @@ class GuardrailStream:
             }
         )
 
-    def _emit_text(self, chunks: tuple[str, ...]) -> tuple[str, ...]:
+    def _format_text_chunks(self, chunks: tuple[str, ...]) -> tuple[str, ...]:
         if self._sse_output:
-            return tuple(self._sse_chunk({"content": text}) for text in chunks)
+            return tuple(self._build_sse_chunk({"content": text}) for text in chunks)
         return chunks
 
-    def _metadata(self, parsed: OpenAIChatChunkParseResult) -> tuple[str, ...]:
+    def _validate_chunk_and_emit_role(
+        self, parsed: OpenAIChatChunkParseResult
+    ) -> tuple[str, ...]:
         payload = parsed.payload
         assert payload is not None
-        envelope: dict[str, object] = {}
+        chunk_metadata: dict[str, object] = {}
         for key in ("id", "object", "created", "model"):
             if key not in payload:
                 continue
@@ -146,16 +148,17 @@ class GuardrailStream:
                 raise GuardrailStreamError("Invalid OpenAI protocol metadata.")
             if key == "object" and value != "chat.completion.chunk":
                 raise GuardrailStreamError("Unsupported OpenAI chunk object.")
-            envelope[key] = value
+            chunk_metadata[key] = value
         if self._response_metadata is None:
-            if len(envelope) == 4:
-                self._response_metadata = envelope
+            if len(chunk_metadata) == 4:
+                self._response_metadata = chunk_metadata
             elif parsed.parsed_choices:
-                raise GuardrailStreamError("Missing OpenAI response envelope.")
+                raise GuardrailStreamError("Missing OpenAI response metadata.")
         elif any(
-            value != self._response_metadata[key] for key, value in envelope.items()
+            value != self._response_metadata[key]
+            for key, value in chunk_metadata.items()
         ):
-            raise GuardrailStreamError("OpenAI response envelope changed.")
+            raise GuardrailStreamError("OpenAI response metadata changed.")
         if not parsed.parsed_choices:
             return ()
         choice = parsed.parsed_choices[0]
@@ -172,7 +175,7 @@ class GuardrailStream:
         if choice.finish_reason is not None:
             self._finish_reason = choice.finish_reason
         if "role" in delta:
-            return (self._sse_chunk({"role": delta["role"]}),)
+            return (self._build_sse_chunk({"role": delta["role"]}),)
         return ()
 
     def _advance(self, chunk: bytes, *, final: bool) -> WindowEmitResult:
@@ -188,20 +191,26 @@ class GuardrailStream:
                 if not self._done_seen:
                     raise GuardrailStreamError("Stream ended without a DONE event.")
                 if self._sse_output and self._response_metadata is None:
-                    raise GuardrailStreamError("Missing OpenAI response envelope.")
-                tail = window.flush()
-                ending: tuple[str, ...] = ()
-                if self._sse_output and not tail.blocked:
+                    raise GuardrailStreamError("Missing OpenAI response metadata.")
+                flush_result = window.flush()
+                terminal_sse_chunks: tuple[str, ...] = ()
+                if self._sse_output and not flush_result.blocked:
                     if self._finish_reason is not None:
-                        ending += (
-                            self._sse_chunk({}, finish_reason=self._finish_reason),
+                        terminal_sse_chunks += (
+                            self._build_sse_chunk(
+                                {}, finish_reason=self._finish_reason
+                            ),
                         )
-                    ending += (build_sse_done_chunk(),)
+                    terminal_sse_chunks += (build_sse_done_chunk(),)
                 result = WindowEmitResult(
                     chunks=()
-                    if tail.blocked
-                    else (result.chunks + self._emit_text(tail.chunks) + ending),
-                    blocked=tail.blocked,
+                    if flush_result.blocked
+                    else (
+                        result.chunks
+                        + self._format_text_chunks(flush_result.chunks)
+                        + terminal_sse_chunks
+                    ),
+                    blocked=flush_result.blocked,
                 )
             self._blocked = result.blocked
             succeeded = True
@@ -236,7 +245,7 @@ class GuardrailStream:
                     "Stream requires exactly one choice with index zero."
                 )
             if self._sse_output:
-                chunks.extend(self._metadata(parsed))
+                chunks.extend(self._validate_chunk_and_emit_role(parsed))
             if not parsed.parsed_choices:
                 continue
             content = parsed.parsed_choices[0].content
@@ -244,5 +253,5 @@ class GuardrailStream:
                 result = window.feed(content)
                 if result.blocked:
                     return WindowEmitResult(chunks=(), blocked=True)
-                chunks.extend(self._emit_text(result.chunks))
+                chunks.extend(self._format_text_chunks(result.chunks))
         return WindowEmitResult(chunks=tuple(chunks))

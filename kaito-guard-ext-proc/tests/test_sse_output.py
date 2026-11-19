@@ -15,21 +15,28 @@ import pytest
 from guardrail_core.streaming.openai import build_sse_data_chunk
 
 from ext_proc.guardrail_stream import GuardrailStream, GuardrailStreamError
-from tests.test_sse_process import DONE, ENVELOPE, event, payloads, policy, text
+from tests.test_sse_process import (
+    DONE,
+    RESPONSE_METADATA,
+    extract_stream_text,
+    make_content_event,
+    make_policy,
+    parse_sse_payloads,
+)
 
 
 def test_body_events_are_self_contained_without_empty_metadata_events():
-    stream = GuardrailStream.from_policy(policy("redact"), sse_output=True)
+    stream = GuardrailStream.from_policy(make_policy("redact"), sse_output=True)
     initial = stream.feed(
         build_sse_data_chunk(
             {
-                **ENVELOPE,
+                **RESPONSE_METADATA,
                 "choices": [{"index": 0, "delta": {"content": "hello secret"}}],
             }
         ).encode()
         + build_sse_data_chunk(
             {
-                **ENVELOPE,
+                **RESPONSE_METADATA,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
         ).encode()
@@ -37,9 +44,9 @@ def test_body_events_are_self_contained_without_empty_metadata_events():
     )
     assert initial.chunks == ()
     wire = "".join(stream.finish().chunks).encode()
-    assert payloads(wire) == [
+    assert parse_sse_payloads(wire) == [
         {
-            **ENVELOPE,
+            **RESPONSE_METADATA,
             "choices": [
                 {
                     "index": 0,
@@ -49,7 +56,7 @@ def test_body_events_are_self_contained_without_empty_metadata_events():
             ],
         },
         {
-            **ENVELOPE,
+            **RESPONSE_METADATA,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
         },
     ]
@@ -67,8 +74,8 @@ def test_body_events_are_self_contained_without_empty_metadata_events():
     ],
 )
 def test_unsupported_deltas_fail_closed(delta):
-    stream = GuardrailStream.from_policy(policy(), sse_output=True)
-    stream.feed(event("pending"))
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    stream.feed(make_content_event("pending"))
     with pytest.raises(GuardrailStreamError):
         stream.feed(
             build_sse_data_chunk(
@@ -81,9 +88,9 @@ def test_unsupported_deltas_fail_closed(delta):
 
 
 def test_usage_is_not_forwarded_as_unvalidated_payload():
-    stream = GuardrailStream.from_policy(policy(), sse_output=True)
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     result = stream.feed(
-        event("hello")
+        make_content_event("hello")
         + build_sse_data_chunk(
             {"choices": [], "usage": {"unvalidated": "private"}}
         ).encode()
@@ -91,7 +98,7 @@ def test_usage_is_not_forwarded_as_unvalidated_payload():
     )
     finished = stream.finish()
     wire = "".join(result.chunks + finished.chunks).encode()
-    assert text(wire) == "hello"
+    assert extract_stream_text(wire) == "hello"
     assert b"usage" not in wire
     assert b"private" not in wire
     assert wire.endswith(DONE)
@@ -99,14 +106,14 @@ def test_usage_is_not_forwarded_as_unvalidated_payload():
 
 @pytest.mark.parametrize("metadata", [{"id": {}}, {"created": True}, {"model": []}])
 def test_protocol_metadata_is_type_checked(metadata):
-    stream = GuardrailStream.from_policy(policy(), sse_output=True)
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     with pytest.raises(GuardrailStreamError):
         stream.feed(build_sse_data_chunk({**metadata, "choices": []}).encode())
 
 
 def test_finish_reason_does_not_replace_done():
-    stream = GuardrailStream.from_policy(policy(), sse_output=True)
-    stream.feed(event("pending"))
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    stream.feed(make_content_event("pending"))
     assert (
         stream.feed(
             build_sse_data_chunk(
@@ -122,13 +129,13 @@ def test_finish_reason_does_not_replace_done():
     assert stream.closed
 
 
-def test_cached_envelope_is_reused_on_text_and_terminal_events():
-    stream = GuardrailStream.from_policy(policy(), sse_output=True)
+def test_cached_response_metadata_is_reused_on_text_and_terminal_events():
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     wire = "".join(
         stream.feed(
             build_sse_data_chunk(
                 {
-                    **ENVELOPE,
+                    **RESPONSE_METADATA,
                     "choices": [{"index": 0, "delta": {"role": "assistant"}}],
                 }
             ).encode()
@@ -156,23 +163,28 @@ def test_cached_envelope_is_reused_on_text_and_terminal_events():
         == ()
     )
     wire += "".join(stream.finish().chunks).encode()
-    events = payloads(wire)
+    events = parse_sse_payloads(wire)
     assert len(events) == 3
-    assert all({key: item[key] for key in ENVELOPE} == ENVELOPE for item in events)
+    assert all(
+        {key: item[key] for key in RESPONSE_METADATA} == RESPONSE_METADATA
+        for item in events
+    )
     assert events[0]["choices"][0]["delta"] == {"role": "assistant"}
-    assert text(wire) == "hello"
+    assert extract_stream_text(wire) == "hello"
     assert events[-1]["choices"][0]["finish_reason"] == "stop"
 
 
-@pytest.mark.parametrize("key", list(ENVELOPE))
-def test_missing_initial_envelope_fails_without_fabricating_fields(key):
-    stream = GuardrailStream.from_policy(policy(), sse_output=True)
-    envelope = {name: value for name, value in ENVELOPE.items() if name != key}
+@pytest.mark.parametrize("key", list(RESPONSE_METADATA))
+def test_missing_initial_response_metadata_fails_without_fabricating_fields(key):
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    chunk_metadata = {
+        name: value for name, value in RESPONSE_METADATA.items() if name != key
+    }
     with pytest.raises(GuardrailStreamError, match="Missing"):
         stream.feed(
             build_sse_data_chunk(
                 {
-                    **envelope,
+                    **chunk_metadata,
                     "choices": [{"index": 0, "delta": {"content": "pending"}}],
                 }
             ).encode()
@@ -189,14 +201,14 @@ def test_missing_initial_envelope_fails_without_fabricating_fields(key):
         ("object", "chat.completion"),
     ],
 )
-def test_changing_response_envelope_fails_closed(key, value):
-    stream = GuardrailStream.from_policy(policy(), sse_output=True)
-    stream.feed(event("pending"))
+def test_changing_response_metadata_fails_closed(key, value):
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    stream.feed(make_content_event("pending"))
     with pytest.raises(GuardrailStreamError):
         stream.feed(
             build_sse_data_chunk(
                 {
-                    **ENVELOPE,
+                    **RESPONSE_METADATA,
                     key: value,
                     "choices": [],
                 }

@@ -228,9 +228,10 @@ sets `Cache-Control: no-store`; streaming output has no fixed content length.
   Exactly one choice with index zero is supported.
 - Every rebuilt text, role, and finish chunk carries the same validated upstream
   `id`, `object="chat.completion.chunk"`, `created`, and `model`, plus choice index
-  zero. A complete envelope is required before emitting a choice; later chunks
-  may omit already-cached fields but cannot change them. Missing fields are not
-  fabricated. Envelope-only input does not produce empty metadata delta events.
+  zero. Complete response metadata is required before emitting a choice; later
+  chunks may omit already-cached fields but cannot change them. Missing fields
+  are not fabricated. Input containing only response metadata does not produce
+  empty metadata delta events.
 - Actual `delta.role="assistant"` events are preserved separately. Chunk
   boundaries and formatting can change; a role can precede held-back text.
 - A parsed `finish_reason` is preserved after the final approved text. It
@@ -268,8 +269,9 @@ DONE waiting for HTTP EOF, an error before headers, blocking/scanner errors afte
 headers with zero body bytes, upstream truncation after DONE, late blocking after
 an approved prefix, and client disconnect. A real OpenAI Python SDK test reads
 through Envoy using `chat.completions.stream()` and `get_final_completion()`,
-verifying each chunk's envelope and the final accumulated redacted text, response
-identity, role, and finish reason. The SDK is a development/test-only dependency.
+verifying each chunk's response metadata and the final accumulated redacted text,
+response identity, role, and finish reason. The SDK is a development/test-only
+dependency.
 All eight Envoy tests run with mode overrides disabled. This is not the full
 Phase 3.4 matrix.
 Locally, real Envoy tests are explicitly skipped unless a binary is available:

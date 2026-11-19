@@ -34,7 +34,7 @@ from ext_proc.policy import GuardrailPolicyConfig
 from ext_proc.server import ExternalProcessorServicer, serve
 
 DONE = build_sse_done_chunk().encode()
-ENVELOPE = {
+RESPONSE_METADATA = {
     "id": "chat-test",
     "object": "chat.completion.chunk",
     "created": 1,
@@ -42,10 +42,10 @@ ENVELOPE = {
 }
 
 
-def event(content):
+def make_content_event(content):
     return build_sse_data_chunk(
         {
-            **ENVELOPE,
+            **RESPONSE_METADATA,
             "choices": [
                 {"index": 0, "delta": {"content": content}, "finish_reason": None}
             ],
@@ -53,7 +53,7 @@ def event(content):
     ).encode()
 
 
-def policy(action="block"):
+def make_policy(action="block"):
     return GuardrailPolicyConfig.from_dict(
         {
             "action": action,
@@ -63,7 +63,7 @@ def policy(action="block"):
     )
 
 
-def headers(content_type="text/event-stream"):
+def make_response_headers_request(content_type="text/event-stream"):
     return pb.ProcessingRequest(
         response_headers=pb.HttpHeaders(
             headers=base_pb2.HeaderMap(
@@ -77,7 +77,7 @@ def headers(content_type="text/event-stream"):
     )
 
 
-def payloads(wire):
+def parse_sse_payloads(wire):
     framer = SSEFramer()
     events = framer.feed(wire) + framer.finish()
     return [
@@ -87,16 +87,16 @@ def payloads(wire):
     ]
 
 
-def text(wire):
+def extract_stream_text(wire):
     return "".join(
         choice.get("delta", {}).get("content", "")
-        for item in payloads(wire)
+        for item in parse_sse_payloads(wire)
         for choice in item.get("choices", [])
     )
 
 
 @asynccontextmanager
-async def processor(config, port):
+async def running_processor(config, port):
     task = asyncio.create_task(serve("127.0.0.1", port, policy=config))
     try:
         async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
@@ -108,9 +108,9 @@ async def processor(config, port):
             await task
 
 
-async def open_call(stub):
+async def open_sse_call(stub):
     call = stub.Process(timeout=5)
-    await call.write(headers("Text/Event-Stream; charset=utf-8"))
+    await call.write(make_response_headers_request("Text/Event-Stream; charset=utf-8"))
     response = await call.read()
     assert response.HasField("response_headers")
     assert not response.HasField("mode_override")
@@ -121,7 +121,7 @@ async def open_call(stub):
     return call
 
 
-async def body(call, wire, *, final=False):
+async def send_body_and_read_response(call, wire, *, final=False):
     await call.write(
         pb.ProcessingRequest(
             response_body=pb.HttpBody(
@@ -136,7 +136,7 @@ async def body(call, wire, *, final=False):
     return response
 
 
-def output(response):
+def extract_replacement_body(response):
     assert response.WhichOneof("response") == "response_body"
     mutation = response.response_body.response.body_mutation
     assert mutation.WhichOneof("mutation") == "body"
@@ -161,31 +161,47 @@ async def test_done_and_finish_reason_wait_for_normal_http_eof(unused_tcp_port):
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
         }
     ).encode()
-    async with processor(policy(), unused_tcp_port) as stub:
-        call = await open_call(stub)
-        first = output(await body(call, role + event("hello \u4f60\u597d")))
-        assert payloads(first)[0] == payloads(role)[0]
-        assert text(first) == ""
-        pending = output(await body(call, finish + DONE))
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        call = await open_sse_call(stub)
+        first = extract_replacement_body(
+            await send_body_and_read_response(
+                call, role + make_content_event("hello \u4f60\u597d")
+            )
+        )
+        assert parse_sse_payloads(first)[0] == parse_sse_payloads(role)[0]
+        assert extract_stream_text(first) == ""
+        pending = extract_replacement_body(
+            await send_body_and_read_response(call, finish + DONE)
+        )
         assert b"[DONE]" not in first + pending
         assert b'"finish_reason":"stop"' not in first + pending
-        completed = output(await body(call, b"", final=True))
-    assert text(completed) == "hello \u4f60\u597d"
-    assert payloads(completed)[-1]["choices"][0]["finish_reason"] == "stop"
+        completed = extract_replacement_body(
+            await send_body_and_read_response(call, b"", final=True)
+        )
+    assert extract_stream_text(completed) == "hello \u4f60\u597d"
+    assert parse_sse_payloads(completed)[-1]["choices"][0]["finish_reason"] == "stop"
     assert completed.endswith(DONE)
     assert (first + pending + completed).count(DONE) == 1
 
 
 @pytest.mark.asyncio
 async def test_cross_chunk_redaction_uses_real_shared_scanners(unused_tcp_port):
-    wire = event("safe " * 60 + "se") + event("cret \u56de\u590d") + DONE
-    async with processor(policy("redact"), unused_tcp_port) as stub:
-        call = await open_call(stub)
+    wire = (
+        make_content_event("safe " * 60 + "se")
+        + make_content_event("cret \u56de\u590d")
+        + DONE
+    )
+    async with running_processor(make_policy("redact"), unused_tcp_port) as stub:
+        call = await open_sse_call(stub)
         received = b""
         for chunk in (wire[:7], wire[7:350], wire[350:-1], wire[-1:]):
-            received += output(await body(call, chunk))
-        received += output(await body(call, b"", final=True))
-    assert text(received) == "safe " * 60 + "[REDACTED] \u56de\u590d"
+            received += extract_replacement_body(
+                await send_body_and_read_response(call, chunk)
+            )
+        received += extract_replacement_body(
+            await send_body_and_read_response(call, b"", final=True)
+        )
+    assert extract_stream_text(received) == "safe " * 60 + "[REDACTED] \u56de\u590d"
     assert b"secret" not in received
     assert received.count(DONE) == 1
 
@@ -194,18 +210,18 @@ async def test_cross_chunk_redaction_uses_real_shared_scanners(unused_tcp_port):
 @pytest.mark.parametrize(
     "wire",
     [
-        event("pending"),
-        event("pending") + DONE + b"data: unfinished",
-        event("pending") + DONE + event("late"),
-        event("pending") + DONE + b"data:\n\n",
-        event("pending") + DONE + DONE,
-        event("pending") + b"data: {invalid}\n\n",
+        make_content_event("pending"),
+        make_content_event("pending") + DONE + b"data: unfinished",
+        make_content_event("pending") + DONE + make_content_event("late"),
+        make_content_event("pending") + DONE + b"data:\n\n",
+        make_content_event("pending") + DONE + DONE,
+        make_content_event("pending") + b"data: {invalid}\n\n",
     ],
 )
 async def test_truncation_or_invalid_sse_never_flushes_holdback(unused_tcp_port, wire):
-    async with processor(policy(), unused_tcp_port) as stub:
-        call = await open_call(stub)
-        response = await body(call, wire, final=True)
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        call = await open_sse_call(stub)
+        response = await send_body_and_read_response(call, wire, final=True)
     assert response.immediate_response.status.code == 502
     assert b"pending" not in response.SerializeToString()
     assert b"[DONE]" not in response.SerializeToString()
@@ -213,9 +229,11 @@ async def test_truncation_or_invalid_sse_never_flushes_holdback(unused_tcp_port,
 
 @pytest.mark.asyncio
 async def test_block_discards_pending_output(unused_tcp_port):
-    async with processor(policy(), unused_tcp_port) as stub:
-        call = await open_call(stub)
-        response = await body(call, event("a secret") + DONE, final=True)
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        call = await open_sse_call(stub)
+        response = await send_body_and_read_response(
+            call, make_content_event("a secret") + DONE, final=True
+        )
     assert response.immediate_response.status.code == 403
     assert response.immediate_response.body == b"Blocked by streaming policy."
     assert b"secret" not in response.SerializeToString()
@@ -230,10 +248,13 @@ async def test_scanner_exception_is_generic_and_never_flushes(
     monkeypatch.setattr(
         ScannerWindowAdapter, "scan", Mock(side_effect=RuntimeError("private-text"))
     )
-    async with processor(policy(), unused_tcp_port) as stub:
-        call = await open_call(stub)
-        wire = event("private-text" if final else "private-text " * 30) + DONE
-        response = await body(call, wire, final=final)
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        call = await open_sse_call(stub)
+        wire = (
+            make_content_event("private-text" if final else "private-text " * 30)
+            + DONE
+        )
+        response = await send_body_and_read_response(call, wire, final=final)
     assert response.immediate_response.status.code == 502
     assert b"private-text" not in response.SerializeToString()
     assert "private-text" not in caplog.text
@@ -242,9 +263,16 @@ async def test_scanner_exception_is_generic_and_never_flushes(
 
 @pytest.mark.asyncio
 async def test_rpc_eof_is_not_http_eof(unused_tcp_port):
-    async with processor(policy(), unused_tcp_port) as stub:
-        call = await open_call(stub)
-        assert output(await body(call, event("pending") + DONE)) == b""
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        call = await open_sse_call(stub)
+        assert (
+            extract_replacement_body(
+                await send_body_and_read_response(
+                    call, make_content_event("pending") + DONE
+                )
+            )
+            == b""
+        )
         await call.done_writing()
         with pytest.raises(grpc.aio.AioRpcError) as exc:
             await call.read()
@@ -274,9 +302,16 @@ async def test_client_cancellation_discards_without_finish(
     monkeypatch.setattr(GuardrailStream, "from_policy", create)
     finish = Mock(side_effect=AssertionError("Must not flush a cancelled response"))
     monkeypatch.setattr(GuardrailStream, "finish", finish)
-    async with processor(policy(), unused_tcp_port) as stub:
-        call = await open_call(stub)
-        assert output(await body(call, event("pending") + DONE)) == b""
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        call = await open_sse_call(stub)
+        assert (
+            extract_replacement_body(
+                await send_body_and_read_response(
+                    call, make_content_event("pending") + DONE
+                )
+            )
+            == b""
+        )
         call.cancel()
         await asyncio.wait_for(cancelled.wait(), timeout=5)
     assert created[0].closed
@@ -288,8 +323,10 @@ async def test_client_cancellation_discards_without_finish(
 async def test_unsupported_response_rejected_before_header_ack(
     unused_tcp_port, content_type
 ):
-    async with processor(policy(), unused_tcp_port) as stub:
-        response = await stub.Process(iter([headers(content_type)]), timeout=5).read()
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        response = await stub.Process(
+            iter([make_response_headers_request(content_type)]), timeout=5
+        ).read()
     assert response.immediate_response.status.code == 502
 
 
@@ -312,9 +349,9 @@ def test_unsupported_streaming_policy_fails_startup():
     ],
 )
 async def test_declared_non_streamed_mode_fails_closed(unused_tcp_port, mode):
-    request = headers()
+    request = make_response_headers_request()
     request.protocol_config.response_body_mode = mode
-    async with processor(policy(), unused_tcp_port) as stub:
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
         response = await stub.Process(iter([request]), timeout=5).read()
     assert response.immediate_response.status.code == 502
     assert response.immediate_response.details == "guardrail_unsupported_mode"
@@ -322,15 +359,17 @@ async def test_declared_non_streamed_mode_fails_closed(unused_tcp_port, mode):
 
 @pytest.mark.asyncio
 async def test_header_responses_do_not_override_configured_mode(unused_tcp_port):
-    async with processor(policy(), unused_tcp_port) as stub:
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
         call = stub.Process(timeout=5)
         await call.write(pb.ProcessingRequest(request_headers=pb.HttpHeaders()))
         request_ack = await call.read()
         assert request_ack.HasField("request_headers")
         assert not request_ack.HasField("mode_override")
-        await call.write(headers())
+        await call.write(make_response_headers_request())
         response_ack = await call.read()
         assert response_ack.HasField("response_headers")
         assert not response_ack.HasField("mode_override")
-        result = await body(call, event("hello") + DONE, final=True)
-    assert text(output(result)) == "hello"
+        result = await send_body_and_read_response(
+            call, make_content_event("hello") + DONE, final=True
+        )
+    assert extract_stream_text(extract_replacement_body(result)) == "hello"
