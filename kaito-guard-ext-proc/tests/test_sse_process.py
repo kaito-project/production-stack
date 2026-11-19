@@ -12,7 +12,6 @@
 # limitations under the License.
 
 import asyncio
-import json
 from contextlib import asynccontextmanager
 from unittest.mock import Mock
 
@@ -22,45 +21,19 @@ from envoy.config.core.v3 import base_pb2
 from envoy.extensions.filters.http.ext_proc.v3.processing_mode_pb2 import ProcessingMode
 from envoy.service.ext_proc.v3 import external_processor_pb2 as pb
 from envoy.service.ext_proc.v3.external_processor_pb2_grpc import ExternalProcessorStub
-from guardrail_core.streaming.openai import (
-    build_sse_data_chunk,
-    build_sse_done_chunk,
-)
+from guardrail_core.streaming.openai import build_sse_data_chunk
 from guardrail_core.streaming.scanners import ScannerWindowAdapter, StreamingPolicyError
-from guardrail_core.streaming.sse import SSEFramer
 
 from ext_proc.guardrail_stream import GuardrailStream
 from ext_proc.policy import GuardrailPolicyConfig
 from ext_proc.server import ExternalProcessorServicer, serve
-
-DONE = build_sse_done_chunk().encode()
-RESPONSE_METADATA = {
-    "id": "chat-test",
-    "object": "chat.completion.chunk",
-    "created": 1,
-    "model": "test",
-}
-
-
-def make_content_event(content):
-    return build_sse_data_chunk(
-        {
-            **RESPONSE_METADATA,
-            "choices": [
-                {"index": 0, "delta": {"content": content}, "finish_reason": None}
-            ],
-        }
-    ).encode()
-
-
-def make_policy(action="block"):
-    return GuardrailPolicyConfig.from_dict(
-        {
-            "action": action,
-            "blockMessage": "Blocked by streaming policy.",
-            "scanner_configs": [{"type": "ban_substrings", "substrings": ["secret"]}],
-        }
-    )
+from tests.sse_helpers import (
+    DONE,
+    extract_stream_text,
+    make_content_event,
+    make_policy,
+    parse_sse_payloads,
+)
 
 
 def make_response_headers_request(content_type="text/event-stream"):
@@ -74,24 +47,6 @@ def make_response_headers_request(content_type="text/event-stream"):
                 ]
             )
         )
-    )
-
-
-def parse_sse_payloads(wire):
-    framer = SSEFramer()
-    events = framer.feed(wire) + framer.finish()
-    return [
-        json.loads(item.data)
-        for item in events
-        if item.data is not None and item.data != "[DONE]"
-    ]
-
-
-def extract_stream_text(wire):
-    return "".join(
-        choice.get("delta", {}).get("content", "")
-        for item in parse_sse_payloads(wire)
-        for choice in item.get("choices", [])
     )
 
 

@@ -15,7 +15,7 @@ import pytest
 from guardrail_core.streaming.openai import build_sse_data_chunk
 
 from ext_proc.guardrail_stream import GuardrailStream, GuardrailStreamError
-from tests.test_sse_process import (
+from tests.sse_helpers import (
     DONE,
     RESPONSE_METADATA,
     extract_stream_text,

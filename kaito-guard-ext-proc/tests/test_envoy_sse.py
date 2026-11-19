@@ -27,14 +27,14 @@ from guardrail_core.streaming.openai import build_sse_data_chunk
 from openai import AsyncOpenAI
 
 from ext_proc.guardrail_stream import GuardrailStream
-from tests.test_sse_process import (
+from tests.sse_helpers import (
     DONE,
     RESPONSE_METADATA,
     extract_stream_text,
     make_content_event,
     make_policy,
-    running_processor,
 )
+from tests.test_sse_process import running_processor
 
 
 @pytest.fixture
