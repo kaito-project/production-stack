@@ -137,21 +137,23 @@ class GuardrailStream:
         """Validate the chunk, record finish_reason, and build any role event."""
         payload = parsed.payload
         assert payload is not None
+        required_fields = ("id", "object", "created", "model")
         chunk_metadata: dict[str, object] = {}
-        for key in ("id", "object", "created", "model"):
+        for key in required_fields:
             if key not in payload:
                 continue
             value = payload[key]
-            if (
-                key == "created"
-                and (isinstance(value, bool) or not isinstance(value, int))
-            ) or (key != "created" and not isinstance(value, str)):
+            if key == "created":
+                valid_type = isinstance(value, int) and not isinstance(value, bool)
+            else:
+                valid_type = isinstance(value, str)
+            if not valid_type:
                 raise GuardrailStreamError("Invalid OpenAI protocol metadata.")
             if key == "object" and value != "chat.completion.chunk":
                 raise GuardrailStreamError("Unsupported OpenAI chunk object.")
             chunk_metadata[key] = value
         if self._response_metadata is None:
-            if len(chunk_metadata) == 4:
+            if all(key in chunk_metadata for key in required_fields):
                 self._response_metadata = chunk_metadata
             elif parsed.parsed_choices:
                 raise GuardrailStreamError("Missing OpenAI response metadata.")
@@ -194,25 +196,19 @@ class GuardrailStream:
                 if self._sse_output and self._response_metadata is None:
                     raise GuardrailStreamError("Missing OpenAI response metadata.")
                 flush_result = window.flush()
-                terminal_sse_chunks: tuple[str, ...] = ()
-                if self._sse_output and not flush_result.blocked:
-                    if self._finish_reason is not None:
-                        terminal_sse_chunks += (
-                            self._build_sse_chunk(
-                                {}, finish_reason=self._finish_reason
-                            ),
-                        )
-                    terminal_sse_chunks += (build_sse_done_chunk(),)
-                result = WindowEmitResult(
-                    chunks=()
-                    if flush_result.blocked
-                    else (
-                        result.chunks
-                        + self._format_text_chunks(flush_result.chunks)
-                        + terminal_sse_chunks
-                    ),
-                    blocked=flush_result.blocked,
-                )
+                if flush_result.blocked:
+                    result = WindowEmitResult(chunks=(), blocked=True)
+                else:
+                    chunks = result.chunks + self._format_text_chunks(flush_result.chunks)
+                    if self._sse_output:
+                        if self._finish_reason is not None:
+                            chunks += (
+                                self._build_sse_chunk(
+                                    {}, finish_reason=self._finish_reason
+                                ),
+                            )
+                        chunks += (build_sse_done_chunk(),)
+                    result = WindowEmitResult(chunks=chunks)
             self._blocked = result.blocked
             succeeded = True
             return result
