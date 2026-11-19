@@ -21,6 +21,9 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 var corsOriginPattern = regexp.MustCompile(`^https?://(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)(:(0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$`)
@@ -129,6 +132,9 @@ type ModelDeploymentValues struct {
 	// Config is the name of a ConfigMap containing custom inference arguments
 	// (spec.template.inference.config).
 	Config string
+	// Adapters are vLLM LoRA adapters rendered under
+	// spec.template.inference.adapters. Their names are additional model IDs.
+	Adapters []LoRAAdapter
 	// Replicas is the desired number of InferenceSet replicas in manual mode.
 	// Rendered only when EnableScaling is false, where 0 is an explicit
 	// scale-to-zero rather than "unset" — UpgradeModelDeployment relies on
@@ -174,6 +180,19 @@ type ModelDeploymentValues struct {
 	EPPScorerWeights *EPPScorerWeights
 	// Gateway overrides the chart's gateway provider and public domain.
 	Gateway GatewayValues
+}
+
+// LoRAAdapter describes one vLLM adapter source. Exactly one of Image and
+// PersistentVolumeClaim must be set.
+type LoRAAdapter struct {
+	// Name is the client-visible adapter model ID.
+	Name string
+	// Image is an adapter image whose PEFT files are stored under /data.
+	Image string
+	// ImagePullSecrets contains Secret names used to pull Image.
+	ImagePullSecrets []string
+	// PersistentVolumeClaim names a PVC containing the adapter's PEFT files.
+	PersistentVolumeClaim string
 }
 
 // AutoUpgrade mirrors the modeldeployment chart's autoUpgrade values, wired
@@ -242,6 +261,31 @@ func (v ModelDeploymentValues) Validate() error {
 	}
 	if v.Replicas < 0 {
 		return fmt.Errorf("modeldeployment %q: Replicas must not be negative (got %d)", v.Name, v.Replicas)
+	}
+	adapterNames := make(map[string]struct{}, len(v.Adapters))
+	for i, adapter := range v.Adapters {
+		if errs := validation.IsDNS1123Subdomain(adapter.Name); len(errs) > 0 {
+			return fmt.Errorf("modeldeployment %q: Adapters[%d].Name must be a DNS-1123 subdomain: %s",
+				v.Name, i, strings.Join(errs, ", "))
+		}
+		if adapter.Name == v.Name {
+			return fmt.Errorf("modeldeployment %q: Adapters[%d].Name must differ from the deployment name", v.Name, i)
+		}
+		if _, exists := adapterNames[adapter.Name]; exists {
+			return fmt.Errorf("modeldeployment %q: Adapters[%d].Name %q is duplicated", v.Name, i, adapter.Name)
+		}
+		adapterNames[adapter.Name] = struct{}{}
+		if (adapter.Image == "") == (adapter.PersistentVolumeClaim == "") {
+			return fmt.Errorf("modeldeployment %q: Adapters[%d] must set exactly one of Image or PersistentVolumeClaim", v.Name, i)
+		}
+		if adapter.Image == "" && len(adapter.ImagePullSecrets) > 0 {
+			return fmt.Errorf("modeldeployment %q: Adapters[%d].ImagePullSecrets requires Image", v.Name, i)
+		}
+		for j, secret := range adapter.ImagePullSecrets {
+			if secret == "" {
+				return fmt.Errorf("modeldeployment %q: Adapters[%d].ImagePullSecrets[%d] must not be empty", v.Name, i, j)
+			}
+		}
 	}
 	if !v.EnableScaling {
 		return nil

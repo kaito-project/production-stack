@@ -64,6 +64,20 @@ func inferenceSet(namespace, name string, created time.Time) *unstructured.Unstr
 	return u
 }
 
+func inferenceSetWithAdapters(namespace, name string, created time.Time, adapters ...string) *unstructured.Unstructured {
+	u := inferenceSet(namespace, name, created)
+	items := make([]interface{}, 0, len(adapters))
+	for _, adapter := range adapters {
+		items = append(items, map[string]interface{}{
+			"source": map[string]interface{}{"name": adapter},
+		})
+	}
+	if err := unstructured.SetNestedSlice(u.Object, items, "spec", "template", "inference", "adapters"); err != nil {
+		panic(err)
+	}
+	return u
+}
+
 func namespaceObj(name string, managed bool) *corev1.Namespace {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	if managed {
@@ -160,6 +174,57 @@ func TestListIncludesModelsWithoutReadyEndpoints(t *testing.T) {
 	got := decodeList(t, rec)
 	if len(got.Data) != 1 || got.Data[0].ID != "cold-model" {
 		t.Fatalf("got %+v, want the not-yet-ready model to be listed", got.Data)
+	}
+}
+
+func TestListAndRetrieveIncludeLoRAAdapterAliases(t *testing.T) {
+	h := newHandler(t,
+		namespaceObj(testNamespace, true),
+		inferenceSetWithAdapters(testNamespace, "chat-phi", createdAt,
+			"team-a-legal", "team-a-summary"),
+	)
+
+	list := decodeList(t, do(h, http.MethodGet, ListPath, testNamespace))
+	if len(list.Data) != 3 {
+		t.Fatalf("got %d models, want base plus two adapters: %+v", len(list.Data), list.Data)
+	}
+	wantIDs := []string{"chat-phi", "team-a-legal", "team-a-summary"}
+	for i, want := range wantIDs {
+		if list.Data[i].ID != want {
+			t.Errorf("model[%d].ID = %q, want %q", i, list.Data[i].ID, want)
+		}
+		if list.Data[i].Created != createdAt.Unix() {
+			t.Errorf("model[%d].Created = %d, want owning InferenceSet timestamp %d",
+				i, list.Data[i].Created, createdAt.Unix())
+		}
+	}
+
+	rec := do(h, http.MethodGet, ListPath+"/team-a-legal", testNamespace)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adapter retrieve status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	var adapter Model
+	if err := json.Unmarshal(rec.Body.Bytes(), &adapter); err != nil {
+		t.Fatalf("decode adapter model: %v", err)
+	}
+	if adapter.ID != "team-a-legal" {
+		t.Errorf("adapter ID = %q, want team-a-legal", adapter.ID)
+	}
+}
+
+func TestDuplicateAdapterAliasMakesRegistryUnavailable(t *testing.T) {
+	h := newHandler(t,
+		namespaceObj(testNamespace, true),
+		inferenceSetWithAdapters(testNamespace, "chat-phi", createdAt, "shared-adapter"),
+		inferenceSetWithAdapters(testNamespace, "code-ministral", createdAt, "shared-adapter"),
+	)
+
+	rec := do(h, http.MethodGet, ListPath, testNamespace)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 for ambiguous adapter alias (body=%s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeError(t, rec).Error.Code; got != "models_api_unavailable" {
+		t.Errorf("error code = %q, want models_api_unavailable", got)
 	}
 }
 
