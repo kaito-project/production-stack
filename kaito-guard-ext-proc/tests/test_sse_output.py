@@ -193,23 +193,28 @@ def test_missing_initial_response_metadata_fails_without_fabricating_fields(key)
 
 
 @pytest.mark.parametrize(
-    "key, value",
+    "metadata, error",
     [
-        ("id", "other-response"),
-        ("model", "other-model"),
-        ("created", 2),
-        ("object", "chat.completion"),
+        ({"id": "other-response"}, "OpenAI response metadata changed"),
+        ({"model": "other-model"}, "OpenAI response metadata changed"),
+        ({"created": 2}, "OpenAI response metadata changed"),
+        ({"object": "chat.completion"}, "Unsupported OpenAI chunk object"),
+        ({"created": 1.0}, "Invalid OpenAI protocol metadata"),
+        ({"created": True}, "Invalid OpenAI protocol metadata"),
+        (
+            {"id": "other-response", "created": 1.0},
+            "Invalid OpenAI protocol metadata",
+        ),
     ],
 )
-def test_changing_response_metadata_fails_closed(key, value):
+def test_invalid_or_changed_cached_metadata_fails_closed(metadata, error):
     stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     stream.feed(make_content_event("pending"))
-    with pytest.raises(GuardrailStreamError):
+    with pytest.raises(GuardrailStreamError, match=error):
         stream.feed(
             build_sse_data_chunk(
                 {
-                    **RESPONSE_METADATA,
-                    key: value,
+                    **metadata,
                     "choices": [],
                 }
             ).encode()
