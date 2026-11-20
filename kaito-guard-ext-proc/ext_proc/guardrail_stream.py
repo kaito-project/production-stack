@@ -13,8 +13,6 @@
 
 """Compose shared streaming APIs for one single-choice response, not Envoy I/O."""
 
-from collections.abc import Iterator
-
 from guardrail_core.streaming.openai import (
     OpenAIChatChunkParseStatus,
     OpenAIChatChunkParseResult,
@@ -34,27 +32,6 @@ from ext_proc.policy import GuardrailPolicyConfig
 
 class GuardrailStreamError(ValueError):
     """The response violates the single-choice streaming protocol."""
-
-
-_RESPONSE_METADATA_FIELDS = ("id", "object", "created", "model")
-
-
-def _validated_metadata_items(
-    payload: dict[str, object],
-) -> Iterator[tuple[str, object]]:
-    for key in _RESPONSE_METADATA_FIELDS:
-        if key not in payload:
-            continue
-        value = payload[key]
-        if key == "created":
-            valid_type = isinstance(value, int) and not isinstance(value, bool)
-        else:
-            valid_type = isinstance(value, str)
-        if not valid_type:
-            raise GuardrailStreamError("Invalid OpenAI protocol metadata.")
-        if key == "object" and value != "chat.completion.chunk":
-            raise GuardrailStreamError("Unsupported OpenAI chunk object.")
-        yield key, value
 
 
 class GuardrailStream:
@@ -164,8 +141,22 @@ class GuardrailStream:
                 raise GuardrailStreamError("OpenAI response ID does not match cached ID.")
             return
 
-        chunk_metadata = dict(_validated_metadata_items(payload))
-        if len(chunk_metadata) == len(_RESPONSE_METADATA_FIELDS):
+        required_fields = ("id", "object", "created", "model")
+        chunk_metadata: dict[str, object] = {}
+        for key in required_fields:
+            if key not in payload:
+                continue
+            value = payload[key]
+            if key == "created":
+                valid_type = isinstance(value, int) and not isinstance(value, bool)
+            else:
+                valid_type = isinstance(value, str)
+            if not valid_type:
+                raise GuardrailStreamError("Invalid OpenAI protocol metadata.")
+            if key == "object" and value != "chat.completion.chunk":
+                raise GuardrailStreamError("Unsupported OpenAI chunk object.")
+            chunk_metadata[key] = value
+        if len(chunk_metadata) == len(required_fields):
             self._response_metadata = chunk_metadata
         elif has_choices:
             raise GuardrailStreamError("Missing OpenAI response metadata.")
