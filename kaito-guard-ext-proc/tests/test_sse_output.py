@@ -66,6 +66,21 @@ def test_body_events_are_self_contained_without_empty_metadata_events(choice_met
     assert wire.endswith(DONE)
 
 
+def test_long_response_emits_redacted_sse_before_eof():
+    stream = GuardrailStream.from_policy(make_policy("redact"), sse_output=True)
+    suffix = "ordinary text " * 120
+    result = stream.feed(make_content_event("hello secret " + suffix))
+    early = "".join(result.chunks).encode()
+    assert extract_stream_text(early).startswith("hello [REDACTED] ")
+    assert DONE not in early
+
+    assert stream.feed(DONE).chunks == ()
+    final = "".join(stream.finish().chunks).encode()
+    assert extract_stream_text(early + final) == "hello [REDACTED] " + suffix
+    assert final.endswith(DONE)
+    assert final.count(DONE) == 1
+
+
 def test_vllm_terminal_chunk_drops_null_extensions():
     # Text-only terminal shape from vLLM v0.30.0 chat_completion/serving.py.
     terminal = build_sse_data_chunk({
