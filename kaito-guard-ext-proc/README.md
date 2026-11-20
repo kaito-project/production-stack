@@ -162,6 +162,9 @@ cache nor produce output.
 Only one text choice with index zero is supported. Assistant-role events are
 preserved separately; `finish_reason` is recorded and emitted after approved text,
 followed by exactly one `[DONE]`, only when `finish()` validates normal completion.
+An omitted or `null` `finish_reason` is allowed. A non-null reason must be
+`stop`, `length`, `tool_calls`, `content_filter`, or `function_call`; otherwise
+the stream is rejected without emitting a terminal event or `[DONE]`.
 Receiving `[DONE]` alone never flushes held-back text. The caller must wait for
 normal upstream EOF before calling `finish()` and use `cancel()` on failure.
 Choice-level `logprobs` may be omitted or `null` and is never forwarded;

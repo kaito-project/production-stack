@@ -151,6 +151,31 @@ def test_invalid_metadata_on_empty_prelude_is_ignored():
     assert wire.endswith(DONE)
 
 
+@pytest.mark.parametrize(
+    "reason", ["stop", "length", "tool_calls", "content_filter", "function_call"]
+)
+def test_openai_finish_reason_is_preserved_at_eof(reason):
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    terminal = build_sse_data_chunk(
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]}
+    ).encode()
+    assert stream.feed(make_content_event("hello") + terminal + DONE).chunks == ()
+    wire = "".join(stream.finish().chunks).encode()
+    assert parse_sse_payloads(wire)[-1]["choices"][0]["finish_reason"] == reason
+    assert wire.endswith(DONE)
+
+
+def test_unknown_finish_reason_aborts_without_terminal_events():
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    assert stream.feed(make_content_event("hello")).chunks == ()
+    terminal = build_sse_data_chunk(
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "unknown-status"}]}
+    ).encode()
+    with pytest.raises(GuardrailStreamError, match="Unsupported OpenAI finish_reason"):
+        stream.feed(terminal + DONE)
+    assert stream.closed
+
+
 def test_finish_reason_does_not_replace_done():
     stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     stream.feed(make_content_event("pending"))

@@ -173,6 +173,10 @@ class GuardrailStream:
         if self._finish_reason is not None:
             raise GuardrailStreamError("Choice received after finish_reason.")
         if choice.finish_reason is not None:
+            if choice.finish_reason not in {
+                "stop", "length", "tool_calls", "content_filter", "function_call"
+            }:
+                raise GuardrailStreamError("Unsupported OpenAI finish_reason.")
             self._finish_reason = choice.finish_reason
         if "role" in delta:
             return (self._build_sse_chunk({"role": delta["role"]}),)
