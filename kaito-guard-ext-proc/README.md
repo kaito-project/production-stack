@@ -1,4 +1,4 @@
-# KAITO guardrail ext_proc skeleton
+# KAITO guardrail ext_proc
 
 This package is the Envoy gateway adapter, not a guardrail implementation.
 SSE framing, OpenAI chunk parsing, and scan-before-release holdback come directly
@@ -6,9 +6,14 @@ from the KAITO-owned `kaito-guardrail-core` package. There is no local parser,
 holdback algorithm, scanner, or guard engine.
 
 The server registers Envoy's `envoy.service.ext_proc.v3.ExternalProcessor`
-service and listens on `[::]:9000`. `Process` still returns gRPC `UNIMPLEMENTED`.
-The shared APIs are not wired into request handling yet; this skeleton does not
-inspect or protect traffic and must not be used as an active guardrail.
+service and listens on `[::]:9000`. With an injected policy, `Process` scans
+buffered OpenAI Chat Completions JSON responses through core's policy scanning API.
+SSE transport integration is not implemented.
+
+**No policy means no protection.** The default CLI entry point has no policy
+loader, logs a warning, and acknowledges traffic without scanning. Do not deploy
+that entry point as an active guardrail until a startup integration supplies a
+validated policy.
 
 ## Run and test
 
@@ -26,9 +31,10 @@ python -m pytest
 ```
 
 Runtime dependencies are defined in `setup.py`. The shared core is pinned to
-the published PyPI package `kaito-guardrail-core==0.2.1`, which supplies scanner
-configuration, real scanner/window adaptation, and SSE/parser/window APIs. See
-the [0.2.1 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.1).
+the published PyPI package `kaito-guardrail-core==0.2.2`, which supplies scanner
+configuration, buffered policy scanning, real scanner/window adaptation, and
+SSE/parser/window APIs. See
+the [0.2.2 release](https://github.com/kaito-project/kaito-guardrail-core/releases/tag/kaito-guardrail-core-v0.2.2).
 `xds-protos`, published by the gRPC project, supplies the generated Envoy
 protobuf messages and service.
 
@@ -36,8 +42,7 @@ protobuf messages and service.
 
 `ext_proc.policy.GuardrailPolicyConfig` validates an already-decoded guardrail
 policy configuration and delegates scanner configuration and construction to
-`guardrail_core.config`. It does not load files, define a local scanner registry, or
-wire scanners into Envoy `Process`.
+`guardrail_core.config`. It does not load files or define a local scanner registry.
 
 ```python
 from ext_proc.policy import GuardrailPolicyConfig
@@ -69,6 +74,100 @@ propagate unchanged. Returned scanners implement core's buffered
 `scan(prompt, output)` protocol. `build_window_scanner(prompt=..., holdback_len=...)`
 delegates streaming adaptation and fresh scanner construction to the shared
 `ScannerWindowAdapter`; no local scanner execution or detection logic is added.
+
+## Buffered Envoy response processing (Phase 3.1)
+
+Inject a validated policy at startup, not through Envoy metadata or client input:
+
+```python
+import asyncio
+
+from ext_proc.policy import GuardrailPolicyConfig
+from ext_proc.server import serve
+
+policy = GuardrailPolicyConfig.from_dict({
+    "action": "block",
+    "scanner_configs": [
+        {"type": "ban_substrings", "substrings": ["secret"]},
+    ],
+})
+asyncio.run(serve(policy=policy))
+```
+
+Tests can pass the same policy directly to `ExternalProcessorServicer(policy)`.
+Scanner construction is checked before starting the server; invalid policies or
+construction errors fail startup rather than disabling protection. File loading
+and control-plane integration are separate work.
+
+Configure Envoy's ext_proc filter with `failure_mode_allow: false`,
+`allow_mode_override: false`, and these processing modes:
+
+```yaml
+processing_mode:
+  request_header_mode: SKIP
+  request_body_mode: NONE
+  request_trailer_mode: SKIP
+  response_header_mode: SEND
+  response_body_mode: BUFFERED
+  response_trailer_mode: SKIP
+```
+
+Keep Envoy's response buffering limit configured for the deployment. Do not use
+observability mode, partial buffering, or streamed body modes. Envoy configuration
+owns mode selection; the processor never returns `mode_override`. When Envoy
+provides `protocol_config`, an explicit response-body mode other than `BUFFERED`
+is rejected with HTTP 502. Without that field, the processor still requires a
+complete body but cannot independently verify the configured mode. Request
+headers, if sent, are acknowledged without capturing a prompt; scans use an
+empty prompt.
+Envoy is responsible for message ordering and delivering the buffered body;
+the processor does not maintain per-RPC sequencing state.
+
+- Only uncompressed `application/json` responses are supported. Content-type
+  parameters are accepted. SSE, plain text, compressed bodies, header-only
+  responses, and bodies without `end_of_stream` are rejected with HTTP 502.
+  Responses carrying trailers are outside this phase's scope.
+- Each `choices[*].message.content` must be a string. Every choice is scanned
+  independently through `guardrail_core.buffered.scan_policy_output()`, which
+  constructs fresh scanners for each choice. The gateway delegates policy
+  execution directly to core rather than maintaining a local scanning wrapper.
+  Empty strings are allowed. Tool-call-only responses, null/missing content,
+  multipart content, empty choices, malformed UTF-8/JSON, duplicate JSON object
+  keys at any depth (including escaped equivalents), and unexpected
+  structures are outside this scope and produce HTTP 502, never a successful
+  scan or an uninspected pass-through. Tool arguments and other fields are not
+  scanned, even when accompanied by text content.
+- Core executes scanners in configured order, respecting per-scanner action overrides.
+  A blocker hit rejects the entire response with HTTP 403 and `blockMessage`,
+  including when a later choice is blocked. A redactor hit uses its sanitized
+  string, including an empty string; missing or unchanged sanitization blocks.
+  Secrets sanitization is rescanned and must pass unchanged before release.
+  Unlike streaming, this path does not reorder redactors before blockers.
+- Passing responses retain the original body bytes. Redaction replaces only the
+  corresponding content strings, preserving other JSON fields, including
+  `usage` and `finish_reason`. JSON whitespace/escaping may change. Body
+  replacement sets `content-length` to the actual UTF-8 body byte count and removes
+  stale digest/cache-validator headers through the buffered body response's
+  header mutation.
+- Parsing/scanning errors return a fixed HTTP 502 response and a generic server
+  log without model text or scanner exception details. Unsupported processing
+  message types abort the RPC; Envoy must fail closed on RPC errors.
+  Cancellation discards the call without releasing a pending body.
+
+The gRPC tests use the real protobuf service, transport, and core scanners to
+verify pass, redact, block, and failure paths. Two additional tests run a real
+Envoy 1.36.11 between an HTTP client, a split-write upstream, and the gRPC
+processor. They assert HTTP 403 with exactly the block message and no original
+body content, and HTTP 200 with the expected redacted JSON, correct byte-level
+`Content-Length`, and no stale ETag. This is not the full deployment E2E matrix.
+
+CI downloads the checksum-pinned official Envoy binary and runs these tests.
+Locally, provide an Envoy binary to include them (otherwise they are explicitly
+skipped):
+
+```sh
+ENVOY_BINARY=/path/to/envoy python -m pytest tests/test_envoy.py
+```
 
 ## Guardrail stream adapter
 
@@ -119,7 +218,7 @@ tail; redaction is applied before release, including an empty sanitized output.
 The existing `GuardrailStream(scanner, holdback_len=...)` API remains available
 for caller-supplied `WindowScanner` implementations.
 
-Core 0.2.1 supports `ban_substrings` in default `word` or explicit `str` mode,
+Core 0.2.2 supports `ban_substrings` in default `word` or explicit `str` mode,
 `invisible_text`, `secrets`, and `sensitive`, in block/redact modes. Word matching
 uses the previously released character as left context and defers an unconfirmed
 right boundary until more text or normal EOF. Secrets redaction requires
@@ -145,8 +244,8 @@ discards pending text without scanning or flushing.
 Shared framing and scanner exceptions propagate. Invalid parsed events or
 choice policy violations raise `GuardrailStreamError`, without including model
 text. Call `cancel()` on upstream failure/cancellation, never `finish()`.
-This is tested composition code, not an Envoy `Process` implementation; the
-server remains unchanged and does not protect traffic.
+This is tested composition code; streaming is not yet wired into Envoy
+`Process`. The server supports only the buffered JSON path described above.
 
 ## Shared streaming contracts
 
@@ -169,7 +268,7 @@ from guardrail_core.streaming.window import (
 
 The old `ext_proc.streaming.sse_parser` module and its `split_sse_events`,
 `parse_sse_event`, `is_done_event`, and `SSEParseError` interfaces are removed.
-They had no production callers; the server remains unchanged. This intentionally
+They had no production callers. This intentionally
 adopts the shared contracts rather than reproducing the old compatibility rules.
 
 ### Framing and parsing
@@ -220,15 +319,16 @@ blocking, and safe-prefix release.
   and terminal response state. Unlike `SSEFramer.finish()`, window `flush()` does
   not close the window. Do not reuse a completed or abandoned response's window.
 
-The guardrail stream adapter manages these lifecycle rules; future `Process`
-integration must supply transport and policy handling, not duplicate core logic.
+The guardrail stream adapter manages these lifecycle rules; future streaming
+`Process` integration must supply transport and policy handling, not duplicate
+core logic.
 
 ## CI
 
 The `kaito-guard-ext-proc` job installs `.[dev]` with Python 3.12, exercises the
 pinned shared framing/parser/window APIs and the policy-created real scanners,
-runs the unchanged gRPC skeleton tests, and builds the container.
-The image is not published; these tests do not claim real Envoy protection.
+runs the buffered `Process` gRPC tests and the two real Envoy integration tests,
+and builds the container. The image is not published.
 
 ## Container
 

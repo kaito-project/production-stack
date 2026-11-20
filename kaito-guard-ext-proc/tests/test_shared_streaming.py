@@ -31,11 +31,11 @@ from guardrail_core.streaming.window import (
 
 
 def test_pinned_dependency_contract():
-    assert version("kaito-guardrail-core") == "0.2.1"
+    assert version("kaito-guardrail-core") == "0.2.2"
     dependencies = requires("kaito-guard-ext-proc")
     assert dependencies is not None
     core = next(dep for dep in dependencies if dep.startswith("kaito-guardrail-core"))
-    assert core == "kaito-guardrail-core==0.2.1"
+    assert core == "kaito-guardrail-core==0.2.2"
     assert metadata("kaito-guard-ext-proc")["Requires-Python"] == ">=3.12"
 
 
