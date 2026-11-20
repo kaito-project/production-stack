@@ -154,11 +154,10 @@ the server remains unchanged and does not protect traffic.
 Text, role, and finish events carry the upstream `id`,
 `object="chat.completion.chunk"`, `created`, and `model`. The first chunk with a
 non-empty `choices` array (even a role-only choice) must supply all four fields
-with valid values. The adapter caches them for rebuilt chunks. On later chunks
-with choices, `id` may be omitted but must match the cached `id` if supplied;
-`object`, `created`, and `model` are ignored. Chunks with `choices: []` produce
-no output and neither initialize nor validate metadata, including usage-only
-chunks with a different `id`.
+with valid values. The adapter uses these cached values for all rebuilt chunks
+and ignores later response metadata, even a different `id`. Later text still
+goes through the scanner. Chunks with `choices: []` neither initialize the
+cache nor produce output.
 
 Only one text choice with index zero is supported. Assistant-role events are
 preserved separately; `finish_reason` is recorded and emitted after approved text,

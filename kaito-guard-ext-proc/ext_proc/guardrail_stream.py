@@ -131,40 +131,34 @@ class GuardrailStream:
             return tuple(self._build_sse_chunk({"content": text}) for text in chunks)
         return chunks
 
-    def _validate_response_metadata(self, payload: dict[str, object]) -> None:
-        """Cache the first choice-bearing chunk's metadata; check later IDs."""
-        cached = self._response_metadata
-        if cached is not None:
-            if "id" in payload and payload["id"] != cached["id"]:
-                raise GuardrailStreamError("OpenAI response ID does not match cached ID.")
+    def _capture_response_metadata(
+        self, payload: dict[str, object], *, has_choices: bool
+    ) -> None:
+        """Record the response identity from the first chunk that has choices."""
+        if self._response_metadata is not None or not has_choices:
             return
 
-        required_fields = ("id", "object", "created", "model")
-        chunk_metadata: dict[str, object] = {}
-        for key in required_fields:
-            if key not in payload:
-                continue
-            value = payload[key]
-            if key == "created":
-                valid_type = isinstance(value, int) and not isinstance(value, bool)
-            else:
-                valid_type = isinstance(value, str)
-            if not valid_type:
-                raise GuardrailStreamError("Invalid OpenAI protocol metadata.")
-            if key == "object" and value != "chat.completion.chunk":
-                raise GuardrailStreamError("Unsupported OpenAI chunk object.")
-            chunk_metadata[key] = value
-        if len(chunk_metadata) != len(required_fields):
-            raise GuardrailStreamError("Missing OpenAI response metadata.")
-        self._response_metadata = chunk_metadata
+        response_id = payload.get("id")
+        created = payload.get("created")
+        model = payload.get("model")
+        if not (
+            isinstance(response_id, str)
+            and isinstance(model, str)
+            and type(created) is int  # bool is not a valid timestamp
+            and payload.get("object") == "chat.completion.chunk"
+        ):
+            raise GuardrailStreamError("Missing or invalid OpenAI response metadata.")
+        self._response_metadata = {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+        }
 
     def _validate_chunk_and_emit_role(
         self, parsed: OpenAIChatChunkParseResult
     ) -> tuple[str, ...]:
         """Validate the chunk, record finish_reason, and build any role event."""
-        payload = parsed.payload
-        assert payload is not None
-        self._validate_response_metadata(payload)
         choice = parsed.parsed_choices[0]
         assert choice.choice is not None
         if set(choice.choice) - {"index", "delta", "finish_reason"}:
@@ -236,6 +230,9 @@ class GuardrailStream:
                     f"Invalid OpenAI stream event: {parsed.status}."
                 )
             choices = parsed.parsed_choices
+            if self._sse_output:
+                assert parsed.payload is not None
+                self._capture_response_metadata(parsed.payload, has_choices=bool(choices))
             if not choices:
                 continue
             if len(choices) != 1 or choices[0].choice_index != 0:
