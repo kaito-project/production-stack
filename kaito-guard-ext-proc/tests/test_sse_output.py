@@ -92,7 +92,7 @@ def test_usage_is_not_forwarded_as_unvalidated_payload():
     result = stream.feed(
         make_content_event("hello")
         + build_sse_data_chunk(
-            {"choices": [], "usage": {"unvalidated": "private"}}
+            {"id": "other-response", "choices": [], "usage": {"unvalidated": "private"}}
         ).encode()
         + DONE
     )
@@ -104,11 +104,32 @@ def test_usage_is_not_forwarded_as_unvalidated_payload():
     assert wire.endswith(DONE)
 
 
-@pytest.mark.parametrize("metadata", [{"id": {}}, {"created": True}, {"model": []}])
+@pytest.mark.parametrize(
+    "metadata",
+    [{"id": {}}, {"object": "chat.completion"}, {"created": True}, {"model": []}],
+)
 def test_protocol_metadata_is_type_checked(metadata):
     stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     with pytest.raises(GuardrailStreamError):
-        stream.feed(build_sse_data_chunk({**metadata, "choices": []}).encode())
+        stream.feed(
+            build_sse_data_chunk(
+                {
+                    **RESPONSE_METADATA,
+                    **metadata,
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}}],
+                }
+            ).encode()
+        )
+
+
+def test_invalid_metadata_on_empty_prelude_is_ignored():
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    prelude = build_sse_data_chunk({"id": None, "choices": []}).encode()
+    assert stream.feed(prelude).chunks == ()
+    result = stream.feed(make_content_event("hello") + DONE)
+    wire = "".join(result.chunks + stream.finish().chunks).encode()
+    assert extract_stream_text(wire) == "hello"
+    assert wire.endswith(DONE)
 
 
 def test_finish_reason_does_not_replace_done():
@@ -187,6 +208,7 @@ def test_cached_response_metadata_is_reused_on_text_and_terminal_events(later_me
 @pytest.mark.parametrize("key", list(RESPONSE_METADATA))
 def test_missing_initial_response_metadata_fails_without_fabricating_fields(key):
     stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    stream.feed(build_sse_data_chunk({**RESPONSE_METADATA, "choices": []}).encode())
     chunk_metadata = {
         name: value for name, value in RESPONSE_METADATA.items() if name != key
     }
@@ -195,7 +217,7 @@ def test_missing_initial_response_metadata_fails_without_fabricating_fields(key)
             build_sse_data_chunk(
                 {
                     **chunk_metadata,
-                    "choices": [{"index": 0, "delta": {"content": "pending"}}],
+                    "choices": [{"index": 0, "delta": {"role": "assistant"}}],
                 }
             ).encode()
         )
@@ -211,7 +233,7 @@ def test_mismatched_response_id_fails_closed(response_id):
             build_sse_data_chunk(
                 {
                     "id": response_id,
-                    "choices": [],
+                    "choices": [{"index": 0, "delta": {"content": "other answer"}}],
                 }
             ).encode()
         )

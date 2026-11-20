@@ -131,10 +131,8 @@ class GuardrailStream:
             return tuple(self._build_sse_chunk({"content": text}) for text in chunks)
         return chunks
 
-    def _validate_response_metadata(
-        self, payload: dict[str, object], *, has_choices: bool
-    ) -> None:
-        """Cache complete metadata and check later explicit response IDs."""
+    def _validate_response_metadata(self, payload: dict[str, object]) -> None:
+        """Cache the first choice-bearing chunk's metadata; check later IDs."""
         cached = self._response_metadata
         if cached is not None:
             if "id" in payload and payload["id"] != cached["id"]:
@@ -156,10 +154,9 @@ class GuardrailStream:
             if key == "object" and value != "chat.completion.chunk":
                 raise GuardrailStreamError("Unsupported OpenAI chunk object.")
             chunk_metadata[key] = value
-        if len(chunk_metadata) == len(required_fields):
-            self._response_metadata = chunk_metadata
-        elif has_choices:
+        if len(chunk_metadata) != len(required_fields):
             raise GuardrailStreamError("Missing OpenAI response metadata.")
+        self._response_metadata = chunk_metadata
 
     def _validate_chunk_and_emit_role(
         self, parsed: OpenAIChatChunkParseResult
@@ -167,11 +164,8 @@ class GuardrailStream:
         """Validate the chunk, record finish_reason, and build any role event."""
         payload = parsed.payload
         assert payload is not None
-        choices = parsed.parsed_choices
-        self._validate_response_metadata(payload, has_choices=bool(choices))
-        if not choices:
-            return ()
-        choice = choices[0]
+        self._validate_response_metadata(payload)
+        choice = parsed.parsed_choices[0]
         assert choice.choice is not None
         if set(choice.choice) - {"index", "delta", "finish_reason"}:
             raise GuardrailStreamError("Unsupported OpenAI choice fields.")
@@ -242,14 +236,14 @@ class GuardrailStream:
                     f"Invalid OpenAI stream event: {parsed.status}."
                 )
             choices = parsed.parsed_choices
-            if choices and (len(choices) != 1 or choices[0].choice_index != 0):
+            if not choices:
+                continue
+            if len(choices) != 1 or choices[0].choice_index != 0:
                 raise GuardrailStreamError(
                     "Stream requires exactly one choice with index zero."
                 )
             if self._sse_output:
                 chunks.extend(self._validate_chunk_and_emit_role(parsed))
-            if not choices:
-                continue
             content = choices[0].content
             if content is not None:
                 result = window.feed(content)

@@ -152,12 +152,13 @@ the server remains unchanged and does not protect traffic.
 ### Rebuilt SSE output
 
 Text, role, and finish events carry the upstream `id`,
-`object="chat.completion.chunk"`, `created`, and `model`. The adapter caches the
-first complete, valid set of these fields, even from a chunk with no choices.
-Once cached, a later chunk may omit `id`, but if present it must match the
-cached `id` or the stream is rejected. Later `object`, `created`, and `model`
-values are ignored; rebuilt chunks use the cached metadata. Metadata-only
-input produces no empty delta event.
+`object="chat.completion.chunk"`, `created`, and `model`. The first chunk with a
+non-empty `choices` array (even a role-only choice) must supply all four fields
+with valid values. The adapter caches them for rebuilt chunks. On later chunks
+with choices, `id` may be omitted but must match the cached `id` if supplied;
+`object`, `created`, and `model` are ignored. Chunks with `choices: []` produce
+no output and neither initialize nor validate metadata, including usage-only
+chunks with a different `id`.
 
 Only one text choice with index zero is supported. Assistant-role events are
 preserved separately; `finish_reason` is recorded and emitted after approved text,
