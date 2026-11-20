@@ -583,6 +583,123 @@ func TestModelHarnessBBRPlacement(t *testing.T) {
 	}
 }
 
+// TestModelHarnessStripsRoutingHeadersBeforeBBR pins that the gateway ignores
+// routing headers a client sets itself. BBR sets them only when the request
+// body names a model, so a Lua filter directly before BBR must remove every
+// header the modeldeployment HTTPRoute routes on.
+func TestModelHarnessStripsRoutingHeadersBeforeBBR(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	render := func(chart string, args ...string) []byte {
+		t.Helper()
+		args = append([]string{"template", "release", filepath.Join("..", "..", "..", "..", "charts", chart)}, args...)
+		output, err := exec.Command("helm", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("helm template %s: %v\n%s", chart, err, output)
+		}
+		return output
+	}
+
+	var bbr struct {
+		Spec struct {
+			ConfigPatches []struct {
+				ApplyTo string `json:"applyTo"`
+				Match   struct {
+					Listener struct {
+						FilterChain struct {
+							Filter struct {
+								SubFilter struct {
+									Name string `json:"name"`
+								} `json:"subFilter"`
+							} `json:"filter"`
+						} `json:"filterChain"`
+					} `json:"listener"`
+				} `json:"match"`
+				Patch struct {
+					Operation string `json:"operation"`
+					Value     struct {
+						Name        string `json:"name"`
+						TypedConfig struct {
+							DefaultSourceCode struct {
+								InlineString string `json:"inline_string"`
+							} `json:"default_source_code"`
+						} `json:"typed_config"`
+					} `json:"value"`
+				} `json:"patch"`
+			} `json:"configPatches"`
+		} `json:"spec"`
+	}
+	output := render("modelharness", "--set", "namespace=ns", "--show-only", "templates/envoyfilter-bbr.yaml")
+	if err := yaml.Unmarshal(output, &bbr); err != nil {
+		t.Fatalf("decode bbr-ext-proc EnvoyFilter: %v", err)
+	}
+	const bbrFilter = "envoy.filters.http.ext_proc.bbr"
+	bbrInserted, lua := false, ""
+	for _, p := range bbr.Spec.ConfigPatches {
+		if p.ApplyTo != "HTTP_FILTER" {
+			continue
+		}
+		switch p.Patch.Value.Name {
+		case bbrFilter:
+			bbrInserted = true
+		case "kaito.strip-routing-headers":
+			anchor := p.Match.Listener.FilterChain.Filter.SubFilter.Name
+			if p.Patch.Operation != "INSERT_BEFORE" || anchor != bbrFilter {
+				t.Errorf("strip filter placement = %s %q, want INSERT_BEFORE %q", p.Patch.Operation, anchor, bbrFilter)
+			}
+			// Istio applies the patches of one EnvoyFilter in order, so the
+			// anchor exists only if the BBR insertion comes first.
+			if !bbrInserted {
+				t.Error("the strip filter patch precedes the BBR insertion it anchors on")
+			}
+			lua = p.Patch.Value.TypedConfig.DefaultSourceCode.InlineString
+		}
+	}
+	if lua == "" {
+		t.Fatal("bbr-ext-proc renders no kaito.strip-routing-headers filter")
+	}
+
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "default", args: []string{"--show-only", "templates/httproute.yaml"}},
+		{name: "azure", args: []string{"--show-only", "templates/azure/httproute.yaml",
+			"--set", "cloudprovider=azure", "--set", "azure.defaultDomain.zoneName=example.aksapp.io"}},
+	} {
+		var route struct {
+			Spec struct {
+				Rules []struct {
+					Matches []struct {
+						Headers []struct {
+							Name string `json:"name"`
+						} `json:"headers"`
+					} `json:"matches"`
+				} `json:"rules"`
+			} `json:"spec"`
+		}
+		output := render("modeldeployment", append([]string{"--set", "model=test-model"}, tt.args...)...)
+		if err := yaml.Unmarshal(output, &route); err != nil {
+			t.Fatalf("%s: decode HTTPRoute: %v\n%s", tt.name, err, output)
+		}
+		routed := 0
+		for _, rule := range route.Spec.Rules {
+			for _, match := range rule.Matches {
+				for _, h := range match.Headers {
+					routed++
+					if !strings.Contains(lua, fmt.Sprintf("%q", strings.ToLower(h.Name))) {
+						t.Errorf("%s: the HTTPRoute routes on %s, which the strip filter does not remove", tt.name, h.Name)
+					}
+				}
+			}
+		}
+		if routed == 0 {
+			t.Errorf("%s: the HTTPRoute matches on no header", tt.name)
+		}
+	}
+}
+
 func renderModelDeployment(t *testing.T, values ...string) ([]byte, error) {
 	t.Helper()
 	chart := filepath.Join("..", "..", "..", "..", "charts", "modeldeployment")
@@ -601,12 +718,13 @@ func renderModelDeployment(t *testing.T, values ...string) ([]byte, error) {
 
 // TestModelHarnessOutageReplyMappers pins the attribution contract of the
 // consolidated outage local_reply: mapper order (first match wins) and the
-// status each unflagged mapper keys on. With the model header present, the
-// 503 an EPP returns on purpose because it cannot place a request (endpoint
-// picker protocol) is model_unavailable and any other 5xx is
-// epp_unavailable; with it absent, only the status BBR's ext_proc filter is
-// pinned to is bbr_unavailable. The mappers must use only core
-// AccessLogFilter types, so the patch needs no optional Envoy extension.
+// status each mapper keys on. Every mapper requires a 5xx, so a 4xx keeps its
+// own status and body. With the model header present, the 503 an EPP returns
+// on purpose because it cannot place a request (endpoint picker protocol) is
+// model_unavailable and any other 5xx is epp_unavailable; with it absent,
+// only the status BBR's ext_proc filter is pinned to is bbr_unavailable. The
+// mappers must use only core AccessLogFilter types, so the patch needs no
+// optional Envoy extension.
 func TestModelHarnessOutageReplyMappers(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm is required for chart rendering tests")
@@ -669,6 +787,12 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 									Body struct {
 										InlineString string `json:"inline_string"`
 									} `json:"body"`
+									BodyFormatOverride *struct {
+										TextFormatSource struct {
+											InlineString string `json:"inline_string"`
+										} `json:"text_format_source"`
+										ContentType string `json:"content_type"`
+									} `json:"body_format_override"`
 								} `json:"mappers"`
 							} `json:"local_reply_config"`
 						} `json:"typed_config"`
@@ -723,8 +847,8 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 		retryAfter  bool
 	}{
 		{code: "ext_authz_unavailable", status: 502, source: "authz", match: "GE 500"},
-		{code: "model_unavailable", status: 503, source: "inferenceset", modelHeader: "present", routerFlag: true, retryAfter: true},
-		{code: "gateway_unavailable", status: 502, source: "gateway", modelHeader: "absent", routerFlag: true},
+		{code: "model_unavailable", status: 503, source: "inferenceset", modelHeader: "present", routerFlag: true, match: "GE 500", retryAfter: true},
+		{code: "gateway_unavailable", status: 502, source: "gateway", modelHeader: "absent", routerFlag: true, match: "GE 500"},
 		{code: "model_unavailable", status: 503, source: "inferenceset", modelHeader: "present", match: "EQ 503", retryAfter: true},
 		{code: "epp_unavailable", status: 502, source: "epp", modelHeader: "present", match: "GE 500"},
 		{code: "bbr_unavailable", status: 502, source: "bbr", modelHeader: "absent", match: fmt.Sprintf("EQ %d", bbrStatus)},
@@ -751,6 +875,14 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 		}
 		if _, ok := headers["retry-after"]; ok != tt.retryAfter {
 			t.Errorf("%s: retry-after present = %v, want %v", tt.code, ok, tt.retryAfter)
+		}
+		// Envoy keeps a content-type set through headers_to_add only if it
+		// differs from the one the local reply already had, and an EPP
+		// ImmediateResponse already carries application/json; otherwise it
+		// uses the formatter's, so the formatter must set it.
+		if o := m.BodyFormatOverride; o == nil || o.ContentType != "application/json" ||
+			o.TextFormatSource.InlineString != "%LOCAL_REPLY_BODY%" {
+			t.Errorf("%s: body_format_override = %+v, want the mapper body with content_type application/json", tt.code, o)
 		}
 		filters := []filter{m.Filter}
 		if m.Filter.AndFilter != nil {

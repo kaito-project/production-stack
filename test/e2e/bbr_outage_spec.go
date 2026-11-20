@@ -120,6 +120,21 @@ var _ = Describe("BBR outage (fail-closed cluster filter)",
 			}, 90*time.Second, 5*time.Second).Should(Succeed())
 		})
 
+		It("keeps attributing the outage to BBR when the client sets X-Gateway-Model-Name", func() {
+			// The outage local_reply reads a present X-Gateway-Model-Name as
+			// "BBR ran". The gateway removes a client-set copy before BBR;
+			// were it kept, this outage would surface as 503 model_unavailable.
+			resp, err := utils.SendChatContext(ctx, caseGateway, modelName,
+				utils.WithHeader("X-Gateway-Model-Name", modelName))
+			Expect(err).NotTo(HaveOccurred(), "request to gateway failed")
+			Expect(resp.Header.Get("x-kaito-error-source")).To(Equal("bbr"),
+				"a client-set X-Gateway-Model-Name must not shift the BBR outage onto the model")
+			Expect(resp.StatusCode).To(Equal(http.StatusBadGateway))
+			parsed, err := utils.ParseErrorResponse(resp)
+			Expect(err).NotTo(HaveOccurred(), "response body should be a JSON error envelope")
+			Expect(parsed.ErrorCode()).To(Equal("bbr_unavailable"))
+		})
+
 		It("recovers once BBR is restored", func() {
 			By("scaling the BBR Deployment back to its original replica count")
 			Expect(replicas.Restore(ctx, 3*time.Minute)).

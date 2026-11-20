@@ -81,8 +81,17 @@ jobs:
       - name: Install ext_proc and test dependencies
         working-directory: kaito-guard-ext-proc
         run: python -m pip install -e '.[dev]'
+      - name: Install Envoy for buffered response integration tests
+        run: |
+          curl --fail --location --retry 3 \
+            https://github.com/envoyproxy/envoy/releases/download/v1.36.11/envoy-1.36.11-linux-x86_64 \
+            --output "$RUNNER_TEMP/envoy"
+          echo "989b0ad23ad306acf917ac04d8c32cbe6d351883d2f22219cbe4a1e93bcba208  $RUNNER_TEMP/envoy" | sha256sum --check
+          chmod +x "$RUNNER_TEMP/envoy"
       - name: Run ext_proc tests
         working-directory: kaito-guard-ext-proc
+        env:
+          ENVOY_BINARY: ${{ runner.temp }}/envoy
         run: python -m pytest
       - name: Build ext_proc image
         run: docker build -f docker/Dockerfile.kaito-guard-ext-proc -t kaito-guard-ext-proc:ci .

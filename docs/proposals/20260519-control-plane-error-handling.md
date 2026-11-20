@@ -94,7 +94,7 @@ Production-stack is built from independent OSS components (Istio Gateway, `llm-g
 
 #### Error category overview
 
-Every error in production-stack belongs to exactly one of two categories, and within each category is owned by exactly one of the three layers. This proposal covers the control-plane category; the data-plane category is covered by the [data-plane error handling proposal](./20260519-data-plane-error-handling.md#error-category-overview).
+Every error in production-stack belongs to exactly one of two categories. This proposal covers the control-plane category, in which every error is owned by exactly one of the three layers below; the data-plane category, which is classified by request-path hop rather than by layer, is covered by the [data-plane error handling proposal](./20260519-data-plane-error-handling.md#error-category-overview).
 
 | Category | Cluster level | Modelharness level | Modeldeployment level |
 | --- | --- | --- | --- |

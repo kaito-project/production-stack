@@ -8,7 +8,7 @@ metadata:
     {{- include "modeldeployment.identifyingLabels" . | nindent 4 }}
 data:
   default-plugins.yaml: |
-    apiVersion: inference.networking.x-k8s.io/v1alpha1
+    apiVersion: llm-d.ai/v1
     kind: EndpointPickerConfig
     {{- $flowControl := eq (include "modeldeployment.eppFlowControlEnabled" .) "true" }}
     {{- $fc := fromYaml (include "modeldeployment.eppFlowControlSettings" .) }}
@@ -20,6 +20,9 @@ data:
     - type: queue-scorer
     - type: kv-cache-utilization-scorer
     - type: prefix-cache-scorer
+    - type: openai-parser
+    - type: anthropic-parser
+    - type: vllmhttp-parser
     {{- if $flowControl }}
     {{- /*
     The concurrency detector reports an empty pool as fully saturated (1.0),
@@ -43,6 +46,17 @@ data:
         weight: {{ .Values.epp.scorerWeights.kvCacheUtilization }}
       - pluginRef: prefix-cache-scorer
         weight: {{ .Values.epp.scorerWeights.prefixCache }}
+    {{- /*
+    The EPP's default parsers without its passthrough fallback, which would
+    forward a request on any other path, such as /metrics or
+    /v1/load_lora_adapter, to a model server pod whenever its body names a
+    model. Such a request gets the EPP's 400 instead.
+    */}}
+    requestHandler:
+      parsers:
+      - pluginRef: openai-parser
+      - pluginRef: anthropic-parser
+      - pluginRef: vllmhttp-parser
     {{- if $flowControl }}
     flowControl:
       saturationDetector:

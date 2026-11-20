@@ -142,6 +142,8 @@ Step-by-step targets exist as well: `e2e-setup`, `docker-build`, `e2e-push-image
 | `MODELDEPLOYMENT_CHART` | Override chart path (`helm` backend only) | _(repo root)_ |
 | `MODELHARNESS_CHART` | Override chart path (`helm` backend only) | _(repo root)_ |
 
+`e2e-setup` creates the cluster with Microsoft Entra ID enabled and writes the cluster's local admin kubeconfig. To reconnect to it later, use `az aks get-credentials --admin`; the plain user credentials sign in through `kubelogin`.
+
 ## Deployment backends
 
 Specs never invoke Helm directly. Every modelharness / modeldeployment install
