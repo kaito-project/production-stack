@@ -234,18 +234,16 @@ class GuardrailStream:
                 raise GuardrailStreamError(
                     f"Invalid OpenAI stream event: {parsed.status}."
                 )
-            if parsed.parsed_choices and (
-                len(parsed.parsed_choices) != 1
-                or parsed.parsed_choices[0].choice_index != 0
-            ):
+            choices = parsed.parsed_choices
+            if choices and (len(choices) != 1 or choices[0].choice_index != 0):
                 raise GuardrailStreamError(
                     "Stream requires exactly one choice with index zero."
                 )
             if self._sse_output:
                 chunks.extend(self._validate_chunk_and_emit_role(parsed))
-            if not parsed.parsed_choices:
+            if not choices:
                 continue
-            content = parsed.parsed_choices[0].content
+            content = choices[0].content
             if content is not None:
                 result = window.feed(content)
                 if result.blocked:
