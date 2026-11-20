@@ -25,13 +25,16 @@ from tests.sse_helpers import (
 )
 
 
-def test_body_events_are_self_contained_without_empty_metadata_events():
+@pytest.mark.parametrize("choice_metadata", [{}, {"logprobs": None}])
+def test_body_events_are_self_contained_without_empty_metadata_events(choice_metadata):
     stream = GuardrailStream.from_policy(make_policy("redact"), sse_output=True)
     initial = stream.feed(
         build_sse_data_chunk(
             {
                 **RESPONSE_METADATA,
-                "choices": [{"index": 0, "delta": {"content": "hello secret"}}],
+                "choices": [
+                    {"index": 0, "delta": {"content": "hello secret"}, **choice_metadata}
+                ],
             }
         ).encode()
         + build_sse_data_chunk(
@@ -61,6 +64,22 @@ def test_body_events_are_self_contained_without_empty_metadata_events():
         },
     ]
     assert wire.endswith(DONE)
+
+
+def test_non_null_logprobs_fails_closed():
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    with pytest.raises(GuardrailStreamError, match="Non-null OpenAI logprobs"):
+        stream.feed(
+            build_sse_data_chunk(
+                {
+                    **RESPONSE_METADATA,
+                    "choices": [
+                        {"index": 0, "delta": {"content": "hello"}, "logprobs": {}}
+                    ],
+                }
+            ).encode()
+        )
+    assert stream.closed
 
 
 @pytest.mark.parametrize(

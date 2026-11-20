@@ -161,8 +161,10 @@ class GuardrailStream:
         """Validate the chunk, record finish_reason, and build any role event."""
         choice = parsed.parsed_choices[0]
         assert choice.choice is not None
-        if set(choice.choice) - {"index", "delta", "finish_reason"}:
+        if set(choice.choice) - {"index", "delta", "finish_reason", "logprobs"}:
             raise GuardrailStreamError("Unsupported OpenAI choice fields.")
+        if choice.choice.get("logprobs") is not None:
+            raise GuardrailStreamError("Non-null OpenAI logprobs are not supported.")
         delta = choice.choice.get("delta") or {}
         if set(delta) - {"role", "content"}:
             raise GuardrailStreamError("Unsupported non-text OpenAI delta.")

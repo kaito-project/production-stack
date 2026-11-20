@@ -164,7 +164,9 @@ preserved separately; `finish_reason` is recorded and emitted after approved tex
 followed by exactly one `[DONE]`, only when `finish()` validates normal completion.
 Receiving `[DONE]` alone never flushes held-back text. The caller must wait for
 normal upstream EOF before calling `finish()` and use `cancel()` on failure.
-Usage and non-allowlisted top-level metadata are not forwarded. `tool_calls`,
+Choice-level `logprobs` may be omitted or `null` and is never forwarded;
+non-null values are rejected. Usage and non-allowlisted top-level metadata
+are not forwarded. `tool_calls`,
 `function_call`, `refusal`, other non-text delta fields, and unsupported choice
 fields fail closed.
 
