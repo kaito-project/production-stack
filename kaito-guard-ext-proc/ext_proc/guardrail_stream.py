@@ -131,12 +131,10 @@ class GuardrailStream:
             return tuple(self._build_sse_chunk({"content": text}) for text in chunks)
         return chunks
 
-    def _validate_chunk_and_emit_role(
-        self, parsed: OpenAIChatChunkParseResult
-    ) -> tuple[str, ...]:
-        """Validate the chunk, record finish_reason, and build any role event."""
-        payload = parsed.payload
-        assert payload is not None
+    def _validate_response_metadata(
+        self, payload: dict[str, object], *, has_choices: bool
+    ) -> None:
+        """Validate metadata and cache the first complete response identity."""
         required_fields = ("id", "object", "created", "model")
         chunk_metadata: dict[str, object] = {}
         for key in required_fields:
@@ -155,16 +153,25 @@ class GuardrailStream:
         if self._response_metadata is None:
             if all(key in chunk_metadata for key in required_fields):
                 self._response_metadata = chunk_metadata
-            elif parsed.parsed_choices:
+            elif has_choices:
                 raise GuardrailStreamError("Missing OpenAI response metadata.")
         elif any(
             value != self._response_metadata[key]
             for key, value in chunk_metadata.items()
         ):
             raise GuardrailStreamError("OpenAI response metadata changed.")
-        if not parsed.parsed_choices:
+
+    def _validate_chunk_and_emit_role(
+        self, parsed: OpenAIChatChunkParseResult
+    ) -> tuple[str, ...]:
+        """Validate the chunk, record finish_reason, and build any role event."""
+        payload = parsed.payload
+        assert payload is not None
+        choices = parsed.parsed_choices
+        self._validate_response_metadata(payload, has_choices=bool(choices))
+        if not choices:
             return ()
-        choice = parsed.parsed_choices[0]
+        choice = choices[0]
         assert choice.choice is not None
         if set(choice.choice) - {"index", "delta", "finish_reason"}:
             raise GuardrailStreamError("Unsupported OpenAI choice fields.")
