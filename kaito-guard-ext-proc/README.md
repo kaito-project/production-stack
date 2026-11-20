@@ -244,8 +244,34 @@ discards pending text without scanning or flushing.
 Shared framing and scanner exceptions propagate. Invalid parsed events or
 choice policy violations raise `GuardrailStreamError`, without including model
 text. Call `cancel()` on upstream failure/cancellation, never `finish()`.
-This is tested composition code; streaming is not yet wired into Envoy
-`Process`. The server supports only the buffered JSON path described above.
+`sse_output=True` opts into rebuilt SSE instead of plain approved text chunks.
+The default text-only API is unchanged. Streaming is not yet wired into Envoy
+`Process`; the server supports only the buffered JSON path described above.
+
+### Rebuilt SSE output
+
+Text, role, and finish events carry the upstream `id`,
+`object="chat.completion.chunk"`, `created`, and `model`. The first chunk with a
+non-empty `choices` array (even a role-only choice) must supply all four fields
+with valid values. The adapter uses these cached values for all rebuilt chunks
+and ignores later response metadata, even a different `id`. Later text still
+goes through the scanner. Chunks with `choices: []` neither initialize the
+cache nor produce output.
+
+Only one text choice with index zero is supported. Assistant-role events are
+preserved separately; `finish_reason` is recorded and emitted after approved text,
+followed by exactly one `[DONE]`, only when `finish()` validates normal completion.
+An omitted or `null` `finish_reason` is allowed. A non-null reason must be
+`stop`, `length`, `tool_calls`, `content_filter`, or `function_call`; otherwise
+the stream is rejected without emitting a terminal event or `[DONE]`.
+Receiving `[DONE]` alone never flushes held-back text. The caller must wait for
+normal upstream EOF before calling `finish()` and use `cancel()` on failure.
+Choice-level `logprobs` and the vLLM extensions `stop_reason` and `token_ids`
+may be omitted or `null` and are never forwarded; non-null values are rejected.
+Usage and non-allowlisted top-level metadata
+are not forwarded. `tool_calls`,
+`function_call`, `refusal`, other non-text delta fields, and unsupported choice
+fields fail closed.
 
 ## Shared streaming contracts
 
