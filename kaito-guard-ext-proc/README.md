@@ -154,9 +154,10 @@ the server remains unchanged and does not protect traffic.
 Text, role, and finish events carry the upstream `id`,
 `object="chat.completion.chunk"`, `created`, and `model`. The adapter caches the
 first complete, valid set of these fields, even from a chunk with no choices.
-Once cached, later chunks may omit these fields, but any supplied field must
-be valid and match the cache. Missing fields are never fabricated, and
-metadata-only input produces no empty delta event.
+Once cached, a later chunk may omit `id`, but if present it must match the
+cached `id` or the stream is rejected. Later `object`, `created`, and `model`
+values are ignored; rebuilt chunks use the cached metadata. Metadata-only
+input produces no empty delta event.
 
 Only one text choice with index zero is supported. Assistant-role events are
 preserved separately; `finish_reason` is recorded and emitted after approved text,

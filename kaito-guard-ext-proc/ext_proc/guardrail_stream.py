@@ -157,16 +157,11 @@ class GuardrailStream:
     def _validate_response_metadata(
         self, payload: dict[str, object], *, has_choices: bool
     ) -> None:
-        """Validate metadata and cache the first complete response identity."""
+        """Cache complete metadata and check later explicit response IDs."""
         cached = self._response_metadata
         if cached is not None:
-            metadata_changed = False
-            # Validate every supplied field before reporting a conflict.
-            for key, value in _validated_metadata_items(payload):
-                if value != cached[key]:
-                    metadata_changed = True
-            if metadata_changed:
-                raise GuardrailStreamError("OpenAI response metadata changed.")
+            if "id" in payload and payload["id"] != cached["id"]:
+                raise GuardrailStreamError("OpenAI response ID does not match cached ID.")
             return
 
         chunk_metadata = dict(_validated_metadata_items(payload))

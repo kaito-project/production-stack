@@ -129,7 +129,16 @@ def test_finish_reason_does_not_replace_done():
     assert stream.closed
 
 
-def test_cached_response_metadata_is_reused_on_text_and_terminal_events():
+@pytest.mark.parametrize(
+    "later_metadata",
+    [
+        {},
+        {"id": RESPONSE_METADATA["id"]},
+        {"id": RESPONSE_METADATA["id"], "created": 2, "model": "other-model"},
+        {"object": "chat.completion", "created": 1.0, "model": None},
+    ],
+)
+def test_cached_response_metadata_is_reused_on_text_and_terminal_events(later_metadata):
     stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     wire = "".join(
         stream.feed(
@@ -145,6 +154,7 @@ def test_cached_response_metadata_is_reused_on_text_and_terminal_events():
         stream.feed(
             build_sse_data_chunk(
                 {
+                    **later_metadata,
                     "choices": [{"index": 0, "delta": {"content": "hello"}}],
                 }
             ).encode()
@@ -192,29 +202,15 @@ def test_missing_initial_response_metadata_fails_without_fabricating_fields(key)
     assert stream.closed
 
 
-@pytest.mark.parametrize(
-    "metadata, error",
-    [
-        ({"id": "other-response"}, "OpenAI response metadata changed"),
-        ({"model": "other-model"}, "OpenAI response metadata changed"),
-        ({"created": 2}, "OpenAI response metadata changed"),
-        ({"object": "chat.completion"}, "Unsupported OpenAI chunk object"),
-        ({"created": 1.0}, "Invalid OpenAI protocol metadata"),
-        ({"created": True}, "Invalid OpenAI protocol metadata"),
-        (
-            {"id": "other-response", "created": 1.0},
-            "Invalid OpenAI protocol metadata",
-        ),
-    ],
-)
-def test_invalid_or_changed_cached_metadata_fails_closed(metadata, error):
+@pytest.mark.parametrize("response_id", ["other-response", None, 123])
+def test_mismatched_response_id_fails_closed(response_id):
     stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     stream.feed(make_content_event("pending"))
-    with pytest.raises(GuardrailStreamError, match=error):
+    with pytest.raises(GuardrailStreamError, match="response ID does not match"):
         stream.feed(
             build_sse_data_chunk(
                 {
-                    **metadata,
+                    "id": response_id,
                     "choices": [],
                 }
             ).encode()
