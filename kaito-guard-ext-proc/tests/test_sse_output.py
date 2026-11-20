@@ -66,6 +66,49 @@ def test_body_events_are_self_contained_without_empty_metadata_events(choice_met
     assert wire.endswith(DONE)
 
 
+def test_vllm_terminal_chunk_drops_null_extensions():
+    # Text-only terminal shape from vLLM v0.30.0 chat_completion/serving.py.
+    terminal = build_sse_data_chunk({
+        **RESPONSE_METADATA,
+        "choices": [{
+            "index": 0, "delta": {}, "logprobs": None, "finish_reason": "stop",
+            "stop_reason": None, "token_ids": None,
+        }],
+    }).encode()
+    stream = GuardrailStream.from_policy(make_policy("redact"), sse_output=True)
+    result = stream.feed(make_content_event("secret") + terminal + DONE)
+    wire = "".join(result.chunks + stream.finish().chunks).encode()
+    assert extract_stream_text(wire) == "[REDACTED]"
+    assert parse_sse_payloads(wire)[-1] == {
+        **RESPONSE_METADATA,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }
+    assert wire.endswith(DONE)
+
+
+@pytest.mark.parametrize("extra", [{"stop_reason": 0}, {"token_ids": []}, {"unknown": None}])
+def test_unsupported_choice_extensions_fail_closed(extra):
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    with pytest.raises(GuardrailStreamError):
+        stream.feed(build_sse_data_chunk({
+            **RESPONSE_METADATA,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop", **extra}],
+        }).encode())
+    assert stream.closed
+
+
+def test_block_at_eof_discards_sse_text_finish_and_done():
+    stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
+    terminal = build_sse_data_chunk({
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }).encode()
+    pending = stream.feed(make_content_event("secret") + terminal + DONE)
+    assert not pending.blocked and pending.chunks == ()
+    result = stream.finish()
+    assert result.blocked and result.chunks == ()
+    assert stream.closed
+
+
 def test_non_null_logprobs_fails_closed():
     stream = GuardrailStream.from_policy(make_policy(), sse_output=True)
     with pytest.raises(GuardrailStreamError, match="Non-null OpenAI logprobs"):

@@ -266,8 +266,9 @@ An omitted or `null` `finish_reason` is allowed. A non-null reason must be
 the stream is rejected without emitting a terminal event or `[DONE]`.
 Receiving `[DONE]` alone never flushes held-back text. The caller must wait for
 normal upstream EOF before calling `finish()` and use `cancel()` on failure.
-Choice-level `logprobs` may be omitted or `null` and is never forwarded;
-non-null values are rejected. Usage and non-allowlisted top-level metadata
+Choice-level `logprobs` and the vLLM extensions `stop_reason` and `token_ids`
+may be omitted or `null` and are never forwarded; non-null values are rejected.
+Usage and non-allowlisted top-level metadata
 are not forwarded. `tool_calls`,
 `function_call`, `refusal`, other non-text delta fields, and unsupported choice
 fields fail closed.
