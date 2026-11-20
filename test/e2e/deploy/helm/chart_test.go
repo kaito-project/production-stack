@@ -787,6 +787,12 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 									Body struct {
 										InlineString string `json:"inline_string"`
 									} `json:"body"`
+									BodyFormatOverride *struct {
+										TextFormatSource struct {
+											InlineString string `json:"inline_string"`
+										} `json:"text_format_source"`
+										ContentType string `json:"content_type"`
+									} `json:"body_format_override"`
 								} `json:"mappers"`
 							} `json:"local_reply_config"`
 						} `json:"typed_config"`
@@ -869,6 +875,14 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 		}
 		if _, ok := headers["retry-after"]; ok != tt.retryAfter {
 			t.Errorf("%s: retry-after present = %v, want %v", tt.code, ok, tt.retryAfter)
+		}
+		// Envoy keeps a content-type set through headers_to_add only if it
+		// differs from the one the local reply already had, and an EPP
+		// ImmediateResponse already carries application/json; otherwise it
+		// uses the formatter's, so the formatter must set it.
+		if o := m.BodyFormatOverride; o == nil || o.ContentType != "application/json" ||
+			o.TextFormatSource.InlineString != "%LOCAL_REPLY_BODY%" {
+			t.Errorf("%s: body_format_override = %+v, want the mapper body with content_type application/json", tt.code, o)
 		}
 		filters := []filter{m.Filter}
 		if m.Filter.AndFilter != nil {

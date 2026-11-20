@@ -358,17 +358,17 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			beforeObjective := make(map[string]float64)
 			for _, model := range modelNames {
 				s, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
-					"inference_extension_scheduler_attempts_total", map[string]string{"status": "success"})
+					"llm_d_epp_scheduler_attempts_total", map[string]string{"status": "success"})
 				Expect(err).NotTo(HaveOccurred())
 				beforeSuccess[model] = s
 
 				f, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
-					"inference_extension_scheduler_attempts_total", map[string]string{"status": "failure"})
+					"llm_d_epp_scheduler_attempts_total", map[string]string{"status": "failure"})
 				Expect(err).NotTo(HaveOccurred())
 				beforeFailure[model] = f
 
 				o, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
-					"inference_objective_request_total", map[string]string{"model_name": model})
+					"llm_d_epp_request_total", map[string]string{"model_name": model})
 				Expect(err).NotTo(HaveOccurred())
 				beforeObjective[model] = o
 			}
@@ -386,22 +386,22 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			By("verifying EPP scheduler success metrics increased")
 			for _, model := range modelNames {
 				afterSuccess, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
-					"inference_extension_scheduler_attempts_total", map[string]string{"status": "success"})
+					"llm_d_epp_scheduler_attempts_total", map[string]string{"status": "success"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(afterSuccess-beforeSuccess[model]).To(BeNumerically(">=", float64(numRequests)),
 					"EPP scheduler success count for %s should have increased by at least %d", model, numRequests)
 
 				afterFailure, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
-					"inference_extension_scheduler_attempts_total", map[string]string{"status": "failure"})
+					"llm_d_epp_scheduler_attempts_total", map[string]string{"status": "failure"})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(afterFailure).To(Equal(beforeFailure[model]),
 					"EPP scheduler failure count for %s should not have changed", model)
 
 				afterObjective, err := utils.ScrapeEPPMetric(ctx, clientset, model, caseNamespace,
-					"inference_objective_request_total", map[string]string{"model_name": model})
+					"llm_d_epp_request_total", map[string]string{"model_name": model})
 				Expect(err).NotTo(HaveOccurred())
 				Expect(afterObjective-beforeObjective[model]).To(BeNumerically(">=", float64(numRequests)),
-					"EPP objective request count for %s should have increased by at least %d", model, numRequests)
+					"EPP request count for %s should have increased by at least %d", model, numRequests)
 			}
 		})
 	})
@@ -651,6 +651,28 @@ var _ = Describe("Model-Based Routing", Ordered, utils.GinkgoLabelRouting, func(
 			}, 30*time.Second, 2*time.Second).Should(Equal(http.StatusOK),
 				"valid requests should succeed after non-JSON body request")
 		})
+
+		// The EPP runs without its passthrough parser, so a request on a path
+		// none of its parsers claims is rejected by the EPP even when its body
+		// names a deployed model, and model-server endpoints stay unreachable
+		// through the gateway.
+		DescribeTable("should not forward a model-server endpoint to the model",
+			func(method, path string) {
+				body := []byte(fmt.Sprintf(`{"model": %q}`, falconModel))
+				resp, err := utils.SendGatewayRequest(ctx, caseGateway, method, path, body, utils.WithOriginPath())
+				Expect(err).NotTo(HaveOccurred())
+				respBody, err := utils.ReadResponseBody(resp)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(resp.StatusCode).To(Equal(http.StatusBadRequest),
+					"%s %s naming %s must be rejected by the EPP; body: %s", method, path, falconModel, respBody)
+				Expect(string(respBody)).To(ContainSubstring("no parser registered"),
+					"the 400 must come from the EPP, not from the model server")
+				Expect(resp.Header.Get("x-kaito-error-source")).To(BeEmpty(),
+					"the EPP's 400 passes through unchanged")
+			},
+			Entry("GET /metrics", http.MethodGet, "/metrics"),
+			Entry("POST /v1/load_lora_adapter", http.MethodPost, "/v1/load_lora_adapter"),
+		)
 
 		It("should not inject x-gateway-model-name for non-/v1/ paths", func() {
 			// GET /healthz — should bypass BBR entirely.
