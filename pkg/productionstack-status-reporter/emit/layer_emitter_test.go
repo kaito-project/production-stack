@@ -17,9 +17,14 @@ limitations under the License.
 package emit
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
+	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/config"
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/evaluator"
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/reason"
 )
@@ -72,5 +77,58 @@ func TestStartupGatePrune(t *testing.T) {
 	g.prune(map[string]bool{})
 	if len(g.notReadySince) != 0 {
 		t.Errorf("prune left %d stale entries", len(g.notReadySince))
+	}
+}
+
+// A pod that has no node yet is withheld for the node-provisioning window: a
+// shorter or zero global grace does not shorten it, and a longer one is kept.
+func TestStartupGateHoldsPodAwaitingNode(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name     string
+		grace    time.Duration
+		age      time.Duration
+		withheld bool
+	}{
+		{"held past the global grace", time.Minute, 4 * time.Minute, true},
+		{"surfaces after the node window", time.Minute, evaluator.NodeProvisioningGracePeriod + time.Second, false},
+		{"held when the global grace is zero", 0, 4 * time.Minute, true},
+		{"a longer global grace is kept", 10 * time.Minute, 6 * time.Minute, true},
+	} {
+		g := newStartupGate(func() time.Time { return now }, tc.grace)
+		f := evaluator.Finding{Reason: reason.InferencesetEPPNotReady, GroupKey: "epp", ResourceCreatedAt: now.Add(-tc.age), AwaitingNode: true}
+		if got := g.withholdDuringStartup(f, now, map[string]bool{}); got != tc.withheld {
+			t.Errorf("%s: withheld=%v, want %v", tc.name, got, tc.withheld)
+		}
+	}
+}
+
+// The findings of one Event are gated one by one, so a pod still waiting for a
+// node does not hide another that is failing: the Event is written once, with
+// the message of the first finding past its window.
+func TestEmitReportsFailingPodWhileAnotherAwaitsNode(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+	cs := fake.NewSimpleClientset()
+	e := NewEmitter(cs, func() time.Time { return now }, time.Minute, 5*time.Minute, "cluster")
+	finding := func(msg string, awaitingNode bool) evaluator.Finding {
+		return evaluator.Finding{
+			Reason:            reason.ClusterKedaNotReady,
+			Object:            evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: "keda"},
+			Message:           msg,
+			GroupKey:          "cluster/keda",
+			ResourceCreatedAt: now.Add(-2 * time.Minute),
+			AwaitingNode:      awaitingNode,
+		}
+	}
+	waiting := finding("keda-operator waits for a node", true)
+	e.Emit(ctx, []evaluator.Finding{waiting, finding("keda-operator-metrics-apiserver crashes", false), finding("a later crashing pod", false)})
+
+	ev, err := cs.CoreV1().Events(config.ReportingNamespace).Get(ctx, NameForLookup(waiting).Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("the crashing pod must be reported while another waits for a node: %v", err)
+	}
+	if ev.Message != "keda-operator-metrics-apiserver crashes" || ev.Count != 1 {
+		t.Errorf("event message=%q count=%d, want the first finding past its window, written once", ev.Message, ev.Count)
 	}
 }

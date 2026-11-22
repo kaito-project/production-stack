@@ -30,34 +30,54 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// DeploymentPodUnavailable inspects the pods owned by a Deployment. A missing
-// Deployment, or one that cannot be read, is reported as available: callers
-// check only the readiness of a Deployment that exists. unavailable is true when a pod is
-// not serving — either its Pod Ready condition is False, or it has no Ready
-// condition at all because it is still Pending/unschedulable — or when the
-// Deployment has no pods at all (scaled to zero or every replica removed), which
-// would otherwise read as 0/0 = healthy and never surface. The kubelet only adds
-// the Ready condition after the pod is bound to a node, so a Ready-only probe
-// silently misses an unschedulable pod (a real blind spot: all higher resources
-// can look healthy while no pod ever runs). notReadySince carries a
-// lastTransitionTime the caller can debounce on: the Ready condition's
-// transition for a not-ready pod, or the PodScheduled transition (falling back
-// to the pod creation time) for a pending one — so a quick rolling upgrade never
-// trips the window while a genuinely stuck pod does; it is zero for the no-pods
-// case, deferring to the caller's reason-level startup-grace timer. No container-reason allowlist is used — the reason
-// strings are kubelet/runtime implementation details and not an API contract, so
-// classification is deliberately time-based instead. cause is a short
-// human-readable hint for the event message only.
-func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string) (unavailable bool, cause string, notReadySince time.Time) {
+// PodUnavailability is one reason a Deployment or DaemonSet is not fully
+// serving: one of its pods that is not serving or, for a Deployment, the
+// absence of any pod.
+type PodUnavailability struct {
+	// Cause is a short human-readable hint for the event message only.
+	Cause string
+	// NodeName is the node the pod is assigned to. It is empty for a pod that
+	// has no node yet and for a Deployment without pods.
+	NodeName string
+	// Since is the lastTransitionTime the caller debounces on, so a quick
+	// rolling upgrade never trips the window while a genuinely stuck pod does:
+	// the Ready condition's transition for a pod the kubelet reports as not
+	// ready, or the PodScheduled transition for a pod the kubelet has not
+	// reported yet (see pendingCause). It is zero for a Deployment without
+	// pods, deferring to the caller's reason-level startup-grace timer.
+	Since time.Time
+	// AwaitingNode is true for a pod that has no node yet, typically because no
+	// node has room for it and one is being provisioned. Callers give such a
+	// pod a longer startup grace than one that is already on a node.
+	AwaitingNode bool
+}
+
+// DeploymentPodsUnavailable inspects the pods owned by a Deployment and returns
+// every pod that is not serving: its Pod Ready condition is False, or it has no
+// Ready condition at all because it is still Pending, typically unschedulable
+// while it waits for a node. A Deployment with no pods at all (scaled to zero
+// or every replica removed), which would otherwise read as 0/0 = healthy and
+// never surface, yields a single entry. A missing Deployment, or one that
+// cannot be read, yields nothing: callers check only the readiness of a
+// Deployment that exists. The kubelet only adds the Ready condition after the
+// pod is bound to a node, so a Ready-only probe silently misses an
+// unschedulable pod (a real blind spot: all higher resources can look healthy
+// while no pod ever runs). Every unavailable pod is returned, not just the
+// first, because the caller's startup grace differs per pod: a pod still
+// waiting for a node must not hide another one that is failing on its node.
+// No container-reason allowlist is used — the reason strings are
+// kubelet/runtime implementation details and not an API contract, so
+// classification is deliberately time-based instead.
+func DeploymentPodsUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string) []PodUnavailability {
 	dep, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return false, "", time.Time{} // missing, or a transient API error — nothing to emit
+		return nil // missing, or a transient API error — nothing to emit
 	}
 	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(dep.Spec.Selector),
 	})
 	if err != nil {
-		return false, "", time.Time{}
+		return nil
 	}
 	// A Deployment with no pods at all cannot serve.
 	if len(pods.Items) == 0 {
@@ -65,68 +85,69 @@ func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, name
 		if dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 {
 			cause = "Deployment is scaled to zero replicas"
 		}
-		return true, cause, time.Time{}
+		return []PodUnavailability{{Cause: cause}}
 	}
+	var unavailable []PodUnavailability
 	for i := range pods.Items {
-		p := &pods.Items[i]
-		if p.DeletionTimestamp != nil {
-			continue // being deleted during a rollout — not an anomaly
-		}
-		if ready := PodReadyCondition(p); ready != nil {
-			if ready.Status == corev1.ConditionFalse {
-				return true, PodNotReadyCause(p, *ready), ready.LastTransitionTime.Time
-			}
-			continue // Ready=True — this pod is serving
-		}
-		// No Ready condition: the kubelet has not taken over, so the pod is
-		// still Pending (typically unschedulable). This is the case a
-		// Ready-only probe would silently miss.
-		if p.Status.Phase == corev1.PodPending {
-			since, hint := pendingCause(p)
-			return true, hint, since
+		if u, ok := podUnavailability(&pods.Items[i]); ok {
+			unavailable = append(unavailable, u)
 		}
 	}
-	return false, "", time.Time{}
+	return unavailable
 }
 
-// DaemonSetPodUnavailable probes a DaemonSet the same way
-// DeploymentPodUnavailable probes a Deployment, but per node: it reports the
-// first DaemonSet pod that is not Ready (or still Pending), together with the
-// node it runs on. Pods on nodes for which skipNode returns true are ignored,
-// so simulated nodes that can never run the DaemonSet do not flag it. A
-// DaemonSet with no pods is not flagged: it may legitimately have no eligible
-// node. A missing DaemonSet, or a transient API error, reports nothing.
-func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode func(string) bool) (unavailable bool, cause, nodeName string, notReadySince time.Time) {
+// DaemonSetPodsUnavailable probes a DaemonSet the same way
+// DeploymentPodsUnavailable probes a Deployment, but per node: it returns every
+// DaemonSet pod that is not Ready (or still Pending), each with the node it
+// runs on. Pods on nodes for which skipNode returns true are ignored, so
+// simulated nodes that can never run the DaemonSet do not flag it. A DaemonSet
+// with no pods is not flagged: it may legitimately have no eligible node. A
+// missing DaemonSet, or a transient API error, yields nothing.
+func DaemonSetPodsUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode func(string) bool) []PodUnavailability {
 	ds, err := cs.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return false, "", "", time.Time{}
+		return nil
 	}
 	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(ds.Spec.Selector),
 	})
 	if err != nil {
-		return false, "", "", time.Time{}
+		return nil
 	}
+	var unavailable []PodUnavailability
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		if p.DeletionTimestamp != nil {
-			continue
-		}
 		if skipNode != nil && p.Spec.NodeName != "" && skipNode(p.Spec.NodeName) {
 			continue
 		}
-		if ready := PodReadyCondition(p); ready != nil {
-			if ready.Status == corev1.ConditionFalse {
-				return true, PodNotReadyCause(p, *ready), p.Spec.NodeName, ready.LastTransitionTime.Time
-			}
-			continue
-		}
-		if p.Status.Phase == corev1.PodPending {
-			since, hint := pendingCause(p)
-			return true, hint, p.Spec.NodeName, since
+		if u, ok := podUnavailability(p); ok {
+			unavailable = append(unavailable, u)
 		}
 	}
-	return false, "", "", time.Time{}
+	return unavailable
+}
+
+// podUnavailability reports whether a pod is not serving and, if so, why: its
+// Ready condition is False, or it is still Pending without one. A pod being
+// deleted during a rollout is not an anomaly and is not reported.
+func podUnavailability(p *corev1.Pod) (PodUnavailability, bool) {
+	if p.DeletionTimestamp != nil {
+		return PodUnavailability{}, false
+	}
+	if ready := PodReadyCondition(p); ready != nil {
+		if ready.Status != corev1.ConditionFalse {
+			return PodUnavailability{}, false // this pod is serving
+		}
+		return PodUnavailability{Cause: PodNotReadyCause(p, *ready), NodeName: p.Spec.NodeName, Since: ready.LastTransitionTime.Time}, true
+	}
+	// No Ready condition: the kubelet has not taken over, so the pod is still
+	// Pending, typically unschedulable. This is the case a Ready-only probe
+	// would silently miss.
+	if p.Status.Phase != corev1.PodPending {
+		return PodUnavailability{}, false
+	}
+	since, cause := pendingCause(p)
+	return PodUnavailability{Cause: cause, NodeName: p.Spec.NodeName, Since: since, AwaitingNode: p.Spec.NodeName == ""}, true
 }
 
 // PodReadyCondition returns the pod's Ready condition, or nil when it is absent
@@ -141,27 +162,37 @@ func PodReadyCondition(p *corev1.Pod) *corev1.PodCondition {
 }
 
 // pendingCause renders the debounce anchor and a short hint for a Pending pod
-// that has no Ready condition yet. It prefers the PodScheduled condition (which
-// carries the "Unschedulable" reason and its lastTransitionTime), falling back
-// to the pod creation time.
+// that has no Ready condition yet, from its PodScheduled condition. A pod with
+// no node is timed from when the scheduler first found it unschedulable (the
+// condition is False and carries the "Unschedulable" reason and message). A pod
+// already on a node, which the kubelet has not reported yet, is timed from when
+// it got the node rather than from its creation, which may predate a long wait
+// for a node. Both fall back to the pod creation time.
 func pendingCause(p *corev1.Pod) (time.Time, string) {
+	since, cause := p.CreationTimestamp.Time, "pod pending"
 	for i := range p.Status.Conditions {
 		c := &p.Status.Conditions[i]
-		if c.Type != corev1.PodScheduled || c.Status != corev1.ConditionFalse {
+		if c.Type != corev1.PodScheduled {
 			continue
 		}
-		switch {
-		case c.Reason != "" && c.Message != "":
-			return c.LastTransitionTime.Time, fmt.Sprintf("%s: %s", c.Reason, c.Message)
-		case c.Message != "":
-			return c.LastTransitionTime.Time, c.Message
-		case c.Reason != "":
-			return c.LastTransitionTime.Time, c.Reason
-		default:
-			return c.LastTransitionTime.Time, "pod unschedulable"
+		if !c.LastTransitionTime.IsZero() {
+			since = c.LastTransitionTime.Time
 		}
+		if c.Status == corev1.ConditionFalse {
+			switch {
+			case c.Reason != "" && c.Message != "":
+				cause = fmt.Sprintf("%s: %s", c.Reason, c.Message)
+			case c.Message != "":
+				cause = c.Message
+			case c.Reason != "":
+				cause = c.Reason
+			default:
+				cause = "pod unschedulable"
+			}
+		}
+		break
 	}
-	return p.CreationTimestamp.Time, "pod pending"
+	return since, cause
 }
 
 // PodNotReadyCause renders a short, human-readable hint for a pod whose Ready

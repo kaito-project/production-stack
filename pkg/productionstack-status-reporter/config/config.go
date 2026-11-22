@@ -135,7 +135,9 @@ type Config struct {
 	// backing resource (or condition transition) is younger than this window
 	// (object-age gating) or, for findings without a timestamp, until the
 	// problem has persisted this long (debounce). Findings may override the
-	// window, and terminal failures bypass it. Set to 0 to disable.
+	// window, a pod that has no node yet is withheld for at least
+	// evaluator.NodeProvisioningGracePeriod, and terminal failures bypass it.
+	// Set to 0 to disable.
 	StartupGracePeriod time.Duration
 }
 

@@ -92,7 +92,7 @@ func main() {
 	cfg := config.DefaultConfig()
 	flag.IntVar(&resyncSeconds, "resync-seconds", int(cfg.ResyncInterval/time.Second), "How often every reason is re-evaluated.")
 	flag.IntVar(&startupGraceSeconds, "startup-grace-seconds", int(cfg.StartupGracePeriod/time.Second),
-		"Window during which transient startup states are not surfaced as Warning events (0 disables).")
+		"Window during which transient startup states are not surfaced as Warning events (0 disables it); a pod still waiting for a node is withheld for at least 5 minutes.")
 	flag.IntVar(&eventRefreshSeconds, "event-refresh-seconds", int(cfg.EventRefreshInterval/time.Second),
 		"Minimum interval between two writes of the same active Event; must be below 1800.")
 

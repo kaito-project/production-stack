@@ -50,13 +50,15 @@ func (e *Evaluator) Name() string { return "cluster" }
 // component that exists is checked: the deploying party guarantees that every
 // component it installs exists, so a missing Deployment or DaemonSet is not
 // reported, which also keeps a component that is not installed on this cluster
-// from being flagged. It never returns an error for individual probe failures —
-// a probe that cannot be evaluated is treated as "unknown" (not emitted) so a
-// transient API hiccup does not flap the event stream.
+// from being flagged. Every unavailable pod is a finding of its own, also when
+// several Deployments share a reason, so a pod still waiting for a node never
+// hides another that is failing: the emitter writes one Event per namespace and
+// reason as soon as any of them clears its startup grace. It never returns an
+// error for individual probe failures — a probe that cannot be evaluated is
+// treated as "unknown" (not emitted) so a transient API hiccup does not flap
+// the event stream.
 func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 	var findings []evaluator.Finding
-	// active deduplicates findings so each reason is reported at most once.
-	active := map[reason.Reason]bool{}
 
 	// Deployment-readiness based cluster reasons.
 	type depReason struct {
@@ -78,8 +80,7 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 	// Deployments exist depends on the per-namespace auth.mode the gateway-auth
 	// subcharts were installed for: apikey-authz and apikey-operator
 	// (apikey/hybrid) and/or azure-authz (azure/hybrid). They share this one
-	// reason; an absent one is not reported, and the active-map dedup below
-	// reports the shared reason at most once.
+	// reason; an absent one is not reported.
 	if cfg.GatewayAuthDeployment != "" {
 		checks = append(checks, depReason{
 			reason.ClusterGatewayAuthNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthDeployment, "apikey-authz ext_authz",
@@ -103,63 +104,54 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 		})
 	}
 	for _, chk := range checks {
-		if active[chk.r] {
-			continue // one finding per reason is enough
-		}
-		// A missing Deployment is not reported (see Evaluate).
-		notReady, cause, notReadySince := kube.DeploymentPodUnavailable(ctx, e.clientset, chk.namespace, chk.name)
-		if notReady {
-			// A pod's Ready condition is False, or the Deployment is scaled to
-			// zero. Debounce on how long it has been not-ready (ResourceCreatedAt
-			// = Ready lastTransitionTime): a rolling upgrade recovers within the
-			// grace window and stays silent, while a genuinely stuck pod surfaces
-			// once it persists past the window.
-			active[chk.r] = true
+		// A missing Deployment is not reported (see Evaluate). Debounce on how
+		// long each pod has been unavailable (ResourceCreatedAt): a rolling
+		// upgrade recovers within the grace window and stays silent, while a
+		// genuinely stuck pod surfaces once it persists past the window.
+		for _, u := range kube.DeploymentPodsUnavailable(ctx, e.clientset, chk.namespace, chk.name) {
 			findings = append(findings, evaluator.Finding{
 				Reason:            chk.r,
 				Object:            evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: chk.namespace},
-				Message:           fmt.Sprintf("%s pod in %s/%s is not ready: %s.", chk.component, chk.namespace, chk.name, cause),
+				Message:           fmt.Sprintf("%s pod in %s/%s is not ready: %s.", chk.component, chk.namespace, chk.name, u.Cause),
 				GroupKey:          "cluster/" + chk.namespace,
-				ResourceCreatedAt: notReadySince,
+				ResourceCreatedAt: u.Since,
+				AwaitingNode:      u.AwaitingNode,
 			})
 		}
 	}
 
-	if f, ok := e.localCSINodeFinding(ctx); ok && !active[f.Reason] {
-		findings = append(findings, f)
-	}
-
-	return findings, nil
+	return append(findings, e.localCSINodeFindings(ctx)...), nil
 }
 
 // fakeNodeLabel is stamped by gpu-node-mocker on every simulated Node. Such
 // nodes have no kubelet, so the local CSI node DaemonSet can never run there.
 const fakeNodeLabel = "kaito.sh/fake-node"
 
-// localCSINodeFinding probes the local CSI driver node DaemonSet: any of its
+// localCSINodeFindings probes the local CSI driver node DaemonSet: each of its
 // pods that is not Ready flags clusterLocalCSIDriverNotReady, except pods on
 // gpu-node-mocker nodes. A missing DaemonSet is not reported (see Evaluate).
-func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding, bool) {
+func (e *Evaluator) localCSINodeFindings(ctx context.Context) []evaluator.Finding {
 	ref := e.cfg.LocalCSIDriver
 	if ref.Namespace == "" || ref.NodeDaemonSet == "" {
-		return evaluator.Finding{}, false
+		return nil
 	}
 	fakeNodes, err := e.fakeNodes(ctx)
 	if err != nil {
-		return evaluator.Finding{}, false // unknown this pass
+		return nil // unknown this pass
 	}
-	notReady, cause, node, notReadySince := kube.DaemonSetPodUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet,
-		func(name string) bool { return fakeNodes[name] })
-	if !notReady {
-		return evaluator.Finding{}, false
+	var findings []evaluator.Finding
+	for _, u := range kube.DaemonSetPodsUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet,
+		func(name string) bool { return fakeNodes[name] }) {
+		findings = append(findings, evaluator.Finding{
+			Reason:            reason.ClusterLocalCSIDriverNotReady,
+			Object:            evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: ref.Namespace},
+			Message:           fmt.Sprintf("local CSI driver node pod of DaemonSet %s/%s on Node %s is not ready: %s.", ref.Namespace, ref.NodeDaemonSet, u.NodeName, u.Cause),
+			GroupKey:          "cluster/" + ref.Namespace,
+			ResourceCreatedAt: u.Since,
+			AwaitingNode:      u.AwaitingNode,
+		})
 	}
-	return evaluator.Finding{
-		Reason:            reason.ClusterLocalCSIDriverNotReady,
-		Object:            evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: ref.Namespace},
-		Message:           fmt.Sprintf("local CSI driver node pod of DaemonSet %s/%s on Node %s is not ready: %s.", ref.Namespace, ref.NodeDaemonSet, node, cause),
-		GroupKey:          "cluster/" + ref.Namespace,
-		ResourceCreatedAt: notReadySince,
-	}, true
+	return findings
 }
 
 // fakeNodes returns the names of the Nodes created by gpu-node-mocker.

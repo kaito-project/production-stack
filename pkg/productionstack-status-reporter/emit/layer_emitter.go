@@ -50,6 +50,11 @@ func newStartupGate(clock func() time.Time, grace time.Duration) startupGate {
 // never withheld. now is the pass clock, and touched collects the observed
 // debounce keys so prune can drop the timers that were not.
 //
+// The window is the finding's GracePeriodOverride, or else the layer's global
+// grace. A finding about a pod that has no node yet (AwaitingNode) gets at
+// least NodeProvisioningGracePeriod, so the time an autoscaler takes to
+// provision a node is not reported.
+//
 // Scheme 2 (object-age gating): when the finding's backing resource creation
 // time is known, the warning is withheld only while the resource is still
 // inside its startup window; an old-but-broken resource surfaces immediately,
@@ -66,6 +71,9 @@ func (g *startupGate) withholdDuringStartup(f evaluator.Finding, now time.Time, 
 	grace := g.grace
 	if f.GracePeriodOverride > 0 {
 		grace = f.GracePeriodOverride
+	}
+	if f.AwaitingNode && grace < evaluator.NodeProvisioningGracePeriod {
+		grace = evaluator.NodeProvisioningGracePeriod
 	}
 	if grace <= 0 {
 		return false
@@ -96,9 +104,7 @@ func (g *startupGate) prune(touched map[string]bool) {
 // Emitter turns one reporting layer's Findings into events. It owns the layer's
 // startup-grace debounce state and clock across passes; the pass logger is
 // carried on the context. It is shared by every layer (cluster, modelharness,
-// modeldeployment, model-download): each layer's evaluator already yields at
-// most one finding per (subject, reason), so no per-layer aggregation strategy
-// is needed.
+// modeldeployment, model-download).
 type Emitter struct {
 	w     *writer
 	gate  startupGate
@@ -115,8 +121,12 @@ func NewEmitter(cs kubernetes.Interface, clock func() time.Time, grace, refreshI
 // per surviving finding. Each reason is an independent signal that must surface, so there is
 // no priority collapse — the absence of a Warning is the only "healthy" signal.
 // Findings that resolve to the same Event identity (eventName) within one pass
-// are collapsed to a single write (keeping the last, in first-seen order), so an
-// accidental duplicate never inflates the Event Count or flips its message.
+// are collapsed to a single write. An evaluator yields one such finding per
+// unavailable pod, each gated on its own, so the Event is written as soon as
+// any of them clears its startup grace: a pod still waiting for a node never
+// hides another that is failing. The first surviving finding, in evaluator
+// order, supplies the message, so the choice is deterministic and a duplicate
+// never inflates the Event Count.
 func (s *Emitter) Emit(ctx context.Context, findings []evaluator.Finding) {
 	logger := logr.FromContextOrDiscard(ctx)
 	now := s.gate.clock()
@@ -128,9 +138,10 @@ func (s *Emitter) Emit(ctx context.Context, findings []evaluator.Finding) {
 			continue
 		}
 		name := eventName(f)
-		if _, ok := byEvent[name]; !ok {
-			order = append(order, name)
+		if _, ok := byEvent[name]; ok {
+			continue
 		}
+		order = append(order, name)
 		byEvent[name] = f
 	}
 	s.gate.prune(touched)

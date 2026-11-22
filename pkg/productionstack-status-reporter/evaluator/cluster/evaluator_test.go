@@ -119,6 +119,35 @@ func TestGatewayAuthOperatorNotReady(t *testing.T) {
 	}
 }
 
+// Every Deployment that shares a reason is checked, so a keda-operator pod
+// still waiting for a node does not hide keda-operator-metrics-apiserver
+// failing on its node.
+func TestSharedReasonChecksEveryDeployment(t *testing.T) {
+	cfg := config.DefaultConfig()
+	waiting := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: cfg.KedaNamespace, Name: "keda-operator-new", Labels: map[string]string{"app": "keda-operator"}},
+		Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{
+			{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable"},
+		}},
+	}
+	objs := append(healthyCluster(cfg), waiting,
+		pod(cfg.KedaNamespace, "metrics-broken", "n0", map[string]string{"app": "keda-operator-metrics-apiserver"}, corev1.ConditionFalse))
+	findings, err := New(fake.NewSimpleClientset(objs...), cfg).Evaluate(context.Background())
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	var keda []evaluator.Finding
+	for _, f := range findings {
+		if f.Reason == reason.ClusterKedaNotReady {
+			keda = append(keda, f)
+		}
+	}
+	if len(keda) != 2 || !keda[0].AwaitingNode || keda[1].AwaitingNode ||
+		!strings.Contains(keda[1].Message, "keda-operator-metrics-apiserver") {
+		t.Fatalf("want keda-operator awaiting a node, then keda-operator-metrics-apiserver not ready, got %+v", keda)
+	}
+}
+
 func TestLocalCSIDriver(t *testing.T) {
 	cfg := config.DefaultConfig()
 	ns := cfg.LocalCSIDriver.Namespace

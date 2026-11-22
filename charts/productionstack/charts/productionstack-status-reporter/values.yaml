@@ -32,8 +32,9 @@ eventRefreshSeconds: 300
 # Window (seconds) during which transient startup states are not surfaced as
 # Warning events: findings are withheld while the backing resource is younger
 # than this window (or, for findings without a backing object, until the
-# problem has persisted this long). Some reasons use their own window, and
-# terminal KAITO failures bypass it. Set to 0 to disable.
+# problem has persisted this long). Some reasons use their own window, a pod
+# still waiting for a node is withheld for at least 5 minutes, and terminal
+# KAITO failures bypass it. Set to 0 to disable this window.
 startupGraceSeconds: 60
 
 leaderElection:
