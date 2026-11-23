@@ -96,14 +96,15 @@ func (e *Evaluator) evaluateInferenceSet(ctx context.Context, namespace string, 
 	}
 
 	// inferencesetEPPNotReady — EPP Deployment readiness.
-	if eppName, eppCreatedAt, msg := eppNotReady(ctx, e.clientset, namespace, name); msg != "" {
+	if eppName, u, notReady := eppNotReady(ctx, e.clientset, namespace, name); notReady {
 		findings = append(findings, evaluator.Finding{
 			Reason:            reason.InferencesetEPPNotReady,
 			Object:            obj,
-			Message:           fmt.Sprintf("InferenceSet %s/%s: EPP Deployment %s %s.", namespace, name, eppName, msg),
+			Message:           fmt.Sprintf("InferenceSet %s/%s: EPP Deployment %s not ready: %s.", namespace, name, eppName, u.Cause),
 			WorkloadNamespace: namespace,
 			GroupKey:          groupKey,
-			ResourceCreatedAt: eppCreatedAt,
+			ResourceCreatedAt: u.Since,
+			AwaitingNode:      u.AwaitingNode,
 		})
 	}
 
@@ -187,16 +188,13 @@ func inferenceSetReadyFinding(is *unstructured.Unstructured, obj evaluator.Invol
 // (the modeldeployment.eppName helper) and the InferenceSet name equals
 // the chart's deployment name, so it is derived directly rather than via a label
 // list (which could match more than one Deployment). It returns the Deployment
-// name, a debounce anchor for the startup grace gate (the pod's NotReady
-// transition; zero when the Deployment has no pods, e.g. it is scaled to zero, so
-// the emit falls back to the reason-level debounce), and a message predicate
-// when its pod is not ready or it has no pods. A missing EPP Deployment is not
-// reported: the deploying party guarantees it exists alongside its InferenceSet.
-func eppNotReady(ctx context.Context, cs kubernetes.Interface, namespace, name string) (string, time.Time, string) {
+// name and, when it is not ready, why: the unavailable pod, whose Since is the
+// debounce anchor for the startup grace gate (zero when the Deployment has no
+// pods, e.g. it is scaled to zero, so the emit falls back to the reason-level
+// debounce). A missing EPP Deployment is not reported: the deploying party
+// guarantees it exists alongside its InferenceSet.
+func eppNotReady(ctx context.Context, cs kubernetes.Interface, namespace, name string) (string, kube.PodUnavailability, bool) {
 	eppName := name + "-inferencepool-epp"
-	unavailable, cause, notReadySince := kube.DeploymentPodUnavailable(ctx, cs, namespace, eppName)
-	if !unavailable {
-		return eppName, time.Time{}, ""
-	}
-	return eppName, notReadySince, "not ready: " + cause
+	u, notReady := kube.DeploymentPodUnavailable(ctx, cs, namespace, eppName)
+	return eppName, u, notReady
 }

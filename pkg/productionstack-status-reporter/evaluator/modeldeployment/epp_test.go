@@ -37,11 +37,11 @@ func TestEPPNotReady(t *testing.T) {
 
 	// The deploying party guarantees the EPP Deployment exists alongside its
 	// InferenceSet, so a missing one is not reported.
-	if _, _, msg := eppNotReady(ctx, fake.NewSimpleClientset(), "team-a", "qwen"); msg != "" {
-		t.Errorf("a missing EPP Deployment must not be reported, got %q", msg)
+	if _, u, notReady := eppNotReady(ctx, fake.NewSimpleClientset(), "team-a", "qwen"); notReady {
+		t.Errorf("a missing EPP Deployment must not be reported, got %+v", u)
 	}
-	name, _, msg := eppNotReady(ctx, fake.NewSimpleClientset(epp), "team-a", "qwen")
-	if name != "qwen-inferencepool-epp" || msg != "not ready: Deployment is scaled to zero replicas" {
-		t.Errorf("an EPP Deployment scaled to zero must be reported, got %q %q", name, msg)
+	name, u, notReady := eppNotReady(ctx, fake.NewSimpleClientset(epp), "team-a", "qwen")
+	if name != "qwen-inferencepool-epp" || !notReady || u.Cause != "Deployment is scaled to zero replicas" {
+		t.Errorf("an EPP Deployment scaled to zero must be reported, got %q %+v", name, u)
 	}
 }

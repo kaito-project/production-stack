@@ -18,6 +18,7 @@ package emit
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +29,17 @@ import (
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/evaluator"
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/reason"
 )
+
+// An identity too long for an Event name is cut to 253 characters with a hash
+// suffix, so two identities that share the cut prefix still get different
+// names.
+func TestSanitizeEventNameBoundsLongIdentities(t *testing.T) {
+	prefix := "inferenceset/" + strings.Repeat("a", 300)
+	a, b := sanitizeEventName(prefix+"/x"), sanitizeEventName(prefix+"/y")
+	if len(a) != 253 || len(b) != 253 || a == b {
+		t.Fatalf("want two different 253-character names, got %q and %q", a, b)
+	}
+}
 
 // An active finding creates its Event once, is refreshed no more often than
 // the refresh interval, and is no longer written once it is not passed in

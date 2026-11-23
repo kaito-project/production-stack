@@ -50,6 +50,11 @@ func newStartupGate(clock func() time.Time, grace time.Duration) startupGate {
 // never withheld. now is the pass clock, and touched collects the observed
 // debounce keys so prune can drop the timers that were not.
 //
+// The window is the finding's GracePeriodOverride, or else the layer's global
+// grace. A finding about a pod that has no node yet (AwaitingNode) gets at
+// least NodeProvisioningGracePeriod, so the time an autoscaler takes to
+// provision a node is not reported.
+//
 // Scheme 2 (object-age gating): when the finding's backing resource creation
 // time is known, the warning is withheld only while the resource is still
 // inside its startup window; an old-but-broken resource surfaces immediately,
@@ -66,6 +71,9 @@ func (g *startupGate) withholdDuringStartup(f evaluator.Finding, now time.Time, 
 	grace := g.grace
 	if f.GracePeriodOverride > 0 {
 		grace = f.GracePeriodOverride
+	}
+	if f.AwaitingNode && grace < evaluator.NodeProvisioningGracePeriod {
+		grace = evaluator.NodeProvisioningGracePeriod
 	}
 	if grace <= 0 {
 		return false

@@ -28,9 +28,8 @@ package emit
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -105,7 +104,9 @@ func eventName(f evaluator.Finding) string {
 // sanitizeEventName maps an arbitrary identity string to a deterministic,
 // RFC 1123-valid Event name (lowercase [a-z0-9.-], bounded to 253 chars). Any
 // disallowed character (e.g. the '/' separators in a GroupKey) becomes '-'; an
-// over-long name is truncated and suffixed with a hash to keep it unique.
+// over-long name is truncated and suffixed with a hash of the identity to keep
+// it unique. The hash only needs to tell identities apart, so a
+// non-cryptographic one is enough.
 func sanitizeEventName(s string) string {
 	s = strings.ToLower(s)
 	var b strings.Builder
@@ -122,8 +123,9 @@ func sanitizeEventName(s string) string {
 		name = "event"
 	}
 	if len(name) > 253 {
-		sum := sha256.Sum256([]byte(s))
-		name = name[:253-17] + "-" + hex.EncodeToString(sum[:8])
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(s))
+		name = fmt.Sprintf("%s-%016x", name[:253-17], h.Sum64())
 	}
 	return name
 }

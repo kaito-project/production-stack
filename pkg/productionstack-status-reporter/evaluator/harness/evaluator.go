@@ -160,7 +160,7 @@ func (e *Evaluator) evaluateGatewayDataPlane(ctx context.Context, namespace, gwN
 	}
 	for i := range deps.Items {
 		dep := &deps.Items[i]
-		unavailable, cause, since := kube.DeploymentPodUnavailable(ctx, e.clientset, namespace, dep.Name)
+		u, unavailable := kube.DeploymentPodUnavailable(ctx, e.clientset, namespace, dep.Name)
 		if !unavailable {
 			continue
 		}
@@ -169,11 +169,12 @@ func (e *Evaluator) evaluateGatewayDataPlane(ctx context.Context, namespace, gwN
 			Object: obj,
 			Message: fmt.Sprintf(
 				"Namespace %s: Gateway %s is Programmed but its data-plane pod is not running (%s); check scheduling/quota/nodes.",
-				namespace, gwName, cause),
+				namespace, gwName, u.Cause),
 			WorkloadNamespace:   namespace,
 			GroupKey:            groupKey,
-			ResourceCreatedAt:   since,
+			ResourceCreatedAt:   u.Since,
 			GracePeriodOverride: gatewayProgrammingGracePeriod,
+			AwaitingNode:        u.AwaitingNode,
 		})
 	}
 }
