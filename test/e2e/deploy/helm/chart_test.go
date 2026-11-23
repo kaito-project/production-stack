@@ -17,6 +17,7 @@ limitations under the License.
 package helm
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -27,7 +28,10 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 )
@@ -979,4 +983,132 @@ func TestModelDeploymentHTTPRouteSetsNoErrorSource(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPriorityClassName pins the PriorityClass of the pods that share CPU nodes
+// with the namespace gateway; an empty value omits the field. See
+// charts/productionstack/README.md#pod-priority.
+func TestPriorityClassName(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	charts := filepath.Join("..", "..", "..", "..", "charts")
+	subcharts := filepath.Join(charts, "productionstack", "charts")
+	for _, tt := range []struct {
+		name  string
+		chart string
+		key   string
+		set   []string
+		// shadowPodKey also sets the class of the shadow pods the mocker creates.
+		shadowPodKey string
+	}{
+		{name: "epp", chart: filepath.Join(charts, "modeldeployment"), key: "epp.priorityClassName", set: []string{"model=test-model"}},
+		{name: "bbr", chart: filepath.Join(subcharts, "body-based-routing"), key: "bbr.priorityClassName"},
+		{name: "status-reporter", chart: filepath.Join(subcharts, "productionstack-status-reporter"), key: "priorityClassName"},
+		{name: "keda-kaito-scaler", chart: filepath.Join(subcharts, "keda-kaito-scaler"), key: "priorityClassName"},
+		{name: "gpu-node-mocker", chart: filepath.Join(charts, "gpu-node-mocker"), key: "priorityClassName",
+			shadowPodKey: "shadowPod.priorityClassName"},
+	} {
+		for _, want := range []string{"system-cluster-critical", ""} {
+			t.Run(tt.name+"/"+cmp.Or(want, "empty"), func(t *testing.T) {
+				args := []string{"release", tt.chart}
+				for _, value := range tt.set {
+					args = append(args, "--set", value)
+				}
+				if want == "" {
+					args = append(args, "--set", tt.key+"=")
+					if tt.shadowPodKey != "" {
+						args = append(args, "--set", tt.shadowPodKey+"=")
+					}
+				}
+				deployments := objectsOfKind[appsv1.Deployment](t, renderChart(t, args...), "Deployment")
+				if len(deployments) != 1 {
+					t.Fatalf("expected 1 Deployment, got %d", len(deployments))
+				}
+				pod := deployments[0].Spec.Template.Spec
+				if pod.PriorityClassName != want {
+					t.Errorf("priorityClassName = %q, want %q", pod.PriorityClassName, want)
+				}
+				if tt.shadowPodKey == "" {
+					return
+				}
+				var flags []string
+				for _, arg := range pod.Containers[0].Args {
+					if strings.HasPrefix(arg, "--shadow-pod-priority-class-name") {
+						flags = append(flags, arg)
+					}
+				}
+				var wantFlags []string
+				if want != "" {
+					wantFlags = []string{"--shadow-pod-priority-class-name=" + want}
+				}
+				if !slices.Equal(flags, wantFlags) {
+					t.Errorf("shadow pod class flags = %q, want %q", flags, wantFlags)
+				}
+			})
+		}
+	}
+}
+
+// TestBodyBasedRoutingPodDisruptionBudget pins BBR's PodDisruptionBudget.
+// Voluntary disruptions, such as Karpenter consolidation, must evict the BBR
+// replicas one at a time so one keeps serving ext_proc, and the budget does so
+// only if it selects the BBR pods in their namespace.
+func TestBodyBasedRoutingPodDisruptionBudget(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	chart := filepath.Join("..", "..", "..", "..", "charts", "productionstack", "charts", "body-based-routing")
+	docs := renderChart(t, "bbr", chart, "--namespace", "release-ns", "--set", "namespaceOverride=bbr-ns")
+	deployments := objectsOfKind[appsv1.Deployment](t, docs, "Deployment")
+	pdbs := objectsOfKind[policyv1.PodDisruptionBudget](t, docs, "PodDisruptionBudget")
+	if len(deployments) != 1 || len(pdbs) != 1 {
+		t.Fatalf("expected 1 Deployment and 1 PodDisruptionBudget, got %d and %d", len(deployments), len(pdbs))
+	}
+	bbr, pdb := deployments[0], pdbs[0]
+	if pdb.Spec.MinAvailable != nil || pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.String() != "1" {
+		t.Errorf("want maxUnavailable 1 and no minAvailable, got maxUnavailable=%v minAvailable=%v",
+			pdb.Spec.MaxUnavailable, pdb.Spec.MinAvailable)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		t.Fatalf("PodDisruptionBudget selector: %v", err)
+	}
+	if !selector.Matches(labels.Set(bbr.Spec.Template.Labels)) {
+		t.Errorf("PodDisruptionBudget selector %q does not select the BBR pods %v", selector, bbr.Spec.Template.Labels)
+	}
+	if pdb.Namespace != bbr.Namespace {
+		t.Errorf("PodDisruptionBudget namespace = %q, BBR runs in %q", pdb.Namespace, bbr.Namespace)
+	}
+}
+
+// renderChart runs helm template with args and returns the rendered documents.
+func renderChart(t *testing.T, args ...string) []string {
+	t.Helper()
+	output, err := exec.Command("helm", append([]string{"template"}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return strings.Split(string(output), "\n---")
+}
+
+// objectsOfKind decodes the rendered documents of one kind.
+func objectsOfKind[T any](t *testing.T, docs []string, kind string) []T {
+	t.Helper()
+	var objects []T
+	for _, doc := range docs {
+		var meta metav1.TypeMeta
+		if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {
+			t.Fatalf("decode rendered document: %v\n%s", err, doc)
+		}
+		if meta.Kind != kind {
+			continue
+		}
+		var obj T
+		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+			t.Fatalf("decode %s: %v\n%s", kind, err, doc)
+		}
+		objects = append(objects, obj)
+	}
+	return objects
 }

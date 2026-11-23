@@ -21,7 +21,11 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"github.com/kaito-project/production-stack/test/e2e/utils"
 )
+
+var _ = utils.FailSuiteOnPreemption()
 
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)

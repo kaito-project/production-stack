@@ -42,4 +42,8 @@ resources:
 # expected to pass any required tolerations (e.g. a CriticalAddonsOnly
 # toleration for nodes reserved for critical add-ons).
 tolerations: []
+
+# PriorityClass of the scaler pod; empty omits the field.
+# See charts/productionstack/README.md#pod-priority.
+priorityClassName: system-cluster-critical
   

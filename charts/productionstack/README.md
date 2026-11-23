@@ -190,6 +190,39 @@ supported keys:
 - Upstream `llm-gateway-apikey` chart sources:
   [`kaito-project/llm-gateway-auth/chart/llm-gateway-apikey/values.yaml`](https://github.com/kaito-project/llm-gateway-auth/blob/main/chart/llm-gateway-apikey/values.yaml)
 
+## Pod priority
+
+AKS App Routing runs each namespace gateway at `system-cluster-critical`,
+and the scheduler preempts only pods of strictly lower priority. When the
+CPU nodes are full, a new gateway therefore preempts pods that run at the
+default priority instead of waiting for a new node. The production-stack
+pods that share those nodes run at the same class by default, so the
+gateway waits for a node instead:
+
+| Chart | Value | Pods |
+| --- | --- | --- |
+| `body-based-routing` | `bbr.priorityClassName` | BBR |
+| `productionstack-status-reporter` | `priorityClassName` | status reporter |
+| `keda-kaito-scaler` | `priorityClassName` | scaler |
+| `gpu-node-mocker` (E2E and dev clusters) | `priorityClassName`, `shadowPod.priorityClassName` | mocker controller, shadow pods |
+| `modeldeployment` (a separate chart) | `epp.priorityClassName` | EPP |
+
+Each value is relative to its chart. Through this chart, nest it under the
+subchart's name, e.g. `body-based-routing.bbr.priorityClassName` (see
+[Override subchart values](#override-subchart-values)).
+
+- An empty value omits the field, so the pods get the cluster's default
+  priority (0 unless a PriorityClass is `globalDefault`). Use it where the
+  cluster restricts the built-in classes to `kube-system`.
+- The mocker controller runs at this class too: at the default priority it
+  would be the pod the EPP and shadow pods preempt.
+- A built-in class always preempts, so on a full node these pods also
+  preempt lower-priority pods, such as other workloads on the same nodes.
+  Model pods are not affected: they run on the GPU and CPU-inference node
+  pools, which KAITO taints.
+- `system-node-critical` pods, such as coredns, outrank these pods and can
+  still preempt them.
+
 ## Consume as a dependency of the kaito chart
 
 Add an entry to the parent chart's `Chart.yaml`:

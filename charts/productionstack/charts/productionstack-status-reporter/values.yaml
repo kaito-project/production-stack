@@ -121,3 +121,7 @@ podAntiAffinity: true
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# PriorityClass of the reporter pods; empty omits the field.
+# See charts/productionstack/README.md#pod-priority.
+priorityClassName: system-cluster-critical

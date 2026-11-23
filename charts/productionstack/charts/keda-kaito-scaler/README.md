@@ -135,6 +135,7 @@ Set `namespaceOverride: ""` to fall back to the standard Helm
 | `resources.requests.memory`| `256Mi`                                  | Controller container memory request.                                                                         |
 | `resources.limits.cpu`     | `2000m`                                  | Controller container CPU limit.                                                                              |
 | `resources.limits.memory`  | `512Mi`                                  | Controller container memory limit.                                                                           |
+| `priorityClassName`        | `system-cluster-critical`                | PriorityClass of the controller pod; empty omits the field. See [Pod priority](../../README.md#pod-priority). |
 
 ## Upgrade
 

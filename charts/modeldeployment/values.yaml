@@ -173,6 +173,9 @@ epp:
       memory: 256Mi
   # tolerations are applied to the EPP pod.
   tolerations: []
+  # priorityClassName of the EPP pod; empty omits the field.
+  # See charts/productionstack/README.md#pod-priority.
+  priorityClassName: system-cluster-critical
   # flowControl queues requests in the EPP while no replica exists; it is on automatically with minReplicas=0.
   flowControl:
     # enabled forces flow control on without scale to zero.
