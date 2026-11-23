@@ -56,7 +56,7 @@ func healthyDeployment(ns, name string) []runtime.Object {
 	return []runtime.Object{deployment(ns, name, labels), pod(ns, name+"-0", "n0", labels, corev1.ConditionTrue)}
 }
 
-// healthyCluster returns every component the default config probes, healthy.
+// healthyCluster returns every component the config probes, healthy.
 func healthyCluster(cfg config.Config) []runtime.Object {
 	var objs []runtime.Object
 	for _, d := range [][2]string{
@@ -68,8 +68,12 @@ func healthyCluster(cfg config.Config) []runtime.Object {
 		{cfg.KedaNamespace, "keda-operator-metrics-apiserver"},
 		{cfg.GatewayAuthNamespace, cfg.GatewayAuthDeployment},
 		{cfg.GatewayAuthNamespace, cfg.GatewayAuthOperatorDeployment},
+		{cfg.AzureAuthz.Namespace, cfg.AzureAuthz.Name},
 		{cfg.LocalCSIDriver.Namespace, cfg.LocalCSIDriver.ManagerDeployment},
 	} {
+		if d[1] == "" {
+			continue
+		}
 		objs = append(objs, healthyDeployment(d[0], d[1])...)
 	}
 	objs = append(objs, &appsv1.DaemonSet{
@@ -107,43 +111,28 @@ func TestMissingComponentsAreNotReported(t *testing.T) {
 	}
 }
 
-func TestGatewayAuthOperatorNotReady(t *testing.T) {
+// Each component has a reason of its own, including the KEDA and
+// llm-gateway-auth Deployments that once shared one, so the reason alone names
+// the component that is not ready.
+func TestEachComponentHasItsOwnReason(t *testing.T) {
 	cfg := config.DefaultConfig()
-	objs := healthyCluster(cfg)
-	labels := map[string]string{"app": cfg.GatewayAuthOperatorDeployment}
-	objs = append(objs, pod(cfg.GatewayAuthNamespace, "operator-broken", "n0", labels, corev1.ConditionFalse))
-	got := evaluate(t, cfg, objs...)
-	f, ok := got[reason.ClusterGatewayAuthNotReady]
-	if !ok || !strings.Contains(f.Message, "apikey-operator") {
-		t.Fatalf("want clusterGatewayAuthNotReady naming apikey-operator, got %v", got)
-	}
-}
-
-// Components sharing a reason are reported once. A keda-operator pod still
-// waiting for a node gives way to keda-operator-metrics-apiserver failing on
-// its node, so the wait does not hide the failure.
-func TestSharedReasonPrefersComponentOnNode(t *testing.T) {
-	cfg := config.DefaultConfig()
-	waiting := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: cfg.KedaNamespace, Name: "keda-operator-new", Labels: map[string]string{"app": "keda-operator"}},
-		Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{
-			{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable"},
-		}},
-	}
-	objs := append(healthyCluster(cfg), waiting,
-		pod(cfg.KedaNamespace, "metrics-broken", "n0", map[string]string{"app": "keda-operator-metrics-apiserver"}, corev1.ConditionFalse))
-	findings, err := New(fake.NewSimpleClientset(objs...), cfg).Evaluate(context.Background())
-	if err != nil {
-		t.Fatalf("evaluate: %v", err)
-	}
-	var keda []evaluator.Finding
-	for _, f := range findings {
-		if f.Reason == reason.ClusterKedaNotReady {
-			keda = append(keda, f)
+	cfg.AzureAuthz = config.AzureAuthzRef{Name: "azure-authz", Namespace: "kube-system"}
+	for _, tc := range []struct {
+		namespace, deployment string
+		want                  reason.Reason
+	}{
+		{cfg.KedaNamespace, "keda-operator", reason.ClusterKedaOperatorNotReady},
+		{cfg.KedaNamespace, "keda-operator-metrics-apiserver", reason.ClusterKedaMetricsAPIServerNotReady},
+		{cfg.GatewayAuthNamespace, cfg.GatewayAuthDeployment, reason.ClusterAPIKeyAuthzNotReady},
+		{cfg.GatewayAuthNamespace, cfg.GatewayAuthOperatorDeployment, reason.ClusterAPIKeyOperatorNotReady},
+		{cfg.AzureAuthz.Namespace, cfg.AzureAuthz.Name, reason.ClusterAzureAuthzNotReady},
+	} {
+		labels := map[string]string{"app": tc.deployment}
+		objs := append(healthyCluster(cfg), pod(tc.namespace, tc.deployment+"-broken", "n0", labels, corev1.ConditionFalse))
+		got := evaluate(t, cfg, objs...)
+		if f, ok := got[tc.want]; len(got) != 1 || !ok || !strings.Contains(f.Message, tc.namespace+"/"+tc.deployment+" ") {
+			t.Errorf("%s not ready: want only %s naming it, got %v", tc.deployment, tc.want, got)
 		}
-	}
-	if len(keda) != 1 || keda[0].AwaitingNode || !strings.Contains(keda[0].Message, "keda-operator-metrics-apiserver") {
-		t.Fatalf("want one clusterKedaNotReady naming keda-operator-metrics-apiserver, got %+v", keda)
 	}
 }
 
@@ -161,7 +150,7 @@ func TestLocalCSIDriver(t *testing.T) {
 			}
 			objs = append(objs, o)
 		}
-		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]; ok {
+		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIManagerNotReady]; ok {
 			t.Fatalf("a missing manager must not be reported, got %+v", f)
 		}
 	})
@@ -178,9 +167,9 @@ func TestLocalCSIDriver(t *testing.T) {
 			}
 			objs = append(objs, o)
 		}
-		f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]
+		f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIManagerNotReady]
 		if !ok || !strings.Contains(f.Message, "scaled to zero") {
-			t.Fatalf("a manager scaled to zero must flag clusterLocalCSIDriverNotReady, got %+v", f)
+			t.Fatalf("a manager scaled to zero must flag clusterLocalCSIManagerNotReady, got %+v", f)
 		}
 	})
 	t.Run("node DaemonSet missing", func(t *testing.T) {
@@ -191,28 +180,32 @@ func TestLocalCSIDriver(t *testing.T) {
 			}
 			objs = append(objs, o)
 		}
-		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]; ok {
+		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSINodeNotReady]; ok {
 			t.Fatalf("a missing node DaemonSet must not be reported, got %+v", f)
 		}
 	})
 	t.Run("node pod not ready on a real node", func(t *testing.T) {
 		objs := append(healthyCluster(cfg), pod(ns, "csi-node-a", "aks-0", nodeLabels, corev1.ConditionFalse))
-		f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]
+		f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSINodeNotReady]
 		if !ok || !strings.Contains(f.Message, "aks-0") {
-			t.Fatalf("not-ready node pod must flag clusterLocalCSIDriverNotReady naming the node, got %+v", f)
+			t.Fatalf("not-ready node pod must flag clusterLocalCSINodeNotReady naming the node, got %+v", f)
 		}
 	})
 	t.Run("node pod not ready on a gpu-node-mocker node is ignored", func(t *testing.T) {
 		objs := append(healthyCluster(cfg), fakeNode, pod(ns, "csi-node-f", "fake-gpu", nodeLabels, corev1.ConditionFalse))
-		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSIDriverNotReady]; ok {
+		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSINodeNotReady]; ok {
 			t.Fatalf("pod on fake node must be ignored, got %+v", f)
 		}
 	})
 	t.Run("disabled when namespace is empty", func(t *testing.T) {
 		c := cfg
 		c.LocalCSIDriver.Namespace = ""
-		if _, ok := evaluate(t, c)[reason.ClusterLocalCSIDriverNotReady]; ok {
-			t.Fatalf("check must be skipped when disabled")
+		got := evaluate(t, c)
+		if _, ok := got[reason.ClusterLocalCSIManagerNotReady]; ok {
+			t.Fatalf("manager check must be skipped when disabled")
+		}
+		if _, ok := got[reason.ClusterLocalCSINodeNotReady]; ok {
+			t.Fatalf("node check must be skipped when disabled")
 		}
 	})
 }

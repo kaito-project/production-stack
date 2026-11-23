@@ -46,32 +46,16 @@ func New(cs kubernetes.Interface, cfg config.Config) *Evaluator {
 // Name identifies the evaluator for logging.
 func (e *Evaluator) Name() string { return "cluster" }
 
-// Evaluate probes every cluster-layer reason (§1.2). Only the readiness of a
-// component that exists is checked: the deploying party guarantees that every
-// component it installs exists, so a missing Deployment or DaemonSet is not
-// reported, which also keeps a component that is not installed on this cluster
-// from being flagged. It never returns an error for individual probe failures —
-// a probe that cannot be evaluated is treated as "unknown" (not emitted) so a
-// transient API hiccup does not flap the event stream.
+// Evaluate probes every cluster-layer reason (§1.2), one per component. Only
+// the readiness of a component that exists is checked: the deploying party
+// guarantees that every component it installs exists, so a missing Deployment
+// or DaemonSet is not reported, which also keeps a component that is not
+// installed on this cluster from being flagged. It never returns an error for
+// individual probe failures — a probe that cannot be evaluated is treated as
+// "unknown" (not emitted) so a transient API hiccup does not flap the event
+// stream.
 func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 	var findings []evaluator.Finding
-	// reported indexes the finding of each reason, so each reason is reported
-	// at most once.
-	reported := map[reason.Reason]int{}
-	add := func(f evaluator.Finding) {
-		i, ok := reported[f.Reason]
-		switch {
-		case !ok:
-			reported[f.Reason] = len(findings)
-			findings = append(findings, f)
-		case findings[i].AwaitingNode && !f.AwaitingNode:
-			// Several components share some reasons. A pod still waiting for a
-			// node, whose startup grace is longer, gives way to a component
-			// that is not, so the wait never hides one that is failing;
-			// otherwise the first component checked is reported.
-			findings[i] = f
-		}
-	}
 
 	// Deployment-readiness based cluster reasons.
 	type depReason struct {
@@ -86,35 +70,33 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 		{reason.ClusterBBRNotReady, cfg.BBRNamespace, cfg.BBRDeployment, "body-based-routing"},
 		{reason.ClusterKaitoControllerNotReady, cfg.KaitoNamespace, cfg.KaitoDeployment, "KAITO workspace controller"},
 		{reason.ClusterKedaKaitoScalerNotReady, cfg.KedaScalerNamespace, cfg.KedaScalerDeployment, "keda-kaito-scaler"},
-		{reason.ClusterKedaNotReady, cfg.KedaNamespace, "keda-operator", "KEDA control-plane"},
-		{reason.ClusterKedaNotReady, cfg.KedaNamespace, "keda-operator-metrics-apiserver", "KEDA control-plane"},
+		{reason.ClusterKedaOperatorNotReady, cfg.KedaNamespace, "keda-operator", "KEDA control-plane"},
+		{reason.ClusterKedaMetricsAPIServerNotReady, cfg.KedaNamespace, "keda-operator-metrics-apiserver", "KEDA control-plane"},
 	}
-	// clusterGatewayAuthNotReady — the llm-gateway-auth components. Which
-	// Deployments exist depends on the per-namespace auth.mode the gateway-auth
-	// subcharts were installed for: apikey-authz and apikey-operator
-	// (apikey/hybrid) and/or azure-authz (azure/hybrid). They share this one
-	// reason; an absent one is not reported, and add reports the shared reason
-	// at most once.
+	// The llm-gateway-auth components. Which Deployments exist depends on the
+	// per-namespace auth.mode the gateway-auth subcharts were installed for:
+	// apikey-authz and apikey-operator (apikey/hybrid) and/or azure-authz
+	// (azure/hybrid). An absent one is not reported.
 	if cfg.GatewayAuthDeployment != "" {
 		checks = append(checks, depReason{
-			reason.ClusterGatewayAuthNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthDeployment, "apikey-authz ext_authz",
+			reason.ClusterAPIKeyAuthzNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthDeployment, "apikey-authz ext_authz",
 		})
 	}
 	if cfg.GatewayAuthOperatorDeployment != "" {
 		checks = append(checks, depReason{
-			reason.ClusterGatewayAuthNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthOperatorDeployment, "apikey-operator",
+			reason.ClusterAPIKeyOperatorNotReady, cfg.GatewayAuthNamespace, cfg.GatewayAuthOperatorDeployment, "apikey-operator",
 		})
 	}
 	if cfg.AzureAuthz.Name != "" {
 		checks = append(checks, depReason{
-			reason.ClusterGatewayAuthNotReady, cfg.AzureAuthz.Namespace, cfg.AzureAuthz.Name, "azure-authz ext_authz",
+			reason.ClusterAzureAuthzNotReady, cfg.AzureAuthz.Namespace, cfg.AzureAuthz.Name, "azure-authz ext_authz",
 		})
 	}
-	// clusterLocalCSIDriverNotReady — the manager half of the local CSI driver;
-	// the node DaemonSet half is probed below.
+	// The manager half of the local CSI driver; the node DaemonSet half is
+	// probed below.
 	if cfg.LocalCSIDriver.Namespace != "" && cfg.LocalCSIDriver.ManagerDeployment != "" {
 		checks = append(checks, depReason{
-			reason.ClusterLocalCSIDriverNotReady, cfg.LocalCSIDriver.Namespace, cfg.LocalCSIDriver.ManagerDeployment, "local CSI driver manager",
+			reason.ClusterLocalCSIManagerNotReady, cfg.LocalCSIDriver.Namespace, cfg.LocalCSIDriver.ManagerDeployment, "local CSI driver manager",
 		})
 	}
 	for _, chk := range checks {
@@ -125,7 +107,7 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 			// unavailable (ResourceCreatedAt): a rolling upgrade recovers within
 			// the grace window and stays silent, while a genuinely stuck pod
 			// surfaces once it persists past the window.
-			add(evaluator.Finding{
+			findings = append(findings, evaluator.Finding{
 				Reason:            chk.r,
 				Object:            evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: chk.namespace},
 				Message:           fmt.Sprintf("%s pod in %s/%s is not ready: %s.", chk.component, chk.namespace, chk.name, u.Cause),
@@ -137,7 +119,7 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 	}
 
 	if f, ok := e.localCSINodeFinding(ctx); ok {
-		add(f)
+		findings = append(findings, f)
 	}
 
 	return findings, nil
@@ -148,7 +130,7 @@ func (e *Evaluator) Evaluate(ctx context.Context) ([]evaluator.Finding, error) {
 const fakeNodeLabel = "kaito.sh/fake-node"
 
 // localCSINodeFinding probes the local CSI driver node DaemonSet: any of its
-// pods that is not Ready flags clusterLocalCSIDriverNotReady, except pods on
+// pods that is not Ready flags clusterLocalCSINodeNotReady, except pods on
 // gpu-node-mocker nodes. A missing DaemonSet is not reported (see Evaluate).
 func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding, bool) {
 	ref := e.cfg.LocalCSIDriver
@@ -165,7 +147,7 @@ func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding,
 		return evaluator.Finding{}, false
 	}
 	return evaluator.Finding{
-		Reason:            reason.ClusterLocalCSIDriverNotReady,
+		Reason:            reason.ClusterLocalCSINodeNotReady,
 		Object:            evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: ref.Namespace},
 		Message:           fmt.Sprintf("local CSI driver node pod of DaemonSet %s/%s on Node %s is not ready: %s.", ref.Namespace, ref.NodeDaemonSet, u.NodeName, u.Cause),
 		GroupKey:          "cluster/" + ref.Namespace,

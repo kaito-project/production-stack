@@ -54,35 +54,19 @@ func deploymentPodUnavailable(t *testing.T, pods ...runtime.Object) (PodUnavaila
 	return DeploymentPodUnavailable(context.Background(), fake.NewSimpleClientset(append(pods, dep)...), "ns", "epp")
 }
 
-// A pod on a node is reported before a pod still waiting for a node, whose
-// startup grace is longer, so the wait cannot hide a pod that is failing.
-// Between pods of the same kind, the one unavailable for longer is reported.
+// A pod failing on its node is reported before a pod still waiting for a node,
+// even one listed first and waiting for longer: the wait has the longer
+// startup grace, so it must not hide the failure.
 func TestDeploymentPodUnavailablePrefersPodOnNode(t *testing.T) {
-	serving := testPod("serving", "n0", corev1.PodRunning, condition(corev1.PodReady, corev1.ConditionTrue, "", "", created))
-	waiting := func(name string, since time.Duration) *corev1.Pod {
-		return testPod(name, "", corev1.PodPending,
-			condition(corev1.PodScheduled, corev1.ConditionFalse, "Unschedulable", "0/3 nodes are available: 3 Insufficient cpu.", created.Add(since)))
-	}
-	notReady := func(name, node string, since time.Duration) *corev1.Pod {
-		return testPod(name, node, corev1.PodRunning,
-			condition(corev1.PodReady, corev1.ConditionFalse, "ContainersNotReady", "", created.Add(since)))
-	}
-
-	got, ok := deploymentPodUnavailable(t, serving, waiting("waiting", time.Second),
-		notReady("crashing-new", "n2", 2*time.Minute), notReady("crashing-old", "n1", time.Minute))
+	got, ok := deploymentPodUnavailable(t,
+		testPod("a-waiting", "", corev1.PodPending,
+			condition(corev1.PodScheduled, corev1.ConditionFalse, "Unschedulable", "0/3 nodes are available: 3 Insufficient cpu.", created)),
+		testPod("b-crashing", "n1", corev1.PodRunning,
+			condition(corev1.PodReady, corev1.ConditionFalse, "ContainersNotReady", "", created.Add(time.Minute))),
+		testPod("c-serving", "n0", corev1.PodRunning, condition(corev1.PodReady, corev1.ConditionTrue, "", "", created)))
 	want := PodUnavailability{Cause: "ContainersNotReady", NodeName: "n1", Since: created.Add(time.Minute)}
 	if !ok || got != want {
-		t.Errorf("with pods on a node: got %+v, want %+v", got, want)
-	}
-
-	got, ok = deploymentPodUnavailable(t, serving, waiting("waiting-new", time.Minute), waiting("waiting-old", time.Second))
-	want = PodUnavailability{
-		Cause:        "Unschedulable: 0/3 nodes are available: 3 Insufficient cpu.",
-		Since:        created.Add(time.Second),
-		AwaitingNode: true,
-	}
-	if !ok || got != want {
-		t.Errorf("with only pods waiting for a node: got %+v, want %+v", got, want)
+		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
 

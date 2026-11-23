@@ -51,22 +51,21 @@ const (
 )
 
 // AzureAuthzRef registers the optional azure-authz ext_authz Deployment the
-// cluster evaluator probes for clusterGatewayAuthNotReady. azure-authz is
+// cluster evaluator probes for clusterAzureAuthzNotReady. azure-authz is
 // installed for both azure and hybrid auth (subchart llm-gateway-azureauth); it
 // is a fail-closed ext_authz backend, so an outage blocks authenticated
-// requests exactly like apikey-authz. It shares the clusterGatewayAuthNotReady
-// reason with apikey-authz (GatewayAuthDeployment). When Name is empty the
-// probe is skipped; a configured Deployment that does not exist is not
-// reported either (§1.2).
+// requests exactly like apikey-authz. When Name is empty the probe is skipped;
+// a configured Deployment that does not exist is not reported either (§1.2).
 type AzureAuthzRef struct {
 	Name      string
 	Namespace string
 }
 
 // LocalCSIDriverRef registers the local CSI driver installed by the KAITO
-// workspace chart, probed for clusterLocalCSIDriverNotReady. An empty
-// Namespace disables the check; an empty ManagerDeployment or NodeDaemonSet
-// skips that half of it (§1.2).
+// workspace chart, probed for clusterLocalCSIManagerNotReady (the manager
+// Deployment) and clusterLocalCSINodeNotReady (the node DaemonSet). An empty
+// Namespace disables both checks; an empty ManagerDeployment or NodeDaemonSet
+// skips that one (§1.2).
 type LocalCSIDriverRef struct {
 	Namespace         string
 	ManagerDeployment string
@@ -100,12 +99,12 @@ type Config struct {
 	GatewayAuthDeployment         string
 	GatewayAuthOperatorDeployment string
 
-	// AzureAuthz is the optional azure-authz ext_authz Deployment to probe as a
-	// further backend of the clusterGatewayAuthNotReady reason.
+	// AzureAuthz is the optional azure-authz ext_authz Deployment to probe for
+	// clusterAzureAuthzNotReady.
 	AzureAuthz AzureAuthzRef
 
 	// LocalCSIDriver is the local CSI driver probed for
-	// clusterLocalCSIDriverNotReady.
+	// clusterLocalCSIManagerNotReady and clusterLocalCSINodeNotReady.
 	LocalCSIDriver LocalCSIDriverRef
 
 	// WeightDownload configures the inferencesetModelDownloadSlow window.

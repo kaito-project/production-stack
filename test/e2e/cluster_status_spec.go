@@ -137,15 +137,15 @@ var _ = Describe("Cluster Status Reporter",
 					To(Succeed())
 			})
 
-		It("emits clusterGatewayAuthNotReady when llm-gateway-auth is scaled to zero", func() {
+		It("emits clusterAPIKeyAuthzNotReady when apikey-authz is scaled to zero", func() {
 			desired, _, err := utils.GetDeploymentReplicas(ctx, gatewayAuthNamespace, gatewayAuthDeployment)
 			Expect(err).NotTo(HaveOccurred())
 
-			baseline, err := utils.ReporterEventBaseline(ctx, "clusterGatewayAuthNotReady", "")
+			baseline, err := utils.ReporterEventBaseline(ctx, "clusterAPIKeyAuthzNotReady", "")
 			Expect(err).NotTo(HaveOccurred())
 
-			By("scaling llm-gateway-auth to zero and waiting for the clusterGatewayAuthNotReady Warning")
-			ev := scaleToZeroAndWait(gatewayAuthNamespace, gatewayAuthDeployment, desired, "clusterGatewayAuthNotReady", "", baseline)
+			By("scaling apikey-authz to zero and waiting for the clusterAPIKeyAuthzNotReady Warning")
+			ev := scaleToZeroAndWait(gatewayAuthNamespace, gatewayAuthDeployment, desired, "clusterAPIKeyAuthzNotReady", "", baseline)
 			Expect(ev.Message).NotTo(ContainSubstring("http://"))
 			Expect(ev.Message).NotTo(ContainSubstring("https://"))
 		})
@@ -163,27 +163,27 @@ var _ = Describe("Cluster Status Reporter",
 			Expect(ev.Message).NotTo(ContainSubstring("https://"))
 		})
 
-		It("emits clusterGatewayAuthNotReady when apikey-operator is scaled to zero", func() {
+		It("emits clusterAPIKeyOperatorNotReady when apikey-operator is scaled to zero", func() {
 			desired, _, err := utils.GetDeploymentReplicas(ctx, gatewayAuthNamespace, gatewayAuthOperator)
 			Expect(err).NotTo(HaveOccurred())
-			baseline, err := utils.ReporterEventBaseline(ctx, "clusterGatewayAuthNotReady", "")
+			baseline, err := utils.ReporterEventBaseline(ctx, "clusterAPIKeyOperatorNotReady", "")
 			Expect(err).NotTo(HaveOccurred())
 
-			By("scaling apikey-operator to zero and waiting for the clusterGatewayAuthNotReady Warning")
-			ev := scaleToZeroAndWait(gatewayAuthNamespace, gatewayAuthOperator, desired, "clusterGatewayAuthNotReady", "", baseline)
+			By("scaling apikey-operator to zero and waiting for the clusterAPIKeyOperatorNotReady Warning")
+			ev := scaleToZeroAndWait(gatewayAuthNamespace, gatewayAuthOperator, desired, "clusterAPIKeyOperatorNotReady", "", baseline)
 			Expect(ev.Message).To(ContainSubstring(gatewayAuthOperator))
 			Expect(ev.Message).NotTo(ContainSubstring("http://"))
 			Expect(ev.Message).NotTo(ContainSubstring("https://"))
 		})
 
-		It("emits clusterLocalCSIDriverNotReady when the local CSI driver manager is scaled to zero", func() {
+		It("emits clusterLocalCSIManagerNotReady when the local CSI driver manager is scaled to zero", func() {
 			desired, _, err := utils.GetDeploymentReplicas(ctx, localCSINamespace, localCSIManager)
 			Expect(err).NotTo(HaveOccurred())
-			baseline, err := utils.ReporterEventBaseline(ctx, "clusterLocalCSIDriverNotReady", localCSINamespace)
+			baseline, err := utils.ReporterEventBaseline(ctx, "clusterLocalCSIManagerNotReady", localCSINamespace)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("scaling csi-local-manager to zero and waiting for the clusterLocalCSIDriverNotReady Warning")
-			ev := scaleToZeroAndWait(localCSINamespace, localCSIManager, desired, "clusterLocalCSIDriverNotReady", localCSINamespace, baseline)
+			By("scaling csi-local-manager to zero and waiting for the clusterLocalCSIManagerNotReady Warning")
+			ev := scaleToZeroAndWait(localCSINamespace, localCSIManager, desired, "clusterLocalCSIManagerNotReady", localCSINamespace, baseline)
 			Expect(ev.Message).To(ContainSubstring(localCSIManager))
 			Expect(ev.Message).NotTo(ContainSubstring("http://"))
 			Expect(ev.Message).NotTo(ContainSubstring("https://"))

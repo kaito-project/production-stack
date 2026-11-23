@@ -63,11 +63,10 @@ type PodUnavailability struct {
 // condition after the pod is bound to a node, so a Ready-only probe silently
 // misses an unschedulable pod (a real blind spot: all higher resources can
 // look healthy while no pod ever runs). When several pods are unavailable, a
-// pod on a node is reported before one still waiting for a node (see
-// precedes), so the longer startup grace of the wait never hides a pod that is
-// failing. No container-reason allowlist is used — the reason strings are
-// kubelet/runtime implementation details and not an API contract, so
-// classification is deliberately time-based instead.
+// pod failing on its node is reported before one still waiting for a node
+// (see pickUnavailable). No container-reason allowlist is used — the reason
+// strings are kubelet/runtime implementation details and not an API contract,
+// so classification is deliberately time-based instead.
 func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string) (PodUnavailability, bool) {
 	dep, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -113,33 +112,33 @@ func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, names
 	})
 }
 
-// pickUnavailable returns the unavailable pod to report among pods, chosen by
-// precedes, ignoring the pods for which skip returns true.
+// pickUnavailable returns the unavailable pod to report among pods, ignoring
+// the pods for which skip returns true. The first pod that is failing on its
+// node is reported; only when every unavailable pod is still waiting for a
+// node is the first of those reported, so the longer startup grace of the wait
+// never hides a pod that is failing.
 func pickUnavailable(pods []corev1.Pod, skip func(*corev1.Pod) bool) (PodUnavailability, bool) {
-	var picked PodUnavailability
-	found := false
+	var waiting *PodUnavailability
 	for i := range pods {
 		p := &pods[i]
 		if skip != nil && skip(p) {
 			continue
 		}
-		if u, ok := podUnavailability(p); ok && (!found || precedes(u, picked)) {
-			picked, found = u, true
+		u, ok := podUnavailability(p)
+		if !ok {
+			continue
+		}
+		if !u.AwaitingNode {
+			return u, true
+		}
+		if waiting == nil {
+			waiting = &u
 		}
 	}
-	return picked, found
-}
-
-// precedes reports whether unavailable pod u is reported instead of v. A pod on
-// a node goes before a pod still waiting for a node, whose startup grace is
-// longer, so the wait never hides a pod that is failing. Between pods of the
-// same kind, the one unavailable for longer goes first: its startup grace runs
-// out first.
-func precedes(u, v PodUnavailability) bool {
-	if u.AwaitingNode != v.AwaitingNode {
-		return !u.AwaitingNode
+	if waiting == nil {
+		return PodUnavailability{}, false
 	}
-	return u.Since.Before(v.Since)
+	return *waiting, true
 }
 
 // podUnavailability reports whether a pod is not serving and, if so, why: its
