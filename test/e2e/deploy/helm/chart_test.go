@@ -30,6 +30,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -985,6 +986,68 @@ func TestModelDeploymentHTTPRouteSetsNoErrorSource(t *testing.T) {
 	}
 }
 
+// TestModelDeploymentHTTPRouteMatchesOnlyModelName pins that a deployment is
+// selected only by an exact match of BBR's X-Gateway-Model-Name on its name, so
+// no other header (e.g. upstream BBR's X-Gateway-Base-Model-Name) can route a
+// request to it.
+func TestModelDeploymentHTTPRouteMatchesOnlyModelName(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	chart := filepath.Join("..", "..", "..", "..", "charts", "modeldeployment")
+	for _, tt := range []struct {
+		name     string
+		template string
+		values   []string
+	}{
+		{name: "default", template: "templates/httproute.yaml"},
+		{name: "azure", template: "templates/azure/httproute.yaml",
+			values: []string{"cloudprovider=azure", "azure.defaultDomain.zoneName=example.aksapp.io"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"template", "release", chart, "--show-only", tt.template,
+				"--set", "model=test-model", "--set", "name=my-deployment"}
+			for _, value := range tt.values {
+				args = append(args, "--set", value)
+			}
+			output, err := exec.Command("helm", args...).CombinedOutput()
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, output)
+			}
+			type headerMatch struct {
+				Type  string `json:"type"`
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			}
+			var route struct {
+				Spec struct {
+					Rules []struct {
+						Matches []struct {
+							Headers []headerMatch `json:"headers"`
+						} `json:"matches"`
+					} `json:"rules"`
+				} `json:"spec"`
+			}
+			if err := yaml.Unmarshal(output, &route); err != nil {
+				t.Fatalf("decode HTTPRoute: %v\n%s", err, output)
+			}
+			want := headerMatch{Type: "Exact", Name: "X-Gateway-Model-Name", Value: "my-deployment"}
+			var got []headerMatch
+			for _, rule := range route.Spec.Rules {
+				for _, match := range rule.Matches {
+					if len(match.Headers) == 0 {
+						t.Errorf("a match has no header condition, so it routes every request: %+v", match)
+					}
+					got = append(got, match.Headers...)
+				}
+			}
+			if !slices.Equal(got, []headerMatch{want}) {
+				t.Errorf("HTTPRoute header matches = %+v, want only %+v", got, want)
+			}
+		})
+	}
+}
+
 // TestPriorityClassName pins the PriorityClass of the pods that share CPU nodes
 // with the namespace gateway; an empty value omits the field. See
 // charts/productionstack/README.md#pod-priority.
@@ -1079,6 +1142,97 @@ func TestBodyBasedRoutingPodDisruptionBudget(t *testing.T) {
 	}
 	if pdb.Namespace != bbr.Namespace {
 		t.Errorf("PodDisruptionBudget namespace = %q, BBR runs in %q", pdb.Namespace, bbr.Namespace)
+	}
+}
+
+// TestBodyBasedRoutingGrantsNoConfigMapAccess pins that the installed BBR runs
+// without ConfigMap access: production-stack routes on X-Gateway-Model-Name
+// only, so BBR must neither load the ConfigMap-watching base-model-to-header
+// plugin nor be granted cluster-wide ConfigMap reads.
+func TestBodyBasedRoutingGrantsNoConfigMapAccess(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	docs := renderChart(t, "ps", filepath.Join("..", "..", "..", "..", "charts", "productionstack"), "--namespace", "kaito-system")
+
+	var bbr *appsv1.Deployment
+	for _, d := range objectsOfKind[appsv1.Deployment](t, docs, "Deployment") {
+		if d.Labels["app.kubernetes.io/name"] == "body-based-routing" {
+			bbr = &d
+		}
+	}
+	if bbr == nil {
+		t.Fatal("productionstack renders no body-based-routing Deployment")
+	}
+
+	var plugins []string
+	args := bbr.Spec.Template.Spec.Containers[0].Args
+	for i, arg := range args {
+		if arg == "--plugin" && i+1 < len(args) {
+			plugins = append(plugins, args[i+1])
+		}
+	}
+	// With no --plugin flag the BBR runner loads its defaults, which include
+	// base-model-to-header.
+	if len(plugins) == 0 {
+		t.Error("BBR renders no --plugin flag, so it loads its default plugins")
+	}
+	for _, p := range plugins {
+		if strings.HasPrefix(p, "base-model-to-header:") {
+			t.Errorf("BBR loads %q", p)
+		}
+	}
+
+	sa := rbacv1.Subject{Kind: "ServiceAccount", Name: bbr.Spec.Template.Spec.ServiceAccountName, Namespace: bbr.Namespace}
+	boundToBBR := func(subjects []rbacv1.Subject, bindingNamespace string) bool {
+		for _, s := range subjects {
+			if s.Kind == sa.Kind && s.Name == sa.Name && cmp.Or(s.Namespace, bindingNamespace) == sa.Namespace {
+				return true
+			}
+		}
+		return false
+	}
+	grantsConfigMaps := func(rules []rbacv1.PolicyRule) bool {
+		for _, r := range rules {
+			if (slices.Contains(r.APIGroups, "") || slices.Contains(r.APIGroups, "*")) &&
+				(slices.Contains(r.Resources, "configmaps") || slices.Contains(r.Resources, "*")) {
+				return true
+			}
+		}
+		return false
+	}
+	clusterRoles := map[string][]rbacv1.PolicyRule{}
+	for _, r := range objectsOfKind[rbacv1.ClusterRole](t, docs, "ClusterRole") {
+		clusterRoles[r.Name] = r.Rules
+	}
+	roles := map[string][]rbacv1.PolicyRule{}
+	for _, r := range objectsOfKind[rbacv1.Role](t, docs, "Role") {
+		roles[r.Namespace+"/"+r.Name] = r.Rules
+	}
+	// A binding to a role this chart does not render (e.g. the built-in "view"
+	// ClusterRole) may grant configmaps, so treat it as a failure rather than as
+	// an empty rule set.
+	checkBinding := func(binding string, ref rbacv1.RoleRef, namespace string) {
+		rules, ok := clusterRoles[ref.Name]
+		if ref.Kind == "Role" {
+			rules, ok = roles[namespace+"/"+ref.Name]
+		}
+		switch {
+		case !ok:
+			t.Errorf("%s binds the BBR ServiceAccount to %s %s, which is not rendered, so its access cannot be checked", binding, ref.Kind, ref.Name)
+		case grantsConfigMaps(rules):
+			t.Errorf("%s grants the BBR ServiceAccount access to configmaps", binding)
+		}
+	}
+	for _, b := range objectsOfKind[rbacv1.ClusterRoleBinding](t, docs, "ClusterRoleBinding") {
+		if boundToBBR(b.Subjects, "") {
+			checkBinding("ClusterRoleBinding "+b.Name, b.RoleRef, "")
+		}
+	}
+	for _, b := range objectsOfKind[rbacv1.RoleBinding](t, docs, "RoleBinding") {
+		if boundToBBR(b.Subjects, b.Namespace) {
+			checkBinding("RoleBinding "+b.Namespace+"/"+b.Name, b.RoleRef, b.Namespace)
+		}
 	}
 }
 
