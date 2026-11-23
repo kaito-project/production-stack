@@ -77,10 +77,6 @@ type Finding struct {
 	Reason  reason.Reason
 	Object  InvolvedObject
 	Message string
-	// WorkloadNamespace is the workload namespace the finding belongs to, used
-	// for per-InferenceSet grouping. Empty for
-	// cluster-layer findings that are not namespace-scoped.
-	WorkloadNamespace string
 	// GroupKey uniquely identifies the logical subject (e.g. the InferenceSet)
 	// so its findings are grouped and emitted together, one event per reason.
 	GroupKey string
