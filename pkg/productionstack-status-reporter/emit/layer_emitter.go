@@ -104,7 +104,9 @@ func (g *startupGate) prune(touched map[string]bool) {
 // Emitter turns one reporting layer's Findings into events. It owns the layer's
 // startup-grace debounce state and clock across passes; the pass logger is
 // carried on the context. It is shared by every layer (cluster, modelharness,
-// modeldeployment, model-download).
+// modeldeployment, model-download): each layer's evaluator already yields at
+// most one finding per (subject, reason), so no per-layer aggregation strategy
+// is needed.
 type Emitter struct {
 	w     *writer
 	gate  startupGate
@@ -121,12 +123,8 @@ func NewEmitter(cs kubernetes.Interface, clock func() time.Time, grace, refreshI
 // per surviving finding. Each reason is an independent signal that must surface, so there is
 // no priority collapse — the absence of a Warning is the only "healthy" signal.
 // Findings that resolve to the same Event identity (eventName) within one pass
-// are collapsed to a single write. An evaluator yields one such finding per
-// unavailable pod, each gated on its own, so the Event is written as soon as
-// any of them clears its startup grace: a pod still waiting for a node never
-// hides another that is failing. The first surviving finding, in evaluator
-// order, supplies the message, so the choice is deterministic and a duplicate
-// never inflates the Event Count.
+// are collapsed to a single write (keeping the last, in first-seen order), so an
+// accidental duplicate never inflates the Event Count or flips its message.
 func (s *Emitter) Emit(ctx context.Context, findings []evaluator.Finding) {
 	logger := logr.FromContextOrDiscard(ctx)
 	now := s.gate.clock()
@@ -138,10 +136,9 @@ func (s *Emitter) Emit(ctx context.Context, findings []evaluator.Finding) {
 			continue
 		}
 		name := eventName(f)
-		if _, ok := byEvent[name]; ok {
-			continue
+		if _, ok := byEvent[name]; !ok {
+			order = append(order, name)
 		}
-		order = append(order, name)
 		byEvent[name] = f
 	}
 	s.gate.prune(touched)

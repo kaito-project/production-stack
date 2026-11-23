@@ -146,11 +146,11 @@ const harnessOwnedBySelector = "kaito.sh/owned-by=modelharness"
 
 // evaluateGatewayDataPlane verifies the Envoy data plane Istio auto-provisions
 // for a Programmed Gateway is actually running: it locates the backing
-// Deployment(s) by the Gateway-name + modelharness ownership labels and flags
-// each Pending/unschedulable or not-ready pod as
-// modelharnessGatewayDataPlaneNotReady. The grace override matches
-// modelharnessGatewayProgrammingFailed because a fresh gateway pod may
-// legitimately take minutes to schedule (e.g. while a node scales up).
+// Deployment(s) by the Gateway-name + modelharness ownership labels and flags a
+// Pending/unschedulable or not-ready pod as modelharnessGatewayDataPlaneNotReady.
+// The grace override matches modelharnessGatewayProgrammingFailed because a
+// fresh gateway pod may legitimately take minutes to schedule (e.g. while a
+// node scales up).
 func (e *Evaluator) evaluateGatewayDataPlane(ctx context.Context, namespace, gwName string, obj evaluator.InvolvedObject, groupKey string, findings *[]evaluator.Finding) {
 	deps, err := e.clientset.AppsV1().Deployments(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: fmt.Sprintf("%s=%s,%s", gatewayDataPlaneLabel, gwName, harnessOwnedBySelector),
@@ -160,19 +160,21 @@ func (e *Evaluator) evaluateGatewayDataPlane(ctx context.Context, namespace, gwN
 	}
 	for i := range deps.Items {
 		dep := &deps.Items[i]
-		for _, u := range kube.DeploymentPodsUnavailable(ctx, e.clientset, namespace, dep.Name) {
-			*findings = append(*findings, evaluator.Finding{
-				Reason: reason.ModelharnessGatewayDataPlaneNotReady,
-				Object: obj,
-				Message: fmt.Sprintf(
-					"Namespace %s: Gateway %s is Programmed but its data-plane pod is not running (%s); check scheduling/quota/nodes.",
-					namespace, gwName, u.Cause),
-				WorkloadNamespace:   namespace,
-				GroupKey:            groupKey,
-				ResourceCreatedAt:   u.Since,
-				GracePeriodOverride: gatewayProgrammingGracePeriod,
-				AwaitingNode:        u.AwaitingNode,
-			})
+		u, unavailable := kube.DeploymentPodUnavailable(ctx, e.clientset, namespace, dep.Name)
+		if !unavailable {
+			continue
 		}
+		*findings = append(*findings, evaluator.Finding{
+			Reason: reason.ModelharnessGatewayDataPlaneNotReady,
+			Object: obj,
+			Message: fmt.Sprintf(
+				"Namespace %s: Gateway %s is Programmed but its data-plane pod is not running (%s); check scheduling/quota/nodes.",
+				namespace, gwName, u.Cause),
+			WorkloadNamespace:   namespace,
+			GroupKey:            groupKey,
+			ResourceCreatedAt:   u.Since,
+			GracePeriodOverride: gatewayProgrammingGracePeriod,
+			AwaitingNode:        u.AwaitingNode,
+		})
 	}
 }

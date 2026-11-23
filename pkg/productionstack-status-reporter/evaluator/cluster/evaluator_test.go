@@ -119,10 +119,10 @@ func TestGatewayAuthOperatorNotReady(t *testing.T) {
 	}
 }
 
-// Every Deployment that shares a reason is checked, so a keda-operator pod
-// still waiting for a node does not hide keda-operator-metrics-apiserver
-// failing on its node.
-func TestSharedReasonChecksEveryDeployment(t *testing.T) {
+// Components sharing a reason are reported once. A keda-operator pod still
+// waiting for a node gives way to keda-operator-metrics-apiserver failing on
+// its node, so the wait does not hide the failure.
+func TestSharedReasonPrefersComponentOnNode(t *testing.T) {
 	cfg := config.DefaultConfig()
 	waiting := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: cfg.KedaNamespace, Name: "keda-operator-new", Labels: map[string]string{"app": "keda-operator"}},
@@ -142,9 +142,8 @@ func TestSharedReasonChecksEveryDeployment(t *testing.T) {
 			keda = append(keda, f)
 		}
 	}
-	if len(keda) != 2 || !keda[0].AwaitingNode || keda[1].AwaitingNode ||
-		!strings.Contains(keda[1].Message, "keda-operator-metrics-apiserver") {
-		t.Fatalf("want keda-operator awaiting a node, then keda-operator-metrics-apiserver not ready, got %+v", keda)
+	if len(keda) != 1 || keda[0].AwaitingNode || !strings.Contains(keda[0].Message, "keda-operator-metrics-apiserver") {
+		t.Fatalf("want one clusterKedaNotReady naming keda-operator-metrics-apiserver, got %+v", keda)
 	}
 }
 

@@ -30,9 +30,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// PodUnavailability is one reason a Deployment or DaemonSet is not fully
-// serving: one of its pods that is not serving or, for a Deployment, the
-// absence of any pod.
+// PodUnavailability is why a Deployment or DaemonSet is not fully serving:
+// one of its pods that is not serving or, for a Deployment, the absence of any
+// pod.
 type PodUnavailability struct {
 	// Cause is a short human-readable hint for the event message only.
 	Cause string
@@ -52,32 +52,32 @@ type PodUnavailability struct {
 	AwaitingNode bool
 }
 
-// DeploymentPodsUnavailable inspects the pods owned by a Deployment and returns
-// every pod that is not serving: its Pod Ready condition is False, or it has no
-// Ready condition at all because it is still Pending, typically unschedulable
-// while it waits for a node. A Deployment with no pods at all (scaled to zero
-// or every replica removed), which would otherwise read as 0/0 = healthy and
-// never surface, yields a single entry. A missing Deployment, or one that
-// cannot be read, yields nothing: callers check only the readiness of a
-// Deployment that exists. The kubelet only adds the Ready condition after the
-// pod is bound to a node, so a Ready-only probe silently misses an
-// unschedulable pod (a real blind spot: all higher resources can look healthy
-// while no pod ever runs). Every unavailable pod is returned, not just the
-// first, because the caller's startup grace differs per pod: a pod still
-// waiting for a node must not hide another one that is failing on its node.
-// No container-reason allowlist is used — the reason strings are
+// DeploymentPodUnavailable inspects the pods owned by a Deployment and reports
+// whether one is not serving, and why: its Pod Ready condition is False, or it
+// has no Ready condition at all because it is still Pending, typically
+// unschedulable while it waits for a node. A Deployment with no pods at all
+// (scaled to zero or every replica removed), which would otherwise read as
+// 0/0 = healthy and never surface, is unavailable too. A missing Deployment,
+// or one that cannot be read, is reported as available: callers check only the
+// readiness of a Deployment that exists. The kubelet only adds the Ready
+// condition after the pod is bound to a node, so a Ready-only probe silently
+// misses an unschedulable pod (a real blind spot: all higher resources can
+// look healthy while no pod ever runs). When several pods are unavailable, a
+// pod on a node is reported before one still waiting for a node (see
+// precedes), so the longer startup grace of the wait never hides a pod that is
+// failing. No container-reason allowlist is used — the reason strings are
 // kubelet/runtime implementation details and not an API contract, so
 // classification is deliberately time-based instead.
-func DeploymentPodsUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string) []PodUnavailability {
+func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string) (PodUnavailability, bool) {
 	dep, err := cs.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil // missing, or a transient API error — nothing to emit
+		return PodUnavailability{}, false // missing, or a transient API error — nothing to emit
 	}
 	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(dep.Spec.Selector),
 	})
 	if err != nil {
-		return nil
+		return PodUnavailability{}, false
 	}
 	// A Deployment with no pods at all cannot serve.
 	if len(pods.Items) == 0 {
@@ -85,46 +85,61 @@ func DeploymentPodsUnavailable(ctx context.Context, cs kubernetes.Interface, nam
 		if dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 {
 			cause = "Deployment is scaled to zero replicas"
 		}
-		return []PodUnavailability{{Cause: cause}}
+		return PodUnavailability{Cause: cause}, true
 	}
-	var unavailable []PodUnavailability
-	for i := range pods.Items {
-		if u, ok := podUnavailability(&pods.Items[i]); ok {
-			unavailable = append(unavailable, u)
-		}
-	}
-	return unavailable
+	return pickUnavailable(pods.Items, nil)
 }
 
-// DaemonSetPodsUnavailable probes a DaemonSet the same way
-// DeploymentPodsUnavailable probes a Deployment, but per node: it returns every
-// DaemonSet pod that is not Ready (or still Pending), each with the node it
-// runs on. Pods on nodes for which skipNode returns true are ignored, so
+// DaemonSetPodUnavailable probes a DaemonSet the same way
+// DeploymentPodUnavailable probes a Deployment, but per node: it reports a
+// DaemonSet pod that is not Ready (or still Pending), together with the node
+// it runs on. Pods on nodes for which skipNode returns true are ignored, so
 // simulated nodes that can never run the DaemonSet do not flag it. A DaemonSet
 // with no pods is not flagged: it may legitimately have no eligible node. A
-// missing DaemonSet, or a transient API error, yields nothing.
-func DaemonSetPodsUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode func(string) bool) []PodUnavailability {
+// missing DaemonSet, or a transient API error, reports nothing.
+func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode func(string) bool) (PodUnavailability, bool) {
 	ds, err := cs.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil
+		return PodUnavailability{}, false
 	}
 	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(ds.Spec.Selector),
 	})
 	if err != nil {
-		return nil
+		return PodUnavailability{}, false
 	}
-	var unavailable []PodUnavailability
-	for i := range pods.Items {
-		p := &pods.Items[i]
-		if skipNode != nil && p.Spec.NodeName != "" && skipNode(p.Spec.NodeName) {
+	return pickUnavailable(pods.Items, func(p *corev1.Pod) bool {
+		return skipNode != nil && p.Spec.NodeName != "" && skipNode(p.Spec.NodeName)
+	})
+}
+
+// pickUnavailable returns the unavailable pod to report among pods, chosen by
+// precedes, ignoring the pods for which skip returns true.
+func pickUnavailable(pods []corev1.Pod, skip func(*corev1.Pod) bool) (PodUnavailability, bool) {
+	var picked PodUnavailability
+	found := false
+	for i := range pods {
+		p := &pods[i]
+		if skip != nil && skip(p) {
 			continue
 		}
-		if u, ok := podUnavailability(p); ok {
-			unavailable = append(unavailable, u)
+		if u, ok := podUnavailability(p); ok && (!found || precedes(u, picked)) {
+			picked, found = u, true
 		}
 	}
-	return unavailable
+	return picked, found
+}
+
+// precedes reports whether unavailable pod u is reported instead of v. A pod on
+// a node goes before a pod still waiting for a node, whose startup grace is
+// longer, so the wait never hides a pod that is failing. Between pods of the
+// same kind, the one unavailable for longer goes first: its startup grace runs
+// out first.
+func precedes(u, v PodUnavailability) bool {
+	if u.AwaitingNode != v.AwaitingNode {
+		return !u.AwaitingNode
+	}
+	return u.Since.Before(v.Since)
 }
 
 // podUnavailability reports whether a pod is not serving and, if so, why: its

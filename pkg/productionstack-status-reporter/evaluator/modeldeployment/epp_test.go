@@ -23,13 +23,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
-
-	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/evaluator"
 )
 
 func TestEPPNotReady(t *testing.T) {
 	ctx := context.Background()
-	obj := evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: "team-a"}
 	epp := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "qwen-inferencepool-epp"},
 		Spec: appsv1.DeploymentSpec{
@@ -40,12 +37,11 @@ func TestEPPNotReady(t *testing.T) {
 
 	// The deploying party guarantees the EPP Deployment exists alongside its
 	// InferenceSet, so a missing one is not reported.
-	if got := eppNotReady(ctx, fake.NewSimpleClientset(), "team-a", "qwen", obj, "g"); len(got) != 0 {
-		t.Errorf("a missing EPP Deployment must not be reported, got %+v", got)
+	if _, u, notReady := eppNotReady(ctx, fake.NewSimpleClientset(), "team-a", "qwen"); notReady {
+		t.Errorf("a missing EPP Deployment must not be reported, got %+v", u)
 	}
-	got := eppNotReady(ctx, fake.NewSimpleClientset(epp), "team-a", "qwen", obj, "g")
-	want := "InferenceSet team-a/qwen: EPP Deployment qwen-inferencepool-epp not ready: Deployment is scaled to zero replicas."
-	if len(got) != 1 || got[0].Message != want {
-		t.Errorf("an EPP Deployment scaled to zero must be reported, got %+v", got)
+	name, u, notReady := eppNotReady(ctx, fake.NewSimpleClientset(epp), "team-a", "qwen")
+	if name != "qwen-inferencepool-epp" || !notReady || u.Cause != "Deployment is scaled to zero replicas" {
+		t.Errorf("an EPP Deployment scaled to zero must be reported, got %q %+v", name, u)
 	}
 }
