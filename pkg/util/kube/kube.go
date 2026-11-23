@@ -47,16 +47,19 @@ type PodUnavailability struct {
 	// pods, deferring to the caller's reason-level startup-grace timer.
 	Since time.Time
 	// AwaitingNode is true for a pod that has no node yet, typically because no
-	// node has room for it and one is being provisioned. Callers give such a
-	// pod a longer startup grace than one that is already on a node.
+	// node has room for it and one is being provisioned, and for a DaemonSet
+	// pod on a node that has only just registered (see DaemonSetPodUnavailable).
+	// Callers give such a pod a longer startup grace than one that is already
+	// on a node.
 	AwaitingNode bool
 }
 
 // DeploymentPodUnavailable inspects the pods owned by a Deployment and reports
 // whether one is not serving, and why: its Pod Ready condition is False, or it
 // has no Ready condition at all because it is still Pending, typically
-// unschedulable while it waits for a node. A Deployment with no pods at all
-// (scaled to zero or every replica removed), which would otherwise read as
+// unschedulable while it waits for a node. Pods in a terminal phase are ignored
+// (see livePods). A Deployment with no live pods (scaled to zero, every
+// replica removed, or only evicted pods left), which would otherwise read as
 // 0/0 = healthy and never surface, is unavailable too. A missing Deployment,
 // or one that cannot be read, is reported as available: callers check only the
 // readiness of a Deployment that exists. The kubelet only adds the Ready
@@ -72,52 +75,76 @@ func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, name
 	if err != nil {
 		return PodUnavailability{}, false // missing, or a transient API error — nothing to emit
 	}
-	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+	list, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(dep.Spec.Selector),
 	})
 	if err != nil {
 		return PodUnavailability{}, false
 	}
-	// A Deployment with no pods at all cannot serve.
-	if len(pods.Items) == 0 {
+	pods := livePods(list.Items)
+	// A Deployment with no live pods cannot serve.
+	if len(pods) == 0 {
 		cause := "no pods are running for the Deployment"
 		if dep.Spec.Replicas != nil && *dep.Spec.Replicas == 0 {
 			cause = "Deployment is scaled to zero replicas"
 		}
 		return PodUnavailability{Cause: cause}, true
 	}
-	return pickUnavailable(pods.Items, nil)
+	return pickUnavailable(pods, nil, nil)
 }
 
 // DaemonSetPodUnavailable probes a DaemonSet the same way
 // DeploymentPodUnavailable probes a Deployment, but per node: it reports a
 // DaemonSet pod that is not Ready (or still Pending), together with the node
 // it runs on. Pods on nodes for which skipNode returns true are ignored, so
-// simulated nodes that can never run the DaemonSet do not flag it. A DaemonSet
-// with no pods is not flagged: it may legitimately have no eligible node. A
-// missing DaemonSet, or a transient API error, reports nothing.
-func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode func(string) bool) (PodUnavailability, bool) {
+// simulated nodes that can never run the DaemonSet do not flag it. A pod on a
+// node for which newNode returns true is still waiting for its node: the
+// DaemonSet controller binds a pod to a node as soon as the node registers,
+// before the node can run it, so unlike a Deployment pod it never waits
+// unscheduled for a new node. Pods in a terminal phase are ignored (see
+// livePods). A DaemonSet with no live pods is not flagged: it may
+// legitimately have no eligible node. A missing DaemonSet, or a transient API
+// error, reports nothing.
+func DaemonSetPodUnavailable(ctx context.Context, cs kubernetes.Interface, namespace, name string, skipNode, newNode func(string) bool) (PodUnavailability, bool) {
 	ds, err := cs.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return PodUnavailability{}, false
 	}
-	pods, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+	list, err := cs.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: metav1.FormatLabelSelector(ds.Spec.Selector),
 	})
 	if err != nil {
 		return PodUnavailability{}, false
 	}
-	return pickUnavailable(pods.Items, func(p *corev1.Pod) bool {
-		return skipNode != nil && p.Spec.NodeName != "" && skipNode(p.Spec.NodeName)
-	})
+	onNode := func(match func(string) bool) func(*corev1.Pod) bool {
+		return func(p *corev1.Pod) bool {
+			return match != nil && p.Spec.NodeName != "" && match(p.Spec.NodeName)
+		}
+	}
+	return pickUnavailable(livePods(list.Items), onNode(skipNode), onNode(newNode))
+}
+
+// livePods drops the pods in a terminal phase, Failed or Succeeded. A pod the
+// kubelet evicted, or stopped when its node shut down, never runs again but is
+// kept until it is deleted, while its controller runs a replacement. Counting
+// it would flag its component for as long as it is kept.
+func livePods(pods []corev1.Pod) []corev1.Pod {
+	live := make([]corev1.Pod, 0, len(pods))
+	for i := range pods {
+		if phase := pods[i].Status.Phase; phase != corev1.PodFailed && phase != corev1.PodSucceeded {
+			live = append(live, pods[i])
+		}
+	}
+	return live
 }
 
 // pickUnavailable returns the unavailable pod to report among pods, ignoring
-// the pods for which skip returns true. The first pod that is failing on its
-// node is reported; only when every unavailable pod is still waiting for a
-// node is the first of those reported, so the longer startup grace of the wait
-// never hides a pod that is failing.
-func pickUnavailable(pods []corev1.Pod, skip func(*corev1.Pod) bool) (PodUnavailability, bool) {
+// the pods for which skip returns true. A pod for which awaitingNode returns
+// true counts as waiting for a node, like a pod that has no node yet. The
+// first pod that is failing on its node is reported; only when every
+// unavailable pod is still waiting for a node is the first of those reported,
+// so the longer startup grace of the wait never hides a pod that is failing.
+func pickUnavailable(pods []corev1.Pod, skip, awaitingNode func(*corev1.Pod) bool) (PodUnavailability, bool) {
 	var waiting *PodUnavailability
 	for i := range pods {
 		p := &pods[i]
@@ -127,6 +154,9 @@ func pickUnavailable(pods []corev1.Pod, skip func(*corev1.Pod) bool) (PodUnavail
 		u, ok := podUnavailability(p)
 		if !ok {
 			continue
+		}
+		if awaitingNode != nil && awaitingNode(p) {
+			u.AwaitingNode = true
 		}
 		if !u.AwaitingNode {
 			return u, true

@@ -31,6 +31,11 @@ import (
 var (
 	created = time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
 	labels  = map[string]string{"app": "epp"}
+
+	csiNodeDaemonSet = &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "csi-node"},
+		Spec:       appsv1.DaemonSetSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}},
+	}
 )
 
 func testPod(name, node string, phase corev1.PodPhase, conds ...corev1.PodCondition) *corev1.Pod {
@@ -83,15 +88,48 @@ func TestDeploymentPodUnavailableTimesAssignedPodFromItsNode(t *testing.T) {
 }
 
 func TestDaemonSetPodUnavailableMarksPodAwaitingNode(t *testing.T) {
-	ds := &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "csi-node"},
-		Spec:       appsv1.DaemonSetSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}},
-	}
-	cs := fake.NewSimpleClientset(ds,
+	cs := fake.NewSimpleClientset(csiNodeDaemonSet,
 		testPod("waiting", "", corev1.PodPending, condition(corev1.PodScheduled, corev1.ConditionFalse, "Unschedulable", "", created)),
 		testPod("simulated", "fake-gpu", corev1.PodRunning, condition(corev1.PodReady, corev1.ConditionFalse, "", "", created)))
-	got, ok := DaemonSetPodUnavailable(context.Background(), cs, "ns", "csi-node", func(node string) bool { return node == "fake-gpu" })
+	got, ok := DaemonSetPodUnavailable(context.Background(), cs, "ns", "csi-node", func(node string) bool { return node == "fake-gpu" }, nil)
 	if !ok || !got.AwaitingNode || got.Cause != "Unschedulable" {
 		t.Fatalf("want only the pod awaiting a node, got %+v", got)
+	}
+}
+
+// A DaemonSet pod is bound to a node as soon as the node registers, so on a new
+// node it is still waiting for its node, while a pod failing on an older node
+// is reported first.
+func TestDaemonSetPodUnavailableWaitsForNewNode(t *testing.T) {
+	starting := testPod("a-starting", "new", corev1.PodPending,
+		condition(corev1.PodReady, corev1.ConditionFalse, "ContainersNotReady", "", created))
+	failing := testPod("b-failing", "old", corev1.PodRunning,
+		condition(corev1.PodReady, corev1.ConditionFalse, "ContainersNotReady", "", created))
+	newNode := func(node string) bool { return node == "new" }
+
+	got, ok := DaemonSetPodUnavailable(context.Background(), fake.NewSimpleClientset(csiNodeDaemonSet, starting), "ns", "csi-node", nil, newNode)
+	if !ok || !got.AwaitingNode || got.NodeName != "new" {
+		t.Fatalf("a pod on a new node must wait for its node, got %+v", got)
+	}
+	got, ok = DaemonSetPodUnavailable(context.Background(), fake.NewSimpleClientset(csiNodeDaemonSet, starting, failing), "ns", "csi-node", nil, newNode)
+	if !ok || got.AwaitingNode || got.NodeName != "old" {
+		t.Fatalf("a pod failing on an older node must be reported first, got %+v", got)
+	}
+}
+
+// A pod the kubelet evicted stays Failed until it is deleted, while a
+// replacement serves: it must not flag the Deployment. With only the evicted
+// pod left, nothing runs for the Deployment.
+func TestDeploymentPodUnavailableIgnoresEvictedPod(t *testing.T) {
+	evicted := testPod("a-evicted", "n1", corev1.PodFailed,
+		condition(corev1.PodReady, corev1.ConditionFalse, "PodFailed", "", created))
+	evicted.Status.Reason = "Evicted"
+	serving := testPod("b-serving", "n0", corev1.PodRunning, condition(corev1.PodReady, corev1.ConditionTrue, "", "", created))
+	if got, ok := deploymentPodUnavailable(t, evicted, serving); ok {
+		t.Fatalf("an evicted pod must not flag the Deployment, got %+v", got)
+	}
+	got, ok := deploymentPodUnavailable(t, evicted)
+	if want := (PodUnavailability{Cause: "no pods are running for the Deployment"}); !ok || got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }

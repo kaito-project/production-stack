@@ -21,6 +21,7 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -36,11 +37,12 @@ import (
 type Evaluator struct {
 	clientset kubernetes.Interface
 	cfg       config.Config
+	clock     func() time.Time
 }
 
 // New constructs a cluster Evaluator.
 func New(cs kubernetes.Interface, cfg config.Config) *Evaluator {
-	return &Evaluator{clientset: cs, cfg: cfg}
+	return &Evaluator{clientset: cs, cfg: cfg, clock: time.Now}
 }
 
 // Name identifies the evaluator for logging.
@@ -131,7 +133,9 @@ const fakeNodeLabel = "kaito.sh/fake-node"
 
 // localCSINodeFinding probes the local CSI driver node DaemonSet: any of its
 // pods that is not Ready flags clusterLocalCSINodeNotReady, except pods on
-// gpu-node-mocker nodes. A missing DaemonSet is not reported (see Evaluate).
+// gpu-node-mocker nodes. A pod on a Node that has only just registered is
+// still waiting for its node (see newNode). A missing DaemonSet is not
+// reported (see Evaluate).
 func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding, bool) {
 	ref := e.cfg.LocalCSIDriver
 	if ref.Namespace == "" || ref.NodeDaemonSet == "" {
@@ -142,7 +146,7 @@ func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding,
 		return evaluator.Finding{}, false // unknown this pass
 	}
 	u, notReady := kube.DaemonSetPodUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet,
-		func(name string) bool { return fakeNodes[name] })
+		func(name string) bool { return fakeNodes[name] }, e.newNode(ctx))
 	if !notReady {
 		return evaluator.Finding{}, false
 	}
@@ -154,6 +158,19 @@ func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding,
 		ResourceCreatedAt: u.Since,
 		AwaitingNode:      u.AwaitingNode,
 	}, true
+}
+
+// newNode reports whether a Node registered less than
+// NodeProvisioningGracePeriod ago. Its local CSI node pod is bound to it as
+// soon as it registers but cannot start before the Node is up, so the pod gets
+// the same window as a pod that waits for a node to be provisioned. A Node
+// that cannot be read is not new.
+func (e *Evaluator) newNode(ctx context.Context) func(string) bool {
+	now := e.clock()
+	return func(name string) bool {
+		node, err := e.clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		return err == nil && now.Sub(node.CreationTimestamp.Time) < evaluator.NodeProvisioningGracePeriod
+	}
 }
 
 // fakeNodes returns the names of the Nodes created by gpu-node-mocker.

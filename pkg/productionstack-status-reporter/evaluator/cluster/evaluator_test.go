@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -195,6 +196,24 @@ func TestLocalCSIDriver(t *testing.T) {
 		objs := append(healthyCluster(cfg), fakeNode, pod(ns, "csi-node-f", "fake-gpu", nodeLabels, corev1.ConditionFalse))
 		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSINodeNotReady]; ok {
 			t.Fatalf("pod on fake node must be ignored, got %+v", f)
+		}
+	})
+	t.Run("node pod on a node that has only just registered waits for its node", func(t *testing.T) {
+		now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+		for _, tc := range []struct {
+			nodeAge time.Duration
+			want    bool
+		}{{time.Minute, true}, {10 * time.Minute, false}} {
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "aks-1", CreationTimestamp: metav1.NewTime(now.Add(-tc.nodeAge))}}
+			e := New(fake.NewSimpleClientset(append(healthyCluster(cfg), node, pod(ns, "csi-node-b", "aks-1", nodeLabels, corev1.ConditionFalse))...), cfg)
+			e.clock = func() time.Time { return now }
+			findings, err := e.Evaluate(context.Background())
+			if err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if len(findings) != 1 || findings[0].Reason != reason.ClusterLocalCSINodeNotReady || findings[0].AwaitingNode != tc.want {
+				t.Errorf("node registered %s ago: want clusterLocalCSINodeNotReady with AwaitingNode=%t, got %+v", tc.nodeAge, tc.want, findings)
+			}
 		}
 	})
 	t.Run("disabled when namespace is empty", func(t *testing.T) {
