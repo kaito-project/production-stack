@@ -25,7 +25,7 @@ import (
 	"fmt"
 	"time"
 
-	kaitoconsts "github.com/kaito-project/kaito/pkg/utils/consts"
+	kaitoconsts "github.com/kaito-project/kaito/pkg/consts"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"

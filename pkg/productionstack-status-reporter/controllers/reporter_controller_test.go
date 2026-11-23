@@ -178,7 +178,8 @@ func TestReconcilePassesThroughInferenceSetReady(t *testing.T) {
 		wantAfter5m bool
 	}{
 		{"QuotaExceeded", true, true},
-		{"DownloadFailed", false, true},
+		{"DownloadFailed", true, true},
+		{"CreateInstanceFailed", false, true},
 		{"NodeClaimNotReady", false, false},
 	}
 	for _, tc := range cases {

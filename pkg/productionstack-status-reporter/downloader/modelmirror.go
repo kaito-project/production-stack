@@ -22,7 +22,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/kaito-project/kaito/pkg/utils/plugin"
+	"github.com/kaito-project/kaito/pkg/model"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -94,9 +94,9 @@ func (d *ModelMirrorDownloader) Observe(ctx context.Context, is *unstructured.Un
 // model ID is "custom-<config>" for the custom preset and otherwise the preset
 // name mapped through KAITO's legacy short-name catalogue.
 func ModelMirrorName(preset, config string) string {
-	modelID := plugin.ResolveHFModelID(preset)
-	if plugin.IsCustomPreset(preset) {
-		modelID = plugin.CustomModelNamePrefix + config
+	modelID := model.ResolveHFModelID(preset)
+	if model.IsCustomPreset(preset) {
+		modelID = model.CustomModelNamePrefix + config
 	}
 	sum := sha256.Sum256([]byte(modelID))
 	return hex.EncodeToString(sum[:])[:6]
