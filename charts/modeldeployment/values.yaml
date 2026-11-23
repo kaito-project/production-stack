@@ -173,10 +173,8 @@ epp:
       memory: 256Mi
   # tolerations are applied to the EPP pod.
   tolerations: []
-  # priorityClassName of the EPP pod. AKS App Routing runs the namespace gateway at
-  # system-cluster-critical and the scheduler preempts only lower-priority pods, so at
-  # the same class a gateway that does not fit waits for a new node instead of evicting
-  # the EPP. Empty omits the field (priority 0).
+  # priorityClassName of the EPP pod; empty omits the field.
+  # See charts/productionstack/README.md#pod-priority.
   priorityClassName: system-cluster-critical
   # flowControl queues requests in the EPP while no replica exists; it is on automatically with minReplicas=0.
   flowControl:

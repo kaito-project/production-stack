@@ -986,11 +986,8 @@ func TestModelDeploymentHTTPRouteSetsNoErrorSource(t *testing.T) {
 }
 
 // TestPriorityClassName pins the PriorityClass of the pods that share CPU nodes
-// with the namespace gateway. AKS App Routing runs the gateway at
-// system-cluster-critical and the scheduler preempts only lower-priority pods,
-// so at the same class a gateway that does not fit waits for a new node instead
-// of evicting them. An empty value omits the field, for clusters that restrict
-// the built-in classes to kube-system.
+// with the namespace gateway; an empty value omits the field. See
+// charts/productionstack/README.md#pod-priority.
 func TestPriorityClassName(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm is required for chart rendering tests")

@@ -122,9 +122,6 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
-# PriorityClass of the reporter pods. AKS App Routing runs each namespace
-# gateway at system-cluster-critical, and the scheduler preempts only
-# lower-priority pods, so at the same class a gateway that does not fit waits
-# for a new node instead of evicting a reporter replica. Empty omits the
-# field (priority 0).
+# PriorityClass of the reporter pods; empty omits the field.
+# See charts/productionstack/README.md#pod-priority.
 priorityClassName: system-cluster-critical
