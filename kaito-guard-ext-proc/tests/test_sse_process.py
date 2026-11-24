@@ -12,6 +12,7 @@
 # limitations under the License.
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from unittest.mock import Mock
 
@@ -270,6 +271,57 @@ async def test_client_cancellation_discards_without_finish(
         call.cancel()
         await asyncio.wait_for(cancelled.wait(), timeout=5)
     assert created[0].closed
+    finish.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_feed_is_running(unused_tcp_port, monkeypatch):
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    cleaned = asyncio.Event()
+    exited = asyncio.Event()
+    release = threading.Event()
+    original_scan = ScannerWindowAdapter.scan
+    original_feed = GuardrailStream.feed
+    original_cancel = GuardrailStream.cancel
+
+    def scan(scanner, *args, **kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(timeout=5)
+        return original_scan(scanner, *args, **kwargs)
+
+    def feed(stream, body):
+        try:
+            return original_feed(stream, body)
+        finally:
+            loop.call_soon_threadsafe(exited.set)
+
+    def cancel(stream):
+        original_cancel(stream)
+        loop.call_soon_threadsafe(cleaned.set)
+
+    monkeypatch.setattr(ScannerWindowAdapter, "scan", scan)
+    monkeypatch.setattr(GuardrailStream, "feed", feed)
+    monkeypatch.setattr(GuardrailStream, "cancel", cancel)
+    finish = Mock(side_effect=AssertionError("Unexpected finish after cancellation"))
+    monkeypatch.setattr(GuardrailStream, "finish", finish)
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        call = await open_sse_call(stub)
+        await call.write(
+            pb.ProcessingRequest(
+                response_body=pb.HttpBody(body=make_content_event("safe " * 100))
+            )
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert call.cancel()
+            assert await call.code() == grpc.StatusCode.CANCELLED
+            with pytest.raises(asyncio.CancelledError):
+                await call.read()
+        finally:
+            release.set()
+        await asyncio.wait_for(exited.wait(), timeout=5)
+        await asyncio.wait_for(cleaned.wait(), timeout=5)
     finish.assert_not_called()
 
 
