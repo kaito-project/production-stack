@@ -360,7 +360,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     continue
                 await context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
-                    "Unexpected guardrail processing phase",
+                    f"Unexpected ext_proc message {request_type!r} in the current stream state",
                 )
                 return
             logger.warning("Guardrail stream ended without a complete HTTP response")

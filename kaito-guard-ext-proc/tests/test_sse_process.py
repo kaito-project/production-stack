@@ -77,17 +77,17 @@ async def open_sse_call(stub):
     return call
 
 
-async def send_body_and_read_response(call, wire, *, final=False):
+async def send_body_and_read_response(call, wire, *, end_of_stream=False):
     await call.write(
         pb.ProcessingRequest(
             response_body=pb.HttpBody(
                 body=wire,
-                end_of_stream=final,
+                end_of_stream=end_of_stream,
             )
         )
     )
     response = await call.read()
-    if final:
+    if end_of_stream:
         assert await call.read() is grpc.aio.EOF
     return response
 
@@ -132,7 +132,7 @@ async def test_done_and_finish_reason_wait_for_normal_http_eof(unused_tcp_port):
         assert b"[DONE]" not in first + pending
         assert b'"finish_reason":"stop"' not in first + pending
         completed = extract_replacement_body(
-            await send_body_and_read_response(call, b"", final=True)
+            await send_body_and_read_response(call, b"", end_of_stream=True)
         )
     assert extract_stream_text(completed) == "hello \u4f60\u597d"
     assert parse_sse_payloads(completed)[-1]["choices"][0]["finish_reason"] == "stop"
@@ -155,7 +155,7 @@ async def test_cross_chunk_redaction_uses_real_shared_scanners(unused_tcp_port):
                 await send_body_and_read_response(call, chunk)
             )
         received += extract_replacement_body(
-            await send_body_and_read_response(call, b"", final=True)
+            await send_body_and_read_response(call, b"", end_of_stream=True)
         )
     assert extract_stream_text(received) == "safe " * 60 + "[REDACTED] \u56de\u590d"
     assert b"secret" not in received
@@ -177,7 +177,7 @@ async def test_cross_chunk_redaction_uses_real_shared_scanners(unused_tcp_port):
 async def test_truncation_or_invalid_sse_never_flushes_holdback(unused_tcp_port, wire):
     async with running_processor(make_policy(), unused_tcp_port) as stub:
         call = await open_sse_call(stub)
-        response = await send_body_and_read_response(call, wire, final=True)
+        response = await send_body_and_read_response(call, wire, end_of_stream=True)
     assert response.immediate_response.status.code == 502
     assert b"pending" not in response.SerializeToString()
     assert b"[DONE]" not in response.SerializeToString()
@@ -188,7 +188,7 @@ async def test_block_discards_pending_output(unused_tcp_port):
     async with running_processor(make_policy(), unused_tcp_port) as stub:
         call = await open_sse_call(stub)
         response = await send_body_and_read_response(
-            call, make_content_event("a secret") + DONE, final=True
+            call, make_content_event("a secret") + DONE, end_of_stream=True
         )
     assert response.immediate_response.status.code == 403
     assert response.immediate_response.body == b"Blocked by streaming policy."
@@ -197,9 +197,9 @@ async def test_block_discards_pending_output(unused_tcp_port):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("final", [False, True])
+@pytest.mark.parametrize("end_of_stream", [False, True])
 async def test_scanner_exception_is_generic_and_never_flushes(
-    unused_tcp_port, monkeypatch, caplog, final
+    unused_tcp_port, monkeypatch, caplog, end_of_stream
 ):
     monkeypatch.setattr(
         ScannerWindowAdapter, "scan", Mock(side_effect=RuntimeError("private-text"))
@@ -207,10 +207,10 @@ async def test_scanner_exception_is_generic_and_never_flushes(
     async with running_processor(make_policy(), unused_tcp_port) as stub:
         call = await open_sse_call(stub)
         wire = (
-            make_content_event("private-text" if final else "private-text " * 30)
+            make_content_event("private-text" if end_of_stream else "private-text " * 30)
             + DONE
         )
-        response = await send_body_and_read_response(call, wire, final=final)
+        response = await send_body_and_read_response(call, wire, end_of_stream=end_of_stream)
     assert response.immediate_response.status.code == 502
     assert b"private-text" not in response.SerializeToString()
     assert "private-text" not in caplog.text
@@ -377,6 +377,16 @@ async def test_header_responses_do_not_override_configured_mode(unused_tcp_port)
         assert response_ack.HasField("response_headers")
         assert not response_ack.HasField("mode_override")
         result = await send_body_and_read_response(
-            call, make_content_event("hello") + DONE, final=True
+            call, make_content_event("hello") + DONE, end_of_stream=True
         )
     assert extract_stream_text(extract_replacement_body(result)) == "hello"
+
+
+@pytest.mark.asyncio
+async def test_body_before_headers_reports_message_type(unused_tcp_port):
+    request = pb.ProcessingRequest(response_body=pb.HttpBody(body=b"private"))
+    async with running_processor(make_policy(), unused_tcp_port) as stub:
+        with pytest.raises(grpc.aio.AioRpcError) as exc:
+            await stub.Process(iter([request]), timeout=5).read()
+    assert exc.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    assert exc.value.details() == "Unexpected ext_proc message 'response_body' in the current stream state"
