@@ -43,7 +43,7 @@ def _header_value(key: str, value: bytes) -> base_pb2.HeaderValueOption:
     )
 
 
-def _streaming_headers_response() -> pb.ProcessingResponse:
+def _build_sse_header_update() -> pb.ProcessingResponse:
     mutation = pb.HeaderMutation(
         remove_headers=[
             "content-length",
@@ -320,7 +320,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                             "guardrail_init_error",
                         )
                         return
-                    yield _streaming_headers_response()
+                    yield _build_sse_header_update()
                     continue
                 if request_type == "response_body" and guardrail_stream is not None:
                     try:
