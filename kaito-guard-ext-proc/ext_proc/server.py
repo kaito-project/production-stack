@@ -114,7 +114,9 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[pb.ProcessingResponse]:
         if self.streaming and self.policy is not None:
-            async with aclosing(self._process_streaming(request_iterator, context)) as responses:
+            async with aclosing(
+                self._process_streaming(request_iterator, context, self.policy)
+            ) as responses:
                 async for response in responses:
                     yield response
             return
@@ -235,9 +237,9 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         self,
         request_iterator: AsyncIterator[external_processor_pb2.ProcessingRequest],
         context: grpc.aio.ServicerContext,
+        policy: GuardrailPolicyConfig,
     ) -> AsyncGenerator[pb.ProcessingResponse, None]:
         guardrail_stream: GuardrailStream | None = None
-        request_headers_received = False
         try:
             async for request in request_iterator:
                 request_type = request.WhichOneof("request")
@@ -257,21 +259,12 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         502, "Unsupported guardrail mode.", "guardrail_unsupported_mode"
                     )
                     return
-                if (
-                    request_type == "request_headers"
-                    and guardrail_stream is None
-                    and not request_headers_received
-                ):
-                    request_headers_received = True
+                if request_type == "request_headers" and guardrail_stream is None:
                     yield pb.ProcessingResponse(
                         request_headers=pb.HeadersResponse(),
                     )
                     continue
-                if (
-                    request_type == "response_headers"
-                    and guardrail_stream is None
-                    and self.policy is not None
-                ):
+                if request_type == "response_headers" and guardrail_stream is None:
                     headers = {
                         header.key.lower(): (
                             header.raw_value.decode("latin-1")
@@ -298,7 +291,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         return
                     try:
                         guardrail_stream = GuardrailStream.from_policy(
-                            self.policy, sse_output=True
+                            policy, sse_output=True
                         )
                     except Exception:
                         logger.error("Guardrail streaming initialization failed")
@@ -354,9 +347,8 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         return
                     if result.blocked:
                         logger.info("Guardrail blocked streaming response")
-                        assert self.policy is not None
                         yield _immediate_response(
-                            403, self.policy.block_message, "guardrail_blocked"
+                            403, policy.block_message, "guardrail_blocked"
                         )
                         return
                     yield pb.ProcessingResponse(
@@ -376,13 +368,10 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                     "Unexpected guardrail processing phase",
                 )
                 return
-            if self.policy is not None:
-                logger.warning(
-                    "Guardrail stream ended without a complete HTTP response"
-                )
-                await context.abort(
-                    grpc.StatusCode.FAILED_PRECONDITION, "Incomplete guardrail stream"
-                )
+            logger.warning("Guardrail stream ended without a complete HTTP response")
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION, "Incomplete guardrail stream"
+            )
         finally:
             if guardrail_stream is not None:
                 guardrail_stream.cancel()
