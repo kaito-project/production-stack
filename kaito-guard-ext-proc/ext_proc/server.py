@@ -43,6 +43,25 @@ def _header_value(key: str, value: bytes) -> base_pb2.HeaderValueOption:
     )
 
 
+def _streaming_headers_response() -> pb.ProcessingResponse:
+    mutation = pb.HeaderMutation(
+        remove_headers=[
+            "content-length",
+            "etag",
+            "content-md5",
+            "digest",
+            "content-digest",
+            "repr-digest",
+        ],
+        set_headers=[_header_value("cache-control", b"no-store")],
+    )
+    return pb.ProcessingResponse(
+        response_headers=pb.HeadersResponse(
+            response=pb.CommonResponse(header_mutation=mutation)
+        )
+    )
+
+
 def _immediate_response(status: int, message: str, details: str) -> pb.ProcessingResponse:
     return pb.ProcessingResponse(
         immediate_response=pb.ImmediateResponse(
@@ -301,31 +320,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                             "guardrail_init_error",
                         )
                         return
-                    yield pb.ProcessingResponse(
-                        response_headers=pb.HeadersResponse(
-                            response=pb.CommonResponse(
-                                header_mutation=pb.HeaderMutation(
-                                    remove_headers=[
-                                        "content-length",
-                                        "etag",
-                                        "content-md5",
-                                        "digest",
-                                        "content-digest",
-                                        "repr-digest",
-                                    ],
-                                    set_headers=[
-                                        base_pb2.HeaderValueOption(
-                                            header=base_pb2.HeaderValue(
-                                                key="cache-control",
-                                                raw_value=b"no-store",
-                                            ),
-                                            append_action=base_pb2.HeaderValueOption.OVERWRITE_IF_EXISTS_OR_ADD,
-                                        )
-                                    ],
-                                )
-                            )
-                        ),
-                    )
+                    yield _streaming_headers_response()
                     continue
                 if request_type == "response_body" and guardrail_stream is not None:
                     try:
