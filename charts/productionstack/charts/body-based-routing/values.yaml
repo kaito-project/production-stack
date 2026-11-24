@@ -101,6 +101,10 @@ bbr:
   # toleration for nodes reserved for critical add-ons).
   tolerations: []
 
+  # PriorityClass of the BBR pods; empty omits the field.
+  # See charts/productionstack/README.md#pod-priority.
+  priorityClassName: system-cluster-critical
+
   image:
     registry: mcr.microsoft.com
     repository: oss/v2/gateway-api-inference-extension/bbr

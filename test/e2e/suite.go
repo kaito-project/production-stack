@@ -39,6 +39,10 @@ limitations under the License.
 //
 // Spec selection is by Ginkgo label (--label-filter), not by import, because
 // importing the package always registers the full set.
+//
+// This repository's suite also fails when the scheduler preempts a pod while
+// it runs. An importer opts in to that check with
+// var _ = utils.FailSuiteOnPreemption().
 package e2e
 
 import (

@@ -67,7 +67,7 @@ func ScrapePodMetrics(ctx context.Context, clientset *kubernetes.Clientset, name
 // Examples:
 //
 //	vllm:request_success_total{model_name="falcon"} 42
-//	inference_extension_scheduler_attempts_total{status="success"} 10
+//	llm_d_epp_scheduler_attempts_total{status="success"} 10
 var metricsLineRegex = regexp.MustCompile(`^([a-zA-Z_:][a-zA-Z0-9_:]*)\{([^}]*)\}\s+(\S+)`)
 
 // metricsLineNoLabels matches a Prometheus metric line without labels.

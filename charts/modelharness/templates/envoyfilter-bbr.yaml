@@ -24,11 +24,28 @@ Filter-chain placement:
   EnvoyFilters render (see modelharness.bbrAnchorFilter), or first when
   auth renders none. Istio appends the InferencePool ext_proc after its own
   authn/authz filters, giving the chain:
-    kaito.cors -> [ext_authz] -> bbr -> ... -> ext_proc (InferencePool) -> ... -> router
+    kaito.cors -> [ext_authz] -> kaito.strip-routing-headers -> bbr -> ... -> ext_proc (InferencePool) -> ... -> router
   BBR therefore still runs after authentication, so an unauthenticated
   request never reaches it. `priority: 5` applies this patch after the auth
   EnvoyFilters (priority 0) that create the anchor and before gateway-cors
   (priority 10), whose INSERT_FIRST keeps kaito.cors ahead of BBR.
+
+Client-supplied routing headers:
+  BBR writes `X-Gateway-Model-Name` and `X-Gateway-Base-Model-Name` only
+  when the request body names a `model`. On a request without one, or
+  without a body, a value the client set itself would survive, and the
+  modeldeployment HTTPRoute routes on either header. The EPP sends a
+  bodyless request to a random pod, so a client could reach any
+  model-server endpoint that takes no body (e.g. `/metrics`), and the
+  outage local_reply (envoyfilter-outage-reply.yaml) reads a present model
+  header as "BBR ran". `kaito.strip-routing-headers`, a Lua filter inserted
+  immediately before BBR, removes both headers so only BBR sets them. It is
+  anchored on BBR itself, so it follows BBR wherever the placement above
+  puts it; it must never run after BBR, which would delete BBR's own
+  headers. Envoy picks the route before the filter chain runs; a Lua filter
+  that modifies the request headers drops that cached route (the Lua
+  filter's `clear_route_cache`, on by default), so the request is routed as
+  if the client had never sent the header.
 
 Transport:
   BBR serves plaintext HTTP/2; the upstream cluster is plain
@@ -98,6 +115,39 @@ spec:
             grpc_service:
               envoy_grpc:
                 cluster_name: outbound|{{ .Values.bbr.port }}||{{ .Values.bbr.name }}.{{ .Values.bbr.namespace }}.svc.cluster.local
+    # Remove client-supplied routing headers immediately before BBR (see
+    # "Client-supplied routing headers" above). INSERT_BEFORE anchors on the
+    # BBR filter the previous patch inserts: Istio applies the patches of one
+    # EnvoyFilter in order, so the anchor always exists.
+    - applyTo: HTTP_FILTER
+      match:
+        context: GATEWAY
+        listener:
+          filterChain:
+            filter:
+              name: "envoy.filters.network.http_connection_manager"
+              subFilter:
+                name: "envoy.filters.http.ext_proc.bbr"
+      patch:
+        operation: INSERT_BEFORE
+        value:
+          name: kaito.strip-routing-headers
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+            default_source_code:
+              inline_string: |
+                local routing_headers = { "x-gateway-model-name", "x-gateway-base-model-name" }
+
+                function envoy_on_request(request_handle)
+                  local headers = request_handle:headers()
+                  for _, name in ipairs(routing_headers) do
+                    -- remove() also drops the cached route; get() keeps that
+                    -- to the requests that carry the header.
+                    if headers:get(name) ~= nil then
+                      headers:remove(name)
+                    end
+                  end
+                end
     # ─────────────────────────────────────────────────────────────────
     # Passive outlier detection for the BBR ext_proc upstream cluster.
     #

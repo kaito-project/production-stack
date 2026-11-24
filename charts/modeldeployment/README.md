@@ -28,9 +28,14 @@ thresholds, and the [scale to zero](#scale-to-zero) activation/deactivation
 rules of keda-kaito-scaler v0.7.0. With `enableScaling=false`, `minReplicas`,
 `maxReplicas` and `scaling` are ignored.
 
-The EPP runs the [`llm-d-router-endpoint-picker`](https://github.com/llm-d/llm-d-router/tree/v0.9.0)
+The EPP runs the [`llm-d-router-endpoint-picker`](https://github.com/llm-d/llm-d-router/tree/v1.0.0)
 distribution with `--secure-serving=false`, so the Istio Gateway can reach it
 over plaintext gRPC and **no `DestinationRule` is required**.
+
+The chart configures the EPP's OpenAI, Anthropic and vLLM
+`/inference/v1/generate` parsers without its passthrough parser, so a request
+on a path none of them claims, e.g. `/metrics` or `/v1/load_lora_adapter`,
+gets the EPP's `400` instead of reaching a model server.
 
 ## Inputs
 
@@ -70,7 +75,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `autoUpgrade.maintenanceWindow.duration` | optional | _empty_ → `4h`                                      | How long the window stays open once it opens, e.g. `"4h"`. Empty inherits the KAITO controller's `4h` default. Ignored when `schedule` is empty. |
 | `gatewayName`             | optional | _empty_ → `<namespace>`                                             | Gateway the HTTPRoute attaches to. Defaults to the per-namespace Gateway provisioned by `charts/modelharness`. |
 | `epp.image.repository`    | optional | `mcr.microsoft.com/oss/v2/llm-d/llm-d-router-endpoint-picker`       | EPP container image.                                                                       |
-| `epp.image.tag`           | optional | `v0.9.0`                                                             | EPP image tag.                                                                             |
+| `epp.image.tag`           | optional | `v1.0.0`                                                             | EPP image tag.                                                                             |
 | `epp.image.pullPolicy`    | optional | `IfNotPresent`                                                       | EPP image pull policy.                                                                     |
 | `epp.replicas`            | optional | `1`                                                                  | Number of EPP pods.                                                                        |
 | `epp.modelServerPort`     | optional | `5000`                                                               | Port exposed by inference pods (`KAITO PortInferenceServer`).                              |
@@ -79,6 +84,7 @@ over plaintext gRPC and **no `DestinationRule` is required**.
 | `epp.metricsPort`         | optional | `9090`                                                               | EPP HTTP metrics port.                                                                     |
 | `epp.logVerbosity`        | optional | `1`                                                                  | EPP `--v=<n>` log verbosity.                                                               |
 | `epp.resources`           | optional | `requests: 100m / 256Mi` (no limits)                                 | EPP container resources. Steady-state usage is ~10–25m CPU / ~40–50Mi memory; `epp.flowControl.maxBytes` keeps a full flow-control queue within the memory request. |
+| `epp.priorityClassName`  | optional | `system-cluster-critical`                                            | EPP pod PriorityClass; empty omits the field. See [Pod priority](../productionstack/README.md#pod-priority). |
 | `epp.modelServerSelector` | optional | `inferenceset.kaito.sh/created-by: ""`, `apps.kubernetes.io/pod-index: "0"` | InferencePool selector. Empty `created-by` value is auto-filled with `name`. |
 | `epp.flowControl.enabled` | optional | `false`                                                              | Forces the EPP `flowControl` feature gate on. It is turned on automatically for [scale to zero](#scale-to-zero). |
 | `epp.flowControl.maxConcurrency` | optional | `1000000`                                                     | Per-endpoint in-flight capacity of the `concurrency-detector` saturation detector. The EPP queues once in-flight requests reach `maxConcurrency × endpoints`; an empty pool always counts as saturated. |

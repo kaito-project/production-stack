@@ -16,11 +16,13 @@
 #     the failure is at/before BBR (infrastructure side: ext_authz, BBR, or the
 #     namespace Gateway dataplane). Header PRESENT => BBR already ran and the
 #     request was routed to a model (model-serving side: EPP or the inference
-#     pods). This requires the gateway to strip any client-supplied
-#     `X-Gateway-Model-Name` at ingress so it cannot be spoofed.
+#     pods). The bbr-ext-proc EnvoyFilter strips any client-supplied
+#     `X-Gateway-Model-Name` immediately before BBR, so only BBR sets it.
 #   * Envoy response flag — a router/upstream flag (UH/LH/UT/UPE/UF/UC/NC)
 #     means the routed upstream or the gateway dataplane failed; UAEX means
 #     ext_authz. An ext_proc filter (BBR or EPP) never sets a response flag.
+#     Envoy sends these flags with a 5xx by default, but not always (see
+#     mappers 2 and 3), so the flag-bearing mappers also require one.
 #   * Status code — what separates the unflagged local replies. Every value
 #     relied on is a documented contract or pinned by this chart, never an
 #     Envoy implementation detail:
@@ -39,20 +41,29 @@
 #     place the request" and any other 5xx means "the EPP failed"; with it
 #     ABSENT, 503 means "BBR failed".
 #
+# Content type. Every mapper sets `content-type: application/json` through
+# its body_format_override, not headers_to_add: Envoy resets the content type
+# of a rewritten local reply to the formatter's (text/plain by default) unless
+# the rewrite changed the header, and an EPP ImmediateResponse already carries
+# `content-type: application/json` (llm-d-router v1.0.0 and later), so writing
+# the same value through headers_to_add counts as no change.
+#
 # Envoy's `local_reply` mapper filter is an AccessLogFilter, which has
 # `and_filter` / `or_filter` / `response_flag_filter` / `header_filter` /
 # `status_code_filter` but NO `not_filter`. "No router flag" and "any other
 # 5xx" therefore cannot be written directly; they are expressed by ORDERING —
-# every flag-bearing mapper precedes the no-flag mappers, so a request that
+# every flag-bearing mapper precedes the no-flag mappers, so a 5xx that
 # reaches mapper 4a, 4b or 5 provably carries no router flag, and 4a (503)
-# precedes 4b (any other 5xx). Only core AccessLogFilter types are used (no
+# precedes 4b (any other 5xx). Every mapper requires a 5xx, so a 4xx local
+# reply is never rewritten: it is a component telling the client to fix its
+# request, in its own words. Only core AccessLogFilter types are used (no
 # `extension_filter`), so the patch does not depend on optional Envoy
 # extensions being built into the data plane. Mappers are evaluated
 # top-to-bottom, first-match wins:
 #
 #   1.  ext_authz outage     - UAEX + status >= 500                          -> 502 ext_authz_unavailable (authz)
-#   2.  inference pods       - model header PRESENT + router flag             -> 503 model_unavailable     (inferenceset)
-#   3.  gateway dataplane    - model header ABSENT  + router flag             -> 502 gateway_unavailable   (gateway)
+#   2.  inference pods       - model header PRESENT + router flag + >= 500    -> 503 model_unavailable     (inferenceset)
+#   3.  gateway dataplane    - model header ABSENT  + router flag + >= 500    -> 502 gateway_unavailable   (gateway)
 #   4a. EPP rejects request  - model header PRESENT + status == 503           -> 503 model_unavailable     (inferenceset)
 #   4b. EPP failure          - model header PRESENT + any other 5xx           -> 502 epp_unavailable       (epp)
 #   5.  BBR ext_proc outage  - model header ABSENT  + status == 503           -> 502 bbr_unavailable       (bbr)
@@ -123,14 +134,14 @@ spec:
                   body:
                     inline_string: |
                       {"error":{"type":"service_unavailable","code":"ext_authz_unavailable","message":"The authentication service is temporarily unavailable. Please retry.","param":null}}
+                  body_format_override:
+                    text_format_source:
+                      inline_string: "%LOCAL_REPLY_BODY%"
+                    content_type: application/json
                   headers_to_add:
                     - header:
                         key: x-kaito-error-source
                         value: authz
-                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
-                    - header:
-                        key: content-type
-                        value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
                 # 2. inference pods -> 503 model_unavailable (inferenceset).
                 # Model header PRESENT (request was routed to a model) AND a
@@ -144,6 +155,12 @@ spec:
                 # Retry-After and retry); the operator root cause is a
                 # kube-system Event. The zero-ready-endpoint case where the EPP
                 # itself rejects the request (no router flag) is #4a.
+                # The `>= 500` guard keeps a non-5xx reply that carries one of
+                # these flags unchanged: Envoy sends them with a 5xx by default
+                # (Istio sends NC with 500 on Gateway API routes), but NC's
+                # status comes from the route's cluster_not_found_response_code
+                # (503, 404 or 500), and UT answers 204 when the request carries
+                # x-envoy-upstream-rq-timeout-alt-response.
                 - filter:
                     and_filter:
                       filters:
@@ -160,18 +177,24 @@ spec:
                               - UF
                               - UC
                               - NC
+                        - status_code_filter:
+                            comparison:
+                              op: GE
+                              value:
+                                default_value: 500
+                                runtime_key: productionstack_inference_min_status
                   status_code: 503
                   body:
                     inline_string: |
                       {"error":{"type":"service_unavailable","code":"model_unavailable","message":"The requested model is temporarily unavailable. Back off and retry; see Events in kube-system for the root cause.","param":null}}
+                  body_format_override:
+                    text_format_source:
+                      inline_string: "%LOCAL_REPLY_BODY%"
+                    content_type: application/json
                   headers_to_add:
                     - header:
                         key: x-kaito-error-source
                         value: inferenceset
-                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
-                    - header:
-                        key: content-type
-                        value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
                     - header:
                         key: retry-after
@@ -182,7 +205,8 @@ spec:
                 # a router/upstream flag fired: the namespace Gateway dataplane
                 # itself could not forward — no healthy upstream (UH/LH) or the
                 # listener/cluster is not yet programmed while the harness
-                # converges (UF/UC/NC).
+                # converges (UF/UC/NC). The `>= 500` guard leaves a non-5xx
+                # reply that carries one of these flags unchanged (see #2).
                 - filter:
                     and_filter:
                       filters:
@@ -200,18 +224,24 @@ spec:
                               - UF
                               - UC
                               - NC
+                        - status_code_filter:
+                            comparison:
+                              op: GE
+                              value:
+                                default_value: 500
+                                runtime_key: productionstack_dataplane_min_status
                   status_code: 502
                   body:
                     inline_string: |
                       {"error":{"type":"service_unavailable","code":"gateway_unavailable","message":"The namespace gateway has no ready upstream; retry shortly.","param":null}}
+                  body_format_override:
+                    text_format_source:
+                      inline_string: "%LOCAL_REPLY_BODY%"
+                    content_type: application/json
                   headers_to_add:
                     - header:
                         key: x-kaito-error-source
                         value: gateway
-                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
-                    - header:
-                        key: content-type
-                        value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
                 # 4a. EPP rejects the request -> 503 model_unavailable
                 # (inferenceset). Model header PRESENT, no router flag, status
@@ -240,14 +270,14 @@ spec:
                   body:
                     inline_string: |
                       {"error":{"type":"service_unavailable","code":"model_unavailable","message":"The requested model is temporarily unavailable. Back off and retry; see Events in kube-system for the root cause.","param":null}}
+                  body_format_override:
+                    text_format_source:
+                      inline_string: "%LOCAL_REPLY_BODY%"
+                    content_type: application/json
                   headers_to_add:
                     - header:
                         key: x-kaito-error-source
                         value: inferenceset
-                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
-                    - header:
-                        key: content-type
-                        value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
                     - header:
                         key: retry-after
@@ -279,14 +309,14 @@ spec:
                   body:
                     inline_string: |
                       {"error":{"type":"service_unavailable","code":"epp_unavailable","message":"The endpoint picker is temporarily unavailable. Please retry.","param":null}}
+                  body_format_override:
+                    text_format_source:
+                      inline_string: "%LOCAL_REPLY_BODY%"
+                    content_type: application/json
                   headers_to_add:
                     - header:
                         key: x-kaito-error-source
                         value: epp
-                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
-                    - header:
-                        key: content-type
-                        value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
                 # 5. BBR ext_proc outage -> 502 bbr_unavailable (bbr).
                 # Model header ABSENT and status 503: the BBR ext_proc call
@@ -315,14 +345,14 @@ spec:
                   body:
                     inline_string: |
                       {"error":{"type":"service_unavailable","code":"bbr_unavailable","message":"The request router is temporarily unavailable. Please retry.","param":null}}
+                  body_format_override:
+                    text_format_source:
+                      inline_string: "%LOCAL_REPLY_BODY%"
+                    content_type: application/json
                   headers_to_add:
                     - header:
                         key: x-kaito-error-source
                         value: bbr
-                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
-                    - header:
-                        key: content-type
-                        value: application/json
                       append_action: OVERWRITE_IF_EXISTS_OR_ADD
                 # 6. Catch-all: any remaining local 5xx -> gateway_internal_error
                 # (gateway). Placed last so the specific mappers above keep their
@@ -338,11 +368,11 @@ spec:
                   body:
                     inline_string: |
                       {"error":{"type":"service_unavailable","code":"gateway_internal_error","message":"The namespace gateway encountered an unexpected error. Please retry.","param":null}}
+                  body_format_override:
+                    text_format_source:
+                      inline_string: "%LOCAL_REPLY_BODY%"
+                    content_type: application/json
                   headers_to_add:
-                    - header:
-                        key: content-type
-                        value: application/json
-                      append_action: OVERWRITE_IF_EXISTS_OR_ADD
                     - header:
                         key: x-kaito-error-source
                         value: gateway

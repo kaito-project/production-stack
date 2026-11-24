@@ -32,8 +32,9 @@ eventRefreshSeconds: 300
 # Window (seconds) during which transient startup states are not surfaced as
 # Warning events: findings are withheld while the backing resource is younger
 # than this window (or, for findings without a backing object, until the
-# problem has persisted this long). Some reasons use their own window, and
-# terminal KAITO failures bypass it. Set to 0 to disable.
+# problem has persisted this long). Some reasons use their own window, a pod
+# still waiting for a node is withheld for at least 5 minutes, and terminal
+# KAITO failures bypass it. Set to 0 to disable this window.
 startupGraceSeconds: 60
 
 leaderElection:
@@ -83,15 +84,15 @@ controlPlane:
   gatewayAuthOperatorDeployment: apikey-operator
   # azure-authz ext_authz backend (subchart llm-gateway-azureauth, whose
   # fullnameOverride "azure" names the Deployment "azure-authz"), installed for
-  # both azure and hybrid auth. It shares the clusterGatewayAuthNotReady reason
-  # with apikey-authz; on a cluster without it nothing is reported. Leave name
-  # empty to skip the check.
+  # both azure and hybrid auth and probed for clusterAzureAuthzNotReady; on a
+  # cluster without it nothing is reported. Leave name empty to skip the check.
   azureAuthz:
     name: azure-authz
     namespace: kube-system
-  # Local CSI driver installed by the KAITO workspace chart, probed for
-  # clusterLocalCSIDriverNotReady. Set namespace to "" to disable the check, or
-  # clear one name to skip that half of it.
+  # Local CSI driver installed by the KAITO workspace chart: the manager is
+  # probed for clusterLocalCSIManagerNotReady and the node DaemonSet for
+  # clusterLocalCSINodeNotReady. Set namespace to "" to disable both checks, or
+  # clear one name to skip that check.
   localCSIDriver:
     namespace: kube-system
     managerDeployment: csi-local-manager
@@ -121,3 +122,7 @@ podAntiAffinity: true
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# PriorityClass of the reporter pods; empty omits the field.
+# See charts/productionstack/README.md#pod-priority.
+priorityClassName: system-cluster-critical

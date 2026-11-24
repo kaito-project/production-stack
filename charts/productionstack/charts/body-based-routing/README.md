@@ -41,6 +41,7 @@ comments, and recapped here:
 | GKE provider template dropped | Upstream offers a `provider.name=gke` rendering path; this repo only ships the Istio data plane today. Reintroduce when a GKE-backed E2E lane lands. |
 | Image tag pinned (`v1.5.0`) instead of upstream `main` | Reproducible installs; `main` is a moving floating tag in the upstream staging registry. |
 | `app.kubernetes.io/*` labels added via `bbr.labels` / `bbr.selectorLabels` helpers; ConfigMap-reader `ClusterRole` name is release-scoped (`<bbr.name>-<release>-configmap-reader`) | Lets multiple unrelated releases coexist on the same cluster and makes `kubectl ... -l app.kubernetes.io/name=body-based-routing` work for ops. |
+| `PodDisruptionBudget` (`maxUnavailable: 1`) and `bbr.priorityClassName` (`system-cluster-critical`) added | Voluntary disruptions such as Karpenter consolidation evict one replica at a time, and a namespace gateway cannot preempt a replica. See [High availability](#high-availability--unhealthy-replica-ejection) and [Pod priority](../../README.md#pod-priority). |
 
 ## Install via the umbrella chart (recommended)
 
@@ -105,6 +106,7 @@ so the per-namespace EnvoyFilter targets the right Service FQDN.
 | `bbr.podAntiAffinity.type`                       | `soft`                                                                        | `soft` ⇒ `preferredDuringScheduling…` (best-effort spread, still schedules on a single-node cluster); `hard` ⇒ `requiredDuringScheduling…` (a replica stays Pending until a distinct node is free). The anti-affinity rule itself is load-bearing for HA and is always rendered. |
 | `bbr.podAntiAffinity.topologyKey`                | `kubernetes.io/hostname`                                                      | Topology domain across which replicas are spread (per-node by default; set to `topology.kubernetes.io/zone` for per-zone).      |
 | `bbr.healthCheck.{liveness,readiness}.*`         | `initialDelaySeconds:5, periodSeconds:10, timeoutSeconds:5/3, failureThreshold:3` | Standard probe timing knobs. The gRPC liveness/readiness probes against BBR's `grpc.health.v1.Health` service on `healthCheckPort` are load-bearing for HA (their readiness result drives the pod Ready condition → Istio EDS endpoint set → ext_proc cluster) and are always rendered. |
+| `bbr.priorityClassName`                          | `system-cluster-critical`                                                     | PriorityClass of the BBR pods; empty omits the field. See [Pod priority](../../README.md#pod-priority). |
 | `bbr.image.{registry,repository,tag,pullPolicy}` | `mcr.microsoft.com/oss/v2/gateway-api-inference-extension/bbr:v1.5.0`        | Container image coordinates for the released BBR image mirrored in MCR. |
 | `bbr.port`                                       | `9004`                                                                        | ext_proc gRPC port.                                                                                                            |
 | `bbr.healthCheckPort`                            | `9005`                                                                        | gRPC health-check port.                                                                                                        |
@@ -130,6 +132,12 @@ replicas are down). This chart ships HA out of the box:
 * **≥ 2 replicas + pod anti-affinity** (`bbr.replicas`, default `2`,
   schema minimum `2`; `bbr.podAntiAffinity`) spread BBR across distinct
   nodes so the loss of one node cannot take down every replica.
+* **A PodDisruptionBudget** (`maxUnavailable: 1`, always rendered) makes
+  voluntary disruptions, such as Karpenter consolidation, node drains and
+  upgrades, evict one replica at a time.
+* **`system-cluster-critical` priority** (`bbr.priorityClassName`): a
+  namespace gateway cannot preempt a replica to fit on a full node. See
+  [Pod priority](../../README.md#pod-priority).
 * **Active gRPC health checking** is wired via Kubernetes
   liveness/readiness probes (`bbr.healthCheck`) against BBR's
   `grpc.health.v1.Health` service on `healthCheckPort`. BBR serves the

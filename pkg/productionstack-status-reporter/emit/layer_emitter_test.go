@@ -74,3 +74,26 @@ func TestStartupGatePrune(t *testing.T) {
 		t.Errorf("prune left %d stale entries", len(g.notReadySince))
 	}
 }
+
+// A pod that has no node yet is withheld for the node-provisioning window: a
+// shorter or zero global grace does not shorten it, and a longer one is kept.
+func TestStartupGateHoldsPodAwaitingNode(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name     string
+		grace    time.Duration
+		age      time.Duration
+		withheld bool
+	}{
+		{"held past the global grace", time.Minute, 4 * time.Minute, true},
+		{"surfaces after the node window", time.Minute, evaluator.NodeProvisioningGracePeriod + time.Second, false},
+		{"held when the global grace is zero", 0, 4 * time.Minute, true},
+		{"a longer global grace is kept", 10 * time.Minute, 6 * time.Minute, true},
+	} {
+		g := newStartupGate(func() time.Time { return now }, tc.grace)
+		f := evaluator.Finding{Reason: reason.InferencesetEPPNotReady, GroupKey: "epp", ResourceCreatedAt: now.Add(-tc.age), AwaitingNode: true}
+		if got := g.withholdDuringStartup(f, now, map[string]bool{}); got != tc.withheld {
+			t.Errorf("%s: withheld=%v, want %v", tc.name, got, tc.withheld)
+		}
+	}
+}

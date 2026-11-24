@@ -49,15 +49,19 @@ const (
 // KAITO InferenceSetReady reason passed through verbatim.
 type Reason string
 
-// Cluster-layer reasons (§1.2).
+// Cluster-layer reasons (§1.2), one per component.
 const (
-	ClusterIstioControlPlaneNotReady Reason = "clusterIstioControlPlaneNotReady"
-	ClusterGatewayAuthNotReady       Reason = "clusterGatewayAuthNotReady"
-	ClusterBBRNotReady               Reason = "clusterBBRNotReady"
-	ClusterKaitoControllerNotReady   Reason = "clusterKaitoControllerNotReady"
-	ClusterKedaNotReady              Reason = "clusterKedaNotReady"
-	ClusterKedaKaitoScalerNotReady   Reason = "clusterKedaKaitoScalerNotReady"
-	ClusterLocalCSIDriverNotReady    Reason = "clusterLocalCSIDriverNotReady"
+	ClusterIstioControlPlaneNotReady    Reason = "clusterIstioControlPlaneNotReady"
+	ClusterAPIKeyAuthzNotReady          Reason = "clusterAPIKeyAuthzNotReady"
+	ClusterAPIKeyOperatorNotReady       Reason = "clusterAPIKeyOperatorNotReady"
+	ClusterAzureAuthzNotReady           Reason = "clusterAzureAuthzNotReady"
+	ClusterBBRNotReady                  Reason = "clusterBBRNotReady"
+	ClusterKaitoControllerNotReady      Reason = "clusterKaitoControllerNotReady"
+	ClusterKedaOperatorNotReady         Reason = "clusterKedaOperatorNotReady"
+	ClusterKedaMetricsAPIServerNotReady Reason = "clusterKedaMetricsAPIServerNotReady"
+	ClusterKedaKaitoScalerNotReady      Reason = "clusterKedaKaitoScalerNotReady"
+	ClusterLocalCSIManagerNotReady      Reason = "clusterLocalCSIManagerNotReady"
+	ClusterLocalCSINodeNotReady         Reason = "clusterLocalCSINodeNotReady"
 )
 
 // Modelharness-layer reasons (§1.2).
@@ -86,9 +90,12 @@ func EventType(Reason) string {
 // which includes the pass-through KAITO reasons.
 func LayerOf(r Reason) Layer {
 	switch r {
-	case ClusterIstioControlPlaneNotReady, ClusterGatewayAuthNotReady,
+	case ClusterIstioControlPlaneNotReady, ClusterAPIKeyAuthzNotReady,
+		ClusterAPIKeyOperatorNotReady, ClusterAzureAuthzNotReady,
 		ClusterBBRNotReady, ClusterKaitoControllerNotReady,
-		ClusterKedaNotReady, ClusterKedaKaitoScalerNotReady, ClusterLocalCSIDriverNotReady:
+		ClusterKedaOperatorNotReady, ClusterKedaMetricsAPIServerNotReady,
+		ClusterKedaKaitoScalerNotReady, ClusterLocalCSIManagerNotReady,
+		ClusterLocalCSINodeNotReady:
 		return LayerCluster
 	case ModelharnessGatewayClassMissing, ModelharnessGatewayProgrammingFailed,
 		ModelharnessGatewayDataPlaneNotReady:

@@ -81,7 +81,7 @@ jobs:
       - name: Install ext_proc and test dependencies
         working-directory: kaito-guard-ext-proc
         run: python -m pip install -e '.[dev]'
-      - name: Install Envoy for streaming integration tests
+      - name: Install Envoy for buffered and streaming integration tests
         run: |
           curl --fail --location --retry 3 \
             https://github.com/envoyproxy/envoy/releases/download/v1.36.11/envoy-1.36.11-linux-x86_64 \

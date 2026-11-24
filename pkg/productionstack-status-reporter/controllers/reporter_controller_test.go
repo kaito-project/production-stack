@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -214,6 +215,65 @@ func TestReconcilePassesThroughInferenceSetReady(t *testing.T) {
 		if got := published(); got != tc.wantAfter5m {
 			t.Errorf("%s after 5m: published=%v, want %v", tc.reason, got, tc.wantAfter5m)
 		}
+	}
+}
+
+// An EPP pod waiting for a node, e.g. while Karpenter provisions one, is not
+// reported while it is younger than the node-provisioning window, even past
+// the global startup grace, and is reported with the scheduler's cause once it
+// outlasts that window.
+func TestReconcileWaitsForNodeProvisioning(t *testing.T) {
+	start := time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{util.ManagedByLabel: util.ManagedByValue}}}
+	is := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "kaito.sh/v1beta1",
+		"kind":       "InferenceSet",
+		"metadata":   map[string]interface{}{"name": "qwen", "namespace": "team-a"},
+	}}
+	labels := map[string]string{"app": "qwen-epp"}
+	epp := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "qwen-inferencepool-epp"},
+		Spec:       appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}},
+	}
+	waiting := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "qwen-inferencepool-epp-0", Labels: labels, CreationTimestamp: metav1.NewTime(start)},
+		Status: corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{
+			Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable",
+			Message: "0/3 nodes are available: 3 Insufficient cpu.", LastTransitionTime: metav1.NewTime(start),
+		}}},
+	}
+	cs := fake.NewSimpleClientset(ns, epp, waiting)
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{
+			util.InferenceSetGVR: "InferenceSetList",
+			{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}: "GatewayList",
+		}, is)
+	now := start
+	r := newStatusReporter(cs, dyn, config.DefaultConfig(), func() time.Time { return now })
+	ctx := context.Background()
+	reported := func() (string, bool) {
+		t.Helper()
+		events, err := cs.CoreV1().Events(config.ReportingNamespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			t.Fatalf("list events: %v", err)
+		}
+		for _, ev := range events.Items {
+			if ev.Reason == string(reason.InferencesetEPPNotReady) {
+				return ev.Message, true
+			}
+		}
+		return "", false
+	}
+
+	now = start.Add(2 * time.Minute)
+	r.ReconcileOnce(ctx)
+	if msg, ok := reported(); ok {
+		t.Fatalf("an EPP pod waiting 2m for a node must not be reported, got %q", msg)
+	}
+	now = start.Add(evaluator.NodeProvisioningGracePeriod + time.Second)
+	r.ReconcileOnce(ctx)
+	if msg, ok := reported(); !ok || !strings.Contains(msg, "Unschedulable: 0/3 nodes are available") {
+		t.Fatalf("an EPP pod waiting past the node window must be reported with the scheduler's cause, got %q", msg)
 	}
 }
 

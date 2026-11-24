@@ -52,7 +52,7 @@ def make_response_headers_request(content_type="text/event-stream"):
 
 @asynccontextmanager
 async def running_processor(config, port):
-    task = asyncio.create_task(serve("127.0.0.1", port, policy=config))
+    task = asyncio.create_task(serve("127.0.0.1", port, policy=config, streaming=True))
     try:
         async with grpc.aio.insecure_channel(f"127.0.0.1:{port}") as channel:
             await asyncio.wait_for(channel.channel_ready(), timeout=5)
@@ -292,7 +292,7 @@ def test_unsupported_streaming_policy_fails_startup():
         }
     )
     with pytest.raises(StreamingPolicyError):
-        ExternalProcessorServicer(config)
+        ExternalProcessorServicer(config, streaming=True)
 
 
 @pytest.mark.asyncio

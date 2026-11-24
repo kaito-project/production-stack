@@ -131,41 +131,44 @@ class GuardrailStream:
             return tuple(self._build_sse_chunk({"content": text}) for text in chunks)
         return chunks
 
+    def _capture_response_metadata(
+        self, payload: dict[str, object], *, has_choices: bool
+    ) -> None:
+        """Record the response identity from the first chunk that has choices."""
+        if self._response_metadata is not None or not has_choices:
+            return
+
+        response_id = payload.get("id")
+        created = payload.get("created")
+        model = payload.get("model")
+        if not (
+            isinstance(response_id, str)
+            and isinstance(model, str)
+            and type(created) is int  # bool is not a valid timestamp
+            and payload.get("object") == "chat.completion.chunk"
+        ):
+            raise GuardrailStreamError("Missing or invalid OpenAI response metadata.")
+        self._response_metadata = {
+            "id": response_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+        }
+
     def _validate_chunk_and_emit_role(
         self, parsed: OpenAIChatChunkParseResult
     ) -> tuple[str, ...]:
         """Validate the chunk, record finish_reason, and build any role event."""
-        payload = parsed.payload
-        assert payload is not None
-        chunk_metadata: dict[str, object] = {}
-        for key in ("id", "object", "created", "model"):
-            if key not in payload:
-                continue
-            value = payload[key]
-            if (
-                key == "created"
-                and (isinstance(value, bool) or not isinstance(value, int))
-            ) or (key != "created" and not isinstance(value, str)):
-                raise GuardrailStreamError("Invalid OpenAI protocol metadata.")
-            if key == "object" and value != "chat.completion.chunk":
-                raise GuardrailStreamError("Unsupported OpenAI chunk object.")
-            chunk_metadata[key] = value
-        if self._response_metadata is None:
-            if len(chunk_metadata) == 4:
-                self._response_metadata = chunk_metadata
-            elif parsed.parsed_choices:
-                raise GuardrailStreamError("Missing OpenAI response metadata.")
-        elif any(
-            value != self._response_metadata[key]
-            for key, value in chunk_metadata.items()
-        ):
-            raise GuardrailStreamError("OpenAI response metadata changed.")
-        if not parsed.parsed_choices:
-            return ()
         choice = parsed.parsed_choices[0]
         assert choice.choice is not None
-        if set(choice.choice) - {"index", "delta", "finish_reason"}:
+        if set(choice.choice) - {
+            "index", "delta", "finish_reason", "logprobs", "stop_reason", "token_ids"
+        }:
             raise GuardrailStreamError("Unsupported OpenAI choice fields.")
+        if choice.choice.get("logprobs") is not None:
+            raise GuardrailStreamError("Non-null OpenAI logprobs are not supported.")
+        if choice.choice.get("stop_reason") is not None or choice.choice.get("token_ids") is not None:
+            raise GuardrailStreamError("Non-null vLLM stop_reason or token_ids are not supported.")
         delta = choice.choice.get("delta") or {}
         if set(delta) - {"role", "content"}:
             raise GuardrailStreamError("Unsupported non-text OpenAI delta.")
@@ -174,6 +177,10 @@ class GuardrailStream:
         if self._finish_reason is not None:
             raise GuardrailStreamError("Choice received after finish_reason.")
         if choice.finish_reason is not None:
+            if choice.finish_reason not in {
+                "stop", "length", "tool_calls", "content_filter", "function_call"
+            }:
+                raise GuardrailStreamError("Unsupported OpenAI finish_reason.")
             self._finish_reason = choice.finish_reason
         if "role" in delta:
             return (self._build_sse_chunk({"role": delta["role"]}),)
@@ -194,25 +201,19 @@ class GuardrailStream:
                 if self._sse_output and self._response_metadata is None:
                     raise GuardrailStreamError("Missing OpenAI response metadata.")
                 flush_result = window.flush()
-                terminal_sse_chunks: tuple[str, ...] = ()
-                if self._sse_output and not flush_result.blocked:
-                    if self._finish_reason is not None:
-                        terminal_sse_chunks += (
-                            self._build_sse_chunk(
-                                {}, finish_reason=self._finish_reason
-                            ),
-                        )
-                    terminal_sse_chunks += (build_sse_done_chunk(),)
-                result = WindowEmitResult(
-                    chunks=()
-                    if flush_result.blocked
-                    else (
-                        result.chunks
-                        + self._format_text_chunks(flush_result.chunks)
-                        + terminal_sse_chunks
-                    ),
-                    blocked=flush_result.blocked,
-                )
+                if flush_result.blocked:
+                    result = WindowEmitResult(chunks=(), blocked=True)
+                else:
+                    chunks = result.chunks + self._format_text_chunks(flush_result.chunks)
+                    if self._sse_output:
+                        if self._finish_reason is not None:
+                            chunks += (
+                                self._build_sse_chunk(
+                                    {}, finish_reason=self._finish_reason
+                                ),
+                            )
+                        chunks += (build_sse_done_chunk(),)
+                    result = WindowEmitResult(chunks=chunks)
             self._blocked = result.blocked
             succeeded = True
             return result
@@ -238,18 +239,19 @@ class GuardrailStream:
                 raise GuardrailStreamError(
                     f"Invalid OpenAI stream event: {parsed.status}."
                 )
-            if parsed.parsed_choices and (
-                len(parsed.parsed_choices) != 1
-                or parsed.parsed_choices[0].choice_index != 0
-            ):
+            choices = parsed.parsed_choices
+            if self._sse_output:
+                assert parsed.payload is not None
+                self._capture_response_metadata(parsed.payload, has_choices=bool(choices))
+            if not choices:
+                continue
+            if len(choices) != 1 or choices[0].choice_index != 0:
                 raise GuardrailStreamError(
                     "Stream requires exactly one choice with index zero."
                 )
             if self._sse_output:
                 chunks.extend(self._validate_chunk_and_emit_role(parsed))
-            if not parsed.parsed_choices:
-                continue
-            content = parsed.parsed_choices[0].content
+            content = choices[0].content
             if content is not None:
                 result = window.feed(content)
                 if result.blocked:

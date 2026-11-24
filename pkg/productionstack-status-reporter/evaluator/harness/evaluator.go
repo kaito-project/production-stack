@@ -87,7 +87,6 @@ func (e *Evaluator) evaluateNamespace(ctx context.Context, namespace string) []e
 			Reason:            r,
 			Object:            obj,
 			Message:           msg,
-			WorkloadNamespace: namespace,
 			GroupKey:          groupKey,
 			ResourceCreatedAt: createdAt,
 		})
@@ -111,7 +110,6 @@ func (e *Evaluator) evaluateNamespace(ctx context.Context, namespace string) []e
 					Message: fmt.Sprintf(
 						"Namespace %s: Gateway %s programming failed (%s): %s.",
 						namespace, gw.GetName(), rsn, msg),
-					WorkloadNamespace:   namespace,
 					GroupKey:            groupKey,
 					ResourceCreatedAt:   gw.GetCreationTimestamp().Time,
 					GracePeriodOverride: gatewayProgrammingGracePeriod,
@@ -160,7 +158,7 @@ func (e *Evaluator) evaluateGatewayDataPlane(ctx context.Context, namespace, gwN
 	}
 	for i := range deps.Items {
 		dep := &deps.Items[i]
-		unavailable, cause, since := kube.DeploymentPodUnavailable(ctx, e.clientset, namespace, dep.Name)
+		u, unavailable := kube.DeploymentPodUnavailable(ctx, e.clientset, namespace, dep.Name)
 		if !unavailable {
 			continue
 		}
@@ -169,11 +167,11 @@ func (e *Evaluator) evaluateGatewayDataPlane(ctx context.Context, namespace, gwN
 			Object: obj,
 			Message: fmt.Sprintf(
 				"Namespace %s: Gateway %s is Programmed but its data-plane pod is not running (%s); check scheduling/quota/nodes.",
-				namespace, gwName, cause),
-			WorkloadNamespace:   namespace,
+				namespace, gwName, u.Cause),
 			GroupKey:            groupKey,
-			ResourceCreatedAt:   since,
+			ResourceCreatedAt:   u.Since,
 			GracePeriodOverride: gatewayProgrammingGracePeriod,
+			AwaitingNode:        u.AwaitingNode,
 		})
 	}
 }

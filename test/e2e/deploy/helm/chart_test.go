@@ -17,6 +17,7 @@ limitations under the License.
 package helm
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -27,7 +28,10 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/yaml"
 )
@@ -583,6 +587,123 @@ func TestModelHarnessBBRPlacement(t *testing.T) {
 	}
 }
 
+// TestModelHarnessStripsRoutingHeadersBeforeBBR pins that the gateway ignores
+// routing headers a client sets itself. BBR sets them only when the request
+// body names a model, so a Lua filter directly before BBR must remove every
+// header the modeldeployment HTTPRoute routes on.
+func TestModelHarnessStripsRoutingHeadersBeforeBBR(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	render := func(chart string, args ...string) []byte {
+		t.Helper()
+		args = append([]string{"template", "release", filepath.Join("..", "..", "..", "..", "charts", chart)}, args...)
+		output, err := exec.Command("helm", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("helm template %s: %v\n%s", chart, err, output)
+		}
+		return output
+	}
+
+	var bbr struct {
+		Spec struct {
+			ConfigPatches []struct {
+				ApplyTo string `json:"applyTo"`
+				Match   struct {
+					Listener struct {
+						FilterChain struct {
+							Filter struct {
+								SubFilter struct {
+									Name string `json:"name"`
+								} `json:"subFilter"`
+							} `json:"filter"`
+						} `json:"filterChain"`
+					} `json:"listener"`
+				} `json:"match"`
+				Patch struct {
+					Operation string `json:"operation"`
+					Value     struct {
+						Name        string `json:"name"`
+						TypedConfig struct {
+							DefaultSourceCode struct {
+								InlineString string `json:"inline_string"`
+							} `json:"default_source_code"`
+						} `json:"typed_config"`
+					} `json:"value"`
+				} `json:"patch"`
+			} `json:"configPatches"`
+		} `json:"spec"`
+	}
+	output := render("modelharness", "--set", "namespace=ns", "--show-only", "templates/envoyfilter-bbr.yaml")
+	if err := yaml.Unmarshal(output, &bbr); err != nil {
+		t.Fatalf("decode bbr-ext-proc EnvoyFilter: %v", err)
+	}
+	const bbrFilter = "envoy.filters.http.ext_proc.bbr"
+	bbrInserted, lua := false, ""
+	for _, p := range bbr.Spec.ConfigPatches {
+		if p.ApplyTo != "HTTP_FILTER" {
+			continue
+		}
+		switch p.Patch.Value.Name {
+		case bbrFilter:
+			bbrInserted = true
+		case "kaito.strip-routing-headers":
+			anchor := p.Match.Listener.FilterChain.Filter.SubFilter.Name
+			if p.Patch.Operation != "INSERT_BEFORE" || anchor != bbrFilter {
+				t.Errorf("strip filter placement = %s %q, want INSERT_BEFORE %q", p.Patch.Operation, anchor, bbrFilter)
+			}
+			// Istio applies the patches of one EnvoyFilter in order, so the
+			// anchor exists only if the BBR insertion comes first.
+			if !bbrInserted {
+				t.Error("the strip filter patch precedes the BBR insertion it anchors on")
+			}
+			lua = p.Patch.Value.TypedConfig.DefaultSourceCode.InlineString
+		}
+	}
+	if lua == "" {
+		t.Fatal("bbr-ext-proc renders no kaito.strip-routing-headers filter")
+	}
+
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "default", args: []string{"--show-only", "templates/httproute.yaml"}},
+		{name: "azure", args: []string{"--show-only", "templates/azure/httproute.yaml",
+			"--set", "cloudprovider=azure", "--set", "azure.defaultDomain.zoneName=example.aksapp.io"}},
+	} {
+		var route struct {
+			Spec struct {
+				Rules []struct {
+					Matches []struct {
+						Headers []struct {
+							Name string `json:"name"`
+						} `json:"headers"`
+					} `json:"matches"`
+				} `json:"rules"`
+			} `json:"spec"`
+		}
+		output := render("modeldeployment", append([]string{"--set", "model=test-model"}, tt.args...)...)
+		if err := yaml.Unmarshal(output, &route); err != nil {
+			t.Fatalf("%s: decode HTTPRoute: %v\n%s", tt.name, err, output)
+		}
+		routed := 0
+		for _, rule := range route.Spec.Rules {
+			for _, match := range rule.Matches {
+				for _, h := range match.Headers {
+					routed++
+					if !strings.Contains(lua, fmt.Sprintf("%q", strings.ToLower(h.Name))) {
+						t.Errorf("%s: the HTTPRoute routes on %s, which the strip filter does not remove", tt.name, h.Name)
+					}
+				}
+			}
+		}
+		if routed == 0 {
+			t.Errorf("%s: the HTTPRoute matches on no header", tt.name)
+		}
+	}
+}
+
 func renderModelDeployment(t *testing.T, values ...string) ([]byte, error) {
 	t.Helper()
 	chart := filepath.Join("..", "..", "..", "..", "charts", "modeldeployment")
@@ -601,12 +722,13 @@ func renderModelDeployment(t *testing.T, values ...string) ([]byte, error) {
 
 // TestModelHarnessOutageReplyMappers pins the attribution contract of the
 // consolidated outage local_reply: mapper order (first match wins) and the
-// status each unflagged mapper keys on. With the model header present, the
-// 503 an EPP returns on purpose because it cannot place a request (endpoint
-// picker protocol) is model_unavailable and any other 5xx is
-// epp_unavailable; with it absent, only the status BBR's ext_proc filter is
-// pinned to is bbr_unavailable. The mappers must use only core
-// AccessLogFilter types, so the patch needs no optional Envoy extension.
+// status each mapper keys on. Every mapper requires a 5xx, so a 4xx keeps its
+// own status and body. With the model header present, the 503 an EPP returns
+// on purpose because it cannot place a request (endpoint picker protocol) is
+// model_unavailable and any other 5xx is epp_unavailable; with it absent,
+// only the status BBR's ext_proc filter is pinned to is bbr_unavailable. The
+// mappers must use only core AccessLogFilter types, so the patch needs no
+// optional Envoy extension.
 func TestModelHarnessOutageReplyMappers(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm is required for chart rendering tests")
@@ -669,6 +791,12 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 									Body struct {
 										InlineString string `json:"inline_string"`
 									} `json:"body"`
+									BodyFormatOverride *struct {
+										TextFormatSource struct {
+											InlineString string `json:"inline_string"`
+										} `json:"text_format_source"`
+										ContentType string `json:"content_type"`
+									} `json:"body_format_override"`
 								} `json:"mappers"`
 							} `json:"local_reply_config"`
 						} `json:"typed_config"`
@@ -723,8 +851,8 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 		retryAfter  bool
 	}{
 		{code: "ext_authz_unavailable", status: 502, source: "authz", match: "GE 500"},
-		{code: "model_unavailable", status: 503, source: "inferenceset", modelHeader: "present", routerFlag: true, retryAfter: true},
-		{code: "gateway_unavailable", status: 502, source: "gateway", modelHeader: "absent", routerFlag: true},
+		{code: "model_unavailable", status: 503, source: "inferenceset", modelHeader: "present", routerFlag: true, match: "GE 500", retryAfter: true},
+		{code: "gateway_unavailable", status: 502, source: "gateway", modelHeader: "absent", routerFlag: true, match: "GE 500"},
 		{code: "model_unavailable", status: 503, source: "inferenceset", modelHeader: "present", match: "EQ 503", retryAfter: true},
 		{code: "epp_unavailable", status: 502, source: "epp", modelHeader: "present", match: "GE 500"},
 		{code: "bbr_unavailable", status: 502, source: "bbr", modelHeader: "absent", match: fmt.Sprintf("EQ %d", bbrStatus)},
@@ -751,6 +879,14 @@ func TestModelHarnessOutageReplyMappers(t *testing.T) {
 		}
 		if _, ok := headers["retry-after"]; ok != tt.retryAfter {
 			t.Errorf("%s: retry-after present = %v, want %v", tt.code, ok, tt.retryAfter)
+		}
+		// Envoy keeps a content-type set through headers_to_add only if it
+		// differs from the one the local reply already had, and an EPP
+		// ImmediateResponse already carries application/json; otherwise it
+		// uses the formatter's, so the formatter must set it.
+		if o := m.BodyFormatOverride; o == nil || o.ContentType != "application/json" ||
+			o.TextFormatSource.InlineString != "%LOCAL_REPLY_BODY%" {
+			t.Errorf("%s: body_format_override = %+v, want the mapper body with content_type application/json", tt.code, o)
 		}
 		filters := []filter{m.Filter}
 		if m.Filter.AndFilter != nil {
@@ -847,4 +983,132 @@ func TestModelDeploymentHTTPRouteSetsNoErrorSource(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPriorityClassName pins the PriorityClass of the pods that share CPU nodes
+// with the namespace gateway; an empty value omits the field. See
+// charts/productionstack/README.md#pod-priority.
+func TestPriorityClassName(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	charts := filepath.Join("..", "..", "..", "..", "charts")
+	subcharts := filepath.Join(charts, "productionstack", "charts")
+	for _, tt := range []struct {
+		name  string
+		chart string
+		key   string
+		set   []string
+		// shadowPodKey also sets the class of the shadow pods the mocker creates.
+		shadowPodKey string
+	}{
+		{name: "epp", chart: filepath.Join(charts, "modeldeployment"), key: "epp.priorityClassName", set: []string{"model=test-model"}},
+		{name: "bbr", chart: filepath.Join(subcharts, "body-based-routing"), key: "bbr.priorityClassName"},
+		{name: "status-reporter", chart: filepath.Join(subcharts, "productionstack-status-reporter"), key: "priorityClassName"},
+		{name: "keda-kaito-scaler", chart: filepath.Join(subcharts, "keda-kaito-scaler"), key: "priorityClassName"},
+		{name: "gpu-node-mocker", chart: filepath.Join(charts, "gpu-node-mocker"), key: "priorityClassName",
+			shadowPodKey: "shadowPod.priorityClassName"},
+	} {
+		for _, want := range []string{"system-cluster-critical", ""} {
+			t.Run(tt.name+"/"+cmp.Or(want, "empty"), func(t *testing.T) {
+				args := []string{"release", tt.chart}
+				for _, value := range tt.set {
+					args = append(args, "--set", value)
+				}
+				if want == "" {
+					args = append(args, "--set", tt.key+"=")
+					if tt.shadowPodKey != "" {
+						args = append(args, "--set", tt.shadowPodKey+"=")
+					}
+				}
+				deployments := objectsOfKind[appsv1.Deployment](t, renderChart(t, args...), "Deployment")
+				if len(deployments) != 1 {
+					t.Fatalf("expected 1 Deployment, got %d", len(deployments))
+				}
+				pod := deployments[0].Spec.Template.Spec
+				if pod.PriorityClassName != want {
+					t.Errorf("priorityClassName = %q, want %q", pod.PriorityClassName, want)
+				}
+				if tt.shadowPodKey == "" {
+					return
+				}
+				var flags []string
+				for _, arg := range pod.Containers[0].Args {
+					if strings.HasPrefix(arg, "--shadow-pod-priority-class-name") {
+						flags = append(flags, arg)
+					}
+				}
+				var wantFlags []string
+				if want != "" {
+					wantFlags = []string{"--shadow-pod-priority-class-name=" + want}
+				}
+				if !slices.Equal(flags, wantFlags) {
+					t.Errorf("shadow pod class flags = %q, want %q", flags, wantFlags)
+				}
+			})
+		}
+	}
+}
+
+// TestBodyBasedRoutingPodDisruptionBudget pins BBR's PodDisruptionBudget.
+// Voluntary disruptions, such as Karpenter consolidation, must evict the BBR
+// replicas one at a time so one keeps serving ext_proc, and the budget does so
+// only if it selects the BBR pods in their namespace.
+func TestBodyBasedRoutingPodDisruptionBudget(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required for chart rendering tests")
+	}
+	chart := filepath.Join("..", "..", "..", "..", "charts", "productionstack", "charts", "body-based-routing")
+	docs := renderChart(t, "bbr", chart, "--namespace", "release-ns", "--set", "namespaceOverride=bbr-ns")
+	deployments := objectsOfKind[appsv1.Deployment](t, docs, "Deployment")
+	pdbs := objectsOfKind[policyv1.PodDisruptionBudget](t, docs, "PodDisruptionBudget")
+	if len(deployments) != 1 || len(pdbs) != 1 {
+		t.Fatalf("expected 1 Deployment and 1 PodDisruptionBudget, got %d and %d", len(deployments), len(pdbs))
+	}
+	bbr, pdb := deployments[0], pdbs[0]
+	if pdb.Spec.MinAvailable != nil || pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.String() != "1" {
+		t.Errorf("want maxUnavailable 1 and no minAvailable, got maxUnavailable=%v minAvailable=%v",
+			pdb.Spec.MaxUnavailable, pdb.Spec.MinAvailable)
+	}
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		t.Fatalf("PodDisruptionBudget selector: %v", err)
+	}
+	if !selector.Matches(labels.Set(bbr.Spec.Template.Labels)) {
+		t.Errorf("PodDisruptionBudget selector %q does not select the BBR pods %v", selector, bbr.Spec.Template.Labels)
+	}
+	if pdb.Namespace != bbr.Namespace {
+		t.Errorf("PodDisruptionBudget namespace = %q, BBR runs in %q", pdb.Namespace, bbr.Namespace)
+	}
+}
+
+// renderChart runs helm template with args and returns the rendered documents.
+func renderChart(t *testing.T, args ...string) []string {
+	t.Helper()
+	output, err := exec.Command("helm", append([]string{"template"}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("helm template %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return strings.Split(string(output), "\n---")
+}
+
+// objectsOfKind decodes the rendered documents of one kind.
+func objectsOfKind[T any](t *testing.T, docs []string, kind string) []T {
+	t.Helper()
+	var objects []T
+	for _, doc := range docs {
+		var meta metav1.TypeMeta
+		if err := yaml.Unmarshal([]byte(doc), &meta); err != nil {
+			t.Fatalf("decode rendered document: %v\n%s", err, doc)
+		}
+		if meta.Kind != kind {
+			continue
+		}
+		var obj T
+		if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+			t.Fatalf("decode %s: %v\n%s", kind, err, doc)
+		}
+		objects = append(objects, obj)
+	}
+	return objects
 }

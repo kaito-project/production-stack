@@ -38,10 +38,16 @@ func TestEventType(t *testing.T) {
 
 func TestLayerOf(t *testing.T) {
 	cases := map[Reason]Layer{
-		ClusterKedaKaitoScalerNotReady:  LayerCluster,
-		ClusterLocalCSIDriverNotReady:   LayerCluster,
-		ModelharnessGatewayClassMissing: LayerModelharness,
-		InferencesetModelDownloadSlow:   LayerModeldeployment,
+		ClusterKedaKaitoScalerNotReady:      LayerCluster,
+		ClusterAPIKeyAuthzNotReady:          LayerCluster,
+		ClusterAPIKeyOperatorNotReady:       LayerCluster,
+		ClusterAzureAuthzNotReady:           LayerCluster,
+		ClusterKedaOperatorNotReady:         LayerCluster,
+		ClusterKedaMetricsAPIServerNotReady: LayerCluster,
+		ClusterLocalCSIManagerNotReady:      LayerCluster,
+		ClusterLocalCSINodeNotReady:         LayerCluster,
+		ModelharnessGatewayClassMissing:     LayerModelharness,
+		InferencesetModelDownloadSlow:       LayerModeldeployment,
 		// Pass-through KAITO InferenceSetReady reasons belong to the
 		// modeldeployment layer.
 		Reason("ImagePullError"): LayerModeldeployment,
