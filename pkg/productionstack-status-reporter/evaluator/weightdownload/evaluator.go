@@ -137,10 +137,9 @@ func (e *Evaluator) evaluateInferenceSet(ctx context.Context, is *unstructured.U
 	}
 	namespace, name := is.GetNamespace(), is.GetName()
 	return evaluator.Finding{
-		Reason:            reason.InferencesetModelDownloadSlow,
-		Object:            evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: namespace},
-		WorkloadNamespace: namespace,
-		GroupKey:          fmt.Sprintf("inferenceset/%s/%s/modeldownload", namespace, name),
+		Reason:   reason.InferencesetModelDownloadSlow,
+		Object:   evaluator.InvolvedObject{Kind: evaluator.KindNamespace, Name: namespace},
+		GroupKey: fmt.Sprintf("inferenceset/%s/%s/modeldownload", namespace, name),
 		Message: fmt.Sprintf(
 			"InferenceSet %s/%s: model download below %g MB/s for %s (worst %.2f MB/s); source=%s.",
 			namespace, name, e.cfg.WeightDownload.MinMBps, e.cfg.WeightDownload.WindowDuration,
