@@ -332,8 +332,8 @@ flushing. Missing HTTP EOF aborts the RPC.
 ### Integration tests
 
 [Real Envoy tests](tests/test_envoy_sse.py) cover completion, truncation, blocks,
-scanner errors, cancellation, and OpenAI SDK stream accumulation. The SDK is
-test-only; CI uses checksum-pinned Envoy 1.36.11 with mode overrides disabled.
+scanner errors, cancellation, and cross-event redaction over HTTP.
+CI uses checksum-pinned Envoy 1.36.11 with mode overrides disabled.
 Locally these tests skip unless an Envoy binary is available. From this directory:
 
 ```sh
