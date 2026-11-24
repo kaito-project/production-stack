@@ -1,8 +1,10 @@
+import argparse
 import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
+from pathlib import Path
 
 import grpc
 from envoy.config.core.v3 import base_pb2
@@ -392,9 +394,28 @@ async def serve(
         await server.stop(grace=0)
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the Envoy guardrail processor.")
+    parser.add_argument("--policy", type=Path, help="Path to a JSON guardrail policy")
+    parser.add_argument("--response-body-mode", choices=("BUFFERED", "STREAMED"))
+    args = parser.parse_args()
+    if args.response_body_mode and args.policy is None:
+        parser.error("--response-body-mode requires --policy")
+    policy = None
+    if args.policy is not None:
+        try:
+            with args.policy.open(encoding="utf-8") as source:
+                raw = json.load(source, object_pairs_hook=_unique_json_object,
+                                parse_constant=_reject_json_constant)
+            policy = GuardrailPolicyConfig.from_dict(raw)
+        except (OSError, ValueError) as exc:
+            parser.exit(2, f"Cannot load guardrail policy {args.policy}: {exc}\n")
+    asyncio.run(serve(policy=policy, streaming=args.response_body_mode == "STREAMED"))
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
         format="[ext_proc] %(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    asyncio.run(serve())
+    main()
