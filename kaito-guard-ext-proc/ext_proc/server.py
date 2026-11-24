@@ -134,7 +134,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
     ) -> AsyncIterator[pb.ProcessingResponse]:
         if self.streaming and self.policy is not None:
             async with aclosing(
-                self._process_streaming(request_iterator, context, self.policy)
+                self._process_sse_response(request_iterator, context, self.policy)
             ) as responses:
                 async for response in responses:
                     yield response
@@ -252,7 +252,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
             return
 
 
-    async def _process_streaming(
+    async def _process_sse_response(
         self,
         request_iterator: AsyncIterator[external_processor_pb2.ProcessingRequest],
         context: grpc.aio.ServicerContext,
@@ -327,10 +327,10 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         result = await asyncio.to_thread(
                             guardrail_stream.feed, request.response_body.body
                         )
-                        chunks = result.chunks
+                        output_chunks = result.chunks
                         if request.response_body.end_of_stream and not result.blocked:
                             result = await asyncio.to_thread(guardrail_stream.finish)
-                            chunks += result.chunks
+                            output_chunks += result.chunks
                     except Exception:
                         # Do not expose model text or chained scanner exception details.
                         logger.error("Guardrail streaming processing failed")
@@ -350,7 +350,7 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
                         response_body=pb.BodyResponse(
                             response=pb.CommonResponse(
                                 body_mutation=pb.BodyMutation(
-                                    body="".join(chunks).encode("utf-8")
+                                    body="".join(output_chunks).encode("utf-8")
                                 )
                             )
                         )
