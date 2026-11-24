@@ -422,6 +422,18 @@ runs the gRPC lifecycle tests, downloads the checksum-pinned official Envoy
 1.36.11 binary for the buffered and streaming integration tests, and builds the container.
 The image is not published.
 
+To run just the CI end-to-end suite from this package directory:
+
+```sh
+ENVOY_BINARY=/absolute/path/to/envoy python -m pytest -v tests/test_envoy.py tests/test_envoy_sse.py
+```
+
+These tests send HTTP requests through a real Envoy process backed by the gRPC
+processor and a local HTTP upstream (no model or cluster required). Both modes
+cover clean, redacted, blocked, and malformed responses. Streaming also checks
+matches split across SSE events: redaction completes with `[DONE]`, while a
+block after headers are committed interrupts the stream without a success marker.
+
 ## Container
 
 Build from the repository root using

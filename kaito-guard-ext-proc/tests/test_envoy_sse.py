@@ -188,6 +188,47 @@ def get_response(port, on_headers=None, on_body=None):
 
 
 @pytest.mark.asyncio
+async def test_real_envoy_allows_clean_sse(
+    envoy_binary, tmp_path, unused_tcp_port_factory
+):
+    async with running_envoy_proxy(
+        envoy_binary, tmp_path, unused_tcp_port_factory, make_policy(),
+        [make_content_event("hello "), make_content_event("world"), DONE],
+    ) as (port, _):
+        status, _, received, complete = await asyncio.to_thread(get_response, port)
+    assert status == 200 and complete
+    assert extract_stream_text(received) == "hello world"
+    assert received.endswith(DONE) and received.count(DONE) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        [make_content_event("se"), make_content_event("cret"), DONE],
+        [make_content_event("pending"), b"data: {broken}\n\n", DONE],
+        [make_content_event("pending")],
+    ],
+    ids=["cross-event-block", "malformed-event", "missing-done"],
+)
+async def test_real_envoy_rejects_sse_without_releasing_pending_body(
+    envoy_binary, tmp_path, unused_tcp_port_factory, chunks
+):
+    body_gate = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    async with running_envoy_proxy(
+        envoy_binary, tmp_path, unused_tcp_port_factory, make_policy(),
+        chunks, body_gate=body_gate,
+    ) as (port, _):
+        status, _, received, complete = await asyncio.to_thread(
+            get_response, port, lambda _: loop.call_soon_threadsafe(body_gate.set)
+        )
+    # Headers were already committed: the client sees an abort, not a new status.
+    assert status == 200 and not complete
+    assert received == b""
+
+
+@pytest.mark.asyncio
 async def test_real_openai_sdk_accumulates_redacted_stream_with_response_metadata(
     envoy_binary,
     tmp_path,

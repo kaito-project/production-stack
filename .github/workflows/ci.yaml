@@ -90,9 +90,12 @@ jobs:
           chmod +x "$RUNNER_TEMP/envoy"
       - name: Run ext_proc tests
         working-directory: kaito-guard-ext-proc
+        run: python -m pytest --ignore=tests/test_envoy.py --ignore=tests/test_envoy_sse.py
+      - name: Run buffered and streaming E2E through real Envoy
+        working-directory: kaito-guard-ext-proc
         env:
           ENVOY_BINARY: ${{ runner.temp }}/envoy
-        run: python -m pytest
+        run: python -m pytest -v tests/test_envoy.py tests/test_envoy_sse.py
       - name: Build ext_proc image
         run: docker build -f docker/Dockerfile.kaito-guard-ext-proc -t kaito-guard-ext-proc:ci .
 

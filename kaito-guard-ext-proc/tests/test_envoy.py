@@ -241,6 +241,32 @@ def get_response(port):
 
 
 @pytest.mark.asyncio
+async def test_envoy_allows_clean_json_without_rewriting(
+    envoy_binary, tmp_path, unused_tcp_port_factory
+):
+    body = chat_body("safe reply", "another reply") + b"\n"
+    async with proxy(
+        envoy_binary, tmp_path, unused_tcp_port_factory, make_policy(), body
+    ) as port:
+        status, _, received = await asyncio.to_thread(get_response, port)
+    assert status == 200
+    assert received == body
+
+
+@pytest.mark.asyncio
+async def test_envoy_malformed_json_returns_generic_502(
+    envoy_binary, tmp_path, unused_tcp_port_factory
+):
+    body = b'{"choices":[{"message":{"content":"pending-original-text"'
+    async with proxy(
+        envoy_binary, tmp_path, unused_tcp_port_factory, make_policy(), body
+    ) as port:
+        status, _, received = await asyncio.to_thread(get_response, port)
+    assert status == 502
+    assert received == b"Guardrail response processing failed."
+
+
+@pytest.mark.asyncio
 async def test_envoy_block_returns_403_without_original_body_bytes(
     envoy_binary, tmp_path, unused_tcp_port_factory
 ):
