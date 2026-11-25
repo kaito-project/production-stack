@@ -1,7 +1,8 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import aclosing
 
 import grpc
 from envoy.config.core.v3 import base_pb2
@@ -13,6 +14,7 @@ from envoy.service.ext_proc.v3 import (
 from envoy.type.v3 import http_status_pb2
 from guardrail_core.buffered import scan_policy_output
 
+from ext_proc.guardrail_stream import GuardrailStream
 from ext_proc.policy import GuardrailPolicyConfig
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,25 @@ def _header_value(key: str, value: bytes) -> base_pb2.HeaderValueOption:
     )
 
 
+def _build_sse_header_update() -> pb.ProcessingResponse:
+    mutation = pb.HeaderMutation(
+        remove_headers=[
+            "content-length",
+            "etag",
+            "content-md5",
+            "digest",
+            "content-digest",
+            "repr-digest",
+        ],
+        set_headers=[_header_value("cache-control", b"no-store")],
+    )
+    return pb.ProcessingResponse(
+        response_headers=pb.HeadersResponse(
+            response=pb.CommonResponse(header_mutation=mutation)
+        )
+    )
+
+
 def _immediate_response(status: int, message: str, details: str) -> pb.ProcessingResponse:
     return pb.ProcessingResponse(
         immediate_response=pb.ImmediateResponse(
@@ -57,12 +78,17 @@ def _immediate_response(status: int, message: str, details: str) -> pb.Processin
 
 
 class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorServicer):
-    def __init__(self, policy: GuardrailPolicyConfig | None = None) -> None:
+    def __init__(
+        self, policy: GuardrailPolicyConfig | None = None, *, streaming: bool = False
+    ) -> None:
         self.policy = policy
+        self.streaming = streaming
         if policy is None:
             logger.warning(
                 "No guardrail policy configured; response protection is disabled"
             )
+        elif streaming:
+            policy.build_window_scanner()
         else:
             # Fail startup on scanner construction errors; never silently disable a policy.
             policy.build_scanners()
@@ -106,6 +132,13 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
         request_iterator: AsyncIterator[pb.ProcessingRequest],
         context: grpc.aio.ServicerContext,
     ) -> AsyncIterator[pb.ProcessingResponse]:
+        if self.streaming and self.policy is not None:
+            async with aclosing(
+                self._process_sse_response(request_iterator, context, self.policy)
+            ) as responses:
+                async for response in responses:
+                    yield response
+            return
         async for request in request_iterator:
             request_type = request.WhichOneof("request")
             if self.policy is None:
@@ -219,10 +252,131 @@ class ExternalProcessorServicer(external_processor_pb2_grpc.ExternalProcessorSer
             return
 
 
+    async def _process_sse_response(
+        self,
+        request_iterator: AsyncIterator[external_processor_pb2.ProcessingRequest],
+        context: grpc.aio.ServicerContext,
+        policy: GuardrailPolicyConfig,
+    ) -> AsyncGenerator[pb.ProcessingResponse, None]:
+        guardrail_stream: GuardrailStream | None = None
+        try:
+            async for request in request_iterator:
+                request_type = request.WhichOneof("request")
+                if request.observability_mode:
+                    await context.abort(
+                        grpc.StatusCode.FAILED_PRECONDITION,
+                        "Guardrails require blocking ext_proc mode",
+                    )
+                    return
+                if (
+                    request.HasField("protocol_config")
+                    and request.protocol_config.response_body_mode
+                    != ProcessingMode.STREAMED
+                ):
+                    logger.warning("Guardrail requires STREAMED response body mode")
+                    yield _immediate_response(
+                        502, "Unsupported guardrail mode.", "guardrail_unsupported_mode"
+                    )
+                    return
+                if request_type == "request_headers" and guardrail_stream is None:
+                    yield pb.ProcessingResponse(
+                        request_headers=pb.HeadersResponse(),
+                    )
+                    continue
+                if request_type == "response_headers" and guardrail_stream is None:
+                    headers = {
+                        header.key.lower(): (
+                            header.raw_value.decode("latin-1")
+                            if header.raw_value
+                            else header.value
+                        )
+                        for header in request.response_headers.headers.headers
+                    }
+                    if (
+                        headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                        != "text/event-stream"
+                        or headers.get("content-encoding", "identity").strip().lower()
+                        != "identity"
+                        or request.response_headers.end_of_stream
+                    ):
+                        logger.warning(
+                            "Guardrail rejected unsupported streaming headers"
+                        )
+                        yield _immediate_response(
+                            502,
+                            "Unsupported guardrail response.",
+                            "guardrail_unsupported_response",
+                        )
+                        return
+                    try:
+                        guardrail_stream = GuardrailStream.from_policy(
+                            policy, sse_output=True
+                        )
+                    except Exception:
+                        logger.error("Guardrail streaming initialization failed")
+                        yield _immediate_response(
+                            502,
+                            "Guardrail initialization failed.",
+                            "guardrail_init_error",
+                        )
+                        return
+                    yield _build_sse_header_update()
+                    continue
+                if request_type == "response_body" and guardrail_stream is not None:
+                    try:
+                        result = await asyncio.to_thread(
+                            guardrail_stream.feed, request.response_body.body
+                        )
+                        output_chunks = result.chunks
+                        if request.response_body.end_of_stream and not result.blocked:
+                            result = await asyncio.to_thread(guardrail_stream.finish)
+                            output_chunks += result.chunks
+                    except Exception:
+                        # Do not expose model text or chained scanner exception details.
+                        logger.error("Guardrail streaming processing failed")
+                        yield _immediate_response(
+                            502,
+                            "Guardrail streaming processing failed.",
+                            "guardrail_stream_error",
+                        )
+                        return
+                    if result.blocked:
+                        logger.info("Guardrail blocked streaming response")
+                        yield _immediate_response(
+                            403, policy.block_message, "guardrail_blocked"
+                        )
+                        return
+                    yield pb.ProcessingResponse(
+                        response_body=pb.BodyResponse(
+                            response=pb.CommonResponse(
+                                body_mutation=pb.BodyMutation(
+                                    body="".join(output_chunks).encode("utf-8")
+                                )
+                            )
+                        )
+                    )
+                    if request.response_body.end_of_stream:
+                        return
+                    continue
+                await context.abort(
+                    grpc.StatusCode.INVALID_ARGUMENT,
+                    f"Unexpected ext_proc message {request_type!r} in the current stream state",
+                )
+                return
+            logger.warning("Guardrail stream ended without a complete HTTP response")
+            await context.abort(
+                grpc.StatusCode.FAILED_PRECONDITION, "Incomplete guardrail stream"
+            )
+        finally:
+            if guardrail_stream is not None:
+                guardrail_stream.cancel()
+
+
 async def serve(
-    host: str = "[::]", port: int = 9000, *, policy: GuardrailPolicyConfig | None = None
+    host: str = "[::]", port: int = 9000, *, policy: GuardrailPolicyConfig | None = None,
+    streaming: bool = False,
 ) -> None:
-    servicer = ExternalProcessorServicer(policy)
+    servicer = ExternalProcessorServicer(policy, streaming=streaming)
     server = grpc.aio.server()
     external_processor_pb2_grpc.add_ExternalProcessorServicer_to_server(
         servicer, server
