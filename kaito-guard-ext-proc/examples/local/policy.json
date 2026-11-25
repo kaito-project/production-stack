@@ -1,0 +1,4 @@
+{
+  "action": "redact",
+  "scanner_configs": [{"type": "ban_substrings", "substrings": ["secret"]}]
+}
