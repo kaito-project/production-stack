@@ -10,7 +10,7 @@ service and listens on `[::]:9000`. With an injected policy, `Process` scans
 buffered OpenAI Chat Completions JSON responses through core's policy scanning API.
 Set `streaming=True` at startup to process single-choice text SSE responses instead.
 
-Without arguments, ext_proc logs a warning and forwards responses without
+With no arguments, the processor logs a warning and forwards responses without
 scanning. Pass `--policy PATH` to enable scanning. See the
 [local container example](#container).
 
@@ -449,8 +449,8 @@ curl --retry 8 --retry-all-errors --retry-delay 1 -fsSN http://127.0.0.1:18080/c
 The content deltas combine to form `hello [REDACTED]`, and the stream ends
 with `data: [DONE]`.
 The fixture splits `secret` between two SSE events. The demo serves files
-with GET; it is not a model API. `BODY_MODE` sets both the processor CLI
-argument and Envoy's static `response_body_mode`.
+with GET; it is not a model API. `BODY_MODE` sets the response body mode for
+both Envoy and the processor at startup.
 
 To use your own JSON policy, set `POLICY_FILE` to its absolute host path and
 run `docker compose up -d --force-recreate`. Policy changes require restart.
@@ -459,8 +459,9 @@ its `action` to `block`. Recreate the containers with that policy, then request
 the JSON fixture:
 
 ```sh
-POLICY_FILE="$PWD/block.json" BODY_MODE=BUFFERED docker compose up -d --force-recreate
-curl -i http://127.0.0.1:18080/chat.json
+export POLICY_FILE="$PWD/block.json" BODY_MODE=BUFFERED
+docker compose up -d --force-recreate
+curl --retry 8 --retry-connrefused --retry-delay 1 -i http://127.0.0.1:18080/chat.json
 ```
 
 Expect HTTP 403. With streaming, a block after headers are sent aborts the
