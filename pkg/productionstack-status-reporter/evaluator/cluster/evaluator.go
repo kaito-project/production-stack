@@ -158,8 +158,10 @@ func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding,
 		}
 		return now.Sub(node.CreationTimestamp.Time) < evaluator.NodeProvisioningGracePeriod
 	}
-	u, notReady := kube.DaemonSetPodUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet,
-		func(name string) bool { return fakeNodes[name] }, isNewNode)
+	u, notReady := kube.DaemonSetPodUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet, kube.NodeFilter{
+		Skip:  func(name string) bool { return fakeNodes[name] },
+		IsNew: isNewNode,
+	})
 	if nodeUnknown || !notReady {
 		return evaluator.Finding{}, false
 	}

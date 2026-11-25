@@ -87,13 +87,13 @@ func TestDeploymentPodUnavailableTimesAssignedPodFromItsNode(t *testing.T) {
 	}
 }
 
-func daemonSetPodUnavailable(skipNode, isNewNode func(string) bool, pods ...runtime.Object) (PodUnavailability, bool) {
+func daemonSetPodUnavailable(nodes NodeFilter, pods ...runtime.Object) (PodUnavailability, bool) {
 	cs := fake.NewSimpleClientset(append(pods, csiNodeDaemonSet)...)
-	return DaemonSetPodUnavailable(context.Background(), cs, "ns", "csi-node", skipNode, isNewNode)
+	return DaemonSetPodUnavailable(context.Background(), cs, "ns", "csi-node", nodes)
 }
 
 func TestDaemonSetPodUnavailableMarksPodAwaitingNode(t *testing.T) {
-	got, ok := daemonSetPodUnavailable(func(node string) bool { return node == "fake-gpu" }, nil,
+	got, ok := daemonSetPodUnavailable(NodeFilter{Skip: func(node string) bool { return node == "fake-gpu" }},
 		testPod("waiting", "", corev1.PodPending, condition(corev1.PodScheduled, corev1.ConditionFalse, "Unschedulable", "", created)),
 		testPod("simulated", "fake-gpu", corev1.PodRunning, condition(corev1.PodReady, corev1.ConditionFalse, "", "", created)))
 	if !ok || !got.AwaitingNode || got.Cause != "Unschedulable" {
@@ -109,13 +109,13 @@ func TestDaemonSetPodUnavailableWaitsForNewNode(t *testing.T) {
 		condition(corev1.PodReady, corev1.ConditionFalse, "ContainersNotReady", "", created))
 	failing := testPod("b-failing", "old", corev1.PodRunning,
 		condition(corev1.PodReady, corev1.ConditionFalse, "ContainersNotReady", "", created))
-	isNewNode := func(node string) bool { return node == "new" }
+	nodes := NodeFilter{IsNew: func(node string) bool { return node == "new" }}
 
-	got, ok := daemonSetPodUnavailable(nil, isNewNode, starting)
+	got, ok := daemonSetPodUnavailable(nodes, starting)
 	if !ok || !got.AwaitingNode || got.NodeName != "new" {
 		t.Fatalf("a pod on a new node must wait for its node, got %+v", got)
 	}
-	got, ok = daemonSetPodUnavailable(nil, isNewNode, starting, failing)
+	got, ok = daemonSetPodUnavailable(nodes, starting, failing)
 	if !ok || got.AwaitingNode || got.NodeName != "old" {
 		t.Fatalf("a pod failing on an older node must be reported first, got %+v", got)
 	}
@@ -126,7 +126,7 @@ func TestDaemonSetPodUnavailableWaitsForNewNode(t *testing.T) {
 func TestDaemonSetPodUnavailableIgnoresEvictedPod(t *testing.T) {
 	evicted := testPod("evicted", "n1", corev1.PodFailed,
 		condition(corev1.PodReady, corev1.ConditionFalse, "PodFailed", "", created))
-	if got, ok := daemonSetPodUnavailable(nil, nil, evicted); ok {
+	if got, ok := daemonSetPodUnavailable(NodeFilter{}, evicted); ok {
 		t.Fatalf("an evicted pod must not flag the DaemonSet, got %+v", got)
 	}
 }
