@@ -394,11 +394,11 @@ async def serve(
         await server.stop(grace=0)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the Envoy guardrail processor.")
     parser.add_argument("--policy", type=Path, help="Path to a JSON guardrail policy")
     parser.add_argument("--response-body-mode", choices=("BUFFERED", "STREAMED"))
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.response_body_mode and args.policy is None:
         parser.error("--response-body-mode requires --policy")
     policy = None
