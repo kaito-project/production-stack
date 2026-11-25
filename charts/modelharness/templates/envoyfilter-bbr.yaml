@@ -31,10 +31,12 @@ Filter-chain placement:
   (priority 10), whose INSERT_FIRST keeps kaito.cors ahead of BBR.
 
 Client-supplied routing headers:
-  BBR writes `X-Gateway-Model-Name` and `X-Gateway-Base-Model-Name` only
-  when the request body names a `model`. On a request without one, or
-  without a body, a value the client set itself would survive, and the
-  modeldeployment HTTPRoute routes on either header. The EPP sends a
+  BBR writes `X-Gateway-Model-Name` only when the request body names a
+  `model`. On a request without one, or without a body, a value the client
+  set itself would survive, and the modeldeployment HTTPRoute routes on that
+  header. `X-Gateway-Base-Model-Name` is stripped too: upstream BBR's
+  `base-model-to-header` plugin (not used here) sets it, so a route may
+  expect only BBR to set it. The EPP sends a
   bodyless request to a random pod, so a client could reach any
   model-server endpoint that takes no body (e.g. `/metrics`), and the
   outage local_reply (envoyfilter-outage-reply.yaml) reads a present model

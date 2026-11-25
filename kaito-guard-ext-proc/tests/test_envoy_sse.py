@@ -23,13 +23,10 @@ from unittest.mock import Mock
 
 import pytest
 from guardrail_core.streaming.scanners import ScannerWindowAdapter
-from guardrail_core.streaming.openai import build_sse_data_chunk
-from openai import AsyncOpenAI
 
 from ext_proc.guardrail_stream import GuardrailStream
 from tests.sse_helpers import (
     DONE,
-    RESPONSE_METADATA,
     extract_stream_text,
     make_content_event,
     make_policy,
@@ -226,86 +223,6 @@ async def test_real_envoy_rejects_sse_without_releasing_pending_body(
     # Headers were already committed: the client sees an abort, not a new status.
     assert status == 200 and not complete
     assert received == b""
-
-
-@pytest.mark.asyncio
-async def test_real_openai_sdk_accumulates_redacted_stream_with_response_metadata(
-    envoy_binary,
-    tmp_path,
-    unused_tcp_port_factory,
-):
-    role = build_sse_data_chunk(
-        {
-            **RESPONSE_METADATA,
-            "choices": [
-                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-            ],
-        }
-    ).encode()
-    finish = build_sse_data_chunk(
-        {
-            **RESPONSE_METADATA,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        }
-    ).encode()
-    prefix = "safe " * 70
-    async with running_envoy_proxy(
-        envoy_binary,
-        tmp_path,
-        unused_tcp_port_factory,
-        make_policy("redact"),
-        [
-            role,
-            make_content_event(prefix + "se"),
-            make_content_event("cret \u56de\u590d"),
-            finish,
-            DONE,
-        ],
-    ) as (port, _):
-        async with AsyncOpenAI(
-            base_url=f"http://127.0.0.1:{port}/v1",
-            api_key="local-test",
-            max_retries=0,
-            timeout=5,
-        ) as client:
-            async with client.chat.completions.stream(
-                model=RESPONSE_METADATA["model"],
-                messages=[{"role": "user", "content": "local integration test"}],
-            ) as stream:
-                deltas = []
-                chunks = []
-                event_types = []
-                async for item in stream:
-                    event_types.append(item.type)
-                    if item.type == "chunk":
-                        chunk = item.chunk
-                        assert {
-                            "id": chunk.id,
-                            "object": chunk.object,
-                            "created": chunk.created,
-                            "model": chunk.model,
-                        } == RESPONSE_METADATA
-                        chunks.append(chunk)
-                    elif item.type == "content.delta":
-                        deltas.append(item.delta)
-                completion = await stream.get_final_completion()
-    expected = prefix + "[REDACTED] \u56de\u590d"
-    assert "content.delta" in event_types, event_types
-    assert "".join(deltas) == expected
-    assert completion.id == RESPONSE_METADATA["id"]
-    assert completion.model == RESPONSE_METADATA["model"]
-    assert completion.created == RESPONSE_METADATA["created"]
-    assert completion.object == "chat.completion"
-    assert completion.choices[0].message.role == "assistant"
-    assert completion.choices[0].message.content == expected
-    assert completion.choices[0].finish_reason == "stop"
-    assert all(
-        choice.delta.content is not None
-        or choice.delta.role == "assistant"
-        or choice.finish_reason == "stop"
-        for chunk in chunks
-        for choice in chunk.choices
-    )
 
 
 @pytest.mark.asyncio

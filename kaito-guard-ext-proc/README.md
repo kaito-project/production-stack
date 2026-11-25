@@ -10,10 +10,9 @@ service and listens on `[::]:9000`. With an injected policy, `Process` scans
 buffered OpenAI Chat Completions JSON responses through core's policy scanning API.
 Set `streaming=True` at startup to process single-choice text SSE responses instead.
 
-**No policy means no protection.** The default CLI entry point has no policy
-loader, logs a warning, and acknowledges traffic without scanning. Do not deploy
-that entry point as an active guardrail until a startup integration supplies a
-validated policy.
+With no arguments, the processor logs a warning and forwards responses without
+scanning. Pass `--policy PATH` to enable scanning. See the
+[local container example](#container).
 
 ## Run and test
 
@@ -96,8 +95,8 @@ asyncio.run(serve(policy=policy))
 
 Tests can pass the same policy directly to `ExternalProcessorServicer(policy)`.
 Scanner construction is checked before starting the server; invalid policies or
-construction errors fail startup rather than disabling protection. File loading
-and control-plane integration are separate work.
+construction errors fail startup rather than disabling protection. The CLI
+loads a local JSON policy file.
 
 Configure Envoy's ext_proc filter with `failure_mode_allow: false`,
 `allow_mode_override: false`, and these processing modes:
@@ -278,7 +277,7 @@ Inject a [validated policy](#guardrail-policy-configuration-adaptation) into
 `ExternalProcessorServicer(policy, streaming=True)` or
 `serve(policy=policy, streaming=True)`. Core streaming-policy
 validation and scanner construction fail startup for unsupported policies.
-There is no policy-file loader or control-plane integration. Request headers
+The equivalent CLI flags are `--policy PATH --response-body-mode STREAMED`. Request headers
 are acknowledged without capturing a prompt; scans use an empty prompt.
 
 Configure Envoy with `failure_mode_allow: false`, `allow_mode_override: false`,
@@ -332,8 +331,8 @@ flushing. Missing HTTP EOF aborts the RPC.
 ### Integration tests
 
 [Real Envoy tests](tests/test_envoy_sse.py) cover completion, truncation, blocks,
-scanner errors, cancellation, and OpenAI SDK stream accumulation. The SDK is
-test-only; CI uses checksum-pinned Envoy 1.36.11 with mode overrides disabled.
+scanner errors, cancellation, and cross-event redaction over HTTP.
+CI uses checksum-pinned Envoy 1.36.11 with mode overrides disabled.
 Locally these tests skip unless an Envoy binary is available. From this directory:
 
 ```sh
@@ -436,10 +435,59 @@ block after headers are committed interrupts the stream without a success marker
 
 ## Container
 
-Build from the repository root using
-[`docker/Dockerfile.kaito-guard-ext-proc`](../docker/Dockerfile.kaito-guard-ext-proc):
+The [local Compose example](examples/local/compose.yaml) builds the processor
+image from the [ext_proc Dockerfile](../docker/Dockerfile.kaito-guard-ext-proc), mounts
+[policy.json](examples/local/policy.json) read-only, and starts Envoy and an
+HTTP fixture upstream. No model, API key, or cluster is needed. Only Envoy
+is exposed, at `127.0.0.1:18080`. Requires Docker Compose 2.23.1+.
+From the repository root:
 
 ```sh
-docker build -f docker/Dockerfile.kaito-guard-ext-proc -t kaito-guard-ext-proc .
-docker run --rm -p 9000:9000 kaito-guard-ext-proc
+cd kaito-guard-ext-proc/examples/local
+export BODY_MODE=BUFFERED
+docker compose up --build -d
+curl --retry 8 --retry-all-errors --retry-delay 1 -fsS http://127.0.0.1:18080/chat.json
 ```
+
+Expect HTTP 200 and `hello [REDACTED]` in `choices[0].message.content`.
+Switch the same processor and Envoy route to streaming:
+
+```sh
+export BODY_MODE=STREAMED
+docker compose up -d --force-recreate
+curl --retry 8 --retry-all-errors --retry-delay 1 -fsSN http://127.0.0.1:18080/chat.sse
+```
+
+The content deltas combine to form `hello [REDACTED]`, and the stream ends
+with `data: [DONE]`.
+The fixture splits `secret` between two SSE events. The demo serves files
+with GET; it is not a model API. `BODY_MODE` sets the response body mode for
+both Envoy and the processor at startup.
+
+To use your own JSON policy, set `POLICY_FILE` to its absolute host path and
+run `docker compose up -d --force-recreate`. Policy changes require restart.
+For a buffered block example, copy `policy.json` to `block.json` and change
+its `action` to `block`. Recreate the containers with that policy, then request
+the JSON fixture:
+
+```sh
+export POLICY_FILE="$PWD/block.json" BODY_MODE=BUFFERED
+docker compose up -d --force-recreate
+curl --retry 8 --retry-all-errors --retry-delay 1 -i http://127.0.0.1:18080/chat.json
+```
+
+Expect HTTP 403. With streaming, a block after headers are sent aborts the
+stream rather than changing the HTTP status.
+
+To check fail-closed behavior, stop the processor **without** stopping Envoy:
+
+```sh
+docker compose stop processor
+curl -i http://127.0.0.1:18080/chat.json
+docker compose down
+```
+
+Expect a 5xx, not the upstream fixture. The example uses blocking ext_proc,
+`failure_mode_allow: false` and `allow_mode_override: false`. An explicitly
+selected mode without a policy, or a supplied policy that cannot be read,
+parsed or used in that mode, fails startup; it does not fall back to passthrough.
