@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -133,9 +134,10 @@ const fakeNodeLabel = "kaito.sh/fake-node"
 
 // localCSINodeFinding probes the local CSI driver node DaemonSet: any of its
 // pods that is not Ready flags clusterLocalCSINodeNotReady, except pods on
-// gpu-node-mocker nodes. A pod on a Node that has only just registered is
-// still waiting for its node (see newNode). A missing DaemonSet is not
-// reported (see Evaluate).
+// gpu-node-mocker nodes. A pod on a Node that registered less than
+// NodeProvisioningGracePeriod ago is still waiting for its node (see
+// kube.DaemonSetPodUnavailable). A missing DaemonSet is not reported (see
+// Evaluate).
 func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding, bool) {
 	ref := e.cfg.LocalCSIDriver
 	if ref.Namespace == "" || ref.NodeDaemonSet == "" {
@@ -145,9 +147,20 @@ func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding,
 	if err != nil {
 		return evaluator.Finding{}, false // unknown this pass
 	}
+	now := e.clock()
+	nodeUnknown := false
+	isNewNode := func(name string) bool {
+		node, err := e.clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			// A deleted Node is not new; any other error leaves the pass unknown.
+			nodeUnknown = nodeUnknown || !apierrors.IsNotFound(err)
+			return false
+		}
+		return now.Sub(node.CreationTimestamp.Time) < evaluator.NodeProvisioningGracePeriod
+	}
 	u, notReady := kube.DaemonSetPodUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet,
-		func(name string) bool { return fakeNodes[name] }, e.newNode(ctx))
-	if !notReady {
+		func(name string) bool { return fakeNodes[name] }, isNewNode)
+	if nodeUnknown || !notReady {
 		return evaluator.Finding{}, false
 	}
 	return evaluator.Finding{
@@ -158,19 +171,6 @@ func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding,
 		ResourceCreatedAt: u.Since,
 		AwaitingNode:      u.AwaitingNode,
 	}, true
-}
-
-// newNode reports whether a Node registered less than
-// NodeProvisioningGracePeriod ago. Its local CSI node pod is bound to it as
-// soon as it registers but cannot start before the Node is up, so the pod gets
-// the same window as a pod that waits for a node to be provisioned. A Node
-// that cannot be read is not new.
-func (e *Evaluator) newNode(ctx context.Context) func(string) bool {
-	now := e.clock()
-	return func(name string) bool {
-		node, err := e.clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
-		return err == nil && now.Sub(node.CreationTimestamp.Time) < evaluator.NodeProvisioningGracePeriod
-	}
 }
 
 // fakeNodes returns the names of the Nodes created by gpu-node-mocker.

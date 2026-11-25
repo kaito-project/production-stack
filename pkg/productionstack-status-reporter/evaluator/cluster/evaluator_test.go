@@ -18,6 +18,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/config"
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/evaluator"
@@ -214,6 +216,19 @@ func TestLocalCSIDriver(t *testing.T) {
 			if len(findings) != 1 || findings[0].Reason != reason.ClusterLocalCSINodeNotReady || findings[0].AwaitingNode != tc.want {
 				t.Errorf("node registered %s ago: want clusterLocalCSINodeNotReady with AwaitingNode=%t, got %+v", tc.nodeAge, tc.want, findings)
 			}
+		}
+	})
+	t.Run("a Node that cannot be read leaves the node pod unknown this pass", func(t *testing.T) {
+		cs := fake.NewSimpleClientset(append(healthyCluster(cfg), pod(ns, "csi-node-c", "aks-2", nodeLabels, corev1.ConditionFalse))...)
+		cs.PrependReactor("get", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("apiserver unavailable")
+		})
+		findings, err := New(cs, cfg).Evaluate(context.Background())
+		if err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if len(findings) != 0 {
+			t.Fatalf("an unreadable Node must not report its node pod, got %+v", findings)
 		}
 	})
 	t.Run("disabled when namespace is empty", func(t *testing.T) {

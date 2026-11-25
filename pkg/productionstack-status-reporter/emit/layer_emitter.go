@@ -51,7 +51,7 @@ func newStartupGate(clock func() time.Time, grace time.Duration) startupGate {
 // debounce keys so prune can drop the timers that were not.
 //
 // The window is the finding's GracePeriodOverride, or else the layer's global
-// grace. A finding about a pod that has no node yet (AwaitingNode) gets at
+// grace. A finding about a pod still waiting for a node (AwaitingNode) gets at
 // least NodeProvisioningGracePeriod, so the time an autoscaler takes to
 // provision a node is not reported.
 //
