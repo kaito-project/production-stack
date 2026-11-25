@@ -188,7 +188,8 @@ func TestLocalCSIDriver(t *testing.T) {
 		}
 	})
 	t.Run("node pod not ready on a real node", func(t *testing.T) {
-		objs := append(healthyCluster(cfg), pod(ns, "csi-node-a", "aks-0", nodeLabels, corev1.ConditionFalse))
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "aks-0"}}
+		objs := append(healthyCluster(cfg), node, pod(ns, "csi-node-a", "aks-0", nodeLabels, corev1.ConditionFalse))
 		f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSINodeNotReady]
 		if !ok || !strings.Contains(f.Message, "aks-0") {
 			t.Fatalf("not-ready node pod must flag clusterLocalCSINodeNotReady naming the node, got %+v", f)
@@ -198,6 +199,32 @@ func TestLocalCSIDriver(t *testing.T) {
 		objs := append(healthyCluster(cfg), fakeNode, pod(ns, "csi-node-f", "fake-gpu", nodeLabels, corev1.ConditionFalse))
 		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSINodeNotReady]; ok {
 			t.Fatalf("pod on fake node must be ignored, got %+v", f)
+		}
+	})
+	t.Run("node pod whose Node is gone is ignored", func(t *testing.T) {
+		// Deleting a Node leaves the pod that never ran on it until the pod
+		// garbage collector removes it.
+		orphan := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "csi-node-d", Labels: nodeLabels},
+			Spec:       corev1.PodSpec{NodeName: "fake-deleted"},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodPending,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}},
+			},
+		}
+		if f, ok := evaluate(t, cfg, append(healthyCluster(cfg), orphan)...)[reason.ClusterLocalCSINodeNotReady]; ok {
+			t.Fatalf("a pod whose Node is gone must be ignored, got %+v", f)
+		}
+	})
+	t.Run("a healthy node DaemonSet reads no Node", func(t *testing.T) {
+		cs := fake.NewSimpleClientset(append(healthyCluster(cfg), pod(ns, "csi-node-e", "aks-3", nodeLabels, corev1.ConditionTrue))...)
+		if _, err := New(cs, cfg).Evaluate(context.Background()); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		for _, a := range cs.Actions() {
+			if a.GetResource().Resource == "nodes" {
+				t.Fatalf("a healthy DaemonSet must not read Nodes, got %s nodes", a.GetVerb())
+			}
 		}
 	})
 	t.Run("node pod on a node that has only just registered waits for its node", func(t *testing.T) {

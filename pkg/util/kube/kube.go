@@ -91,10 +91,11 @@ func DeploymentPodUnavailable(ctx context.Context, cs kubernetes.Interface, name
 }
 
 // NodeFilter tells DaemonSetPodUnavailable how to treat the node a pod runs
-// on. A nil func matches no node.
+// on. It is consulted only for pods that are not serving, so a lookup it makes
+// costs nothing while the DaemonSet is healthy. A nil func matches no node.
 type NodeFilter struct {
 	// Skip reports whether the pods on a node are ignored, e.g. a simulated
-	// node that can never run the DaemonSet.
+	// node that can never run the DaemonSet, or a node that no longer exists.
 	Skip func(node string) bool
 	// IsNew reports whether a node registered so recently that a pod on it is
 	// still waiting for its node (see DaemonSetPodUnavailable).
@@ -112,8 +113,8 @@ func (f NodeFilter) isNew(node string) bool {
 // DaemonSetPodUnavailable probes a DaemonSet the same way
 // DeploymentPodUnavailable probes a Deployment, but per node: it reports a
 // DaemonSet pod that is not Ready (or still Pending), together with the node
-// it runs on. Pods on nodes that nodes.Skip matches are ignored, so simulated
-// nodes that can never run the DaemonSet do not flag it. A pod on a node that
+// it runs on. Pods on nodes that nodes.Skip matches are ignored, so a node
+// that can never run the DaemonSet does not flag it. A pod on a node that
 // nodes.IsNew matches is still waiting for its node: a DaemonSet pod that
 // tolerates a new node's not-ready taint, as the local CSI node pod does, is
 // scheduled to the node as soon as the node registers, before the node can
@@ -164,11 +165,8 @@ func pickUnavailable(pods []corev1.Pod, nodes NodeFilter) (PodUnavailability, bo
 	var waiting *PodUnavailability
 	for i := range pods {
 		p := &pods[i]
-		if nodes.skips(p.Spec.NodeName) {
-			continue
-		}
 		u, ok := podUnavailability(p)
-		if !ok {
+		if !ok || nodes.skips(p.Spec.NodeName) {
 			continue
 		}
 		if nodes.isNew(p.Spec.NodeName) {
