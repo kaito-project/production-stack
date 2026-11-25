@@ -14,7 +14,6 @@ setup(
     ],
     extras_require={
         "dev": [
-            "openai==3.52.0",
             "pytest>=7.4.0",
             "pytest-asyncio>=0.21.0",
         ],

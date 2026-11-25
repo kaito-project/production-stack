@@ -2,8 +2,8 @@
 
 Helm chart that installs a **cluster-wide workload singleton** Body-Based
 Router (BBR) for the Gateway API Inference Extension. BBR runs as a
-single shared `ext_proc` service (a Deployment + Service + cluster-scoped
-RBAC) that extracts the OpenAI-style `model` field from the request body
+single shared `ext_proc` service (a Deployment + Service + ServiceAccount)
+that extracts the OpenAI-style `model` field from the request body
 and surfaces it as the `X-Gateway-Model-Name` HTTP header.
 
 This chart renders **only the BBR workload** — it does **not** render any
@@ -32,15 +32,15 @@ comments, and recapped here:
 
 | Change | Why |
 |---|---|
-| EnvoyFilter rendering moved OUT of this chart into `charts/modelharness` | BBR's ext_proc EnvoyFilter is now rendered per workload namespace and scoped to that namespace's Gateway pod via `workloadSelector`, so production-stack's BBR never patches unrelated Istio Gateways elsewhere in the mesh. This chart renders only the BBR workload (Deployment + Service + RBAC). |
+| EnvoyFilter rendering moved OUT of this chart into `charts/modelharness` | BBR's ext_proc EnvoyFilter is now rendered per workload namespace and scoped to that namespace's Gateway pod via `workloadSelector`, so production-stack's BBR never patches unrelated Istio Gateways elsewhere in the mesh. This chart renders only the BBR workload (Deployment + Service + ServiceAccount). |
 | `EnvoyFilter` has **no** `spec.targetRefs` and the `inferenceGateway.name` value is removed | Upstream pins the filter to a single Gateway named `inference-gateway` in the EnvoyFilter's own namespace. The per-namespace EnvoyFilter rendered by `modelharness` instead selects each namespace's Gateway pod directly via `workloadSelector` + `match.context: GATEWAY`. |
 | Filter inserted directly after the ext_authz filters (configured in `modelharness`) | Enforces the gateway HTTP filter-chain order required by this repo: `ext_authz (if any) → bbr → ext_proc/epp → router`. BBR must inject `X-Gateway-Model-Name` before the InferencePool ext_proc resolves its per-route override. |
 | BBR always serves plaintext HTTP/2; the `bbr.secureServing` toggle and the upstream `DestinationRule` are removed | The gateway↔BBR hop never leaves the pod network, so upstream TLS adds a per-request self-signed-cert handshake for no benefit. `--secure-serving=false` is hardcoded and no `DestinationRule` is rendered. |
-| `bbr.multiNamespace` value removed; RBAC is **always** cluster-wide | Upstream defaults `multiNamespace: false` and renders a namespace-scoped `Role`/`RoleBinding`, which would leave BBR blind to the LoRA-adapter → base-model ConfigMaps living in workload namespaces and silently break adapter-aware routing. This fork ships a single `ClusterRole` + `ClusterRoleBinding` unconditionally. |
+| `bbr.multiNamespace` value removed; no ConfigMap RBAC; `base-model-to-header` plugin not used | Upstream renders a ConfigMap-reader `Role` or `ClusterRole` for its `base-model-to-header` plugin, which maps LoRA adapter names to base models from ConfigMaps and sets `X-Gateway-Base-Model-Name`. production-stack routes on `X-Gateway-Model-Name` only, so this fork drops that plugin and its RBAC. |
 | `namespaceOverride` value retained | Lets the umbrella `productionstack` chart place BBR in a namespace independent of the parent release namespace if needed. Empty string falls back to the release namespace (`kaito-system`). BBR no longer needs to live in Istio's root namespace. |
 | GKE provider template dropped | Upstream offers a `provider.name=gke` rendering path; this repo only ships the Istio data plane today. Reintroduce when a GKE-backed E2E lane lands. |
 | Image tag pinned (`v1.5.0`) instead of upstream `main` | Reproducible installs; `main` is a moving floating tag in the upstream staging registry. |
-| `app.kubernetes.io/*` labels added via `bbr.labels` / `bbr.selectorLabels` helpers; ConfigMap-reader `ClusterRole` name is release-scoped (`<bbr.name>-<release>-configmap-reader`) | Lets multiple unrelated releases coexist on the same cluster and makes `kubectl ... -l app.kubernetes.io/name=body-based-routing` work for ops. |
+| `app.kubernetes.io/*` labels added via `bbr.labels` / `bbr.selectorLabels` helpers; ServiceAccount name is release-scoped (`<bbr.name>-<release>`) | Lets multiple unrelated releases coexist on the same cluster and makes `kubectl ... -l app.kubernetes.io/name=body-based-routing` work for ops. |
 | `PodDisruptionBudget` (`maxUnavailable: 1`) and `bbr.priorityClassName` (`system-cluster-critical`) added | Voluntary disruptions such as Karpenter consolidation evict one replica at a time, and a namespace gateway cannot preempt a replica. See [High availability](#high-availability--unhealthy-replica-ejection) and [Pod priority](../../README.md#pod-priority). |
 
 ## Install via the umbrella chart (recommended)
@@ -100,7 +100,7 @@ so the per-namespace EnvoyFilter targets the right Service FQDN.
 
 | Parameter                                        | Default                                                                       | Description                                                                                                                    |
 |--------------------------------------------------|-------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
-| `namespaceOverride`                              | `""`                                                                          | Pin the BBR Deployment / Service / RBAC (and the upstream FQDN modelharness uses) to this namespace. Empty ⇒ inherit the Helm release namespace (`kaito-system`). |
+| `namespaceOverride`                              | `""`                                                                          | Pin the BBR Deployment / Service / ServiceAccount (and the upstream FQDN modelharness uses) to this namespace. Empty ⇒ inherit the Helm release namespace (`kaito-system`). |
 | `bbr.name`                                       | `body-based-router`                                                           | Name of the Deployment / Service.                                                                                              |
 | `bbr.replicas`                                   | `2`                                                                           | Replica count. BBR is a cluster-scope singleton on the request hot path, so it runs HA by default. `values.schema.json` pins the minimum to **2**; lowering it below 2 is rejected at render time. |
 | `bbr.podAntiAffinity.type`                       | `soft`                                                                        | `soft` ⇒ `preferredDuringScheduling…` (best-effort spread, still schedules on a single-node cluster); `hard` ⇒ `requiredDuringScheduling…` (a replica stays Pending until a distinct node is free). The anti-affinity rule itself is load-bearing for HA and is always rendered. |
@@ -111,7 +111,7 @@ so the per-namespace EnvoyFilter targets the right Service FQDN.
 | `bbr.port`                                       | `9004`                                                                        | ext_proc gRPC port.                                                                                                            |
 | `bbr.healthCheckPort`                            | `9005`                                                                        | gRPC health-check port.                                                                                                        |
 | `bbr.flags`                                      | `{ v: 3 }`                                                                    | Extra `--key=value` cmd-line flags. `secure-serving` is hardcoded to `false` (plaintext HTTP/2) and MUST NOT be set here.       |
-| `bbr.plugins`                                    | upstream defaults                                                             | Plugin pipeline. Empty list ⇒ runner auto-loads its built-in defaults.                                                          |
+| `bbr.plugins`                                    | `body-field-to-header` (`model` → `X-Gateway-Model-Name`)                     | Plugin pipeline. Empty list ⇒ runner auto-loads its built-in defaults.                                                          |
 | `bbr.tracing.*`                                  | disabled                                                                      | OpenTelemetry exporter configuration.                                                                                          |
 
 > The ext_proc EnvoyFilter (placed directly after the ext_authz

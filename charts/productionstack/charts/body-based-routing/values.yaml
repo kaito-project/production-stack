@@ -127,19 +127,15 @@ bbr:
     # Log verbosity.
     v: 3
 
-  # BBR plugin pipeline. When this list is non-empty the runner skips
-  # its built-in default auto-load, so the two entries below replicate
-  # upstream's default behavior (extract `model` body field into
-  # `X-Gateway-Model-Name`, then map base-model aliases to their
-  # canonical model names).
+  # BBR plugin pipeline: only `body-field-to-header`, which copies the
+  # body's `model` field into `X-Gateway-Model-Name`, the one header the
+  # modeldeployment HTTPRoute routes on.
   plugins:
     - type: body-field-to-header
       name: model-extractor
       json:
         fieldName: model
         headerName: X-Gateway-Model-Name
-    - type: base-model-to-header
-      name: base-model-mapper
 
   tracing:
     enabled: false
