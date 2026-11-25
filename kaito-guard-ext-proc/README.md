@@ -461,7 +461,7 @@ the JSON fixture:
 ```sh
 export POLICY_FILE="$PWD/block.json" BODY_MODE=BUFFERED
 docker compose up -d --force-recreate
-curl --retry 8 --retry-connrefused --retry-delay 1 -i http://127.0.0.1:18080/chat.json
+curl --retry 8 --retry-all-errors --retry-delay 1 -i http://127.0.0.1:18080/chat.json
 ```
 
 Expect HTTP 403. With streaming, a block after headers are sent aborts the
