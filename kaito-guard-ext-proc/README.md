@@ -471,7 +471,7 @@ To check fail-closed behavior, stop the processor **without** stopping Envoy:
 
 ```sh
 docker compose stop processor
-curl -i http://127.0.0.1:18080/chat.sse
+curl -i http://127.0.0.1:18080/chat.json
 docker compose down
 ```
 
