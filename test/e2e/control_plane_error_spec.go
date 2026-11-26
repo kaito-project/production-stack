@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	kaitoconsts "github.com/kaito-project/kaito/pkg/utils/consts"
+	kaitoconsts "github.com/kaito-project/kaito/pkg/consts"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"

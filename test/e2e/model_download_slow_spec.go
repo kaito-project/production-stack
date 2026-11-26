@@ -20,7 +20,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/kaito-project/kaito/pkg/utils/plugin"
+	"github.com/kaito-project/kaito/pkg/model"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -90,7 +90,7 @@ var _ = Describe("Model Download Slow Reporter",
 			Expect(utils.CreateInferenceSet(ctx, spec)).To(Succeed())
 			if !selfDownload {
 				mirror = downloader.ModelMirrorName(presetPhi, "")
-				Expect(utils.CreateModelMirror(ctx, ns, mirror, plugin.ResolveHFModelID(presetPhi))).To(Succeed())
+				Expect(utils.CreateModelMirror(ctx, ns, mirror, model.ResolveHFModelID(presetPhi))).To(Succeed())
 			}
 		}
 

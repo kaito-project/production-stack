@@ -161,7 +161,7 @@ const (
 	MockNodeClassResource = "mocknodeclasses"
 
 	// Cloud provider identifiers accepted by --cloud-provider. They match the
-	// KAITO pkg/sku catalog keys (github.com/kaito-project/kaito/pkg/utils/consts).
+	// KAITO pkg/sku catalog keys (github.com/kaito-project/kaito/pkg/consts).
 	CloudProviderAzure   = "azure"
 	CloudProviderAWS     = "aws"
 	CloudProviderArc     = "arc"
