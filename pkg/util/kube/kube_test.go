@@ -31,6 +31,11 @@ import (
 var (
 	created = time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
 	labels  = map[string]string{"app": "epp"}
+
+	csiNodeDaemonSet = &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "csi-node"},
+		Spec:       appsv1.DaemonSetSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}},
+	}
 )
 
 func testPod(name, node string, phase corev1.PodPhase, conds ...corev1.PodCondition) *corev1.Pod {
@@ -82,16 +87,63 @@ func TestDeploymentPodUnavailableTimesAssignedPodFromItsNode(t *testing.T) {
 	}
 }
 
+func daemonSetPodUnavailable(nodes NodeFilter, pods ...runtime.Object) (PodUnavailability, bool) {
+	cs := fake.NewSimpleClientset(append(pods, csiNodeDaemonSet)...)
+	return DaemonSetPodUnavailable(context.Background(), cs, "ns", "csi-node", nodes)
+}
+
 func TestDaemonSetPodUnavailableMarksPodAwaitingNode(t *testing.T) {
-	ds := &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "csi-node"},
-		Spec:       appsv1.DaemonSetSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}},
-	}
-	cs := fake.NewSimpleClientset(ds,
+	got, ok := daemonSetPodUnavailable(NodeFilter{Skip: func(node string) bool { return node == "fake-gpu" }},
 		testPod("waiting", "", corev1.PodPending, condition(corev1.PodScheduled, corev1.ConditionFalse, "Unschedulable", "", created)),
 		testPod("simulated", "fake-gpu", corev1.PodRunning, condition(corev1.PodReady, corev1.ConditionFalse, "", "", created)))
-	got, ok := DaemonSetPodUnavailable(context.Background(), cs, "ns", "csi-node", func(node string) bool { return node == "fake-gpu" })
 	if !ok || !got.AwaitingNode || got.Cause != "Unschedulable" {
 		t.Fatalf("want only the pod awaiting a node, got %+v", got)
+	}
+}
+
+// A DaemonSet pod that tolerates a new node's not-ready taint is scheduled to
+// the node as soon as it registers, so on a new node it is still waiting for
+// its node, while a pod failing on an older node is reported first.
+func TestDaemonSetPodUnavailableWaitsForNewNode(t *testing.T) {
+	starting := testPod("a-starting", "new", corev1.PodPending,
+		condition(corev1.PodReady, corev1.ConditionFalse, "ContainersNotReady", "", created))
+	failing := testPod("b-failing", "old", corev1.PodRunning,
+		condition(corev1.PodReady, corev1.ConditionFalse, "ContainersNotReady", "", created))
+	nodes := NodeFilter{IsNew: func(node string) bool { return node == "new" }}
+
+	got, ok := daemonSetPodUnavailable(nodes, starting)
+	if !ok || !got.AwaitingNode || got.NodeName != "new" {
+		t.Fatalf("a pod on a new node must wait for its node, got %+v", got)
+	}
+	got, ok = daemonSetPodUnavailable(nodes, starting, failing)
+	if !ok || got.AwaitingNode || got.NodeName != "old" {
+		t.Fatalf("a pod failing on an older node must be reported first, got %+v", got)
+	}
+}
+
+// The DaemonSet controller replaces a pod the kubelet evicted, so the evicted
+// pod must not flag the DaemonSet.
+func TestDaemonSetPodUnavailableIgnoresEvictedPod(t *testing.T) {
+	evicted := testPod("evicted", "n1", corev1.PodFailed,
+		condition(corev1.PodReady, corev1.ConditionFalse, "PodFailed", "", created))
+	if got, ok := daemonSetPodUnavailable(NodeFilter{}, evicted); ok {
+		t.Fatalf("an evicted pod must not flag the DaemonSet, got %+v", got)
+	}
+}
+
+// A pod the kubelet evicted stays Failed until it is deleted, while a
+// replacement serves: it must not flag the Deployment. With only the evicted
+// pod left, nothing runs for the Deployment.
+func TestDeploymentPodUnavailableIgnoresEvictedPod(t *testing.T) {
+	evicted := testPod("a-evicted", "n1", corev1.PodFailed,
+		condition(corev1.PodReady, corev1.ConditionFalse, "PodFailed", "", created))
+	evicted.Status.Reason = "Evicted"
+	serving := testPod("b-serving", "n0", corev1.PodRunning, condition(corev1.PodReady, corev1.ConditionTrue, "", "", created))
+	if got, ok := deploymentPodUnavailable(t, evicted, serving); ok {
+		t.Fatalf("an evicted pod must not flag the Deployment, got %+v", got)
+	}
+	got, ok := deploymentPodUnavailable(t, evicted)
+	if want := (PodUnavailability{Cause: "no pods are running for the Deployment"}); !ok || got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }

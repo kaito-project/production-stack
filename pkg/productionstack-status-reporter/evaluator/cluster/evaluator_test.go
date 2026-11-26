@@ -18,14 +18,17 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/config"
 	"github.com/kaito-project/production-stack/pkg/productionstack-status-reporter/evaluator"
@@ -185,7 +188,8 @@ func TestLocalCSIDriver(t *testing.T) {
 		}
 	})
 	t.Run("node pod not ready on a real node", func(t *testing.T) {
-		objs := append(healthyCluster(cfg), pod(ns, "csi-node-a", "aks-0", nodeLabels, corev1.ConditionFalse))
+		node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "aks-0"}}
+		objs := append(healthyCluster(cfg), node, pod(ns, "csi-node-a", "aks-0", nodeLabels, corev1.ConditionFalse))
 		f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSINodeNotReady]
 		if !ok || !strings.Contains(f.Message, "aks-0") {
 			t.Fatalf("not-ready node pod must flag clusterLocalCSINodeNotReady naming the node, got %+v", f)
@@ -195,6 +199,63 @@ func TestLocalCSIDriver(t *testing.T) {
 		objs := append(healthyCluster(cfg), fakeNode, pod(ns, "csi-node-f", "fake-gpu", nodeLabels, corev1.ConditionFalse))
 		if f, ok := evaluate(t, cfg, objs...)[reason.ClusterLocalCSINodeNotReady]; ok {
 			t.Fatalf("pod on fake node must be ignored, got %+v", f)
+		}
+	})
+	t.Run("node pod whose Node is gone is ignored", func(t *testing.T) {
+		// Deleting a Node leaves the pod that never ran on it until the pod
+		// garbage collector removes it.
+		orphan := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "csi-node-d", Labels: nodeLabels},
+			Spec:       corev1.PodSpec{NodeName: "fake-deleted"},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodPending,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue}},
+			},
+		}
+		if f, ok := evaluate(t, cfg, append(healthyCluster(cfg), orphan)...)[reason.ClusterLocalCSINodeNotReady]; ok {
+			t.Fatalf("a pod whose Node is gone must be ignored, got %+v", f)
+		}
+	})
+	t.Run("a healthy node DaemonSet reads no Node", func(t *testing.T) {
+		cs := fake.NewSimpleClientset(append(healthyCluster(cfg), pod(ns, "csi-node-e", "aks-3", nodeLabels, corev1.ConditionTrue))...)
+		if _, err := New(cs, cfg).Evaluate(context.Background()); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		for _, a := range cs.Actions() {
+			if a.GetResource().Resource == "nodes" {
+				t.Fatalf("a healthy DaemonSet must not read Nodes, got %s nodes", a.GetVerb())
+			}
+		}
+	})
+	t.Run("node pod on a node that has only just registered waits for its node", func(t *testing.T) {
+		now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+		for _, tc := range []struct {
+			nodeAge time.Duration
+			want    bool
+		}{{time.Minute, true}, {10 * time.Minute, false}} {
+			node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "aks-1", CreationTimestamp: metav1.NewTime(now.Add(-tc.nodeAge))}}
+			e := New(fake.NewSimpleClientset(append(healthyCluster(cfg), node, pod(ns, "csi-node-b", "aks-1", nodeLabels, corev1.ConditionFalse))...), cfg)
+			e.clock = func() time.Time { return now }
+			findings, err := e.Evaluate(context.Background())
+			if err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if len(findings) != 1 || findings[0].Reason != reason.ClusterLocalCSINodeNotReady || findings[0].AwaitingNode != tc.want {
+				t.Errorf("node registered %s ago: want clusterLocalCSINodeNotReady with AwaitingNode=%t, got %+v", tc.nodeAge, tc.want, findings)
+			}
+		}
+	})
+	t.Run("a Node that cannot be read leaves the node pod unknown this pass", func(t *testing.T) {
+		cs := fake.NewSimpleClientset(append(healthyCluster(cfg), pod(ns, "csi-node-c", "aks-2", nodeLabels, corev1.ConditionFalse))...)
+		cs.PrependReactor("get", "nodes", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("apiserver unavailable")
+		})
+		findings, err := New(cs, cfg).Evaluate(context.Background())
+		if err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if len(findings) != 0 {
+			t.Fatalf("an unreadable Node must not report its node pod, got %+v", findings)
 		}
 	})
 	t.Run("disabled when namespace is empty", func(t *testing.T) {

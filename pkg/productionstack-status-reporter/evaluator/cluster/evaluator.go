@@ -21,7 +21,10 @@ package cluster
 import (
 	"context"
 	"fmt"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -36,11 +39,12 @@ import (
 type Evaluator struct {
 	clientset kubernetes.Interface
 	cfg       config.Config
+	clock     func() time.Time
 }
 
 // New constructs a cluster Evaluator.
 func New(cs kubernetes.Interface, cfg config.Config) *Evaluator {
-	return &Evaluator{clientset: cs, cfg: cfg}
+	return &Evaluator{clientset: cs, cfg: cfg, clock: time.Now}
 }
 
 // Name identifies the evaluator for logging.
@@ -131,19 +135,49 @@ const fakeNodeLabel = "kaito.sh/fake-node"
 
 // localCSINodeFinding probes the local CSI driver node DaemonSet: any of its
 // pods that is not Ready flags clusterLocalCSINodeNotReady, except pods on
-// gpu-node-mocker nodes. A missing DaemonSet is not reported (see Evaluate).
+// gpu-node-mocker nodes and pods whose Node no longer exists. A pod on a Node
+// that registered less than NodeProvisioningGracePeriod ago is still waiting
+// for its node (see kube.DaemonSetPodUnavailable). A missing DaemonSet is not
+// reported (see Evaluate).
 func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding, bool) {
 	ref := e.cfg.LocalCSIDriver
 	if ref.Namespace == "" || ref.NodeDaemonSet == "" {
 		return evaluator.Finding{}, false
 	}
-	fakeNodes, err := e.fakeNodes(ctx)
-	if err != nil {
-		return evaluator.Finding{}, false // unknown this pass
+	now := e.clock()
+	nodeUnknown := false
+	nodes := map[string]*corev1.Node{} // each Node is read once per pass; nil if it is gone or unreadable
+	getNode := func(name string) *corev1.Node {
+		if node, ok := nodes[name]; ok {
+			return node
+		}
+		node, err := e.clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			// Any error but NotFound leaves the pass unknown.
+			nodeUnknown = nodeUnknown || !apierrors.IsNotFound(err)
+			node = nil
+		}
+		nodes[name] = node
+		return node
 	}
-	u, notReady := kube.DaemonSetPodUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet,
-		func(name string) bool { return fakeNodes[name] })
-	if !notReady {
+	u, notReady := kube.DaemonSetPodUnavailable(ctx, e.clientset, ref.Namespace, ref.NodeDaemonSet, kube.NodeFilter{
+		// A gpu-node-mocker node can never run the driver. Deleting a Node
+		// leaves its pods, which never run again, until the pod garbage
+		// collector removes them 40 to 60 seconds later.
+		Skip: func(name string) bool {
+			node := getNode(name)
+			if node == nil {
+				return true
+			}
+			_, fake := node.Labels[fakeNodeLabel]
+			return fake
+		},
+		IsNew: func(name string) bool {
+			node := getNode(name)
+			return node != nil && now.Sub(node.CreationTimestamp.Time) < evaluator.NodeProvisioningGracePeriod
+		},
+	})
+	if nodeUnknown || !notReady {
 		return evaluator.Finding{}, false
 	}
 	return evaluator.Finding{
@@ -154,17 +188,4 @@ func (e *Evaluator) localCSINodeFinding(ctx context.Context) (evaluator.Finding,
 		ResourceCreatedAt: u.Since,
 		AwaitingNode:      u.AwaitingNode,
 	}, true
-}
-
-// fakeNodes returns the names of the Nodes created by gpu-node-mocker.
-func (e *Evaluator) fakeNodes(ctx context.Context) (map[string]bool, error) {
-	list, err := e.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{LabelSelector: fakeNodeLabel})
-	if err != nil {
-		return nil, err
-	}
-	out := make(map[string]bool, len(list.Items))
-	for i := range list.Items {
-		out[list.Items[i].Name] = true
-	}
-	return out, nil
 }

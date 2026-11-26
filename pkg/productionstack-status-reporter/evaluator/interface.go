@@ -97,20 +97,22 @@ type Finding struct {
 	// provisioning that legitimately takes several minutes). Zero means use the
 	// global StartupGracePeriod.
 	GracePeriodOverride time.Duration
-	// AwaitingNode marks a finding about a pod that has no node yet, typically
-	// while a node is provisioned for it. The startup grace gate withholds it
-	// for at least NodeProvisioningGracePeriod, whatever the finding's own
-	// window.
+	// AwaitingNode marks a finding about a pod that is still waiting for a
+	// node: it has none yet, typically while a node is provisioned for it, or
+	// it is a DaemonSet pod on a node that has only just registered (see
+	// kube.DaemonSetPodUnavailable). The startup grace gate withholds it for at
+	// least NodeProvisioningGracePeriod, whatever the finding's own window.
 	AwaitingNode bool
 }
 
 // NodeProvisioningGracePeriod is the minimum startup-grace window for a finding
-// about a pod that has no node yet (Finding.AwaitingNode). When no node has
-// room for the pod, an autoscaler such as Karpenter provisions one, which
-// routinely outlasts the global StartupGracePeriod, so a healthy rollout would
-// otherwise be reported. The window is fixed like the other reason-specific
-// windows and also applies when the global StartupGracePeriod is zero. It
-// covers only the wait for a node: once the pod is on one, its finding is
-// anchored on when it got the node and then on the kubelet's not-ready
-// transition, so its normal window starts afresh.
+// about a pod that is still waiting for a node (Finding.AwaitingNode). When no
+// node has room for the pod, an autoscaler such as Karpenter provisions one,
+// which routinely outlasts the global StartupGracePeriod, so a healthy rollout
+// would otherwise be reported. A DaemonSet pod on a new node waits until the
+// node is this old. The window is fixed like the other reason-specific windows
+// and also applies when the global StartupGracePeriod is zero. It covers only
+// the wait for a node: once a pod that waited unscheduled is on a node, its
+// finding is anchored on when it got the node and then on the kubelet's
+// not-ready transition, so its normal window starts afresh.
 const NodeProvisioningGracePeriod = 5 * time.Minute
